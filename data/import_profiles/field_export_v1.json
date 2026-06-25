@@ -1,0 +1,28 @@
+{
+  "id": "field_export_v1",
+  "label": "Field export (Lithology + Lat/Long)",
+  "detect": {
+    "required_sheets": ["Lithology"],
+    "optional_sheets": ["Field Data"],
+    "required_columns": {
+      "Lithology": ["Label", "Depth", "Lithology", "Lat", "Long"]
+    }
+  },
+  "lithology_sheet": "Lithology",
+  "columns": {
+    "hole_id": "Label",
+    "depth_interval": "Depth",
+    "lithology_code": "Lithology",
+    "latitude": "Lat",
+    "longitude": "Long"
+  },
+  "depth_format": "interval_string",
+  "coordinates": {
+    "mode": "wgs84_to_utm",
+    "source_crs": "EPSG:4326",
+    "target_crs": "EPSG:32611"
+  },
+  "defaults": {
+    "elevation_m": 100.0
+  }
+}

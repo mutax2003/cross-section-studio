@@ -1,0 +1,14 @@
+.git
+.cursor
+.pytest_cache
+__pycache__
+*.pyc
+.venv
+venv
+tests
+scripts/e2e_smoke_direct.py
+scripts/run_e2e_tests.py
+e2e_*.txt
+*.md
+data/advantage_transects
+data/smoke_test_output.svg

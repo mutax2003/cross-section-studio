@@ -1,0 +1,6 @@
+{
+  "extends": "field_export_v1",
+  "coordinate_offsets_m": {
+    "BH26-15": [0.5, 0.0]
+  }
+}

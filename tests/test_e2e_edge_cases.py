@@ -18,7 +18,17 @@ from ingestion import (
     ingest_workbook,
     parse_depth_interval,
 )
-from models import Collar, DataParser, Lithology, ParseResult, Transect, WaterLevel, subset_parse_result
+from models import (
+    Collar,
+    DataParser,
+    Lithology,
+    ParseResult,
+    Transect,
+    WaterLevel,
+    parse_result_to_json_bundle,
+    subset_json_bundle,
+    subset_parse_result,
+)
 from pipeline import build_cross_section
 from projection import off_transect_warnings, project_boreholes, suggest_offset_threshold_m
 from stratigraphy import build_stratigraphy
@@ -29,6 +39,7 @@ from tests.conftest import (
     run_pipeline,
 )
 from transect_planner import recommend_transects
+from ui_helpers import holes_missing_lithology
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_WORKBOOK = ROOT / "data" / "sample_boreholes.xlsx"
@@ -606,7 +617,7 @@ def test_e2e_transect_recommender_empty_with_one_hole() -> None:
 
 
 def test_e2e_transect_recommender_large_project_sliding_window() -> None:
-    """15 holes triggers sliding-window path instead of full combinations."""
+    """More than 9 holes triggers sliding-window path instead of full combinations."""
     collars = [
         Collar(
             hole_id=f"BH-{index:02d}",
@@ -709,6 +720,39 @@ def test_subset_parse_result_preserves_only_requested_holes() -> None:
     assert len(subset.lithologies) == 1
 
 
+def test_subset_parse_result_preserves_hole_order() -> None:
+    parse_result = ParseResult(
+        collars=(
+            Collar(hole_id="A", easting=0.0, northing=0.0, elevation=1.0, total_depth=5.0),
+            Collar(hole_id="B", easting=1.0, northing=0.0, elevation=1.0, total_depth=5.0),
+            Collar(hole_id="C", easting=2.0, northing=0.0, elevation=1.0, total_depth=5.0),
+        ),
+        lithologies=(),
+        errors=(),
+    )
+    subset = subset_parse_result(parse_result, ("C", "A"))
+    assert [collar.hole_id for collar in subset.collars] == ["C", "A"]
+
+
+def test_subset_json_bundle_matches_parse_result_subset() -> None:
+    parse_result = ParseResult(
+        collars=(
+            Collar(hole_id="A", easting=0.0, northing=0.0, elevation=1.0, total_depth=5.0),
+            Collar(hole_id="B", easting=1.0, northing=0.0, elevation=1.0, total_depth=5.0),
+        ),
+        lithologies=(
+            Lithology(hole_id="A", from_depth=0.0, to_depth=5.0, lithology_code="Clay"),
+            Lithology(hole_id="B", from_depth=0.0, to_depth=5.0, lithology_code="Silt"),
+        ),
+        errors=(),
+        water_levels=(WaterLevel(hole_id="A", depth=1.0),),
+    )
+    bundle = parse_result_to_json_bundle(parse_result)
+    filtered = subset_json_bundle(*bundle, ("B", "A"))
+    pydantic_subset = parse_result_to_json_bundle(subset_parse_result(parse_result, ("B", "A")))
+    assert filtered == pydantic_subset
+
+
 def test_subset_parse_result_filters_water_levels() -> None:
     parse_result = ParseResult(
         collars=(
@@ -725,6 +769,22 @@ def test_subset_parse_result_filters_water_levels() -> None:
     subset = subset_parse_result(parse_result, ("A",))
     assert len(subset.water_levels) == 1
     assert subset.water_levels[0].hole_id == "A"
+
+
+def test_e2e_generate_requires_lithology_on_all_selected_holes() -> None:
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=10.0),
+    ]
+    lithologies = [
+        Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+    ]
+    subset = subset_parse_result(
+        ParseResult(collars=tuple(collars), lithologies=tuple(lithologies), errors=()),
+        ("BH-01", "BH-02"),
+    )
+    assert len(subset.collars) == 2
+    assert holes_missing_lithology(subset.lithologies, ("BH-01", "BH-02")) == ("BH-02",)
 
 
 def test_e2e_transect_requires_two_points() -> None:
@@ -794,7 +854,7 @@ def test_e2e_native_workbook_unit_order_and_water_sheet(tmp_path: Path) -> None:
     parse_result = DataParser().parse_file(workbook)
     assert parse_result.lithologies[0].unit_order == 1
     assert len(parse_result.water_levels) == 2
-    _, polygons, svg_bytes, _, _ = build_cross_section(
+    _, polygons, svg_bytes, _, _, _, _ = build_cross_section(
         parse_result.collars,
         parse_result.lithologies,
         [(0.0, 0.0), (50.0, 0.0)],

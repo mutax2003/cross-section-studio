@@ -13,8 +13,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY app.py pipeline.py renderer.py stratigraphy.py projection.py models.py ingestion.py constants.py lithology_codes.py ui_helpers.py ai_quality.py ai_assistant.py transect_planner.py ./
+COPY *.py ./
 COPY data ./data
+COPY docs ./docs
 COPY .streamlit ./.streamlit
 
 EXPOSE 8501

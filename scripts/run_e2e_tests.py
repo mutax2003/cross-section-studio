@@ -18,6 +18,8 @@ TEST_FILES = [
     "tests/test_app_helpers.py",
     "tests/test_ingestion.py",
     "tests/test_e2e_edge_cases.py",
+    "tests/test_ecoventure_gwm_figures.py",
+    "tests/test_consulting_reference_parity.py",
     "tests/test_advantage_conversion.py",
     "tests/test_ai_quality.py",
     "tests/test_ai_assistant.py",

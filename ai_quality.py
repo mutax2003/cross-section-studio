@@ -17,11 +17,11 @@ from rapidfuzz import fuzz
 
 from constants import CANONICAL_LITHOLOGY_CODES
 from models import COLLAR_COLUMNS, LITHOLOGY_COLUMNS, Collar, Lithology, Transect
-from projection import project_collar_to_transect
+from projection import TransectGeometry
 
 logger = logging.getLogger(__name__)
 
-ALIASES_PATH = Path(__file__).resolve().parent / "data" / "lithology_aliases.json"
+from paths import lithology_aliases_path
 MAPPING_CONFIDENCE_THRESHOLD = 0.8
 
 COLLAR_ALIASES: dict[str, set[str]] = {
@@ -119,7 +119,7 @@ def _normalize_header(value: object) -> str:
 
 @lru_cache(maxsize=1)
 def load_lithology_aliases(path: str | None = None) -> dict[str, str]:
-    alias_path = Path(path) if path else ALIASES_PATH
+    alias_path = Path(path) if path else lithology_aliases_path()
     if not alias_path.exists():
         return {}
     with alias_path.open(encoding="utf-8") as handle:
@@ -128,7 +128,7 @@ def load_lithology_aliases(path: str | None = None) -> dict[str, str]:
 
 
 def save_lithology_alias(source_code: str, canonical_code: str, path: Path | None = None) -> None:
-    alias_path = path or ALIASES_PATH
+    alias_path = path or lithology_aliases_path()
     aliases = dict(load_lithology_aliases(str(alias_path)))
     aliases[_normalize_header(source_code)] = canonical_code
     alias_path.parent.mkdir(parents=True, exist_ok=True)
@@ -374,7 +374,52 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
             )
         )
 
+    code_counts: dict[str, int] = {}
+    for interval in sorted_intervals:
+        code_counts[interval.lithology_code] = code_counts.get(interval.lithology_code, 0) + 1
+    duplicate_codes = {code for code, count in code_counts.items() if count > 1}
+    if duplicate_codes:
+        missing_order = [
+            interval.lithology_code
+            for interval in sorted_intervals
+            if interval.lithology_code in duplicate_codes and interval.unit_order is None
+        ]
+        if missing_order:
+            issues.append(
+                QualityIssue(
+                    code="duplicate_lithology_no_unit_order",
+                    message=(
+                        f"{collar.hole_id} has duplicate lithology code(s) "
+                        f"({', '.join(sorted(set(missing_order)))}) without unit_order — "
+                        "correlation across holes will fail"
+                    ),
+                    severity=Severity.ERROR.value,
+                    hole_id=collar.hole_id,
+                )
+            )
+        orders = [interval.unit_order for interval in sorted_intervals if interval.unit_order is not None]
+        if len(orders) != len(set(orders)):
+            issues.append(
+                QualityIssue(
+                    code="duplicate_unit_order",
+                    message=f"{collar.hole_id} has duplicate unit_order values",
+                    severity=Severity.ERROR.value,
+                    hole_id=collar.hole_id,
+                )
+            )
+
     return issues
+
+
+def collars_use_placeholder_elevation(
+    collars: Sequence[Collar],
+    placeholder_m: float,
+    *,
+    tolerance: float = 0.01,
+) -> bool:
+    if not collars:
+        return False
+    return all(abs(collar.elevation - placeholder_m) <= tolerance for collar in collars)
 
 
 def analyze_parsed_data(
@@ -385,6 +430,7 @@ def analyze_parsed_data(
     offset_threshold_m: float = 50.0,
     mapping_proposal: MappingProposal | None = None,
     aliases: dict[str, str] | None = None,
+    placeholder_elevation_m: float | None = None,
 ) -> QualityReport:
     issues: list[QualityIssue] = []
     collar_by_id = {collar.hole_id: collar for collar in collars}
@@ -432,19 +478,39 @@ def analyze_parsed_data(
     for collar in collars:
         issues.extend(_hole_quality_issues(collar, lithology_by_hole.get(collar.hole_id, [])))
 
-    if transect is not None:
-        for collar in collars:
-            _, offset = project_collar_to_transect(collar.easting, collar.northing, transect)
+    if placeholder_elevation_m is not None and collars_use_placeholder_elevation(
+        collars,
+        placeholder_elevation_m,
+    ):
+        issues.append(
+            QualityIssue(
+                code="placeholder_elevation",
+                message=(
+                    f"All collar elevations use the profile placeholder ({placeholder_elevation_m:.1f} m). "
+                    "Set a site elevation or ingest survey RL before interpolated sections."
+                ),
+                severity=Severity.WARNING.value,
+            )
+        )
+
+    if transect is not None and collars:
+        geometry = TransectGeometry.from_transect(transect)
+        hole_ids = [collar.hole_id for collar in collars]
+        _, offsets = geometry.project_many(
+            [collar.easting for collar in collars],
+            [collar.northing for collar in collars],
+        )
+        for hole_id, offset in zip(hole_ids, offsets, strict=True):
             if offset > offset_threshold_m:
                 issues.append(
                     QualityIssue(
                         code="off_transect",
                         message=(
-                            f"{collar.hole_id} is {offset:.1f} m from transect "
+                            f"{hole_id} is {offset:.1f} m from transect "
                             f"(threshold {offset_threshold_m:.1f} m)"
                         ),
                         severity=Severity.WARNING.value,
-                        hole_id=collar.hole_id,
+                        hole_id=hole_id,
                     )
                 )
 

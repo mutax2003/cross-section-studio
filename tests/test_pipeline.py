@@ -32,14 +32,18 @@ def test_build_cross_section_returns_svg() -> None:
         Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
         Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
     ]
-    projected, polygons, svg_bytes, codes, _ = build_cross_section(
-        collars, lithologies, [(0.0, 0.0), (50.0, 0.0)]
-    )
+    result = build_cross_section(collars, lithologies, [(0.0, 0.0), (50.0, 0.0)])
+    assert len(result.projected) == 2
+    assert len(result.polygons) == 1
+    assert result.lithology_codes == ["Clay"]
+    assert_valid_svg(result.svg_bytes)
+    assert INTERPOLATED_DISCLAIMER.encode() in result.svg_bytes
+
+    projected, polygons, svg_bytes, _, _, codes, _ = result
     assert len(projected) == 2
     assert len(polygons) == 1
     assert codes == ["Clay"]
     assert_valid_svg(svg_bytes)
-    assert INTERPOLATED_DISCLAIMER.encode() in svg_bytes
 
 
 def test_borehole_only_mode_skips_polygons() -> None:
@@ -51,7 +55,7 @@ def test_borehole_only_mode_skips_polygons() -> None:
         Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
         Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Silt"),
     ]
-    _, polygons, svg_bytes, codes, _ = build_cross_section(
+    _, polygons, svg_bytes, _, _, codes, _ = build_cross_section(
         collars,
         lithologies,
         [(0.0, 0.0), (50.0, 0.0)],
@@ -73,10 +77,10 @@ def test_allow_pinch_outs_false_reduces_polygons() -> None:
         Lithology(hole_id="BH-01", from_depth=5.0, to_depth=10.0, lithology_code="Clay"),
         Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Sandstone"),
     ]
-    _, with_pinch, _, _, _ = build_cross_section(
+    _, with_pinch, _, _, _, _, _ = build_cross_section(
         collars, lithologies, [(0.0, 0.0), (50.0, 0.0)], allow_pinch_outs=True
     )
-    _, without_pinch, _, _, _ = build_cross_section(
+    _, without_pinch, _, _, _, _, _ = build_cross_section(
         collars, lithologies, [(0.0, 0.0), (50.0, 0.0)], allow_pinch_outs=False
     )
     assert len(with_pinch) > len(without_pinch)
@@ -93,7 +97,7 @@ def test_overlap_warnings_returned_from_pipeline() -> None:
         Lithology(hole_id="BH-01", from_depth=5.0, to_depth=10.0, lithology_code="Clay"),
         Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Sandstone"),
     ]
-    _, _, svg_bytes, _, overlap_warnings = build_cross_section(
+    _, _, svg_bytes, _, _, _, overlap_warnings = build_cross_section(
         collars, lithologies, [(0.0, 0.0), (50.0, 0.0)]
     )
     assert_valid_svg(svg_bytes)
@@ -109,7 +113,7 @@ def test_water_levels_render_in_svg() -> None:
         Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
         Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
     ]
-    _, _, svg_bytes, _, _ = build_cross_section(
+    _, _, svg_bytes, _, _, _, _ = build_cross_section(
         collars,
         lithologies,
         [(0.0, 0.0), (50.0, 0.0)],
@@ -121,11 +125,35 @@ def test_water_levels_render_in_svg() -> None:
     assert_valid_svg(svg_bytes)
 
 
+def test_validate_interpretation_mode_accepts_correlation_lines() -> None:
+    assert validate_interpretation_mode("correlation_lines") == "correlation_lines"
+
+
 def test_validate_interpretation_mode_rejects_unknown() -> None:
     import pytest
 
     with pytest.raises(ValueError, match="interpretation_mode"):
         validate_interpretation_mode("fence_diagram")
+
+
+def test_build_cross_section_rejects_non_positive_vertical_exaggeration() -> None:
+    import pytest
+
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=5.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=5.0),
+    ]
+    lithologies = [
+        Lithology(hole_id="BH-01", from_depth=0.0, to_depth=5.0, lithology_code="Clay"),
+        Lithology(hole_id="BH-02", from_depth=0.0, to_depth=5.0, lithology_code="Clay"),
+    ]
+    with pytest.raises(ValueError, match="vertical_exaggeration"):
+        build_cross_section(
+            collars,
+            lithologies,
+            [(0.0, 0.0), (50.0, 0.0)],
+            vertical_exaggeration=0.0,
+        )
 
 
 def test_build_cross_section_requires_two_transect_points() -> None:
@@ -150,7 +178,7 @@ def test_single_water_level_renders_marker() -> None:
         Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
         Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
     ]
-    _, _, svg_bytes, _, _ = build_cross_section(
+    _, _, svg_bytes, _, _, _, _ = build_cross_section(
         collars,
         lithologies,
         [(0.0, 0.0), (50.0, 0.0)],

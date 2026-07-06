@@ -16,8 +16,6 @@ def collect_lithology_codes(
 ) -> list[str]:
     codes: set[str] = {polygon.lithology_code for polygon in polygons}
     if not projected.empty:
-        for raw in projected["lithology_code"].unique():
-            code = str(raw).strip()
-            if code and code.lower() != "nan":
-                codes.add(code)
+        series = projected["lithology_code"].astype(str).str.strip()
+        codes.update(code for code in series.unique() if code and code.lower() != "nan")
     return sorted(codes)

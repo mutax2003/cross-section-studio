@@ -12,6 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from models import DataParser
 from ingestion import (
     NATIVE_PROFILE_ID,
     DepthParser,
@@ -290,4 +291,100 @@ def test_ingest_warns_on_placeholder_elevation(simple_field_export: bytes) -> No
         profile_id="field_export_v1",
     )
     assert any("elevation uses profile default" in warning.lower() for warning in report.warnings)
+
+
+def test_screens_and_gradients_sheets_parsed() -> None:
+    from models import DataParser
+
+    collars = [
+        {
+            "hole_id": "MW-01",
+            "easting": 0.0,
+            "northing": 0.0,
+            "elevation": 100.0,
+            "total_depth": 20.0,
+        },
+        {
+            "hole_id": "MW-02",
+            "easting": 50.0,
+            "northing": 0.0,
+            "elevation": 100.0,
+            "total_depth": 18.0,
+        },
+    ]
+    lithology = [
+        {
+            "hole_id": "MW-01",
+            "from_depth": 0.0,
+            "to_depth": 10.0,
+            "lithology_code": "Sand",
+        },
+        {
+            "hole_id": "MW-02",
+            "from_depth": 0.0,
+            "to_depth": 10.0,
+            "lithology_code": "Clay",
+        },
+    ]
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        pd.DataFrame(collars).to_excel(writer, sheet_name="Collars", index=False)
+        pd.DataFrame(lithology).to_excel(writer, sheet_name="Lithology", index=False)
+        pd.DataFrame(
+            [{"hole_id": "MW-01", "from_depth": 4.0, "to_depth": 8.0}]
+        ).to_excel(writer, sheet_name="Screens", index=False)
+        pd.DataFrame([{"hole_id": "MW-02", "direction": "up"}]).to_excel(
+            writer, sheet_name="Gradients", index=False
+        )
+    result = DataParser().parse_file(BytesIO(buffer.getvalue()))
+    assert len(result.screen_intervals) == 1
+    assert result.screen_intervals[0].hole_id == "MW-01"
+    assert result.screen_intervals[0].from_depth == 4.0
+    assert len(result.vertical_gradients) == 1
+    assert result.vertical_gradients[0].hole_id == "MW-02"
+    assert result.vertical_gradients[0].direction == "up"
+
+
+def test_water_sheet_parses_gw_series_columns(tmp_path) -> None:
+    workbook = tmp_path / "water_series.xlsx"
+    collars = [
+        {
+            "hole_id": "MW-01",
+            "easting": 0.0,
+            "northing": 0.0,
+            "elevation": 632.0,
+            "total_depth": 30.0,
+        },
+    ]
+    lithology = [
+        {
+            "hole_id": "MW-01",
+            "from_depth": 0.0,
+            "to_depth": 30.0,
+            "lithology_code": "Clay",
+        },
+    ]
+    water = [
+        {
+            "hole_id": "MW-01",
+            "depth": 1.0,
+            "series_id": "2024-05",
+            "series_label": "May 2024",
+        },
+        {
+            "hole_id": "MW-01",
+            "depth": 1.2,
+            "series_id": "2025-06",
+            "series_label": "June 2025",
+        },
+    ]
+    with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
+        pd.DataFrame(collars).to_excel(writer, sheet_name="Collars", index=False)
+        pd.DataFrame(lithology).to_excel(writer, sheet_name="Lithology", index=False)
+        pd.DataFrame(water).to_excel(writer, sheet_name="Water", index=False)
+    result = DataParser().parse_file(workbook)
+    assert len(result.water_levels) == 2
+    series_ids = {level.series_id for level in result.water_levels}
+    assert series_ids == {"2024-05", "2025-06"}
+    assert result.water_levels[0].series_label in {"May 2024", "June 2025"}
 

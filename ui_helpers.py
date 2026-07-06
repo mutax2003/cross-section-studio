@@ -2,21 +2,37 @@
 
 from __future__ import annotations
 
-import json
+import base64
+import html
+import math
 import re
+from dataclasses import dataclass
+from typing import Sequence
 
-from pipeline import DEFAULT_UNCERTAINTY_SPACING_M
-from projection import DEFAULT_OFFSET_WARNING_M
+from models import Collar, Lithology, ScreenInterval, Transect
+from projection import (
+    DEFAULT_OFFSET_WARNING_M,
+    select_and_order_holes_near_transect,
+)
 
 _SVG_HEIGHT_RE = re.compile(r'height="([0-9.]+)', re.IGNORECASE)
 _SVG_VIEWBOX_RE = re.compile(r'viewBox="[^"]*\s+[^"]*\s+[^"]*\s+([0-9.]+)"', re.IGNORECASE)
 
 
+@dataclass(frozen=True)
+class SvgDisplayMeta:
+    valid: bool
+    height: int
+    encoded: str
+
+
+def escape_html(text: str | int | float) -> str:
+    """Escape user-controlled strings before embedding in markdown HTML."""
+    return html.escape(str(text), quote=True)
+
+
 def svg_is_valid(svg_bytes: bytes) -> bool:
-    if not svg_bytes:
-        return False
-    text = svg_bytes.decode("utf-8", errors="replace").strip().lower()
-    return "<svg" in text
+    return svg_display_meta(svg_bytes).valid
 
 
 def svg_display_height(
@@ -27,9 +43,28 @@ def svg_display_height(
     default_height: int = 540,
 ) -> int:
     """Estimate iframe height from SVG attributes to reduce clipping."""
+    return svg_display_meta(
+        svg_bytes,
+        min_height=min_height,
+        max_height=max_height,
+        default_height=default_height,
+    ).height
+
+
+def svg_display_meta(
+    svg_bytes: bytes,
+    *,
+    min_height: int = 420,
+    max_height: int = 760,
+    default_height: int = 540,
+) -> SvgDisplayMeta:
+    """Validate SVG and compute display height + base64 in a single decode pass."""
     if not svg_bytes:
-        return default_height
+        return SvgDisplayMeta(valid=False, height=default_height, encoded="")
     text = svg_bytes.decode("utf-8", errors="replace")
+    lowered = text.strip().lower()
+    valid = lowered.startswith("<svg") or "<svg" in lowered[:200]
+    height = default_height
     for pattern in (_SVG_HEIGHT_RE, _SVG_VIEWBOX_RE):
         match = pattern.search(text)
         if match:
@@ -37,10 +72,11 @@ def svg_display_height(
                 raw = float(match.group(1))
             except ValueError:
                 continue
-            # Matplotlib SVG height is often in points; scale for screen display.
             scaled = int(raw * 1.15)
-            return max(min_height, min(max_height, scaled))
-    return default_height
+            height = max(min_height, min(max_height, scaled))
+            break
+    encoded = base64.b64encode(svg_bytes).decode("ascii") if valid else ""
+    return SvgDisplayMeta(valid=valid, height=height, encoded=encoded)
 
 
 def workflow_stage(
@@ -82,32 +118,100 @@ def legend_hatch_background(hatch: str) -> str:
     return slash
 
 
-def transect_cache_key(
-    hole_ids: tuple[str, ...],
-    transect_points: tuple[tuple[float, float], ...],
-    vertical_exaggeration: float,
+def parse_coordinate_lines(text: str) -> list[tuple[float, float]]:
+    """Parse easting/northing pairs from newline-separated coordinate text."""
+    points: list[tuple[float, float]] = []
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            continue
+        parts = re.split(r"[,\s]+", line)
+        if len(parts) != 2:
+            raise ValueError(f"Line {line_number}: expected 'easting northing' pair")
+        try:
+            easting = float(parts[0])
+            northing = float(parts[1])
+        except ValueError as exc:
+            raise ValueError(f"Line {line_number}: invalid numeric coordinate") from exc
+        if not math.isfinite(easting) or not math.isfinite(northing):
+            raise ValueError(f"Line {line_number}: coordinates must be finite numbers")
+        points.append((easting, northing))
+    if len(points) < 2:
+        raise ValueError("At least two coordinate pairs are required")
+    return points
+
+
+def active_transect_selection(
+    collars: Sequence[Collar],
+    transect_mode: str,
+    selected_holes: Sequence[str],
+    coordinate_text: str,
     offset_warning_m: float,
-    show_hatches: bool,
-    show_legend: bool,
-    section_title: str,
-    interpretation_mode: str = "interpolated",
-    allow_pinch_outs: bool = True,
-    uncertainty_spacing_m: float = DEFAULT_UNCERTAINTY_SPACING_M,
-    uncertainty_offset_m: float = DEFAULT_OFFSET_WARNING_M,
-) -> str:
-    return json.dumps(
-        {
-            "holes": hole_ids,
-            "points": transect_points,
-            "ve": vertical_exaggeration,
-            "offset": offset_warning_m,
-            "hatches": show_hatches,
-            "legend": show_legend,
-            "title": section_title,
-            "mode": interpretation_mode,
-            "pinch_outs": allow_pinch_outs,
-            "unc_spacing": uncertainty_spacing_m,
-            "unc_offset": uncertainty_offset_m,
-        },
-        sort_keys=True,
+) -> tuple[tuple[str, ...], tuple[tuple[float, float], ...]] | None:
+    """Resolve active hole IDs and transect polyline from sidebar mode."""
+    collar_lookup = {collar.hole_id: collar for collar in collars}
+    if transect_mode == "By coordinates":
+        try:
+            transect_points = tuple(parse_coordinate_lines(coordinate_text))
+        except ValueError:
+            return None
+        transect = Transect(points=list(transect_points))
+        ordered_holes = select_and_order_holes_near_transect(
+            collars, transect, offset_warning_m
+        )
+        if len(ordered_holes) < 2:
+            return None
+        return ordered_holes, transect_points
+    if len(selected_holes) < 2:
+        return None
+    missing = [hole_id for hole_id in selected_holes if hole_id not in collar_lookup]
+    if missing:
+        return None
+    transect_points = tuple(
+        (collar_lookup[hole_id].easting, collar_lookup[hole_id].northing)
+        for hole_id in selected_holes
     )
+    return tuple(selected_holes), transect_points
+
+
+def dedupe_messages(messages: Sequence[str]) -> tuple[str, ...]:
+    """Preserve order while removing duplicate warning strings."""
+    seen: set[str] = set()
+    unique: list[str] = []
+    for message in messages:
+        if message in seen:
+            continue
+        seen.add(message)
+        unique.append(message)
+    return tuple(unique)
+
+
+def holes_missing_lithology(
+    lithologies: Sequence[Lithology],
+    hole_ids: Sequence[str],
+) -> tuple[str, ...]:
+    """Return hole IDs in the selection that have no lithology intervals."""
+    lithology_holes = {lithology.hole_id for lithology in lithologies}
+    return tuple(hole_id for hole_id in hole_ids if hole_id not in lithology_holes)
+
+
+def sanitize_filename(text: str, *, fallback: str = "cross_section") -> str:
+    """Return a safe filename stem for downloads."""
+    cleaned = re.sub(r"[^\w\-]+", "_", text.strip())[:80].strip("_")
+    return cleaned or fallback
+
+
+def screen_interval_warnings(
+    hole_ids: Sequence[str],
+    screen_intervals: Sequence[ScreenInterval],
+) -> list[str]:
+    """Warn when transect holes lack screened-interval rows."""
+    if not hole_ids:
+        return []
+    screened = {interval.hole_id for interval in screen_intervals}
+    missing = [hole_id for hole_id in hole_ids if hole_id not in screened]
+    if not missing:
+        return []
+    return [f"No screen interval for transect hole(s): {', '.join(missing)}"]

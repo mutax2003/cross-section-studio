@@ -189,7 +189,7 @@ def _water_smoke() -> None:
         Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
         Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
     ]
-    _, _, svg, _, _ = build_cross_section(
+    _, _, svg, _, _, _, _ = build_cross_section(
         collars,
         lithologies,
         [(0.0, 0.0), (50.0, 0.0)],

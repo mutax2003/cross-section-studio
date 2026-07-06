@@ -5,13 +5,19 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from models import Collar, Lithology, Transect
+from models import Collar, DeviationReading, Lithology, Transect
 from projection import (
     _TransectGeometry,
     _cumulative_distance,
     _find_closest_segment,
+    build_minimum_curvature_survey,
+    interpolate_survey_at_depth,
     project_boreholes,
     project_collar_to_transect,
+    select_and_order_holes_near_transect,
+    select_holes_near_transect,
+    order_holes_along_transect,
+    transect_length_m,
 )
 
 
@@ -74,3 +80,65 @@ def test_project_many_matches_single_project(axis_transect: Transect) -> None:
         assert offsets[index] == pytest.approx(offset_single)
     assert x_profiles.tolist() == pytest.approx([0.0, 25.0, 100.0, 120.0])
     assert offsets.tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0])
+
+
+def test_transect_length_m_sums_segments() -> None:
+    transect = Transect(points=[(0.0, 0.0), (100.0, 0.0), (100.0, 50.0)])
+    assert transect_length_m(transect) == pytest.approx(150.0)
+
+
+def test_select_holes_near_transect_excludes_far_collar() -> None:
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-03", easting=25.0, northing=80.0, elevation=100.0, total_depth=10.0),
+    ]
+    transect = Transect(points=[(0.0, 0.0), (50.0, 0.0)])
+    near = select_holes_near_transect(collars, transect, offset_threshold_m=50.0)
+    assert near == ("BH-01", "BH-02")
+
+
+def test_order_holes_along_transect_sorts_by_profile_distance() -> None:
+    collars = [
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
+    ]
+    transect = Transect(points=[(0.0, 0.0), (50.0, 0.0)])
+    ordered = order_holes_along_transect(collars, transect, ("BH-02", "BH-01"))
+    assert ordered == ("BH-01", "BH-02")
+
+
+def test_select_and_order_holes_near_transect_single_pass() -> None:
+    collars = [
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-03", easting=25.0, northing=80.0, elevation=100.0, total_depth=10.0),
+    ]
+    transect = Transect(points=[(0.0, 0.0), (50.0, 0.0)])
+    ordered = select_and_order_holes_near_transect(collars, transect, offset_threshold_m=50.0)
+    assert ordered == ("BH-01", "BH-02")
+
+
+def test_minimum_curvature_shifts_deviated_hole_east() -> None:
+    collar = Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0)
+    readings = [
+        DeviationReading(hole_id="BH-01", depth=10.0, inclination_deg=45.0, azimuth_deg=90.0),
+    ]
+    stations = build_minimum_curvature_survey(collar, readings)
+    easting, northing, tvd = interpolate_survey_at_depth(stations, 10.0)
+    assert easting > 0.0
+    assert northing == pytest.approx(0.0, abs=0.01)
+    assert tvd < 10.0
+
+
+def test_project_boreholes_uses_deviation_survey() -> None:
+    collar = Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0)
+    lithologies = [Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Sand")]
+    readings = [
+        DeviationReading(hole_id="BH-01", depth=10.0, inclination_deg=45.0, azimuth_deg=90.0),
+    ]
+    transect = Transect(points=[(0.0, 0.0), (100.0, 0.0)])
+    vertical = project_boreholes([collar], lithologies, transect)
+    deviated = project_boreholes([collar], lithologies, transect, deviation_readings=readings)
+    assert deviated.iloc[0]["x_profile"] > vertical.iloc[0]["x_profile"]
+    assert deviated.iloc[0]["bottom_elevation"] > vertical.iloc[0]["bottom_elevation"]

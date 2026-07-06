@@ -64,8 +64,10 @@ def run_pipeline(
     show_legend: bool = True,
     interpretation_mode: str = "interpolated",
     allow_pinch_outs: bool = True,
+    render_layout: str = "section_sheet",
+    water_levels: Sequence | None = None,
 ) -> tuple[pd.DataFrame, list[GeologicalPolygon], bytes]:
-    projected, polygons, svg_bytes, _, _ = build_cross_section(
+    projected, polygons, svg_bytes, _, _, _, _ = build_cross_section(
         collars,
         lithologies,
         transect_points,
@@ -74,6 +76,8 @@ def run_pipeline(
         show_legend=show_legend,
         interpretation_mode=interpretation_mode,  # type: ignore[arg-type]
         allow_pinch_outs=allow_pinch_outs,
+        render_layout=render_layout,
+        water_levels=water_levels,
     )
     return projected, polygons, svg_bytes
 

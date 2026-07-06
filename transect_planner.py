@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import itertools
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 
+import numpy as np
+
 from models import Collar, Lithology, Transect
-from projection import _TransectGeometry
+from projection import TransectGeometry
 
 
 @dataclass(frozen=True)
@@ -35,12 +38,20 @@ def _mean_perpendicular_offset(
     collars_by_id: dict[str, Collar],
     hole_ids: tuple[str, ...],
 ) -> float:
-    points = [(collars_by_id[hole_id].easting, collars_by_id[hole_id].northing) for hole_id in hole_ids]
-    geometry = _TransectGeometry.from_transect(Transect(points=points))
-    _, offsets = geometry.project_many(
-        [collars_by_id[hole_id].easting for hole_id in hole_ids],
-        [collars_by_id[hole_id].northing for hole_id in hole_ids],
+    eastings = np.fromiter(
+        (collars_by_id[hole_id].easting for hole_id in hole_ids),
+        dtype=float,
+        count=len(hole_ids),
     )
+    northings = np.fromiter(
+        (collars_by_id[hole_id].northing for hole_id in hole_ids),
+        dtype=float,
+        count=len(hole_ids),
+    )
+    geometry = TransectGeometry.from_transect(
+        Transect(points=list(zip(eastings.tolist(), northings.tolist(), strict=True)))
+    )
+    _, offsets = geometry.project_many(eastings, northings)
     return float(offsets.mean())
 
 
@@ -70,6 +81,19 @@ def score_transect(
     return _score_transect(collars_by_id, codes_by_hole, hole_ids)
 
 
+def _min_hole_spacing_m(collars_by_id: dict[str, Collar], hole_ids: tuple[str, ...]) -> float:
+    if len(hole_ids) < 2:
+        return float("inf")
+    spacings = []
+    for left, right in zip(hole_ids, hole_ids[1:]):
+        left_collar = collars_by_id[left]
+        right_collar = collars_by_id[right]
+        dx = right_collar.easting - left_collar.easting
+        dy = right_collar.northing - left_collar.northing
+        spacings.append((dx**2 + dy**2) ** 0.5)
+    return float(min(spacings))
+
+
 def _score_transect(
     collars_by_id: dict[str, Collar],
     codes_by_hole: dict[str, set[str]],
@@ -79,12 +103,14 @@ def _score_transect(
     diversity = _lithology_diversity(codes_by_hole, hole_ids)
     length = _path_length(collars_by_id, hole_ids)
     pinch_outs = _pinch_out_count(codes_by_hole, hole_ids)
+    min_spacing = _min_hole_spacing_m(collars_by_id, hole_ids)
 
     score = (
-        diversity * 10.0
-        + pinch_outs * 5.0
+        diversity * 8.0
         + min(length, 500.0) / 50.0
-        - mean_offset * 2.0
+        + min(min_spacing, 200.0) / 20.0
+        - mean_offset * 3.0
+        - pinch_outs * 6.0
     )
     return TransectCandidate(
         hole_ids=hole_ids,
@@ -105,6 +131,9 @@ def _order_holes_along_dominant_axis(
     if max(eastings) - min(eastings) >= max(northings) - min(northings):
         return tuple(sorted(hole_ids, key=lambda hole_id: collars_by_id[hole_id].easting))
     return tuple(sorted(hole_ids, key=lambda hole_id: collars_by_id[hole_id].northing))
+
+
+_COMBINATORICS_MAX_HOLES = 9
 
 
 def recommend_transects(
@@ -131,7 +160,7 @@ def recommend_transects(
     candidates: list[TransectCandidate] = []
     max_size = min(max_holes, len(hole_ids))
 
-    if len(hole_ids) > 12:
+    if len(hole_ids) > _COMBINATORICS_MAX_HOLES:
         for size in range(min_holes, max_size + 1):
             for start in range(len(hole_ids) - size + 1):
                 ordered = tuple(hole_ids[start : start + size])

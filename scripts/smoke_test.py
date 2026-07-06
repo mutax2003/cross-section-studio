@@ -8,10 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from models import DataParser, Transect
-from projection import project_boreholes
-from renderer import CrossSectionRenderer
-from stratigraphy import build_stratigraphy
+from models import DataParser
+from pipeline import build_cross_section
 
 SAMPLE = ROOT / "data" / "sample_boreholes.xlsx"
 OUTPUT = ROOT / "data" / "smoke_test_output.svg"
@@ -23,22 +21,22 @@ def main() -> None:
 
     hole_ids = [collar.hole_id for collar in parse_result.collars]
     collar_lookup = {collar.hole_id: collar for collar in parse_result.collars}
-    transect = Transect(
-        points=[(collar_lookup[hole_id].easting, collar_lookup[hole_id].northing) for hole_id in hole_ids]
+    transect_points = [
+        (collar_lookup[hole_id].easting, collar_lookup[hole_id].northing) for hole_id in hole_ids
+    ]
+
+    _, polygons, svg_bytes, _, _, lithology_codes, overlap_warnings = build_cross_section(
+        parse_result.collars,
+        parse_result.lithologies,
+        transect_points,
+        vertical_exaggeration=5.0,
     )
-
-    projected = project_boreholes(parse_result.collars, parse_result.lithologies, transect)
-    polygons = build_stratigraphy(projected)
-    collar_depths = {collar.hole_id: collar.total_depth for collar in parse_result.collars}
-
-    renderer = CrossSectionRenderer(vertical_exaggeration=5.0)
-    figure = renderer.render(polygons, projected, collar_depths=collar_depths)
-    svg_bytes = renderer.to_svg_bytes(figure)
     OUTPUT.write_bytes(svg_bytes)
 
     print(f"Holes: {len(hole_ids)}")
-    print(f"Projected intervals: {len(projected)}")
     print(f"Polygons: {len(polygons)}")
+    print(f"Lithology codes: {len(lithology_codes)}")
+    print(f"Overlap warnings: {len(overlap_warnings)}")
     print(f"Wrote {OUTPUT} ({len(svg_bytes)} bytes)")
 
 

@@ -1,0 +1,122 @@
+---
+description: Vector rendering, lithology fills, scale bar, and label anti-collision
+globs: renderer.py,**/renderer.py,renderer_*.py,render_profiles.py,render_theme.py,report_export.py,constants.py
+alwaysApply: false
+---
+
+# Renderer — Vector Rendering Layer
+
+| Module | Role |
+|--------|------|
+| `renderer.py` | `CrossSectionRenderer` facade; dispatches to layout mixins |
+| `renderer_common.py` | `RendererGeometryMixin` — wells, profile lookup, style resolution |
+| `renderer_section_sheet.py` | `SectionSheetLayoutMixin` — Strater-like section sheet |
+| `renderer_chart.py` | `ChartLayoutMixin` — legacy debug chart |
+| `renderer_consulting.py` | `ConsultingLayoutMixin` — report sheet, title block, screens/gradients |
+
+Input: `GeologicalPolygon` list, projected DataFrame, optional `WaterLevel` / screens / gradients.
+Output: Matplotlib figure or SVG/PNG/PDF bytes.
+
+**No projection or pinch-out logic** — consume pre-built polygons and projected intervals only.
+Lithology fills use the **BH Log** legend (Excel → `constants.get_lithology_style()`; namespaced as `USGS_LITHOLOGY_*`).
+
+## Render Profiles (`render_profiles.py`)
+
+`CrossSectionRenderProfile` controls layout without a second renderer:
+
+| Field | Section sheet (default) | Consulting section | Chart (legacy) |
+|-------|-------------------------|-------------------|----------------|
+| `layout` | `section_sheet` | `consulting_section` | `chart` |
+| `track_width_m` | 3.0 | 1.2 (white columns) | 1.6 |
+| `show_track_lithology` | true | false | true |
+| `show_grid` / `show_report_grid` | false | report grid (1 m / 10 m) | true |
+| `show_ground_surface` / `show_sky_fill` | true / true | true / false | false |
+| `show_contact_ticks` / `show_eol_bar` / `show_track_border` | true | false | false |
+| `show_column_headers` | true | false (IDs above plot) | false |
+| `show_dual_y_axes` | false | true | false |
+| `legend_in_title_block` | false | true | false |
+| `y_axis_mode` | `elevation_rl` or `depth_below_collar` | `elevation_rl` | `elevation_rl` |
+| `water_symbol` | triangle | triangle (labeled RL) | circle |
+| `title_block` / `show_ve_annotation` | footer metadata / in-plot | subtitle band + footer legend | false |
+
+Wire profile via `pipeline.build_cross_section(render_layout=..., elevation_mode=...)` or `CrossSectionRenderer(render_profile=...)`.
+Theme colors live in `render_theme.py`.
+
+## Interpretation Modes
+
+| Mode | Polygons | Inter-hole fill | Disclaimer |
+|------|----------|-----------------|------------|
+| `interpolated` | Yes | Filled fence diagram | "Interpreted fence diagram — contacts are linear…" |
+| `correlation_lines` | Yes | Contact lines only (no fill) | Correlation-lines disclaimer |
+| `borehole_only` | Empty list | None | "Observed borehole data only — no inter-borehole correlation." |
+
+Set via `CrossSectionRenderer(interpretation_mode=...)` or `pipeline.build_cross_section(interpretation_mode=...)`.
+
+## Section-Sheet Layers (z-order, Strater-like)
+
+1. **Sky fill** — light fill above interpolated ground surface (`show_sky_fill`)
+2. **Fence polygons** — BH Log colors/hatches; lower alpha (`fence_alpha` ~0.58) so tracks read in front
+3. **Uncertainty zones** — amber shading when spacing/offset thresholds exceeded
+4. **Track lithology** — wide bordered rectangles per interval inside each borehole track
+5. **Track borders** — white column outline from collar to TD
+6. **Contact ticks** — horizontal lines at interval tops/bottoms across track width
+7. **Deviated centerlines** — dotted polyline through interval midpoints when deviation survey present
+8. **Raster log strips** — optional placeholder/image column (`RasterLogStrip` model)
+9. **Ground surface** — thick green/brown polyline
+10. **Water table** — symbol per hole (circle/triangle/diamond) + optional dashed interpolation
+11. **EOL bars** — horizontal end-of-log marker at TD
+12. **Column headers** — hole ID, RL or depth label, TD above each track
+13. **Faults / unconformities / environmental markers**
+14. **Overlap markers** — when `overlap_pairs` provided
+15. **Scale bar** + **VE annotation** (`V.E. N×`)
+16. **Legend** — lithology codes (when `show_legend=True`)
+17. **Title block footer** — disclaimer + `SectionFigureMetadata` (CRS, datum, azimuth, VE, hole count)
+
+## Chart Layout (legacy debug)
+
+Thin center sticks, optional dashed grid, floating bbox labels, no sky/EOL/contact ticks. Use `CHART_PROFILE` or `render_layout="chart"`.
+
+## Consulting Section Layout (EcoVenture-style report sheet)
+
+Fence-first layout matching consulting cross-section figures (`render_layout="consulting_section"`). Uses `GridSpec`: plot (~62%), subtitle band (~8%), simplified title block (~22%).
+
+**Plot layers (z-order):**
+
+1. **Report grid** — 1 m elevation / 10 m distance majors; dual **ELEVATION (m)** axes
+2. **Fence polygons** — opaque fills (`fence_alpha=1.0`); no wide track lithology
+3. **Ground surface** — interpolated collar polyline (no sky fill)
+4. **Thin well sticks** — vertical lines collar to TD (white column fill `TRACK_FILL_COLOR`)
+5. **Screen intervals** — opaque `TRACK_FILL_COLOR` + `hatch="///"` (Matplotlib needs a non-transparent face for hatch); legend swatch matches
+6. **Gradients** — vertical arrows when provided
+7. **Hole ID labels** — above each stick
+8. **Transect end labels** — optional via `ConsultingTitleBlock`
+9. **Water table** — labeled RL at each ▼; dashed interpolation when ≥2 points
+10. **Faults / unconformities / environmental markers**
+
+**Subtitle band:** section label, `SCALE {map_scale}`, `{VE}× VERTICAL EXAGGERATION`, graphic scale bar.
+
+**Title block:** lithology swatches + GW symbol key + project metadata (`ConsultingTitleBlock` via `SectionBuildRequest.consulting_title_block`).
+
+Wire via `pipeline.build_cross_section(render_layout="consulting_section", consulting_title_block=...)`.
+Streamlit: layout radio **Consulting section** + **Report sheet (consulting)** expander.
+
+## Visual Requirements
+
+- Fill polygons via `matplotlib.patches.Polygon` using `constants.get_lithology_style()` (BH Log palette)
+- User overrides via `paths.lithology_styles_path()` (user data dir, not repo `data/`)
+- Expose **`vertical_exaggeration`** (Y-axis multiplier) and **`scale_bar_length_m`**
+- Hatch patterns toggled via `show_hatches`
+
+## Y-Axis Modes
+
+- `elevation_rl` — absolute reduced level (default)
+- `depth_below_collar` — inverted depth axis; wired from UI `elevation_mode=relative`
+
+## Export
+
+- `to_svg_bytes()` / `to_png_bytes(dpi=300)` on rendered figure
+- `export_figure_bytes(figure, export_formats, ...)` — single figure, selective encoding via `export_formats`
+- `pipeline.build_cross_section(export_formats=...)` returns SVG/PNG/PDF bytes per format set (default `{"svg"}` for tests)
+- Streamlit Generate: `cached_build_section()` is **SVG-only**; PNG/PDF via `cached_build_section_exports()` after **Prepare**
+- `report_export.export_section_pdf()` — page 1 section, page 2 legend/metadata/QA summary; reuses `section_figure` when provided
+- Allowed: import stratigraphy **types** (`GeologicalPolygon`, `PolygonOverlap`) — not correlation/pinch-out logic

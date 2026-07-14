@@ -1,0 +1,59 @@
+---
+description: 3D borehole to 2D profile projection — vector math requirements
+globs: projection.py,**/projection.py,transect_planner.py
+alwaysApply: false
+---
+
+# projection.py — Spatial Projection Engine
+
+Project 3D collar coordinates onto a 2D cross-section transect plane.
+
+## Algorithm (per borehole B)
+
+Given transect segments `(P₁, P₂), (P₂, P₃), …`:
+
+1. Find the **closest segment** to `B(x_b, y_b)`
+2. Orthogonal projection onto that segment:
+   - `t = ((B - P₁) · (P₂ - P₁)) / ||P₂ - P₁||²`
+   - **Clamp** `t ∈ [0, 1]`
+   - Projection point `P = P₁ + t(P₂ - P₁)`
+3. **Cumulative transect distance S** = sum of prior segment lengths + distance along current segment to `P`
+4. Profile coordinates:
+   - `x_profile = S`
+   - `offset_distance` = perpendicular distance from collar to transect (for QA and uncertainty shading)
+   - Per interval: `top_elevation = Z - from_depth`, `bottom_elevation = Z - to_depth`
+
+## Vertical vs deviated holes
+
+- **Vertical (default):** collar easting/northing projected once per hole; intervals use collar RL − depth
+- **Deviated:** when `DeviationReading` rows exist, build **minimum-curvature survey** (`build_minimum_curvature_survey`), interpolate interval midpoints (`interpolate_survey_many`), project mid-eastings/northings per interval (`_deviated_projection_frame`)
+
+## Output DataFrame
+
+Sorted by `x_profile`. Columns:
+
+`hole_id`, `x_profile`, `collar_elevation`, `top_elevation`, `bottom_elevation`, `lithology_code`, `offset_distance`, `unit_order`
+
+`offset_distance` is consumed by `renderer._draw_uncertainty_zones()` when spacing or offset exceeds thresholds.
+
+## Helpers
+
+- `off_transect_warnings(collars, transect, offset_threshold_m)` — per-hole warning messages (uses `project_many`)
+- Also consumed by **`ai_quality.analyze_parsed_data()`** for batch off-transect QA
+- `suggest_offset_threshold_m(collars)` — auto threshold from collar spread
+- `select_holes_near_transect`, `order_holes_along_transect`, `select_and_order_holes_near_transect` — transect hole picking
+- `transect_length_m`, `transect_azimuth_deg` — metadata (azimuth used in `SectionFigureMetadata`)
+- `project_collar_to_transect` — single-collar projection
+- `DEFAULT_OFFSET_WARNING_M = 50.0`
+
+## Geometry cache
+
+- Precompute via `_TransectGeometry` (`_geometry_from_points`, `lru_cache`)
+- Public alias: **`TransectGeometry = _TransectGeometry`** (for tests and `transect_planner`)
+- Batch projection: `project_many(eastings, northings)` for vectorized paths
+
+## Requirements
+
+- Use NumPy vector ops where possible; keep segment math explicit and testable
+- No Shapely or plotting imports in this module
+- Log boreholes exceeding `offset_warning_m` via `_warn_off_transect_holes` (warning only — still projected)

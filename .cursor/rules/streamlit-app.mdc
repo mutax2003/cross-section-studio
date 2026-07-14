@@ -1,0 +1,66 @@
+---
+description: Streamlit UI assembly — upload, transect config, SVG-first Generate + Prepare PNG/PDF
+globs: app.py,**/app.py,app_*.py,app_state.py,app_services.py,ui_helpers.py,**/ui_helpers.py,ui_output_presets.py
+alwaysApply: false
+---
+
+# Streamlit Application Assembly
+
+Thin shell in **`app.py`**; sidebar/upload/configure live in split modules. Delegate ingest/build to **`app_services.py`** and rendering to **`pipeline.build_cross_section()`** → **`CrossSectionResult`**.
+
+## Module split
+
+| Module | Role |
+|--------|------|
+| `app.py` | `set_page_config`, session init, workflow routing, generate + staleness |
+| `app_sidebar.py` | Sidebar: layout, style, consulting title block, Advanced water/GW toggles, transect thresholds, import/AI |
+| `app_upload.py` | Welcome card, workbook detect/parse |
+| `app_build.py` | `collect_section_build_request()`, `generate_cross_section()` |
+| `app_styles.py` | Shared CSS (`APP_CSS`) |
+| `app_common.py` | Shared helpers (assistant, transect selection, quality refresh, legend) |
+| `app_validate.py` | Validate step: Data Health, fix plan, lithology mapping, sheet roles |
+| `app_configure.py` | Configure: transect sidebar, correlation health, manual overrides, section Q&A |
+| `app_generate.py` | Generate, stale banner, SVG/PNG/PDF downloads |
+| `app_menubar.py` | Windows-style File/Edit/View/Help menus, Ctrl accelerators, `docs/help` dialogs |
+| `app_state.py` | `DEFAULT_SESSION` + domain key groups / clear helpers |
+| `app_services.py` | Streamlit `@st.cache_data` wrappers only (no widgets, no geometry); engine stays Streamlit-free |
+| `ui_helpers.py` | Streamlit-free helpers: `active_transect_selection`, `svg_is_valid`, workflow stage |
+| `ui_output_presets.py` | Named output presets → sidebar / `SectionBuildRequest` field mapping |
+| `section_build_request.py` | Frozen `SectionBuildRequest` + unified `cache_key()` |
+
+## Integration Pattern
+
+```python
+parse_result, import_report = cached_ingest_workbook(uploaded_bytes, ...)
+request = SectionBuildRequest(...)
+subset = subset_parse_result(parse_result, active_hole_ids, lithology_index=...)
+result = cached_build_section(subset.model_dump_json(), request.model_dump_json())
+# → SVG-first CrossSectionResult; PNG/PDF via cached_build_section_exports() on Prepare
+```
+
+- **Primary cache key:** `SectionBuildRequest.cache_key(hole_ids)` in `st.session_state.render_cache_key`
+- **Transect selection cache:** `app_common.active_transect_selection_cached()` memoizes `ui_helpers.active_transect_selection()`
+- **Session keys:** `DEFAULT_SESSION` in `app_state.py`; use `clear_section_output_state()` / domain clears
+- **SVG display:** `st.markdown` + base64 `<img>` via `svg_display_meta()` — never `st.image()` on raw SVG
+- **Lazy imports** for `ai_assistant` / `render_theme` inside helpers (avoid Streamlit hot-reload ImportErrors)
+
+## Workflow (four steps)
+
+**Upload → Validate → Configure → Generate**
+
+1. **Upload** — file uploader, profile, CRS, elevation, Parse; import report (optional sheets, geology counts, `unit_order`)
+2. **Validate** — Data Health, fix-path coach, lithology mapping, sheet roles, QA narrative
+3. **Configure** — transect (incl. NL pick), correlation health + AI link suggestions, section Q&A, consulting report sheet fields
+4. **Generate** — warnings gate, `cached_build_section()` (**SVG only**), overlap warnings; **Prepare PNG/PDF** via `cached_build_section_exports()` before download
+
+## Layouts
+
+- `section_sheet`, `consulting_section`, `chart` via `render_layout`
+- Lithology fills use BH Log legend colours via `get_lithology_style()` (constants aliased as `USGS_LITHOLOGY_*`); legend in title block
+- Optional workbook sheets: **Screens**, **Gradients** (see `docs/workbook-format.md`)
+
+## Boundaries
+
+- Widgets only in `app*.py`; `app_services.py` = cache wrappers only (may import Streamlit for `@st.cache_data`)
+- Do not import stratigraphy/projection in UI except QA helpers (`off_transect_warnings`, `suggest_offset_threshold_m`)
+- No stratigraphy or projection logic in Streamlit modules

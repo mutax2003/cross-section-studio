@@ -1,0 +1,109 @@
+---
+description: Canonical cross-section build pipeline — projection, stratigraphy, render
+globs: pipeline.py,**/pipeline.py,section_build_request.py,app_services.py,lithology_codes.py
+alwaysApply: false
+---
+
+# pipeline.py — Cross-Section Orchestration
+
+**Single entry point** for app, CLI, smoke tests, and pytest. Do not duplicate projection → stratigraphy → render logic outside this module.
+
+## Canonical API
+
+```python
+from pipeline import (
+    CrossSectionResult,
+    build_cross_section,
+    auto_scale_bar_m,
+    validate_interpretation_mode,
+    SVG_PNG_EXPORT_FORMATS,
+    PDF_EXPORT_FORMATS,
+    ALL_EXPORT_FORMATS,
+)
+
+result = build_cross_section(
+    collars,
+    lithologies,
+    transect_points,  # min 2 points
+    *,
+    vertical_exaggeration=1.0,
+    show_hatches=True,
+    render_layout="section_sheet",  # or consulting_section / chart
+    export_formats=None,  # default {"svg"}; use SVG_PNG_EXPORT_FORMATS or ALL_EXPORT_FORMATS
+    # ... water_levels, consulting_title_block, screen_intervals, vertical_gradients,
+    # warn_on_correlation_gaps, show_water_elevation_labels, show_water_legend,
+    # show_dry_well_nm, water_interpolate_across_gaps, etc.
+)
+# result.svg_bytes, result.polygons, result.overlap_warnings, ...
+# Legacy unpack still works: proj, polys, svg, png, pdf, codes, warns = result
+```
+
+
+`SectionBuildRequest` (in `section_build_request.py`) bundles UI render params and provides `cache_key(hole_ids)` for Streamlit. Note: pipeline defaults `allow_pinch_outs=True`; **`SectionBuildRequest.allow_pinch_outs` defaults `False`** (conservative UI default).
+
+## Export format constants
+
+| Constant | Formats | Used by |
+|----------|---------|---------|
+| `_DEFAULT_EXPORT_FORMATS` | `{"svg"}` | Tests, smoke scripts (default when `export_formats` omitted) |
+| `SVG_PNG_EXPORT_FORMATS` | `{"svg", "png"}` | Scripts / callers that need raster without PDF |
+| `PDF_EXPORT_FORMATS` | `{"pdf"}` | PDF-only callers |
+| `ALL_EXPORT_FORMATS` | `{"svg", "png", "pdf"}` | Scripts / one-shot full export (not Streamlit Generate) |
+
+Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes the same figure to requested formats. PDF uses `report_export.export_section_pdf()` with the existing figure (no second render when `section_figure` is passed).
+
+## Flow
+
+1. `Transect(points=...)` → `project_boreholes()` → projected DataFrame
+2. `_filter_projected_for_interpolation()` when `max_offset_for_interpolation_m` set — drops **whole holes** whose **max** `offset_distance` exceeds the threshold (unique `hole_id`, not individual lithology rows); requires ≥2 holes remaining
+3. If `interpretation_mode == "borehole_only"`: `polygons = []`, **skip overlap detection**
+4. Else: `build_stratigraphy(projected, allow_pinch_outs=..., correlation_overrides=...)` — includes per-pair overlap clipping via `_resolve_overlaps_in_pair()`
+5. When polygons exist (≥2): `detect_polygon_overlaps(polygons)` → `log_polygon_overlaps()` → overlap warnings (residual overlaps after clipping). Optional `warn_on_correlation_gaps=True` appends correlation-gap messages from `preview_correlation_health()` (warn-only).
+6. `collect_lithology_codes(projected, polygons)` via `lithology_codes.py`
+7. `auto_scale_bar_m(x_span)` picks nearest scale-bar length from `[1, 2, 5, 10, 20, 50]` m
+8. `profile_for_layout(render_layout)` + `profile_with_elevation_mode()` → merge water/GW flags (`water_interpolate_segments`, `water_interpolate_across_gaps`, `show_water_elevation_labels`, …) → `CrossSectionRenderer(render_profile=...)`
+9. `renderer.render(...)` → one figure → `renderer.export_figure_bytes(figure, export_formats, ...)`
+
+**Water table (renderer, not stratigraphy):** `_draw_water_table()` draws per-series markers + dashed lines. Default **segment mode** connects only consecutive transect holes with readings; `water_interpolate_across_gaps=True` restores full min→max span. Consulting profile forces interpolation on; section sheet uses profile/sidebar toggles.
+
+**Preflight only (not in pipeline):** `app_services.preflight_correlation_health()` calls `project_boreholes` + `stratigraphy.preview_correlation_health()` before Generate in the UI. Validate step uses `ai_quality.summarize_water_levels()` / `summarize_screen_intervals()` when those sheets are present.
+
+## Return Value (7-tuple)
+
+| Item | Type | Description |
+|------|------|-------------|
+| `projected` | `pd.DataFrame` | Intervals on profile plane |
+| `polygons` | `list[GeologicalPolygon]` | Empty in borehole-only mode |
+| `svg_bytes` | `bytes` | SVG document (empty when `"svg"` not in `export_formats`) |
+| `png_bytes` | `bytes` | PNG at 300 dpi (empty when `"png"` not in `export_formats`) |
+| `pdf_bytes` | `bytes` | PDF export bytes (empty when `"pdf"` not in `export_formats`). Note: `consulting_section` exports a **single-page** vector PDF; section-sheet uses `report_export.export_section_pdf()` (two-page bundle). |
+| `lithology_codes` | `list[str]` | Sorted unique codes (polygons + projected) |
+| `overlap_warnings` | `tuple[str, ...]` | Polygon overlap messages; may include correlation-gap warnings when `warn_on_correlation_gaps=True` |
+
+## Streamlit export strategy
+
+- **Generate:** `cached_build_section()` builds **SVG only** (`frozenset({"svg"})`)
+- **Deliverables:** `cached_build_section_exports()` builds PNG+PDF when the user clicks **Prepare PNG/PDF**
+- **Legacy:** `cached_build_section_pdf()` returns PDF from `cached_build_section_exports()` (not a separate full triple rebuild)
+
+## Overlap gating (production QA)
+
+`build_cross_section(..., fail_on_overlaps=True)` raises `ValueError` when residual overlaps are detected by `detect_polygon_overlaps()`.
+
+UI path: Configure step can optionally **block export on polygon overlaps** (implemented via `SectionBuildRequest.fail_on_overlaps`).
+
+## Errors
+
+- Raises `ValueError` when projected DataFrame is empty (no lithology for selected transect)
+- Raises `ValueError` when fewer than two holes remain within `max_offset_for_interpolation_m`
+
+## Consumers
+
+- `app_services.cached_build_section()` — SVG-only on Generate
+- `app_services.cached_build_section_exports()` — lazy PNG+PDF for Prepare / downloads
+- `app_services.cached_build_section_pdf()` — legacy PDF accessor via exports cache
+- `scripts/smoke_test.py` — end-to-end smoke via `build_cross_section()`
+- `tests/conftest.py` — `run_pipeline()`
+- `scripts/plot_advantage_transects.py`
+
+When adding new render options, extend `build_cross_section()` parameters (and `SectionBuildRequest`) — do not add parallel render paths in `app.py`.

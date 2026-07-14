@@ -1,0 +1,51 @@
+---
+description: Docker, PyInstaller, launcher, and frozen-bundle path resolution
+globs: Dockerfile,docker-compose.yml,cross_section_studio.spec,launcher.py,paths.py,ops_*.py,workbook_template.py,ui_output_presets.py,scripts/build_windows.ps1,scripts/deploy_streamlit_cloud.py,requirements-build.txt
+alwaysApply: false
+---
+
+# Packaging & Deployment
+
+## Docker / Streamlit Cloud
+
+- **Image:** `python:3.12-slim` + `libgeos-dev` (Shapely)
+- **Entry:** `streamlit run app.py --server.headless=true --server.address=0.0.0.0 --server.port=8501`
+- **Healthcheck:** `/_stcore/health` on port 8501
+- **COPY modules:** `COPY *.py ./` (all root Python modules), `data/`, `docs/`, `.streamlit/`
+- **`launcher.py` is not used in Docker** — container runs `app.py` directly
+
+`docker-compose.yml` wraps the same image for local container runs.
+
+`scripts/deploy_streamlit_cloud.py` — Streamlit Cloud API deploy helper.
+
+## Windows PyInstaller
+
+- **Spec:** `cross_section_studio.spec` — onedir distribution
+- **Entry script:** `launcher.py` (not `app.py`)
+- **Datas:** all root `*.py` except `launcher.py` copied as data; `data/` and `.streamlit/config.toml` bundled
+- **hiddenimports:** `paths`, `section_build_request`, `app_state`, `app_services`, engine modules, `pydantic`, etc.
+- **Build:** `scripts/build_windows.ps1` + `requirements-build.txt`
+
+## paths.py
+
+Resolves resource roots for frozen vs dev environments:
+
+- `app_root()` — project / bundle root
+- `import_profiles_dir()` — `data/import_profiles`
+- `help_dir()` / `help_topic_path()` — operator help under `docs/help` (bundled in the Windows spec; Docker must not strip `docs/help/**`)
+- Used by `ingestion.py`, `ai_quality.py`, `launcher.py`, `app_menubar.py`
+
+## Parity checklist
+
+When adding a new Python module imported at runtime:
+
+1. Add to **`Dockerfile` COPY** if needed by Streamlit (root `*.py` covers most; add packages like `advantage_p2_reference/` only if the image runs those tests)
+2. Add to **`cross_section_studio.spec`** datas/hiddenimports if needed by desktop (`ops_*`, `workbook_template`, `ui_output_presets`, `app_menubar`, `docs/help` when imported from app)
+3. Document in **`borehole-platform-architecture.mdc`** module table
+
+## Tests
+
+- `tests/test_paths.py` — frozen-friendly path resolution (incl. help topics)
+- `tests/test_launcher_port.py` — launcher port selection
+- `tests/test_import_smoke.py` — `app`, `pipeline`, `models`/`parsing`, renderer mixins, `app_menubar` import cleanly
+- `tests/test_menubar.py` — help loaders + menubar smoke

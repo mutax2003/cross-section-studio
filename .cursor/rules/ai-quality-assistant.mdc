@@ -1,0 +1,82 @@
+---
+description: Geology QA heuristics and optional LLM-assisted triage in the Validate step
+globs: ai_quality.py,**/ai_quality.py,ai_assistant.py,**/ai_assistant.py,tests/test_ai_*.py,tests/test_water_quality.py,tests/test_geology_qc.py,tests/test_unit_order_auto.py
+alwaysApply: false
+---
+
+# AI Quality & Assistant
+
+## ai_quality.py — Rule-based QA (no LLM)
+
+Runs after ingest via `analyze_parsed_data()` → `QualityReport` with `issues`, counts, and `unmapped_lithologies`.
+
+### Key issue codes
+
+| Code | Severity | Meaning |
+|------|----------|---------|
+| `duplicate_lithology_no_unit_order` | error | Same `lithology_code` twice in one hole without `unit_order` |
+| `duplicate_unit_order` | error | Conflicting `unit_order` values in one hole |
+| `placeholder_elevation` | warning | All collars use profile placeholder RL; UI blocks absolute-mode interpreted generate |
+| `unit_order_auto_assigned` | info | `assign_missing_unit_orders` filled gaps from depth sequence |
+| `off_transect` | warning | Collar offset exceeds threshold (also from projection) |
+
+### Lithology aliases
+
+- Load/save: `data/lithology_aliases.json`
+- `normalize_lithology_code()` applied during ingest
+- UI mapping expander + optional AI suggest in Validate step
+
+### Helpers
+
+- `collars_use_placeholder_elevation()`, `suggest_utm_crs()` for field-export CRS guidance
+- Per-hole checks in `_hole_quality_issues()`
+- Off-transect QA uses **`TransectGeometry.project_many()`** (batch projection, same pattern as `off_transect_warnings`)
+- Validate summaries: `summarize_water_levels()`, `summarize_screen_intervals()`, `summarize_environmental_readings()`
+
+## ai_assistant.py — Optional LLM (UI only)
+
+Hybrid assistant: **local rules first**, LLM polish when enabled (sidebar toggle + API key). `CROSS_SECTION_DISABLE_LLM=1` disables **third-party LLM** calls and hides provider controls; local assist still runs.
+
+Provider helpers: `preferred_llm_provider_from_env()` (Groq → Gemini → OpenAI when keys present); sidebar auto-enables once. Packaging must keep `docs/help/**` for Help menus (see `packaging-deployment.mdc`).
+
+| Capability | Local fallback | LLM |
+|------------|----------------|-----|
+| Column mapping suggestions | — | Low-confidence headers |
+| Lithology alias suggestions | Keyword heuristics | Canonical BH Log codes |
+| QA narrative | Count summary | Report paragraph |
+| **Fix-path coach** (`suggest_fix_plan`) | Catalog by issue code | Polished steps |
+| **Report autofill** (`suggest_report_metadata`) | Notes/caption from facts | Title-block fields |
+| **Correlation assist** (`suggest_correlation_overrides`) | Depth-rank pairing | Override suggestions |
+| **Section Q&A** (`answer_section_question`) | Fact-grounded answers | Narrative from facts only |
+| **Sheet roles** (`suggest_sheet_roles`) | Header/name heuristics | Sheet classification |
+| **NL transect** (`parse_transect_request`) | Regex hole-ID parse | Ordered hole list |
+
+- **Never imported by engine modules** (`pipeline`, `stratigraphy`, `projection`, `renderer`)
+- Mock/disabled path when no key — app remains functional
+- Prefer **lazy imports** from Streamlit UI modules to avoid hot-reload `ImportError`s
+- **Gemini:** send API key via `x-goog-api-key` header only (never query string); redact keys in error text
+
+## UI integration
+
+### Validate step
+
+- Data Health table + unified **Fix coach** (blocking actions + full fix plan expander)
+- Lithology code mapping + batch accept aliases
+- Sheet role detective (advisory rename checklist)
+- Column AI suggestions (LLM-only): session-persisted rename checklist when enabled
+- Optional QA narrative
+- Assist status caption: Local rules / LLM enabled / LLM disabled by deployment
+- **Free LLM:** prefer Groq, then Gemini, when `GROQ_API_KEY` / `GEMINI_API_KEY` are set (auto-enable once)
+
+### Configure / consulting
+
+- Report sheet autofill (accept writes `ConsultingTitleBlock` session keys)
+- Correlation link suggestions (accept → `session_correlation_overrides`)
+- Section Q&A over active transect facts
+- Natural-language transect pick (sets hole sequence)
+
+## Boundaries
+
+- QA **blocking rules** live in `ai_quality.py` — do not weaken without a user-facing fix path
+- LLM output is **advisory** — user must accept/save aliases, overrides, and report fields explicitly
+- No OpenAI calls from `pipeline`, `stratigraphy`, or `projection`

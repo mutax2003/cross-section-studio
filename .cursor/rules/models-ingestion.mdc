@@ -1,0 +1,48 @@
+---
+description: Immutable data schemas and Excel ingestion for borehole datasets
+globs: models.py,**/models.py,parsing.py,parse_ops.py,ingestion.py,**/ingestion.py,workbook_template.py,data/import_profiles/**
+alwaysApply: false
+---
+
+# Models, Parsing & Ingestion
+
+## Module split
+
+| Module | Role |
+|--------|------|
+| `models.py` | Pydantic schemas (`Collar`, `Lithology`, `ParseResult`, `ConsultingTitleBlock`, …) + compat re-exports |
+| `parsing.py` | `DataParser` and Excel sheet parsers |
+| `parse_ops.py` | `subset_parse_result`, `apply_unit_order_fix`, `geology_sheet_counts`, lithology index helpers |
+| `ingestion.py` | `FormatDetector`, `FieldExportAdapter`, `ingest_workbook()` |
+| `workbook_template.py` | Multi-tab input template builder + Data Entry helpers (no geometry) |
+
+Prefer `from models import DataParser, subset_parse_result` (re-exports) or import from `parsing` / `parse_ops` directly. New parse logic goes in `parsing` / `parse_ops`, not `models.py`.
+
+## Core schemas
+
+```python
+# Collar — hole_id, easting, northing, elevation, total_depth
+# Lithology — hole_id, from_depth, to_depth, lithology_code, unit_order?
+# WaterLevel — hole_id + depth (model always stores depth). Sheet input: depth XOR elevation_masl
+#   (parser converts elevation_masl → depth via collar RL). Optional: series_id, series_label, color, marker
+# ScreenInterval — hole_id, from_depth, to_depth
+# VerticalGradient — hole_id, direction (up/down)
+# ParseResult — collars, lithologies, errors, water_levels, screen_intervals, vertical_gradients, ...
+```
+
+Optional sheets: Water, Screens, Gradients, Deviations, Correlations, Faults, Unconformities, Environmental.
+See `docs/workbook-format.md`. Template: `python scripts/build_input_template.py`.
+
+### Parse error policy
+
+| Sheet | Bad / unknown `hole_id` rows |
+|-------|------------------------------|
+| Collars, Lithology, Water, Screens, Gradients, Environmental | Append to `ParseResult.errors` (row kept only if valid) |
+| Deviations, Correlations, Faults, Unconformities | Log-and-skip (not folded into `errors` today) |
+
+Import profile `extends` chains are depth-capped and cycle-checked in `ingestion.py`.
+
+## Boundaries
+
+- No stratigraphy or projection logic in models/parsing/template
+- Ingestion may call `ai_quality` for aliases and QA after parse

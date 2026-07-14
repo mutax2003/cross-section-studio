@@ -1,0 +1,106 @@
+---
+description: Lithology stratigraphy, layer matching, and pinch-out polygon construction
+globs: stratigraphy.py,**/stratigraphy.py
+alwaysApply: false
+---
+
+# stratigraphy.py — Stratigraphy & Pinch-Out Engine
+
+Construct `GeologicalPolygon` instances between adjacent boreholes (sorted by `x_profile`).
+
+```python
+GeologicalPolygon(
+    lithology_code: str,
+    polygon: shapely.Polygon,
+    hole_pair: tuple[str, str],
+    is_pinch_out: bool = False,
+)
+```
+
+## Layer Correlation (`_correlation_keys`)
+
+For each adjacent pair, match intervals using hashable keys (not code-only union):
+
+1. **`('order', unit_order, lithology_code)`** when `unit_order` is set on the interval
+2. **`('code', lithology_code)`** when the code appears exactly once in that hole
+3. **`('pos', index, lithology_code)`** for duplicate codes without `unit_order` (does not match across holes)
+
+Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) or skipped.
+
+`correlation_overrides` from workbook or session remap left/right `unit_order` pairs before matching. Overrides keyed with **reversed** hole order are accepted via `_overrides_for_hole_pair` (unit orders swapped to transect left→right). Prefer exact `(left, right)` when both directions exist.
+
+## Pinch-Out Algorithm
+
+1. Sort projected boreholes by `x_profile`: `B₁, B₂, …, Bₙ`
+2. For each adjacent pair `(Bᵢ, Bᵢ₊₁)`, iterate union of correlation keys
+
+**Case 1 — Continuous layer** (key in both holes):
+- 4-vertex polygon: connect top-top and bottom-bottom linearly between holes
+- `is_pinch_out = False`
+
+**Case 2 — Pinch-out** (key in one hole only, `allow_pinch_outs=True`):
+- `Z_mid` = average boundary elevation from neighboring units in the other hole
+- When the pinch interval has **`unit_order`**, prefer neighbor intervals with adjacent `unit_order` (±1) before **elevation-position** neighbors (compare RLs / top–bottom elevations — not hole-local depths — so unequal collar elevations stay correct)
+- `X_mid = (X_Bᵢ + X_Bᵢ₊₁) / 2`
+- 3-vertex triangular wedge tapering to `(X_mid, Z_mid)`
+- `is_pinch_out = True` — renderer draws dashed edges and lower alpha
+- `_make_polygon` always stores a single Shapely `Polygon` (largest part after `buffer(0)` repair) so the renderer can use `.exterior`
+
+**Case 3 — `allow_pinch_outs=False`:** skip unmatched intervals (leave inter-hole gap).
+
+## Overlap clipping (`_resolve_overlaps_in_pair`)
+
+After `_polygons_for_pair()` builds polygons for one adjacent hole pair, **`_resolve_overlaps_in_pair()`** clips deeper fence polygons so inter-hole fills do not stack on top of shallower units:
+
+1. Sort polygons by descending top elevation (`bounds[3]`, then `bounds[1]`)
+2. Walk in order; subtract already-occupied area from each polygon via Shapely `difference`
+3. Keep the largest remaining polygon fragment (`_largest_polygon`); drop empty fragments
+4. Union occupied area for subsequent clips
+
+Called inside `build_stratigraphy()` for every adjacent pair **before** polygons are returned to the pipeline. This reduces false overlap markers on section-sheet figures; residual overlaps may still be detected and surfaced.
+
+## Internal helpers
+
+- **`_sorted_hole_profiles(projected_df)`** — sort/group intervals by `x_profile`; shared by `build_stratigraphy` and `preview_correlation_health` (avoids duplicate DataFrame work)
+- **`_resolve_overlaps_in_pair(polygons)`** — per-pair overlap clipping (see above)
+- **`_largest_polygon(geom)`** — extract largest polygon from MultiPolygon after clip
+
+## Public API
+
+```python
+build_stratigraphy(
+    projected_df,
+    *,
+    allow_pinch_outs: bool = True,
+    correlation_overrides: Sequence[CorrelationOverride] = (),
+) -> list[GeologicalPolygon]
+
+preview_correlation_health(
+    projected_df,
+    *,
+    allow_pinch_outs: bool = True,
+    correlation_overrides: Sequence[CorrelationOverride] = (),
+) -> list[CorrelationPairSummary]
+# CorrelationPairSummary: matched_count, left_only_codes, right_only_codes,
+# pinch_out_candidates, unmatched_keys_count (property), match_rate (property)
+
+detect_polygon_overlaps(polygons) -> list[PolygonOverlap]
+log_polygon_overlaps(overlaps) -> None
+```
+
+Returns empty polygon list when fewer than 2 holes on profile. `preview_correlation_health` is used by **`app_services.preflight_correlation_health()`** (UI preflight, not pipeline).
+
+## Overlap detection (post-clip)
+
+- Runs in **`pipeline.build_cross_section()`** on the clipped polygon list
+- Uses **Shapely STRtree** to find intersecting polygons per adjacent hole pair
+- Skips pairs that only `touch` (shared boundary); requires non-trivial intersection area
+- `PolygonOverlap.message()` produces human-readable warnings consumed by pipeline → Streamlit UI
+- **Clipping first, detection second:** `_resolve_overlaps_in_pair()` auto-resolves stacking within a pair; detection surfaces remaining correlation conflicts
+- Section-sheet render profile hides overlap markers/footer on the figure (`show_overlap_markers=False`); warnings still appear in the Streamlit overlap panel
+
+## Validation
+
+- Polygons must be valid Shapely geometry; repair with `buffer(0)` when possible (`_make_polygon`)
+- No matplotlib/streamlit imports
+- Requires ≥ 2 boreholes for inter-hole polygons; single-hole transects produce sticks only

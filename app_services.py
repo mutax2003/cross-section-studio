@@ -153,12 +153,40 @@ def cached_build_section(
     return svg, b"", b"", count, codes, warnings
 
 
+@st.cache_data(show_spinner="Preparing PNG export...", ttl=3600, max_entries=8)
+def cached_build_section_png(
+    subset_json: str,
+    request_json: str,
+) -> bytes:
+    """Lazy PNG-only deliverable (avoids PDF work when only PNG is needed)."""
+    subset = ParseResult.model_validate_json(subset_json)
+    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+    _svg, png, _pdf, _count, _codes, _warnings = _run_build_cross_section(
+        subset, request, export_formats=frozenset({"png"})
+    )
+    return png
+
+
+@st.cache_data(show_spinner="Preparing PDF export...", ttl=3600, max_entries=8)
+def cached_build_section_pdf(
+    subset_json: str,
+    request_json: str,
+) -> bytes:
+    """Lazy PDF-only deliverable (avoids PNG work when only PDF is needed)."""
+    subset = ParseResult.model_validate_json(subset_json)
+    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+    _svg, _png, pdf, _count, _codes, _warnings = _run_build_cross_section(
+        subset, request, export_formats=frozenset({"pdf"})
+    )
+    return pdf
+
+
 @st.cache_data(show_spinner="Preparing PNG/PDF exports...", ttl=3600, max_entries=8)
 def cached_build_section_exports(
     subset_json: str,
     request_json: str,
 ) -> tuple[bytes, bytes]:
-    """Lazy PNG + PDF for download buttons (avoids raster work on every Generate)."""
+    """Build PNG+PDF in one pipeline pass (Prepare both)."""
     subset = ParseResult.model_validate_json(subset_json)
     request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
     _svg, png, pdf, _count, _codes, _warnings = _run_build_cross_section(
@@ -166,14 +194,6 @@ def cached_build_section_exports(
     )
     return png, pdf
 
-
-@st.cache_data(show_spinner="Preparing PDF report...", ttl=3600, max_entries=8)
-def cached_build_section_pdf(
-    subset_json: str,
-    request_json: str,
-) -> bytes:
-    """Legacy PDF-only path; prefers pdf from export cache."""
-    return cached_build_section_exports(subset_json, request_json)[1]
 
 
 def preflight_correlation_health(
@@ -266,6 +286,7 @@ def cached_configure_preflight(
     correlation_overrides_json: str,
     offset_warning_m: float,
     max_offset_for_interpolation_m: float = 50.0,
+    check_overlaps: bool = True,
 ) -> tuple[tuple[str, ...], tuple[CorrelationPairSummary, ...]]:
     """Cached Configure-step preflight: project once, then correlation + overlap checks."""
     subset = ParseResult.model_validate_json(subset_json)
@@ -310,7 +331,7 @@ def cached_configure_preflight(
         )
     )
     overlap_extra: tuple[str, ...] = ()
-    if len(projected["hole_id"].unique()) >= 2:
+    if check_overlaps and len(projected["hole_id"].unique()) >= 2:
         polygons = build_stratigraphy(
             projected,
             allow_pinch_outs=allow_pinch_outs,

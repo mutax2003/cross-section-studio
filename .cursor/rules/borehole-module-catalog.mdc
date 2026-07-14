@@ -74,7 +74,7 @@ See `docs/workbook-format.md`.
 ## Execution Protocol
 
 1. **Data path:** `ingest_workbook()` or `DataParser.parse_file()` → `ParseResult`
-2. **Render path:** `subset_parse_result()` → **`pipeline.build_cross_section()`** → **`CrossSectionResult`** (SVG/PNG/PDF via `export_formats`). Streamlit Generate uses SVG-first (`cached_build_section`); PNG/PDF via `cached_build_section_exports()` on Prepare.
+2. **Render path:** `subset_parse_result()` → **`pipeline.build_cross_section()`** → **`CrossSectionResult`** (SVG/PNG/PDF via `export_formats`). Streamlit Generate uses SVG-first (`cached_build_section`); Prepare PNG/PDF via format-scoped caches (`cached_build_section_png` / `cached_build_section_pdf`); `cached_build_section_exports()` builds both as a convenience.
 3. Implement engine modules incrementally: `models` → `parsing` → `projection` → `stratigraphy` → `renderer*` → `pipeline` → `app*`
 4. Prioritize **mathematical exactness** in `projection.py` and **structural validation** in `stratigraphy.py` before plotting
 5. Graceful degradation: warn on bad rows, off-transect collars, placeholder elevations; do not crash silently

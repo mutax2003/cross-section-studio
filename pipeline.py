@@ -47,6 +47,21 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class SectionGeometry:
+    """Projection + stratigraphy outputs shared by render and future Prepare reuse."""
+
+    projected: pd.DataFrame
+    polygons: list[GeologicalPolygon]
+    lithology_codes: list[str]
+    overlap_warnings: tuple[str, ...]
+    collar_depths: dict[str, float]
+    overlap_pairs: tuple[PolygonOverlap, ...]
+    x_span: float
+    max_offset: float
+    projected_hole_ids: frozenset[str]
+
+
+@dataclass(frozen=True)
 class CrossSectionResult:
     """Canonical return value from ``build_cross_section``."""
 
@@ -142,61 +157,25 @@ def filter_projected_for_interpolation(
     return _filter_projected_for_interpolation(projected, max_offset_m)
 
 
-def build_cross_section(
+def compute_section_geometry(
     collars: Sequence[Collar],
     lithologies: Sequence[Lithology],
     transect_points: Sequence[tuple[float, float]],
     *,
-    vertical_exaggeration: float = 1.0,
-    show_hatches: bool = True,
-    show_legend: bool = True,
-    title: str = "Borehole Cross-Section",
     offset_warning_m: float = DEFAULT_OFFSET_WARNING_M,
     interpretation_mode: InterpretationMode = "interpolated",
     allow_pinch_outs: bool = True,
     detect_overlaps: bool = True,
     fail_on_overlaps: bool = False,
-    water_levels: Sequence[WaterLevel] | None = None,
-    uncertainty_spacing_m: float = _DEFAULT_UNCERTAINTY_SPACING_M,
-    uncertainty_offset_m: float = DEFAULT_OFFSET_WARNING_M,
     max_offset_for_interpolation_m: float | None = None,
     correlation_overrides: Sequence[CorrelationOverride] = (),
-    faults: Sequence[Fault] = (),
-    unconformities: Sequence[Unconformity] = (),
-    environmental_readings: Sequence[EnvironmentalReading] = (),
     deviation_readings: Sequence[DeviationReading] = (),
-    figure_metadata: SectionFigureMetadata | None = None,
-    show_ground_surface: bool = True,
-    interpolate_water_table: bool = False,
     warn_on_correlation_gaps: bool = False,
-    show_water_elevation_labels: bool | None = None,
-    show_water_legend: bool | None = None,
-    show_dry_well_nm: bool | None = None,
-    water_interpolate_across_gaps: bool | None = None,
-    environmental_parameters: Sequence[str] | None = None,
-    show_parameter_labels: bool | None = None,
-    parameter_interpolate_segments: bool | None = None,
-    parameter_interpolate_across_gaps: bool | None = None,
-    render_layout: str = "section_sheet",
-    track_width_m: float = 3.0,
-    elevation_mode: str = "absolute",
-    raster_log_strips: Sequence[RasterLogStrip] = (),
-    export_formats: frozenset[str] | None = None,
-    consulting_title_block: ConsultingTitleBlock | None = None,
-    screen_intervals: Sequence[ScreenInterval] | None = None,
-    vertical_gradients: Sequence[VerticalGradient] | None = None,
-) -> CrossSectionResult:
-    """Project, build stratigraphy, render. Returns ``CrossSectionResult`` (also unpackable as a 7-tuple)."""
-    export_formats = _normalize_export_formats(export_formats)
+) -> SectionGeometry:
+    """Project boreholes, build stratigraphy, and collect overlap/correlation QA."""
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
-    if vertical_exaggeration <= 0:
-        raise ValueError("vertical_exaggeration must be positive")
     if offset_warning_m <= 0:
         raise ValueError("offset_warning_m must be positive")
-    if uncertainty_spacing_m <= 0:
-        raise ValueError("uncertainty_spacing_m must be positive")
-    if uncertainty_offset_m <= 0:
-        raise ValueError("uncertainty_offset_m must be positive")
     if len(transect_points) < 2:
         raise ValueError("At least two transect points are required")
     transect = Transect(points=list(transect_points))
@@ -271,6 +250,95 @@ def build_cross_section(
     }
     x_span = float(projected["x_profile"].max() - projected["x_profile"].min()) if not projected.empty else 1.0
     max_offset = float(projected["offset_distance"].max()) if not projected.empty else 0.0
+    return SectionGeometry(
+        projected=projected,
+        polygons=polygons,
+        lithology_codes=lithology_codes,
+        overlap_warnings=overlap_warnings,
+        collar_depths=collar_depths,
+        overlap_pairs=overlap_pairs,
+        x_span=x_span,
+        max_offset=max_offset,
+        projected_hole_ids=projected_hole_ids,
+    )
+
+
+def build_cross_section(
+    collars: Sequence[Collar],
+    lithologies: Sequence[Lithology],
+    transect_points: Sequence[tuple[float, float]],
+    *,
+    vertical_exaggeration: float = 1.0,
+    show_hatches: bool = True,
+    show_legend: bool = True,
+    title: str = "Borehole Cross-Section",
+    offset_warning_m: float = DEFAULT_OFFSET_WARNING_M,
+    interpretation_mode: InterpretationMode = "interpolated",
+    allow_pinch_outs: bool = True,
+    detect_overlaps: bool = True,
+    fail_on_overlaps: bool = False,
+    water_levels: Sequence[WaterLevel] | None = None,
+    uncertainty_spacing_m: float = _DEFAULT_UNCERTAINTY_SPACING_M,
+    uncertainty_offset_m: float = DEFAULT_OFFSET_WARNING_M,
+    max_offset_for_interpolation_m: float | None = None,
+    correlation_overrides: Sequence[CorrelationOverride] = (),
+    faults: Sequence[Fault] = (),
+    unconformities: Sequence[Unconformity] = (),
+    environmental_readings: Sequence[EnvironmentalReading] = (),
+    deviation_readings: Sequence[DeviationReading] = (),
+    figure_metadata: SectionFigureMetadata | None = None,
+    show_ground_surface: bool = True,
+    interpolate_water_table: bool = False,
+    warn_on_correlation_gaps: bool = False,
+    show_water_elevation_labels: bool | None = None,
+    show_water_legend: bool | None = None,
+    show_dry_well_nm: bool | None = None,
+    water_interpolate_across_gaps: bool | None = None,
+    environmental_parameters: Sequence[str] | None = None,
+    show_parameter_labels: bool | None = None,
+    parameter_interpolate_segments: bool | None = None,
+    parameter_interpolate_across_gaps: bool | None = None,
+    render_layout: str = "section_sheet",
+    track_width_m: float = 3.0,
+    elevation_mode: str = "absolute",
+    raster_log_strips: Sequence[RasterLogStrip] = (),
+    export_formats: frozenset[str] | None = None,
+    consulting_title_block: ConsultingTitleBlock | None = None,
+    screen_intervals: Sequence[ScreenInterval] | None = None,
+    vertical_gradients: Sequence[VerticalGradient] | None = None,
+) -> CrossSectionResult:
+    """Project, build stratigraphy, render. Returns ``CrossSectionResult`` (also unpackable as a 7-tuple)."""
+    export_formats = _normalize_export_formats(export_formats)
+    interpretation_mode = validate_interpretation_mode(interpretation_mode)
+    if vertical_exaggeration <= 0:
+        raise ValueError("vertical_exaggeration must be positive")
+    if uncertainty_spacing_m <= 0:
+        raise ValueError("uncertainty_spacing_m must be positive")
+    if uncertainty_offset_m <= 0:
+        raise ValueError("uncertainty_offset_m must be positive")
+    geometry = compute_section_geometry(
+        collars,
+        lithologies,
+        transect_points,
+        offset_warning_m=offset_warning_m,
+        interpretation_mode=interpretation_mode,
+        allow_pinch_outs=allow_pinch_outs,
+        detect_overlaps=detect_overlaps,
+        fail_on_overlaps=fail_on_overlaps,
+        max_offset_for_interpolation_m=max_offset_for_interpolation_m,
+        correlation_overrides=correlation_overrides,
+        deviation_readings=deviation_readings,
+        warn_on_correlation_gaps=warn_on_correlation_gaps,
+    )
+    projected = geometry.projected
+    polygons = geometry.polygons
+    lithology_codes = geometry.lithology_codes
+    overlap_warnings = geometry.overlap_warnings
+    collar_depths = geometry.collar_depths
+    overlap_pairs = geometry.overlap_pairs
+    x_span = geometry.x_span
+    max_offset = geometry.max_offset
+    projected_hole_ids = geometry.projected_hole_ids
     disclaimer = _DISCLAIMER_BY_MODE[interpretation_mode]
 
     metadata = figure_metadata or SectionFigureMetadata(

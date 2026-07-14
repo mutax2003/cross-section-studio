@@ -1,6 +1,6 @@
 ---
 description: Streamlit UI assembly — upload, transect config, SVG-first Generate + Prepare PNG/PDF
-globs: app.py,**/app.py,app_*.py,app_state.py,app_services.py,ui_helpers.py,**/ui_helpers.py,ui_output_presets.py
+globs: app.py,app_*.py,app_state.py,app_services.py,ui_helpers.py,ui_output_presets.py
 alwaysApply: false
 ---
 
@@ -35,7 +35,7 @@ parse_result, import_report = cached_ingest_workbook(uploaded_bytes, ...)
 request = SectionBuildRequest(...)
 subset = subset_parse_result(parse_result, active_hole_ids, lithology_index=...)
 result = cached_build_section(subset.model_dump_json(), request.model_dump_json())
-# → SVG-first CrossSectionResult; PNG/PDF via cached_build_section_exports() on Prepare
+# → SVG-first CrossSectionResult; Prepare PNG/PDF via cached_build_section_png / cached_build_section_pdf; cached_build_section_exports() builds both as a convenience
 ```
 
 - **Primary cache key:** `SectionBuildRequest.cache_key(hole_ids)` in `st.session_state.render_cache_key`
@@ -51,7 +51,7 @@ result = cached_build_section(subset.model_dump_json(), request.model_dump_json(
 1. **Upload** — file uploader, profile, CRS, elevation, Parse; import report (optional sheets, geology counts, `unit_order`)
 2. **Validate** — Data Health, fix-path coach, lithology mapping, sheet roles, QA narrative
 3. **Configure** — transect (incl. NL pick), correlation health + AI link suggestions, section Q&A, consulting report sheet fields
-4. **Generate** — warnings gate, `cached_build_section()` (**SVG only**), overlap warnings; **Prepare PNG/PDF** via `cached_build_section_exports()` before download
+4. **Generate** — warnings gate, `cached_build_section()` (**SVG only**), overlap warnings; **Prepare PNG** / **Prepare PDF** via format-scoped caches (`cached_build_section_png` / `cached_build_section_pdf`)
 
 ## Layouts
 

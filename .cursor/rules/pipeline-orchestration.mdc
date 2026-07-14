@@ -13,7 +13,9 @@ alwaysApply: false
 ```python
 from pipeline import (
     CrossSectionResult,
+    SectionGeometry,
     build_cross_section,
+    compute_section_geometry,
     auto_scale_bar_m,
     validate_interpretation_mode,
     SVG_PNG_EXPORT_FORMATS,
@@ -54,6 +56,8 @@ Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes t
 
 ## Flow
 
+**Geometry stage:** `compute_section_geometry()` — projection, stratigraphy, overlap/correlation QA, lithology codes. `build_cross_section()` calls it then renders/exports. Prepare today uses one PNG+PDF pass via `cached_build_section_exports()`; reusing the SVG Generate figure for Prepare remains future work.
+
 1. `Transect(points=...)` → `project_boreholes()` → projected DataFrame
 2. `_filter_projected_for_interpolation()` when `max_offset_for_interpolation_m` set — drops **whole holes** whose **max** `offset_distance` exceeds the threshold (unique `hole_id`, not individual lithology rows); requires ≥2 holes remaining
 3. If `interpretation_mode == "borehole_only"`: `polygons = []`, **skip overlap detection**
@@ -83,8 +87,9 @@ Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes t
 ## Streamlit export strategy
 
 - **Generate:** `cached_build_section()` builds **SVG only** (`frozenset({"svg"})`)
-- **Deliverables:** `cached_build_section_exports()` builds PNG+PDF when the user clicks **Prepare PNG/PDF**
-- **Legacy:** `cached_build_section_pdf()` returns PDF from `cached_build_section_exports()` (not a separate full triple rebuild)
+- **Deliverables:** Prepare PNG uses `cached_build_section_png()`; Prepare PDF uses `cached_build_section_pdf()` (format-scoped; geometry still rebuilt per Prepare). `cached_build_section_exports()` builds both as a convenience.
+- **Legacy:** `cached_build_section_pdf()` is PDF-only (`frozenset({"pdf"})`)
+- **Future:** reuse `SectionGeometry` / Generate SVG figure for Prepare exports (not implemented yet)
 
 ## Overlap gating (production QA)
 
@@ -100,8 +105,8 @@ UI path: Configure step can optionally **block export on polygon overlaps** (imp
 ## Consumers
 
 - `app_services.cached_build_section()` — SVG-only on Generate
-- `app_services.cached_build_section_exports()` — lazy PNG+PDF for Prepare / downloads
-- `app_services.cached_build_section_pdf()` — legacy PDF accessor via exports cache
+- `app_services.cached_build_section_exports()` — convenience PNG+PDF; prefer per-format Prepare helpers
+- `app_services.cached_build_section_png()` / `cached_build_section_pdf()` — format-scoped Prepare
 - `scripts/smoke_test.py` — end-to-end smoke via `build_cross_section()`
 - `tests/conftest.py` — `run_pipeline()`
 - `scripts/plot_advantage_transects.py`

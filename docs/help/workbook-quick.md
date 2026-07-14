@@ -1,6 +1,15 @@
-# Workbook quick reference
+# Workbook & data entry
 
-Upload a multi-tab Excel workbook. Sheet names are matched case-insensitively.
+**Enter data in Excel** (multi-tab workbook), then **upload** it via **Upload Excel workbook** in the sidebar. Sheet names are matched case-insensitively.
+
+## Enter in Excel, then upload
+
+1. Download **Download template (data entry)** from the welcome card or sidebar Data source section.
+2. Fill **Collars** and **Lithology** in Excel (optional sheets below).
+3. Upload the saved `.xlsx` with **Upload Excel workbook** — same ingest path as any other workbook.
+4. Use File → **Load sample project** only when you want the built-in demo (skips template fill).
+
+A legacy **Data Entry** sheet still imports for compatibility; prefer the named tabs in the template.
 
 ## Required sheets
 

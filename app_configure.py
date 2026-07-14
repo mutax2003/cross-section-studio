@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import streamlit as st
 
@@ -15,9 +16,8 @@ from app_common import (
     _session_correlation_overrides,
     _sidebar_heading,
 )
-from app_services import cached_recommend_transects, preflight_correlation_health
-from models import CorrelationOverride, ParseResult, Transect, subset_parse_result
-from projection import off_transect_warnings
+from app_services import cached_configure_preflight, cached_recommend_transects
+from models import CorrelationOverride, ParseResult, subset_parse_result
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,11 @@ class ConfigureState:
     override_warnings: bool
     placeholder_blocks_interp: bool
     elevation_mode: str
+    fail_on_overlaps: bool
+    has_overlap_warnings: bool
+    environmental_parameters: tuple[str, ...] = ()
+    show_parameter_labels: bool = True
+    parameter_interpolate_segments: bool = True
 
 
 def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], transect_mode: str) -> tuple[list[str], str]:
@@ -92,7 +97,11 @@ def render_configure_step(
     allow_pinch_outs: bool,
     quality_report,
     import_report,
+    is_consulting_layout: bool = False,
+    max_offset_for_interpolation_m: float | None = None,
 ) -> ConfigureState:
+    st.subheader("Configure")
+    st.caption("Choose elevation mode, transect readiness, and export gates before generating.")
     blocking = quality_report is not None and quality_report.has_blocking_errors
     elevation_mode = st.session_state.get("elevation_mode", "absolute")
     if import_report and import_report.uses_placeholder_elevation:
@@ -118,7 +127,26 @@ def render_configure_step(
             "or ingest survey RL before generating an interpreted section."
         )
     has_warnings = quality_report is not None and quality_report.warning_count > 0
-    override_warnings = st.checkbox("Allow generate with warnings", value=True)
+    warnings_default = not is_consulting_layout
+    override_warnings = st.checkbox(
+        "Allow generate with warnings",
+        value=warnings_default,
+        help="Consulting report preset defaults to blocking export when QA warnings are present.",
+    )
+    if has_warnings and not override_warnings:
+        st.warning(
+            "QA warnings are present. Enable **Allow generate with warnings** above to proceed, "
+            "or resolve them in Validate."
+        )
+    fail_on_overlaps = st.checkbox(
+        "Block export on polygon overlaps",
+        value=is_consulting_layout,
+        help="When enabled, generation fails if inter-hole fence polygons overlap.",
+    )
+
+    environmental_parameters: tuple[str, ...] = ()
+    show_parameter_labels = True
+    parameter_interpolate_segments = True
 
     preflight_selection = _active_transect_selection(
         parse_result,
@@ -137,22 +165,85 @@ def render_configure_step(
             active_ids,
             lithology_index=st.session_state.lithology_index,
         )
-        preflight_warnings = off_transect_warnings(
-            subset_preflight.collars,
-            Transect(points=list(active_points)),
+        available_params = sorted({reading.parameter for reading in subset_preflight.environmental_readings})
+        if available_params:
+            st.markdown("**Lab / environmental parameters**")
+            options_sig = tuple(available_params)
+            if st.session_state.get("_env_params_options_sig") != options_sig:
+                previous = list(st.session_state.get("environmental_parameters_multiselect") or [])
+                st.session_state.environmental_parameters_multiselect = [
+                    p for p in previous if p in available_params
+                ] or list(available_params)
+                st.session_state._env_params_options_sig = options_sig
+            environmental_parameters = tuple(
+                st.multiselect(
+                    "Parameters to plot on section",
+                    options=available_params,
+                    help="Markers and optional fence lines at sample depths (Environmental sheet).",
+                    key="environmental_parameters_multiselect",
+                )
+            )
+            if not environmental_parameters:
+                st.caption("No parameters selected — environmental markers will not be plotted.")
+            show_parameter_labels = st.toggle(
+                "Show parameter value labels",
+                value=True,
+                key="show_parameter_labels_toggle",
+            )
+            parameter_interpolate_segments = st.toggle(
+                "Interpolate parameter between adjacent holes",
+                value=True,
+                key="parameter_interpolate_segments_toggle",
+            )
+        elif parse_result.environmental_readings:
+            st.caption(
+                "Environmental readings exist but none fall on the current transect holes."
+            )
+        else:
+            st.caption(
+                "Add an **Environmental** sheet (`hole_id`, `parameter`, `value`, `depth` or "
+                "`from_depth`/`to_depth`) to plot lab data by depth. See docs/workbook-format.md."
+            )
+        correlation_overrides = _session_correlation_overrides() + subset_preflight.correlation_overrides
+        max_interp_m = float(
+            max_offset_for_interpolation_m
+            if max_offset_for_interpolation_m is not None
+            else offset_warning_m
+        )
+        overrides_payload = tuple(item.model_dump() for item in correlation_overrides)
+        preflight_json_key = (
+            tuple(active_ids),
+            tuple(active_points),
+            interpretation_mode,
+            allow_pinch_outs,
+            overrides_payload,
             offset_warning_m,
+            max_interp_m,
+            st.session_state.get("lithology_index"),
+            fail_on_overlaps,
+        )
+        if st.session_state.get("_preflight_json_key") == preflight_json_key:
+            subset_json = st.session_state["_preflight_subset_json"]
+            overrides_json = st.session_state["_preflight_overrides_json"]
+        else:
+            subset_json = subset_preflight.model_dump_json()
+            overrides_json = json.dumps(list(overrides_payload))
+            st.session_state._preflight_json_key = preflight_json_key
+            st.session_state._preflight_subset_json = subset_json
+            st.session_state._preflight_overrides_json = overrides_json
+        preflight_warnings, pair_summaries = cached_configure_preflight(
+            subset_json,
+            json.dumps(list(active_points)),
+            interpretation_mode,
+            allow_pinch_outs,
+            overrides_json,
+            offset_warning_m,
+            max_interp_m,
+            check_overlaps=fail_on_overlaps,
         )
         for message in preflight_warnings:
             st.warning(message)
-        pair_summaries = preflight_correlation_health(
-            subset_preflight,
-            tuple(active_points),
-            interpretation_mode=interpretation_mode,
-            allow_pinch_outs=allow_pinch_outs,
-            correlation_overrides=_session_correlation_overrides()
-            + subset_preflight.correlation_overrides,
-            offset_warning_m=offset_warning_m,
-        )
+        has_overlap_warnings = any("Polygon overlap" in message for message in preflight_warnings)
         if pair_summaries:
             with st.expander("Correlation health preview", expanded=False):
                 for summary in pair_summaries:
@@ -183,17 +274,28 @@ def render_configure_step(
             )
 
         render_section_qa(subset_preflight, active_ids, preflight_warnings)
+    else:
+        has_overlap_warnings = False
+        st.info(
+            "Select holes under **Transect selection** in the sidebar "
+            "(By hole sequence / Recommended / coordinates)."
+        )
 
     can_generate = (
         parse_result is not None
+        and preflight_selection is not None
         and not blocking
         and not placeholder_blocks_interp
         and (override_warnings or not has_warnings)
+        and (not fail_on_overlaps or not has_overlap_warnings)
     )
     if blocking:
         st.error("Resolve data errors before generating a cross-section.")
-    elif has_warnings and not override_warnings:
-        st.warning("Warnings detected. Enable 'Allow generate with warnings' below to proceed.")
+    elif fail_on_overlaps and has_overlap_warnings:
+        st.error(
+            "Polygon overlaps detected. Resolve correlation or disable "
+            "'Block export on polygon overlaps' after manual review."
+        )
 
     return ConfigureState(
         selected_holes=selected_holes,
@@ -205,6 +307,11 @@ def render_configure_step(
         override_warnings=override_warnings,
         placeholder_blocks_interp=placeholder_blocks_interp,
         elevation_mode=str(elevation_mode),
+        fail_on_overlaps=fail_on_overlaps,
+        has_overlap_warnings=has_overlap_warnings,
+        environmental_parameters=environmental_parameters,
+        show_parameter_labels=show_parameter_labels,
+        parameter_interpolate_segments=parameter_interpolate_segments,
     )
 
 

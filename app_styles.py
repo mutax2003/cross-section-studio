@@ -13,27 +13,27 @@ APP_CSS = """
     }
     .app-hero {
         background: linear-gradient(135deg, var(--brand-dark) 0%, var(--brand-mid) 55%, var(--brand-light) 100%);
-        padding: 1.35rem 1.5rem 1.1rem;
-        border-radius: 14px;
-        margin-bottom: 0.85rem;
+        padding: 0.85rem 1.15rem 0.7rem;
+        border-radius: 12px;
+        margin-bottom: 0.55rem;
         color: #f8fafc;
-        box-shadow: 0 8px 24px rgba(30, 58, 47, 0.18);
+        box-shadow: 0 4px 14px rgba(30, 58, 47, 0.14);
     }
-    .app-hero h1 { color: #f8fafc !important; margin: 0; font-size: 1.7rem; letter-spacing: -0.02em; }
-    .app-hero p { margin: 0.35rem 0 0; opacity: 0.93; font-size: 0.92rem; line-height: 1.45; }
+    .app-hero h1 { color: #f8fafc !important; margin: 0; font-size: 1.35rem; letter-spacing: -0.02em; }
+    .app-hero p { margin: 0.2rem 0 0; opacity: 0.92; font-size: 0.84rem; line-height: 1.35; }
     .workflow {
         display: flex;
-        gap: 0.45rem;
+        gap: 0.35rem;
         flex-wrap: wrap;
-        margin: 0.75rem 0 0.25rem;
+        margin: 0.45rem 0 0.15rem;
     }
     .workflow-step {
-        flex: 1 1 8rem;
+        flex: 1 1 6.5rem;
         background: rgba(255,255,255,0.12);
         border: 1px solid rgba(255,255,255,0.22);
-        border-radius: 10px;
-        padding: 0.45rem 0.65rem;
-        font-size: 0.78rem;
+        border-radius: 8px;
+        padding: 0.35rem 0.5rem;
+        font-size: 0.74rem;
         color: #e2e8f0;
         text-align: center;
     }
@@ -106,23 +106,39 @@ APP_CSS = """
     .welcome-steps { text-align: left; margin: 1rem auto 0; max-width: 34rem; }
     .welcome-steps li { margin: 0.35rem 0; }
     .stale-banner {
-        background: #eff6ff;
-        border: 1px solid #bfdbfe;
-        color: #1e40af;
+        background: linear-gradient(180deg, #fffbeb 0%, #fefce8 100%);
+        border: 1px solid #fde68a;
+        color: #92400e;
         border-radius: 10px;
         padding: 0.65rem 0.85rem;
         margin-bottom: 0.75rem;
         font-size: 0.88rem;
     }
     .stale-banner:focus-within {
-        outline: 2px solid #2563eb;
+        outline: 2px solid var(--brand-mid);
+        outline-offset: 2px;
+    }
+    .next-step-coach {
+        position: sticky;
+        top: 0.35rem;
+        z-index: 2;
+        background: linear-gradient(180deg, #ecfdf5 0%, #f0fdf4 100%);
+        border: 1px solid #a7f3d0;
+        color: #065f46;
+        border-radius: 10px;
+        padding: 0.65rem 0.85rem;
+        margin-bottom: 0.75rem;
+        font-size: 0.88rem;
+    }
+    .next-step-coach:focus-within {
+        outline: 2px solid var(--brand-mid);
         outline-offset: 2px;
     }
     .sidebar-section-title {
         font-size: 0.72rem;
         text-transform: uppercase;
         letter-spacing: 0.06em;
-        color: #94a3b8;
+        color: var(--muted);
         margin: 0.35rem 0 0.15rem;
         font-weight: 700;
     }
@@ -131,6 +147,53 @@ APP_CSS = """
         border-radius: 10px;
         overflow: hidden;
         background: #fff;
+    }
+    .app-menubar {
+        background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.2rem 0.45rem 0.35rem;
+        margin-bottom: 0.5rem;
+        box-shadow: 0 1px 4px rgba(15, 23, 42, 0.04);
+    }
+    .app-menubar [data-testid="stHorizontalBlock"] {
+        align-items: center;
+    }
+    .app-menubar button[kind="secondary"],
+    .app-menubar button {
+        font-size: 0.82rem !important;
+        font-weight: 600 !important;
+        border: 1px solid transparent !important;
+        background: transparent !important;
+        color: var(--text) !important;
+        min-height: 1.85rem !important;
+    }
+    .app-menubar button:hover {
+        background: #e2e8f0 !important;
+        border-color: #cbd5e1 !important;
+    }
+    .app-menubar button:focus-visible {
+        outline: 2px solid var(--brand-mid) !important;
+        outline-offset: 2px !important;
+        background: #ecfdf5 !important;
+    }
+    .menu-shortcut {
+        float: right;
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 500;
+        margin-left: 0.75rem;
+    }
+    .app-menu-accels {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        overflow: hidden !important;
+        clip: rect(0, 0, 0, 0) !important;
+        white-space: nowrap !important;
+        border: 0 !important;
+        padding: 0 !important;
+        margin: -1px !important;
     }
     div[data-testid="stSidebar"] {
         background-color: #f8fafc;

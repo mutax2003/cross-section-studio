@@ -66,6 +66,8 @@ def test_import_app_modules() -> None:
     assert section_build_request.SectionBuildRequest.__name__ == "SectionBuildRequest"
     assert callable(app_services.cached_build_section)
     assert callable(app_services.cached_build_section_exports)
+    assert callable(app_services.cached_build_section_png)
+    assert callable(app_services.cached_build_section_pdf)
     assert app_state.DEFAULT_SESSION
     assert "show_hatches" in app_state.DEFAULT_SESSION
     assert "enable_ai_suggestions" in app_state.DEFAULT_SESSION

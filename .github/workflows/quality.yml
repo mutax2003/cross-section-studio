@@ -1,0 +1,49 @@
+name: Quality
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Ruff
+        run: |
+          ruff check app.py app_build.py app_configure.py app_services.py app_state.py app_upload.py \
+            section_build_request.py paths.py pipeline.py projection.py stratigraphy.py ingestion.py \
+            gwm_reference tests/test_streamlit_app.py tests/test_pipeline.py
+
+      - name: Engine coverage gate
+        run: |
+          python -m pytest tests/test_projection.py tests/test_stratigraphy.py \
+            tests/test_pipeline.py tests/test_ingestion.py \
+            --cov=pipeline --cov=projection --cov=stratigraphy --cov=ingestion \
+            --cov-report=term-missing --cov-fail-under=70 -q
+
+      - name: pip-audit
+        run: pip-audit -r requirements.txt
+
+      - name: Figure parity (warn-only)
+        run: python scripts/compare_figure_parity.py --warn-only

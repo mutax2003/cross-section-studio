@@ -53,6 +53,7 @@ def test_import_app_modules() -> None:
     import app_upload
     import app_validate
     import section_build_request
+    from pipeline import ALL_EXPORT_FORMATS
 
     assert app_styles.APP_CSS
     assert callable(app_validate.render_validate_step)
@@ -64,4 +65,15 @@ def test_import_app_modules() -> None:
     assert app_common._WORKFLOW_LABELS[0] == "Upload"
     assert section_build_request.SectionBuildRequest.__name__ == "SectionBuildRequest"
     assert callable(app_services.cached_build_section)
+    assert callable(app_services.cached_build_section_exports)
     assert app_state.DEFAULT_SESSION
+    assert "show_hatches" in app_state.DEFAULT_SESSION
+    assert "enable_ai_suggestions" in app_state.DEFAULT_SESSION
+    assert ALL_EXPORT_FORMATS == frozenset({"svg", "png", "pdf"})
+
+    try:
+        import app_menubar
+    except ImportError:
+        pass
+    else:
+        assert callable(app_menubar.render_menubar)

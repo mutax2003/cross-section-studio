@@ -55,7 +55,7 @@ Map each persona to a Cursor `subagent_type` (IDE Task tool). Do **not** invent 
 
 ### 5. DevOps / Test Runner
 - **Persona:** Automation engineer.
-- **Does:** Run the four-step E2E gate from `AGENTS.md`; return pass/fail + last 50 lines on failure to the Developer.
+- **Does:** Run the three-step E2E gate from `AGENTS.md` / `VERIFY_COMMANDS`; return pass/fail + last 50 lines on failure to the Developer.
 - **Hard rules:** No source edits. On failure, hand the log excerpt to a focused Implementer — do not “fix while verifying.”
 - **Tools:** `shell` subagent; `scripts/agent_prompts/verify.md`; optional `python scripts/agent_supervisor.py verify`.
 

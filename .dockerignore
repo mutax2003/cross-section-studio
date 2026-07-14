@@ -10,5 +10,13 @@ scripts/e2e_smoke_direct.py
 scripts/run_e2e_tests.py
 e2e_*.txt
 *.md
+!docs/help/**
+!docs/workbook-format.md
+!README.md
 data/advantage_transects
 data/smoke_test_output.svg
+.streamlit/secrets.toml
+.env
+.env.*
+*.pem
+*.key

@@ -1,6 +1,6 @@
 ---
 description: Pointer to AGENTS.md — CI hygiene for supervisor, workflows, and ops
-globs: scripts/agent_supervisor.py,scripts/agent_prompts/**,AGENTS.md,.github/workflows/*.yml,ops_*.py,Dockerfile,docker-compose.yml
+globs: scripts/agent_supervisor.py,scripts/agent_prompts/**,AGENTS.md,.github/workflows/*.yml
 alwaysApply: false
 ---
 
@@ -8,7 +8,7 @@ alwaysApply: false
 
 Canonical supervisor protocol lives in **`AGENTS.md`** (Scout → Implementer → Verifier → Reviewer → CI triage). Do not duplicate it here.
 
-When editing supervisor scripts, prompts, CI workflows, or `ops_*`:
+When editing supervisor scripts, prompts, or CI workflows:
 
 ## CI hygiene (release / ops)
 
@@ -30,5 +30,6 @@ When editing supervisor scripts, prompts, CI workflows, or `ops_*`:
 
 - `AGENTS.md` — roles, routing, E2E gate, SDK flags
 - `multi-agent-personas.mdc` — PM / Architect / Developer / QA / DevOps personas
-- `borehole-platform-architecture.mdc` — full module table
+- `borehole-platform-architecture.mdc` — always-on boundaries; `borehole-module-catalog.mdc` — full module table
 - `pipeline-orchestration.mdc` — `build_cross_section()` contract
+- `packaging-deployment.mdc` — Docker / PyInstaller / `ops_*`

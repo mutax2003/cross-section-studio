@@ -20,7 +20,7 @@ Optional: `hatch_pattern`, `unit_order` (needed when the same code repeats in on
 
 | Sheet | Purpose |
 |-------|---------|
-| **Water** | Groundwater markers (`depth` or `elevation_masl`) |
+| **Water** | Groundwater markers (`depth` **or** `elevation_masl`, not both) |
 | **Screens** | Screen interval hatch bands |
 | **Gradients** | Vertical gradient arrows (`up` / `down`) |
 | **Environmental** | Lab/screening values at depth or interval |

@@ -1,6 +1,6 @@
 ---
 description: Module catalog, workbook sheets, and entry points for the borehole platform
-globs: *.py,**/app_*.py,**/renderer*.py,**/render_*.py,pipeline.py,stratigraphy.py,projection.py,ingestion.py,models.py,parsing.py,parse_ops.py,**/ops_*.py,section_build_request.py,workbook_template.py,ui_output_presets.py,transect_planner.py,ui_helpers.py,launcher.py,scripts/*.py
+globs: app.py,app_*.py,**/renderer*.py,**/render_*.py,pipeline.py,stratigraphy.py,projection.py,ingestion.py,models.py,parsing.py,parse_ops.py,ai_quality.py,ai_assistant.py,constants.py,lithology_codes.py,report_export.py,**/ops_*.py,section_build_request.py,workbook_template.py,ui_output_presets.py,transect_planner.py,ui_helpers.py,launcher.py,paths.py,gwm_reference/**,advantage_p2_reference/**
 alwaysApply: false
 ---
 
@@ -64,7 +64,7 @@ Never-mix rules and allowed exceptions: `borehole-platform-architecture.mdc`.
 
 | Sheet | Columns | Use |
 |-------|---------|-----|
-| Water | `hole_id`, `depth` **or** `elevation_masl` | Groundwater markers (depth below collar or RL masl). Optional: `series_id`, `series_label`, `color`, `marker` for multi-date snapshots |
+| Water | `hole_id`, `depth` **or** `elevation_masl` (not both) | Groundwater markers (depth below collar or RL masl). Optional: `series_id`, `series_label`, `color`, `marker` for multi-date snapshots |
 | Screens | `hole_id`, `from_depth`, `to_depth` | Screen hatch bands (consulting) |
 | Gradients | `hole_id`, `direction` | Vertical gradient arrows (consulting) |
 | Deviations, Correlations, Faults, Unconformities, Environmental | (see models) | Overlays / overrides |

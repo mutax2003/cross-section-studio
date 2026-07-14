@@ -120,7 +120,7 @@ def test_verify_subcommand_writes_report(tmp_path: Path) -> None:
 
 @pytest.mark.slow
 def test_verify_subcommand_full_gate() -> None:
-    """Full four-step E2E gate via CLI (slow; run with: pytest -m slow)."""
+    """Full three-step E2E gate via CLI (slow; run with: pytest -m slow)."""
     result = subprocess.run(
         [sys.executable, str(SUPERVISOR), "verify"],
         cwd=ROOT,

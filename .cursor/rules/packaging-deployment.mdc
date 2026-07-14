@@ -11,8 +11,9 @@ alwaysApply: false
 - **Image:** `python:3.12-slim` + `libgeos-dev` (Shapely)
 - **Entry:** `streamlit run app.py --server.headless=true --server.address=0.0.0.0 --server.port=8501`
 - **Healthcheck:** `/_stcore/health` on port 8501
-- **COPY modules:** `COPY *.py ./` (all root Python modules), `data/`, `docs/`, `.streamlit/`
-- **`launcher.py` is not used in Docker** — container runs `app.py` directly
+- **COPY modules:** `COPY *.py ./` (all root Python modules), `data/`, `docs/`, `.streamlit/`; image may also `COPY gwm_reference ./gwm_reference`
+- **`.dockerignore`:** keep `!docs/help/**` (and any other allowlisted `*.md`) so Help topics survive `*.md` ignores
+- **`launcher.py` is not used in Docker** — container runs `app.py` directly (CMD often `python -m streamlit run …`)
 
 `docker-compose.yml` wraps the same image for local container runs.
 
@@ -22,8 +23,8 @@ alwaysApply: false
 
 - **Spec:** `cross_section_studio.spec` — onedir distribution
 - **Entry script:** `launcher.py` (not `app.py`)
-- **Datas:** all root `*.py` except `launcher.py` copied as data; `data/` and `.streamlit/config.toml` bundled
-- **hiddenimports:** `paths`, `section_build_request`, `app_state`, `app_services`, engine modules, `pydantic`, etc.
+- **Datas:** all root `*.py` except `launcher.py` copied as data; `data/`, `.streamlit/config.toml`, and `docs/help` bundled
+- **hiddenimports:** `paths`, `section_build_request`, `app_state`, `app_services`, engine modules, `app_menubar`, `ops_*`, `workbook_template`, `ui_output_presets`, `pydantic`, etc. (root `*.py` datas may mitigate missing analysis)
 - **Build:** `scripts/build_windows.ps1` + `requirements-build.txt`
 
 ## paths.py
@@ -41,7 +42,7 @@ When adding a new Python module imported at runtime:
 
 1. Add to **`Dockerfile` COPY** if needed by Streamlit (root `*.py` covers most; add packages like `advantage_p2_reference/` only if the image runs those tests)
 2. Add to **`cross_section_studio.spec`** datas/hiddenimports if needed by desktop (`ops_*`, `workbook_template`, `ui_output_presets`, `app_menubar`, `docs/help` when imported from app)
-3. Document in **`borehole-platform-architecture.mdc`** module table
+3. Document in **`borehole-module-catalog.mdc`** module table
 
 ## Tests
 

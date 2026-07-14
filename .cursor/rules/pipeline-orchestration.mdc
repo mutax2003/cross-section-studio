@@ -1,6 +1,6 @@
 ---
 description: Canonical cross-section build pipeline — projection, stratigraphy, render
-globs: pipeline.py,**/pipeline.py,section_build_request.py,app_services.py,lithology_codes.py
+globs: pipeline.py,**/pipeline.py,section_build_request.py,lithology_codes.py
 alwaysApply: false
 ---
 

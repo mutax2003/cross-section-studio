@@ -6,7 +6,6 @@ import logging
 from dataclasses import dataclass
 from typing import Iterator, Sequence
 
-import matplotlib.pyplot as plt
 import pandas as pd
 
 from constants import (
@@ -41,6 +40,7 @@ from stratigraphy import (
     build_stratigraphy,
     detect_polygon_overlaps,
     log_polygon_overlaps,
+    preview_correlation_health,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,6 +78,21 @@ DEFAULT_UNCERTAINTY_SPACING_M = _DEFAULT_UNCERTAINTY_SPACING_M
 _DEFAULT_EXPORT_FORMATS = frozenset({"svg"})
 SVG_PNG_EXPORT_FORMATS = frozenset({"svg", "png"})
 ALL_EXPORT_FORMATS = frozenset({"svg", "png", "pdf"})
+_SUPPORTED_EXPORT_FORMATS = ALL_EXPORT_FORMATS
+
+
+def _normalize_export_formats(export_formats: frozenset[str] | None) -> frozenset[str]:
+    """Lowercase and drop unknown formats; fall back to SVG-only when empty."""
+    if not export_formats:
+        return _DEFAULT_EXPORT_FORMATS
+    normalized = frozenset(str(item).strip().lower() for item in export_formats if str(item).strip())
+    unknown = normalized - _SUPPORTED_EXPORT_FORMATS
+    if unknown:
+        logger.warning("Ignoring unsupported export format(s): %s", ", ".join(sorted(unknown)))
+    kept = normalized & _SUPPORTED_EXPORT_FORMATS
+    return kept or _DEFAULT_EXPORT_FORMATS
+
+
 PDF_EXPORT_FORMATS = frozenset({"pdf"})
 
 _DISCLAIMER_BY_MODE = {
@@ -103,14 +118,28 @@ def _filter_projected_for_interpolation(
     projected: pd.DataFrame,
     max_offset_m: float | None,
 ) -> pd.DataFrame:
+    """Drop whole holes whose max offset exceeds ``max_offset_m`` before fence build."""
     if max_offset_m is None or projected.empty:
         return projected
-    valid_holes = projected.loc[projected["offset_distance"] <= max_offset_m, "hole_id"].unique()
-    if len(valid_holes) < 2:
+    hole_offsets = (
+        projected.groupby("hole_id", sort=False)["offset_distance"]
+        .max()
+        .astype(float)
+    )
+    keep_holes = hole_offsets[hole_offsets <= max_offset_m].index
+    if len(keep_holes) < 2:
         raise ValueError(
             f"Fewer than two boreholes within {max_offset_m:.0f} m of the transect for interpolation"
         )
-    return projected[projected["hole_id"].isin(valid_holes)]
+    return projected.loc[projected["hole_id"].isin(keep_holes)]
+
+
+def filter_projected_for_interpolation(
+    projected: pd.DataFrame,
+    max_offset_m: float | None,
+) -> pd.DataFrame:
+    """Drop holes farther than ``max_offset_m`` from the transect before fence build."""
+    return _filter_projected_for_interpolation(projected, max_offset_m)
 
 
 def build_cross_section(
@@ -125,6 +154,8 @@ def build_cross_section(
     offset_warning_m: float = DEFAULT_OFFSET_WARNING_M,
     interpretation_mode: InterpretationMode = "interpolated",
     allow_pinch_outs: bool = True,
+    detect_overlaps: bool = True,
+    fail_on_overlaps: bool = False,
     water_levels: Sequence[WaterLevel] | None = None,
     uncertainty_spacing_m: float = _DEFAULT_UNCERTAINTY_SPACING_M,
     uncertainty_offset_m: float = DEFAULT_OFFSET_WARNING_M,
@@ -137,6 +168,15 @@ def build_cross_section(
     figure_metadata: SectionFigureMetadata | None = None,
     show_ground_surface: bool = True,
     interpolate_water_table: bool = False,
+    warn_on_correlation_gaps: bool = False,
+    show_water_elevation_labels: bool | None = None,
+    show_water_legend: bool | None = None,
+    show_dry_well_nm: bool | None = None,
+    water_interpolate_across_gaps: bool | None = None,
+    environmental_parameters: Sequence[str] | None = None,
+    show_parameter_labels: bool | None = None,
+    parameter_interpolate_segments: bool | None = None,
+    parameter_interpolate_across_gaps: bool | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
     elevation_mode: str = "absolute",
@@ -147,7 +187,7 @@ def build_cross_section(
     vertical_gradients: Sequence[VerticalGradient] | None = None,
 ) -> CrossSectionResult:
     """Project, build stratigraphy, render. Returns ``CrossSectionResult`` (also unpackable as a 7-tuple)."""
-    export_formats = export_formats or _DEFAULT_EXPORT_FORMATS
+    export_formats = _normalize_export_formats(export_formats)
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
     if vertical_exaggeration <= 0:
         raise ValueError("vertical_exaggeration must be positive")
@@ -185,11 +225,42 @@ def build_cross_section(
             correlation_overrides=correlation_overrides,
         )
         overlap_pairs = (
-            tuple(detect_polygon_overlaps(polygons)) if len(polygons) >= 2 else ()
+            tuple(detect_polygon_overlaps(polygons))
+            if detect_overlaps and len(polygons) >= 2
+            else ()
         )
     if overlap_pairs and logger.isEnabledFor(logging.WARNING):
         log_polygon_overlaps(overlap_pairs)
-    overlap_warnings = tuple(overlap.message() for overlap in overlap_pairs)
+    overlap_warnings = (
+        tuple(overlap.message() for overlap in overlap_pairs) if overlap_pairs else ()
+    )
+    correlation_warnings: list[str] = []
+    if (
+        warn_on_correlation_gaps
+        and interpretation_mode != "borehole_only"
+        and not interpolation_df.empty
+    ):
+        for summary in preview_correlation_health(
+            interpolation_df,
+            allow_pinch_outs=allow_pinch_outs,
+            correlation_overrides=correlation_overrides,
+        ):
+            if summary.unmatched_keys_count > 0 or summary.pinch_out_candidates > 0:
+                correlation_warnings.append(
+                    f"Correlation gap {summary.left_hole_id}–{summary.right_hole_id}: "
+                    f"{summary.matched_count} matched, "
+                    f"{summary.unmatched_keys_count} unmatched, "
+                    f"{summary.pinch_out_candidates} pinch-out(s)"
+                )
+    if correlation_warnings and logger.isEnabledFor(logging.WARNING):
+        for message in correlation_warnings:
+            logger.warning(message)
+    overlap_warnings = overlap_warnings + tuple(correlation_warnings)
+    if fail_on_overlaps and overlap_pairs:
+        raise ValueError(
+            f"Polygon overlap detected ({len(overlap_pairs)} pair(s)); "
+            "resolve correlation or set fail_on_overlaps=False to export."
+        )
 
     lithology_codes = collect_lithology_codes(projected, polygons)
     projected_hole_ids = frozenset(projected["hole_id"].unique())
@@ -213,6 +284,22 @@ def build_cross_section(
     profile_updates: dict[str, object] = {"show_ground_surface": show_ground_surface}
     if render_layout == "section_sheet":
         profile_updates["track_width_m"] = track_width_m
+    if show_water_elevation_labels is not None:
+        profile_updates["show_water_elevation_labels"] = show_water_elevation_labels
+    if show_water_legend is not None:
+        profile_updates["show_water_legend"] = show_water_legend
+    if show_dry_well_nm is not None:
+        profile_updates["show_dry_well_nm"] = show_dry_well_nm
+    if water_interpolate_across_gaps is not None:
+        profile_updates["water_interpolate_across_gaps"] = water_interpolate_across_gaps
+    if environmental_parameters:
+        profile_updates["show_parameter_markers"] = True
+    if show_parameter_labels is not None:
+        profile_updates["show_parameter_labels"] = show_parameter_labels
+    if parameter_interpolate_segments is not None:
+        profile_updates["parameter_interpolate_segments"] = parameter_interpolate_segments
+    if parameter_interpolate_across_gaps is not None:
+        profile_updates["parameter_interpolate_across_gaps"] = parameter_interpolate_across_gaps
     render_profile = profile_with_elevation_mode(base_profile, elevation_mode).model_copy(
         update=profile_updates
     )
@@ -240,6 +327,7 @@ def build_cross_section(
         faults=faults,
         unconformities=unconformities,
         environmental_readings=environmental_readings,
+        environmental_parameters=tuple(environmental_parameters or ()),
         render_profile=render_profile,
         raster_log_strips=raster_log_strips,
         consulting_title_block=consulting_title_block,
@@ -265,6 +353,8 @@ def build_cross_section(
             qa_lines=overlap_warnings,
         )
     finally:
+        from matplotlib import pyplot as plt
+
         plt.close(figure)
     return CrossSectionResult(
         projected=projected,

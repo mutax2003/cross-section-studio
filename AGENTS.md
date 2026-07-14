@@ -51,7 +51,7 @@ PM/Architect prompts (`pm.md`, `architect.md`) are **IDE-only** — the SDK does
 | Water / GW QA & UI | `ai_quality.py`, `app_validate.py` (scout may read both) | One of `ai_quality.py` or one `app_*.py` per pass — do not mix in `--modules` | `tests/test_water_quality.py`, `tests/test_streamlit_app.py` |
 | AI assistant (UI) | `ai_assistant.py` | `ai_assistant.py` only | `tests/test_ai_assistant.py` |
 | SVG-first / Generate cache | `app_services.py`, `section_build_request.py`, `pipeline.py` | Serialize preferred — one per pass (`section_build_request` → `pipeline` → `app_services`); kwargs/cache glue may need `app_services` after DTO/pipeline changes | `tests/test_pipeline.py`, `tests/test_section_build_request.py`, `tests/test_import_smoke.py` |
-| Pipeline / export | `pipeline.py`, `section_build_request.py`, `app_services.py` | One of `pipeline.py`, `section_build_request.py`, or `app_services.py` per pass | `tests/test_pipeline.py`, `tests/test_section_build_request.py` |
+| Pipeline / export | `pipeline.py`, `section_build_request.py`, `app_services.py` | Serialize preferred — one per pass; SVG-first triad allowlisted for cache/DTO glue (see `module_boundary_warnings`) | `tests/test_pipeline.py`, `tests/test_section_build_request.py` |
 | UI / sidebar / presets | `app_sidebar.py`, `ui_helpers.py`, `ui_output_presets.py` | One UI module per pass | `tests/test_app_helpers.py`, `tests/test_ui_helpers.py`, `tests/test_ui_output_presets.py`, `tests/test_streamlit_app.py` |
 | Menubar / help | `app_menubar.py`, `docs/help/getting-started.md`, `paths.py` | `app_menubar.py` | `tests/test_menubar.py`, `tests/test_paths.py` |
 | Ops / auth / audit | `ops_*.py`, `paths.py` | One `ops_*.py` per pass | `tests/test_ops.py` |

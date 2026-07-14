@@ -1,0 +1,34 @@
+---
+description: Pointer to AGENTS.md — CI hygiene for supervisor, workflows, and ops
+globs: scripts/agent_supervisor.py,scripts/agent_prompts/**,AGENTS.md,.github/workflows/*.yml,ops_*.py,Dockerfile,docker-compose.yml
+alwaysApply: false
+---
+
+# Agent Orchestration
+
+Canonical supervisor protocol lives in **`AGENTS.md`** (Scout → Implementer → Verifier → Reviewer → CI triage). Do not duplicate it here.
+
+When editing supervisor scripts, prompts, CI workflows, or `ops_*`:
+
+## CI hygiene (release / ops)
+
+- Scoped lint: `python -m ruff check <paths>` (prefer scoped over `ruff check .`)
+- Engine coverage: `pytest --cov=pipeline --cov=projection --cov=stratigraphy --cov=ingestion --cov-fail-under=70`
+- Dependency audit: `pip-audit -r requirements.txt`
+- E2E gate: three steps in `AGENTS.md` (also `VERIFY_COMMANDS` in `agent_supervisor.py`)
+
+## Ops modules
+
+`ops_auth.py`, `ops_logging.py`, `ops_audit.py`, `ops_apm.py` — env-gated production hardening. May use Streamlit for the auth gate only; never import into `pipeline` / `projection` / `stratigraphy` / `renderer*`.
+
+**Auth (`ops_auth`):** `CROSS_SECTION_AUTH_PASSWORD` enables the gate; `CROSS_SECTION_AUTH_REQUIRED=1` refuses to run if password unset; 5 failed attempts → 30s lockout; `render_logout_control()` shows Sign out when authenticated. Timing-safe compare via `hmac.compare_digest`.
+
+**Logging / APM:** secret redaction in `ops_logging`; Sentry `send_default_pii=False` + header scrubbing in `ops_apm`.
+
+**Audit:** `audit_event` best-effort; path confined under `user_data_dir()`; Generate downloads emit `section_exported`.
+## Cross-references
+
+- `AGENTS.md` — roles, routing, E2E gate, SDK flags
+- `multi-agent-personas.mdc` — PM / Architect / Developer / QA / DevOps personas
+- `borehole-platform-architecture.mdc` — full module table
+- `pipeline-orchestration.mdc` — `build_cross_section()` contract

@@ -1,0 +1,24 @@
+---
+description: Borehole cross-section platform — boundaries and canonical paths (always on)
+alwaysApply: true
+---
+
+# Borehole Cross-Section Platform
+
+Engineering-grade **Borehole Cross-Section Generation Platform** (Python 3.12, Streamlit UI, Matplotlib SVG export). Inter-hole geology is a **rule-based 2D fence diagram** in `stratigraphy.py` (linear contacts, midpoint pinch-outs) — **not** geostatistical or SciPy surface interpolation.
+
+## Never mix (strict decoupling)
+
+**Never** mix projection **math** into renderer, stratigraphy **logic** into models, or UI widgets into engine modules.
+
+**Allowed exceptions:** renderer may import stratigraphy **types** (`GeologicalPolygon`); renderers may consume projected DataFrame columns; `models.py` may re-export parse helpers for compat (new parse logic stays in `parsing`/`parse_ops`); `app_services.py` may import Streamlit for `@st.cache_data` only.
+
+## Canonical paths
+
+1. **Data:** `ingest_workbook()` or `DataParser.parse_file()` → `ParseResult`
+2. **Render:** `subset_parse_result()` → **`pipeline.build_cross_section()`** → **`CrossSectionResult`**. Streamlit Generate is SVG-first (`cached_build_section`); PNG/PDF via `cached_build_section_exports()` on Prepare.
+3. **Validation:** Prefer `pipeline.build_cross_section()` over calling engine modules directly.
+
+Prioritize **mathematical exactness** in `projection.py` and **structural validation** in `stratigraphy.py` before plotting. Graceful degradation: warn on bad rows, off-transect collars, placeholder elevations; do not crash silently.
+
+**Full module table, optional workbook sheets, entry points:** `.cursor/rules/borehole-module-catalog.mdc`. Pipeline/UI depth: `pipeline-orchestration.mdc`, `streamlit-app.mdc`, `docs/workbook-format.md`.

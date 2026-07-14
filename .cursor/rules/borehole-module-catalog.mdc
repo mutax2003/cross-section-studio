@@ -1,0 +1,90 @@
+---
+description: Module catalog, workbook sheets, and entry points for the borehole platform
+globs: *.py,**/app_*.py,**/renderer*.py,**/render_*.py,pipeline.py,stratigraphy.py,projection.py,ingestion.py,models.py,parsing.py,parse_ops.py,**/ops_*.py,section_build_request.py,workbook_template.py,ui_output_presets.py,transect_planner.py,ui_helpers.py,launcher.py,scripts/*.py
+alwaysApply: false
+---
+
+# Module Catalog & Reference
+
+Companion to `borehole-platform-architecture.mdc` (always-on boundaries). Load when editing engine, UI, ops, or CLI modules.
+
+## Tech Stack
+
+- Python 3.12 (pinned in `runtime.txt` and `Dockerfile`; 3.11+ compatible)
+- **Math/geometry:** Pandas, NumPy, Shapely (polygons/clipping)
+- **UI:** Streamlit (internal/external testing)
+- **Visualization:** Matplotlib (SVG/vector export)
+- **Ingestion:** Config-driven import profiles (`data/import_profiles/*.json`), pyproj for CRS transforms
+
+## Module Boundaries
+
+| Module | Responsibility |
+|--------|----------------|
+| `models.py` | Immutable Pydantic schemas + `InterpretationMode` |
+| `parsing.py` | `DataParser`, Excel sheet parsers (Collars, Lithology, Water, Screens, Gradients, …) |
+| `parse_ops.py` | `subset_parse_result`, `apply_unit_order_fix`, `geology_sheet_counts`, lithology index helpers |
+| `ingestion.py` | Multi-format ingest: `FormatDetector`, `FieldExportAdapter`, `ingest_workbook()` |
+| `ai_quality.py` | QA heuristics, fuzzy column mapping, lithology alias normalization, `summarize_water_levels()` |
+| `ai_assistant.py` | Optional LLM + local advisory assist (UI only; never in engine) |
+| `projection.py` | Vector math — 3D collar → 2D profile coordinates; deviation surveys |
+| `stratigraphy.py` | Layer correlation, pinch-outs, overlap clipping, correlation preflight |
+| `renderer.py` | Facade: `CrossSectionRenderer.render()` dispatches by layout |
+| `renderer_common.py` | Shared geometry/style helpers (wells, water, fence, styles) |
+| `renderer_section_sheet.py` | Section-sheet layout mixin |
+| `renderer_chart.py` | Chart (legacy debug) layout mixin |
+| `renderer_consulting.py` | Consulting layout: title block, subtitle, well columns, screens/gradients |
+| `render_profiles.py` | Section-sheet / consulting / chart profiles |
+| `render_theme.py` | Visual theme tokens; consulting title helpers |
+| `report_export.py` | Two-page PDF export |
+| `pipeline.py` | **Canonical orchestration** — `build_cross_section()` → **`CrossSectionResult`** |
+| `lithology_codes.py` | `collect_lithology_codes()` |
+| `constants.py` | BH Log lithology colours/hatches (`USGS_LITHOLOGY_*` aliases), `get_lithology_style()` |
+| `workbook_template.py` | Multi-tab Excel input template builder |
+| `ui_output_presets.py` | Named UI output presets → render config |
+| `transect_planner.py` | Non-LLM transect recommender |
+| `ui_helpers.py` | Streamlit-free UI helpers |
+| `section_build_request.py` | Frozen render config + `cache_key(hole_ids)` |
+| `app_state.py` | Session defaults and domain clear helpers |
+| `app_services.py` | Streamlit cache wrappers for ingest/recommend/build (no widgets, no geometry) |
+| `app.py` | Streamlit shell: page config, menubar hook, routing, generate trigger |
+| `app_menubar.py` | Windows-style File/Edit/View/Help menus, Ctrl accelerators, `docs/help` dialogs |
+| `app_sidebar.py` | Sidebar style, consulting report sheet, import/AI settings, Advanced water/GW toggles |
+| `app_upload.py` | Welcome card + workbook parse flow |
+| `app_build.py` | `SectionBuildRequest` assembly, `collect_section_build_request()`, generate |
+| `app_styles.py` / `app_validate.py` / `app_configure.py` / `app_generate.py` | CSS, Validate (incl. groundwater series summary), Configure, Generate steps |
+| `app_common.py` | Shared display helpers (workflow, legend, assistant, quality refresh) |
+| `paths.py` | Resource paths for PyInstaller, Docker, local dev (incl. `help_dir` / `help_topic_path`) |
+| `launcher.py` | Windows desktop entry |
+| `ops_auth.py`, `ops_logging.py`, `ops_audit.py`, `ops_apm.py` | Optional production hardening (auth gate, structured logs, audit trail, APM hook) |
+| `gwm_reference/`, `advantage_p2_reference/` | Golden/reference fixtures + plot helpers (tests/scripts only; not production geometry) |
+
+Never-mix rules and allowed exceptions: `borehole-platform-architecture.mdc`.
+
+## Optional workbook sheets
+
+| Sheet | Columns | Use |
+|-------|---------|-----|
+| Water | `hole_id`, `depth` **or** `elevation_masl` | Groundwater markers (depth below collar or RL masl). Optional: `series_id`, `series_label`, `color`, `marker` for multi-date snapshots |
+| Screens | `hole_id`, `from_depth`, `to_depth` | Screen hatch bands (consulting) |
+| Gradients | `hole_id`, `direction` | Vertical gradient arrows (consulting) |
+| Deviations, Correlations, Faults, Unconformities, Environmental | (see models) | Overlays / overrides |
+
+See `docs/workbook-format.md`.
+
+## Execution Protocol
+
+1. **Data path:** `ingest_workbook()` or `DataParser.parse_file()` → `ParseResult`
+2. **Render path:** `subset_parse_result()` → **`pipeline.build_cross_section()`** → **`CrossSectionResult`** (SVG/PNG/PDF via `export_formats`). Streamlit Generate uses SVG-first (`cached_build_section`); PNG/PDF via `cached_build_section_exports()` on Prepare.
+3. Implement engine modules incrementally: `models` → `parsing` → `projection` → `stratigraphy` → `renderer*` → `pipeline` → `app*`
+4. Prioritize **mathematical exactness** in `projection.py` and **structural validation** in `stratigraphy.py` before plotting
+5. Graceful degradation: warn on bad rows, off-transect collars, placeholder elevations; do not crash silently
+
+## Entry Points
+
+- **Streamlit (dev/Docker/Cloud):** `streamlit run app.py`
+- **Windows desktop:** `launcher.py` → PyInstaller (`cross_section_studio.spec`)
+- **CLI:** `scripts/convert_workbook.py`, `scripts/plot_advantage_transects.py`, `scripts/build_input_template.py`, `scripts/plot_ecoventure_gwm.py`, `scripts/plot_advantage_p2_chloride_transects.py`
+- **Smoke:** `python scripts/smoke_test.py` or `python scripts/e2e_smoke_direct.py`
+- **E2E gate:** `python scripts/agent_supervisor.py verify` (pytest → `e2e_smoke_direct.py` → `smoke_test.py`); optional diagnostic: `python scripts/run_e2e_tests.py`
+- **Dev orchestration:** `AGENTS.md` — hierarchical Cursor agent protocol (scout → implement → verify); CI: `.github/workflows/e2e.yml`
+- **Tests / scripts:** always prefer `pipeline.build_cross_section()` over calling engine modules directly

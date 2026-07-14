@@ -88,6 +88,14 @@ Batch wrapper: `powershell -File scripts/run_verify_batch.ps1` (writes under `or
 
 **Deps:** CI and local verify need `pip install -r requirements.txt -r requirements-dev.txt` (pytest + `cursor-sdk` for supervisor unit tests).
 
+**CI hygiene (not E2E):** `.github/workflows/quality.yml` runs scoped ruff, engine coverage, and pip-audit on PRs — not a substitute for `VERIFY_COMMANDS`.
+
+### IDE iteration verify
+
+While iterating: run the routing-table **Verify focus** pytest file(s) for touched modules; optionally one smoke (`e2e_smoke_direct` or `smoke_test`).
+
+Before **COMPLETE** / SDK `verify` / merge: run the full three-step `VERIFY_COMMANDS` gate above.
+
 ## SDK supervisor
 
 ```text

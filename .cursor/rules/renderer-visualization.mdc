@@ -117,6 +117,6 @@ Streamlit: layout radio **Consulting section** + **Report sheet (consulting)** e
 - `to_svg_bytes()` / `to_png_bytes(dpi=300)` on rendered figure
 - `export_figure_bytes(figure, export_formats, ...)` — single figure, selective encoding via `export_formats`
 - `pipeline.build_cross_section(export_formats=...)` returns SVG/PNG/PDF bytes per format set (default `{"svg"}` for tests)
-- Streamlit Generate: `cached_build_section()` is **SVG-only**; PNG/PDF via `cached_build_section_exports()` after **Prepare**
+- Streamlit Generate: `cached_build_section()` is **SVG-only**; Prepare PNG/PDF via format-scoped helpers (`cached_build_section_png` / `cached_build_section_pdf`)
 - `report_export.export_section_pdf()` — page 1 section, page 2 legend/metadata/QA summary; reuses `section_figure` when provided
 - Allowed: import stratigraphy **types** (`GeologicalPolygon`, `PolygonOverlap`) — not correlation/pinch-out logic

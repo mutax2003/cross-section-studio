@@ -12,6 +12,8 @@ When editing supervisor scripts, prompts, or CI workflows:
 
 ## CI hygiene (release / ops)
 
+PR workflow `.github/workflows/quality.yml` — scoped ruff, engine cov, pip-audit; not a substitute for `VERIFY_COMMANDS`.
+
 - Scoped lint: `python -m ruff check <paths>` (prefer scoped over `ruff check .`)
 - Engine coverage: `pytest --cov=pipeline --cov=projection --cov=stratigraphy --cov=ingestion --cov-fail-under=70`
 - Dependency audit: `pip-audit -r requirements.txt`

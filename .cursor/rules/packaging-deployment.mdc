@@ -1,6 +1,6 @@
 ---
 description: Docker, PyInstaller, launcher, and frozen-bundle path resolution
-globs: Dockerfile,docker-compose.yml,cross_section_studio.spec,launcher.py,paths.py,ops_*.py,workbook_template.py,ui_output_presets.py,scripts/build_windows.ps1,scripts/deploy_streamlit_cloud.py,requirements-build.txt
+globs: Dockerfile,docker-compose.yml,cross_section_studio.spec,launcher.py,paths.py,ops_*.py,scripts/build_windows.ps1,scripts/deploy_streamlit_cloud.py,requirements-build.txt
 alwaysApply: false
 ---
 

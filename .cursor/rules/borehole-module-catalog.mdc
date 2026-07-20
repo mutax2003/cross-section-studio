@@ -36,7 +36,7 @@ Companion to `borehole-platform-architecture.mdc` (always-on boundaries). Load w
 | `render_profiles.py` | Section-sheet / consulting / chart profiles |
 | `render_theme.py` | Visual theme tokens; consulting title helpers |
 | `report_export.py` | Two-page PDF export |
-| `pipeline.py` | **Canonical orchestration** — `build_cross_section()` → **`CrossSectionResult`** |
+| `pipeline.py` | **Canonical orchestration** — `compute_section_geometry()` → **`SectionGeometry`**; `build_cross_section()` → **`CrossSectionResult`** |
 | `lithology_codes.py` | `collect_lithology_codes()` |
 | `constants.py` | BH Log lithology colours/hatches (`USGS_LITHOLOGY_*` aliases), `get_lithology_style()` |
 | `workbook_template.py` | Multi-tab Excel input template builder |
@@ -74,7 +74,7 @@ See `docs/workbook-format.md`.
 ## Execution Protocol
 
 1. **Data path:** `ingest_workbook()` or `DataParser.parse_file()` → `ParseResult`
-2. **Render path:** `subset_parse_result()` → **`pipeline.build_cross_section()`** → **`CrossSectionResult`** (SVG/PNG/PDF via `export_formats`). Streamlit Generate uses SVG-first (`cached_build_section`); Prepare PNG/PDF via format-scoped caches (`cached_build_section_png` / `cached_build_section_pdf`); `cached_build_section_exports()` builds both as a convenience.
+2. **Render path:** `subset_parse_result()` → **`pipeline.build_cross_section()`** → **`CrossSectionResult`** (SVG/PNG/PDF via `export_formats`). Geometry stage: `compute_section_geometry()` → **`SectionGeometry`**. Streamlit Generate uses SVG-first (`cached_build_section`); primary Prepare PNG & PDF via `cached_build_section_exports()`; secondary per-format via `cached_build_section_png` / `cached_build_section_pdf`.
 3. Implement engine modules incrementally: `models` → `parsing` → `projection` → `stratigraphy` → `renderer*` → `pipeline` → `app*`
 4. Prioritize **mathematical exactness** in `projection.py` and **structural validation** in `stratigraphy.py` before plotting
 5. Graceful degradation: warn on bad rows, off-transect collars, placeholder elevations; do not crash silently
@@ -86,5 +86,5 @@ See `docs/workbook-format.md`.
 - **CLI:** `scripts/convert_workbook.py`, `scripts/plot_advantage_transects.py`, `scripts/build_input_template.py`, `scripts/plot_ecoventure_gwm.py`, `scripts/plot_advantage_p2_chloride_transects.py`
 - **Smoke:** `python scripts/smoke_test.py` or `python scripts/e2e_smoke_direct.py`
 - **E2E gate:** `python scripts/agent_supervisor.py verify` (pytest → `e2e_smoke_direct.py` → `smoke_test.py`); optional diagnostic: `python scripts/run_e2e_tests.py`
-- **Dev orchestration:** `AGENTS.md` — hierarchical Cursor agent protocol (scout → implement → verify); CI: `.github/workflows/e2e.yml`
+- **Dev orchestration:** `AGENTS.md` — hierarchical Cursor agent protocol (scout → implement → verify); CI: `.github/workflows/e2e.yml`, `.github/workflows/quality.yml`
 - **Tests / scripts:** always prefer `pipeline.build_cross_section()` over calling engine modules directly

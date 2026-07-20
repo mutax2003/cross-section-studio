@@ -59,7 +59,7 @@ python scripts/agent_supervisor.py run \
   --report
 ```
 
-Use a **single** module boundary in `--modules` (e.g. `pipeline.py` only — not `pipeline.py,app_services.py`).
+Prefer a **single** module boundary in `--modules` (serialize Implement passes). The SVG-first triad (`pipeline.py`, `section_build_request.py`, `app_services.py`) is allowlisted for cache/DTO glue — see `module_boundary_warnings` in `scripts/agent_supervisor.py` and AGENTS.md.
 
 Reports land in `orchestration_reports/latest_run.md` (gitignored). Cloud runtime needs `git remote origin` and uses the current branch as `starting_ref`. Enable PR creation in the Automations editor if you want auto-PRs.
 

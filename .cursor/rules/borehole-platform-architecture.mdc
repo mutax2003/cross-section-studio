@@ -16,7 +16,7 @@ Engineering-grade **Borehole Cross-Section Generation Platform** (Python 3.12, S
 ## Canonical paths
 
 1. **Data:** `ingest_workbook()` or `DataParser.parse_file()` → `ParseResult`
-2. **Render:** `subset_parse_result()` → **`pipeline.build_cross_section()`** → **`CrossSectionResult`**. Streamlit Generate is SVG-first (`cached_build_section`); Prepare PNG/PDF via format-scoped caches (`cached_build_section_png` / `cached_build_section_pdf`); `cached_build_section_exports()` builds both as a convenience.
+2. **Render:** `subset_parse_result()` → **`pipeline.build_cross_section()`** → **`CrossSectionResult`**. Streamlit Generate is SVG-first (`cached_build_section`); primary Prepare PNG & PDF via `cached_build_section_exports()`; secondary per-format via `cached_build_section_png` / `cached_build_section_pdf`.
 3. **Validation:** Prefer `pipeline.build_cross_section()` over calling engine modules directly.
 
 Prioritize **mathematical exactness** in `projection.py` and **structural validation** in `stratigraphy.py` before plotting. Graceful degradation: warn on bad rows, off-transect collars, placeholder elevations; do not crash silently.

@@ -12,6 +12,7 @@ datas: list[tuple[str, str]] = [
     (str(root / "app.py"), "."),
     (str(root / ".streamlit" / "config.toml"), ".streamlit"),
     (str(root / "data"), "data"),
+    (str(root / "docs" / "help"), "docs/help"),
 ]
 
 for py_file in sorted(root.glob("*.py")):
@@ -32,6 +33,7 @@ hiddenimports = [
     "app_validate",
     "app_configure",
     "app_generate",
+    "app_menubar",
     "parse_ops",
     "parsing",
     "render_profiles",
@@ -53,6 +55,12 @@ hiddenimports = [
     "stratigraphy",
     "constants",
     "ui_helpers",
+    "ui_output_presets",
+    "workbook_template",
+    "ops_auth",
+    "ops_logging",
+    "ops_audit",
+    "ops_apm",
     "transect_planner",
     "ai_quality",
     "ai_assistant",

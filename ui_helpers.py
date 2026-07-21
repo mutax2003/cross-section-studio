@@ -84,13 +84,20 @@ def workflow_stage(
     has_upload: bool,
     has_parse_result: bool,
     has_profile: bool,
+    has_blocking_errors: bool = False,
+    has_transect: bool = False,
 ) -> int:
-    """Return workflow step index: 0 upload, 1 validate, 2 configure, 3 profile."""
-    if has_profile:
+    """Return workflow step index: 0 upload, 1 validate, 2 configure, 3 generate.
+
+    Stay on Validate until QA is clear and a transect is selected so the stepper
+    matches the main-pane work. Generate (3) requires a live parse — leftover
+    SVG alone must not advance the stepper after a failed re-upload.
+    """
+    if has_profile and has_parse_result and not has_blocking_errors:
         return 3
-    if has_parse_result:
+    if has_parse_result and not has_blocking_errors and has_transect:
         return 2
-    if has_upload:
+    if has_parse_result or has_upload:
         return 1
     return 0
 

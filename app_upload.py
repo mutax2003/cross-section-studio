@@ -9,7 +9,12 @@ from io import BytesIO
 import streamlit as st
 
 from app_common import _parse_signature_key, _parse_uploaded_workbook
-from app_state import clear_ai_session_state, clear_section_output_state
+from app_state import (
+    DEFAULT_SESSION,
+    SESSION_PARSE_KEYS,
+    clear_ai_session_state,
+    clear_section_output_state,
+)
 from ingestion import NATIVE_PROFILE_ID, FormatDetector
 from models import ParseResult, lithologies_by_hole
 from ops_audit import audit_event
@@ -17,6 +22,9 @@ from paths import sample_boreholes_workbook
 from projection import suggest_offset_threshold_m
 
 logger = logging.getLogger(__name__)
+
+_TEMPLATE_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_TEMPLATE_FALLBACK_NAME = "Cross_Section_Input_Template.xlsx"
 
 
 class _BytesUpload:
@@ -28,6 +36,76 @@ class _BytesUpload:
 
     def getvalue(self) -> bytes:
         return self._data
+
+
+def clear_workbook_session() -> None:
+    """Clear parse/session workbook state and any leftover section SVG/PNG/PDF."""
+    for key in SESSION_PARSE_KEYS:
+        if key in DEFAULT_SESSION:
+            st.session_state[key] = DEFAULT_SESSION[key]
+        elif key in st.session_state:
+            st.session_state[key] = None
+    clear_section_output_state()
+    clear_ai_session_state()
+    st.session_state.uploaded_name = DEFAULT_SESSION.get("uploaded_name")
+    st.session_state.transect_candidates = None
+    st.session_state.suggested_offset_m = DEFAULT_SESSION.get("suggested_offset_m", 50.0)
+
+
+def input_template_download_payload() -> tuple[bytes, str] | None:
+    """Return ``(xlsx_bytes, file_name)`` for the data-entry template, or None."""
+    from paths import cross_section_input_template
+
+    template_path = cross_section_input_template()
+    if template_path.exists():
+        return template_path.read_bytes(), template_path.name
+    try:
+        import workbook_template as wt
+    except ImportError:
+        return None
+    builder = getattr(wt, "build_input_template_bytes", None)
+    if not callable(builder):
+        return None
+    try:
+        return builder(), _TEMPLATE_FALLBACK_NAME
+    except Exception:
+        logger.exception("Failed to build input template bytes")
+        return None
+
+
+def render_input_template_download(*, key: str, help: str | None = None) -> None:
+    """Offer a template download button; fall back to caption if unavailable."""
+    payload = input_template_download_payload()
+    if payload is None:
+        st.caption("Input template not found — run `python scripts/build_input_template.py`.")
+        return
+    data, file_name = payload
+    st.download_button(
+        "Download template (data entry)",
+        data=data,
+        file_name=file_name,
+        mime=_TEMPLATE_MIME,
+        key=key,
+        help=help
+        or (
+            "Fill Collars and Lithology in Excel, then upload via the sidebar. "
+            "Includes Instructions, Project, optional Water/Screens/Gradients/Environmental."
+        ),
+    )
+
+
+def render_workbook_recovery(*, key_prefix: str = "recovery") -> None:
+    """Clear / retry controls when workbook bytes exist but parse_result is missing."""
+    cols = st.columns([1, 3])
+    with cols[0]:
+        if st.button("Clear workbook", key=f"{key_prefix}_clear_workbook"):
+            clear_workbook_session()
+            st.rerun()
+    with cols[1]:
+        st.caption(
+            "Parse failed or did not complete — leftover section output was cleared. "
+            "Clear the workbook, fix the file, or try the sample project again."
+        )
 
 
 def load_sample_workbook() -> None:
@@ -74,9 +152,6 @@ def render_welcome_card() -> None:
 """,
         unsafe_allow_html=True,
     )
-    from paths import cross_section_input_template
-
-    template_path = cross_section_input_template()
     cols = st.columns(2)
     with cols[0]:
         if st.button("Try sample project", type="primary", key="try_sample_project"):
@@ -86,20 +161,7 @@ def render_welcome_card() -> None:
             except FileNotFoundError as exc:
                 st.error(str(exc))
     with cols[1]:
-        if template_path.exists():
-            st.download_button(
-                "Download template (data entry)",
-                data=template_path.read_bytes(),
-                file_name=template_path.name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_input_template",
-                help=(
-                    "Fill Collars and Lithology in Excel, then upload via the sidebar. "
-                    "Includes Instructions, Project, optional Water/Screens/Gradients/Environmental."
-                ),
-            )
-        else:
-            st.caption("Input template not found — run `python scripts/build_input_template.py`.")
+        render_input_template_download(key="download_input_template")
     st.caption(
         "Already have an .xlsx? Skip the template — open **Upload Excel workbook** in the sidebar."
     )
@@ -213,6 +275,7 @@ def handle_workbook_upload(
             st.session_state.pop("upload_banner_caption", None)
         except Exception as exc:
             st.session_state.detection_result = None
+            clear_section_output_state()
             st.session_state.upload_banner_error = f"Failed to inspect workbook: {exc}"
             st.session_state.pop("upload_banner_success", None)
             st.session_state.pop("upload_banner_caption", None)
@@ -309,6 +372,7 @@ def handle_workbook_upload(
             st.session_state.import_report = None
             st.session_state.quality_report = None
             st.session_state.parse_signature = None
+            clear_section_output_state()
             st.session_state.upload_banner_error = f"Failed to parse workbook: {exc}"
             st.session_state.pop("upload_banner_success", None)
             st.session_state.pop("upload_banner_info", None)

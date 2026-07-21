@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -13,6 +14,8 @@ from paths import (
     bh_log_lithology_legend_xlsx_path,
     lithology_styles_path,
 )
+
+logger = logging.getLogger(__name__)
 
 _HEX_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
@@ -230,17 +233,25 @@ def _load_lithology_style_overrides() -> dict[str, LithologyStyle]:
 
 def save_lithology_style_override(lithology_code: str, color: str, hatch: str) -> None:
     path = lithology_styles_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload: dict[str, dict[str, str]] = {}
-    if path.exists():
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            payload = {}
-    normalized = _normalize_hex_colour(color)
-    if normalized is None:
-        raise ValueError(f"Invalid lithology color {color!r}; expected #RRGGBB")
-    payload[lithology_code] = {"color": normalized, "hatch": hatch}
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, dict[str, str]] = {}
+        if path.exists():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                payload = {}
+        normalized = _normalize_hex_colour(color)
+        if normalized is None:
+            raise ValueError(f"Invalid lithology color {color!r}; expected #RRGGBB")
+        payload[lithology_code] = {"color": normalized, "hatch": hatch}
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    except ValueError:
+        raise
+    except (OSError, PermissionError) as exc:
+        logger.warning("Failed to save lithology style override to %s: %s", path, exc)
+        raise RuntimeError(
+            f"Could not save lithology style override to {path}: {exc}"
+        ) from exc
     _load_lithology_style_overrides.cache_clear()
     get_lithology_style.cache_clear()

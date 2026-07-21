@@ -21,6 +21,29 @@ APP_CSS = """
     }
     .app-hero h1 { color: #f8fafc !important; margin: 0; font-size: 1.35rem; letter-spacing: -0.02em; }
     .app-hero p { margin: 0.2rem 0 0; opacity: 0.92; font-size: 0.84rem; line-height: 1.35; }
+    .app-hero.compact {
+        padding: 0.45rem 0.85rem 0.4rem;
+        margin-bottom: 0.35rem;
+    }
+    .app-hero.compact h1 { font-size: 1.05rem; }
+    .app-hero.compact p { display: none; }
+    .app-hero.compact .workflow { margin-top: 0.3rem; }
+    .app-hero.compact .workflow-step { padding: 0.28rem 0.4rem; font-size: 0.68rem; }
+    .generate-strip {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.65rem;
+        background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.45rem 0.75rem;
+        margin-bottom: 0.55rem;
+        font-size: 0.84rem;
+        color: #334155;
+    }
+    .generate-strip .strip-status { flex: 1 1 12rem; color: var(--muted); }
+    .generate-strip .strip-status strong { color: var(--text); }
     .workflow {
         display: flex;
         gap: 0.35rem;

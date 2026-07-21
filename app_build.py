@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import streamlit as st
+
+from app_common import _active_transect_selection, _session_correlation_overrides
+from app_services import cached_build_section
 from models import (
     ConsultingTitleBlock,
     Lithology,
@@ -11,12 +15,9 @@ from models import (
     Transect,
     subset_parse_result,
 )
-from section_build_request import SectionBuildRequest
-from app_common import _active_transect_selection, _session_correlation_overrides
-from app_services import cached_build_section
 from projection import off_transect_warnings
-from ui_helpers import dedupe_messages, screen_interval_warnings, holes_missing_lithology
-import streamlit as st
+from section_build_request import SectionBuildRequest
+from ui_helpers import dedupe_messages, holes_missing_lithology, screen_interval_warnings
 
 
 @dataclass(frozen=True)
@@ -69,12 +70,22 @@ def build_section_request(
     max_offset_for_interpolation_m: float | None,
     show_ground_surface: bool,
     interpolate_water_table: bool,
+    warn_on_correlation_gaps: bool = False,
+    show_water_elevation_labels: bool | None = None,
+    show_water_legend: bool | None = None,
+    show_dry_well_nm: bool | None = None,
+    water_interpolate_across_gaps: bool | None = None,
+    environmental_parameters: tuple[str, ...] = (),
+    show_parameter_labels: bool | None = None,
+    parameter_interpolate_segments: bool | None = None,
+    parameter_interpolate_across_gaps: bool | None = None,
     render_layout: str,
     track_width_m: float,
     coordinate_reference: str,
     uses_placeholder_elevation: bool,
     elevation_mode: str,
     consulting_title_block: ConsultingTitleBlock | None = None,
+    fail_on_overlaps: bool = False,
 ) -> SectionBuildRequest:
     return SectionBuildRequest(
         transect_points=transect_points,
@@ -90,6 +101,15 @@ def build_section_request(
         max_offset_for_interpolation_m=max_offset_for_interpolation_m,
         show_ground_surface=show_ground_surface,
         interpolate_water_table=interpolate_water_table,
+        warn_on_correlation_gaps=warn_on_correlation_gaps,
+        show_water_elevation_labels=show_water_elevation_labels,
+        show_water_legend=show_water_legend,
+        show_dry_well_nm=show_dry_well_nm,
+        water_interpolate_across_gaps=water_interpolate_across_gaps,
+        environmental_parameters=environmental_parameters,
+        show_parameter_labels=show_parameter_labels,
+        parameter_interpolate_segments=parameter_interpolate_segments,
+        parameter_interpolate_across_gaps=parameter_interpolate_across_gaps,
         render_layout=render_layout,  # type: ignore[arg-type]
         track_width_m=track_width_m,
         coordinate_reference=coordinate_reference,
@@ -97,6 +117,7 @@ def build_section_request(
         elevation_mode=elevation_mode,  # type: ignore[arg-type]
         correlation_overrides=_session_correlation_overrides(),
         consulting_title_block=consulting_title_block,
+        fail_on_overlaps=fail_on_overlaps,
     )
 
 
@@ -118,6 +139,15 @@ def collect_section_build_request(
     max_offset_for_interpolation_m: float | None,
     show_ground_surface: bool,
     interpolate_water_table: bool,
+    warn_on_correlation_gaps: bool = False,
+    show_water_elevation_labels: bool | None = None,
+    show_water_legend: bool | None = None,
+    show_dry_well_nm: bool | None = None,
+    water_interpolate_across_gaps: bool | None = None,
+    environmental_parameters: tuple[str, ...] = (),
+    show_parameter_labels: bool | None = None,
+    parameter_interpolate_segments: bool | None = None,
+    parameter_interpolate_across_gaps: bool | None = None,
     render_layout: str,
     track_width_m: float,
     coordinate_reference: str,
@@ -126,6 +156,7 @@ def collect_section_build_request(
     report_preset: bool,
     consulting_title_block: ConsultingTitleBlock | None = None,
     selection: tuple[tuple[str, ...], tuple[tuple[float, float], ...]] | None = None,
+    fail_on_overlaps: bool = False,
 ) -> tuple[SectionBuildRequest | None, str | None]:
     """Single collector for generate click and staleness checks."""
     if selection is None:
@@ -163,12 +194,22 @@ def collect_section_build_request(
         max_offset_for_interpolation_m=max_offset_for_interpolation_m,
         show_ground_surface=effective.show_ground_surface,
         interpolate_water_table=effective.interpolate_water_table,
+        warn_on_correlation_gaps=warn_on_correlation_gaps,
+        show_water_elevation_labels=show_water_elevation_labels,
+        show_water_legend=show_water_legend,
+        show_dry_well_nm=show_dry_well_nm,
+        water_interpolate_across_gaps=water_interpolate_across_gaps,
+        environmental_parameters=environmental_parameters,
+        show_parameter_labels=show_parameter_labels,
+        parameter_interpolate_segments=parameter_interpolate_segments,
+        parameter_interpolate_across_gaps=parameter_interpolate_across_gaps,
         render_layout=effective.layout,
         track_width_m=effective.track_width_m,
         coordinate_reference=coordinate_reference,
         uses_placeholder_elevation=uses_placeholder_elevation,
         elevation_mode=elevation_mode,
         consulting_title_block=effective.consulting_title_block,
+        fail_on_overlaps=fail_on_overlaps,
     )
     return request, request.cache_key(active_hole_ids)
 
@@ -246,8 +287,8 @@ def generate_cross_section(
     request_json = build_request.model_dump_json()
     st.session_state.section_build_subset_json = subset_json
     st.session_state.section_build_request_json = request_json
-    svg_bytes, png_bytes, _, polygon_count, lithology_codes, overlap_warnings = cached_build_section(
+    svg_bytes, png_bytes, pdf_bytes, polygon_count, lithology_codes, overlap_warnings = cached_build_section(
         subset_json,
         request_json,
     )
-    return svg_bytes, png_bytes, b"", polygon_count, list(lithology_codes), list(dedupe_messages(overlap_warnings))
+    return svg_bytes, png_bytes, pdf_bytes, polygon_count, list(lithology_codes), list(dedupe_messages(overlap_warnings))

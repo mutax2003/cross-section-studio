@@ -72,6 +72,9 @@ def render_profile_and_downloads(
     vertical_exaggeration: float,
     is_stale: bool,
     parse_result_available: bool,
+    preset_label: str | None = None,
+    render_layout: str | None = None,
+    transect_label: str | None = None,
 ) -> None:
     """Render profile chips, SVG, and SVG/PNG/PDF downloads."""
     if st.session_state.svg_bytes is None:
@@ -79,12 +82,19 @@ def render_profile_and_downloads(
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Cross-Section Profile")
+    png_ready = bool(st.session_state.get("png_bytes"))
+    pdf_ready = bool(st.session_state.get("pdf_bytes"))
     _render_profile_chips(
         interpretation_mode=interpretation_mode,
         vertical_exaggeration=vertical_exaggeration,
         hole_count=st.session_state.section_hole_count,
         polygon_count=st.session_state.section_polygon_count,
         is_stale=is_stale,
+        preset_label=preset_label,
+        render_layout=render_layout,
+        transect_label=transect_label,
+        png_ready=png_ready,
+        pdf_ready=pdf_ready,
     )
     if is_stale:
         st.markdown(

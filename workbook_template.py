@@ -709,62 +709,74 @@ def build_input_template(path: Path | None = None) -> Path:
         return _write_input_template(fallback)
 
 
+def _populate_input_template(writer: pd.ExcelWriter) -> None:
+    """Write all input-template sheets into an open ExcelWriter."""
+    _write_instructions_sheet(writer)
+    _write_project_sheet(writer)
+    _write_dataframe_sheet(
+        writer,
+        sheet_name=COLLARS_SHEET,
+        columns=COLLAR_COLUMNS,
+        sample=_sample_collars(),
+        blank_count=5,
+        required=True,
+    )
+    _write_dataframe_sheet(
+        writer,
+        sheet_name=LITHOLOGY_SHEET,
+        columns=LITHOLOGY_COLUMNS,
+        sample=_sample_lithology(),
+        blank_count=8,
+        required=True,
+    )
+    _write_dataframe_sheet(
+        writer,
+        sheet_name=WATER_SHEET,
+        columns=WATER_COLUMNS,
+        sample=_sample_water(),
+        blank_count=5,
+        required=False,
+    )
+    _write_dataframe_sheet(
+        writer,
+        sheet_name=ENVIRONMENTAL_SHEET,
+        columns=ENVIRONMENTAL_COLUMNS,
+        sample=_sample_environmental(),
+        blank_count=8,
+        required=False,
+    )
+    _write_dataframe_sheet(
+        writer,
+        sheet_name=SCREENS_SHEET,
+        columns=SCREEN_COLUMNS,
+        sample=_sample_screens(),
+        blank_count=5,
+        required=False,
+    )
+    _write_dataframe_sheet(
+        writer,
+        sheet_name=GRADIENTS_SHEET,
+        columns=GRADIENT_COLUMNS,
+        sample=_sample_gradients(),
+        blank_count=5,
+        required=False,
+    )
+    _write_example_sheet(writer)
+    _write_data_entry_compat_sheet(writer)
+
+
 def _write_input_template(output: Path) -> Path:
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        _write_instructions_sheet(writer)
-        _write_project_sheet(writer)
-        _write_dataframe_sheet(
-            writer,
-            sheet_name=COLLARS_SHEET,
-            columns=COLLAR_COLUMNS,
-            sample=_sample_collars(),
-            blank_count=5,
-            required=True,
-        )
-        _write_dataframe_sheet(
-            writer,
-            sheet_name=LITHOLOGY_SHEET,
-            columns=LITHOLOGY_COLUMNS,
-            sample=_sample_lithology(),
-            blank_count=8,
-            required=True,
-        )
-        _write_dataframe_sheet(
-            writer,
-            sheet_name=WATER_SHEET,
-            columns=WATER_COLUMNS,
-            sample=_sample_water(),
-            blank_count=5,
-            required=False,
-        )
-        _write_dataframe_sheet(
-            writer,
-            sheet_name=ENVIRONMENTAL_SHEET,
-            columns=ENVIRONMENTAL_COLUMNS,
-            sample=_sample_environmental(),
-            blank_count=8,
-            required=False,
-        )
-        _write_dataframe_sheet(
-            writer,
-            sheet_name=SCREENS_SHEET,
-            columns=SCREEN_COLUMNS,
-            sample=_sample_screens(),
-            blank_count=5,
-            required=False,
-        )
-        _write_dataframe_sheet(
-            writer,
-            sheet_name=GRADIENTS_SHEET,
-            columns=GRADIENT_COLUMNS,
-            sample=_sample_gradients(),
-            blank_count=5,
-            required=False,
-        )
-        _write_example_sheet(writer)
-        _write_data_entry_compat_sheet(writer)
-
+        _populate_input_template(writer)
     return output
+
+
+def build_input_template_bytes() -> bytes:
+    """Return the multi-tab input template as .xlsx bytes (Cloud / in-app download)."""
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        _populate_input_template(writer)
+    return buffer.getvalue()
 
 
 def load_data_entry_sheets(source: str | Path | BinaryIO | BytesIO) -> DataEntrySheets:

@@ -6,6 +6,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import pandas as pd
 import streamlit as st
 
 from app_common import (
@@ -102,6 +103,11 @@ def render_configure_step(
 ) -> ConfigureState:
     st.subheader("Configure")
     st.caption("Choose elevation mode, transect readiness, and export gates before generating.")
+    all_hole_ids = [collar.hole_id for collar in parse_result.collars]
+    _render_plan_minimap(parse_result, selected_holes, transect_mode)
+    if transect_mode == "By hole sequence":
+        _render_hole_sequence_order(all_hole_ids)
+        selected_holes = list(st.session_state.get("hole_sequence_multiselect") or selected_holes)
     blocking = quality_report is not None and quality_report.has_blocking_errors
     elevation_mode = st.session_state.get("elevation_mode", "absolute")
     if import_report and import_report.uses_placeholder_elevation:
@@ -157,9 +163,12 @@ def render_configure_step(
     )
     if preflight_selection is not None:
         active_ids, active_points = preflight_selection
+        section_caption = _transect_section_caption(active_ids)
         st.caption(
             f"Transect: **{' → '.join(active_ids)}** ({len(active_ids)} holes)"
         )
+        if section_caption:
+            st.caption(f"Section line: **{section_caption}**")
         subset_preflight = subset_parse_result(
             parse_result,
             active_ids,
@@ -313,6 +322,74 @@ def render_configure_step(
         show_parameter_labels=show_parameter_labels,
         parameter_interpolate_segments=parameter_interpolate_segments,
     )
+
+
+def _transect_section_caption(hole_ids: Sequence[str]) -> str:
+    if len(hole_ids) < 2:
+        return ""
+    return f"A–A′ ({hole_ids[0]} → {hole_ids[-1]})"
+
+
+def _render_plan_minimap(
+    parse_result: ParseResult,
+    selected_holes: list[str],
+    transect_mode: str,
+) -> None:
+    """Plan-view collar scatter (gINT/Strater-style fence context)."""
+    if not parse_result.collars:
+        return
+    selected_set = set(selected_holes)
+    rows = []
+    for collar in parse_result.collars:
+        rows.append(
+            {
+                "easting": collar.easting,
+                "northing": collar.northing,
+                "hole_id": collar.hole_id,
+                "selected": collar.hole_id in selected_set,
+            }
+        )
+    df = pd.DataFrame(rows)
+    st.markdown("**Plan view (collar locations)**")
+    chart_df = df.rename(columns={"easting": "Easting", "northing": "Northing"})
+    color_col = "selected" if transect_mode != "Recommended" else None
+    if color_col and chart_df["selected"].any():
+        st.scatter_chart(
+            chart_df,
+            x="Easting",
+            y="Northing",
+            color="selected",
+        )
+    else:
+        st.scatter_chart(chart_df, x="Easting", y="Northing")
+    st.caption("Collar positions from workbook — transect follows hole order or line geometry.")
+
+
+def _render_hole_sequence_order(hole_ids: list[str]) -> None:
+    """Numbered hole order with Up/Down (first-class fence sequence)."""
+    if "hole_sequence_multiselect" not in st.session_state:
+        st.session_state.hole_sequence_multiselect = hole_ids[: min(4, len(hole_ids))]
+    sequence: list[str] = list(st.session_state.hole_sequence_multiselect)
+    if not sequence:
+        return
+    st.markdown("**Hole order (fence sequence)**")
+    for index, hole_id in enumerate(sequence):
+        col_num, col_label, col_up, col_down = st.columns([0.4, 3, 0.5, 0.5])
+        with col_num:
+            st.markdown(f"**{index + 1}.**")
+        with col_label:
+            st.markdown(hole_id)
+        with col_up:
+            if st.button("↑", key=f"hole_order_up_{index}", disabled=index == 0):
+                sequence[index - 1], sequence[index] = sequence[index], sequence[index - 1]
+                st.session_state.hole_sequence_multiselect = sequence
+                st.rerun()
+        with col_down:
+            if st.button("↓", key=f"hole_order_down_{index}", disabled=index >= len(sequence) - 1):
+                sequence[index + 1], sequence[index] = sequence[index], sequence[index + 1]
+                st.session_state.hole_sequence_multiselect = sequence
+                st.rerun()
+    st.caption(f"Section A–A′: **{sequence[0]} → {sequence[-1]}**")
 
 
 def render_manual_correlation_overrides(active_ids: Sequence[str], subset: ParseResult) -> None:

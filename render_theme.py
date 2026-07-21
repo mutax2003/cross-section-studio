@@ -64,14 +64,21 @@ def water_has_multiple_series(water_levels) -> bool:
 
 
 def primary_water_depth_by_hole(water_levels) -> dict[str, float]:
-    """Map hole_id → depth for the primary (lexicographically first) GW series."""
+    """Map hole_id → depth for the primary GW series (last series_id in workbook order).
+
+    Workbooks typically list older snapshots first; the last distinct ``series_id``
+    is treated as the current/primary series for consulting gradient anchors.
+    """
     if not water_levels:
         return {}
     by_series: dict[str, list] = {}
+    order: list[str] = []
     for level in water_levels:
         series_id = getattr(level, "series_id", None) or "default"
+        if series_id not in by_series:
+            order.append(series_id)
         by_series.setdefault(series_id, []).append(level)
-    primary_series = sorted(by_series)[0]
+    primary_series = order[-1]
     return {level.hole_id: level.depth for level in by_series[primary_series]}
 
 

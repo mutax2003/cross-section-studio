@@ -49,7 +49,56 @@ def test_svg_display_height_uses_viewbox() -> None:
 def test_workflow_stage_progression() -> None:
     assert workflow_stage(has_upload=False, has_parse_result=False, has_profile=False) == 0
     assert workflow_stage(has_upload=True, has_parse_result=False, has_profile=False) == 1
-    assert workflow_stage(has_upload=True, has_parse_result=True, has_profile=False) == 2
+    # Parsed but no transect yet — stay on Validate
+    assert (
+        workflow_stage(
+            has_upload=True,
+            has_parse_result=True,
+            has_profile=False,
+            has_transect=False,
+        )
+        == 1
+    )
+    # Blocking QA keeps Validate active even with a transect
+    assert (
+        workflow_stage(
+            has_upload=True,
+            has_parse_result=True,
+            has_profile=False,
+            has_blocking_errors=True,
+            has_transect=True,
+        )
+        == 1
+    )
+    assert (
+        workflow_stage(
+            has_upload=True,
+            has_parse_result=True,
+            has_profile=False,
+            has_transect=True,
+        )
+        == 2
+    )
+    # Leftover SVG without a live parse must not show Generate
+    assert (
+        workflow_stage(
+            has_upload=True,
+            has_parse_result=False,
+            has_profile=True,
+        )
+        == 1
+    )
+    # Blocking QA with SVG still keeps Validate active
+    assert (
+        workflow_stage(
+            has_upload=True,
+            has_parse_result=True,
+            has_profile=True,
+            has_blocking_errors=True,
+            has_transect=True,
+        )
+        == 1
+    )
     assert workflow_stage(has_upload=True, has_parse_result=True, has_profile=True) == 3
 
 

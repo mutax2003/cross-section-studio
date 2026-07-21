@@ -91,23 +91,46 @@ def _pinch_out_z_mid(
     pinch_interval: _LayerInterval,
     neighbor_intervals: list[_LayerInterval],
 ) -> float:
-    """Average contact elevation from units above/below pinch-out depth at neighbor hole."""
-    upper = None
-    lower = None
+    """Average contact elevation from units above/below the pinch-out at the neighbor hole.
 
+    When ``unit_order`` is set on the pinch interval, prefer neighbor intervals with
+    adjacent ``unit_order`` values before falling back to elevation-position neighbors.
+    This stabilizes pinch-outs when duplicate lithology codes appear in one hole.
+    """
+    if pinch_interval.unit_order is not None:
+        order = pinch_interval.unit_order
+        by_order = {
+            interval.unit_order: interval
+            for interval in neighbor_intervals
+            if interval.unit_order is not None
+        }
+        contacts: list[float] = []
+        above = by_order.get(order - 1)
+        below = by_order.get(order + 1)
+        if above is not None:
+            contacts.append(above.bottom_elevation)
+        if below is not None:
+            contacts.append(below.top_elevation)
+        if contacts:
+            return sum(contacts) / len(contacts)
+
+    # Elevation-position neighbors: shallower (above) and deeper (below) the pinch interval.
+    # Compare elevations (not hole-local depths) so unequal collar RLs stay correct.
+    above = None
+    below = None
     for interval in neighbor_intervals:
-        if interval.from_depth >= pinch_interval.to_depth - 1e-9:
-            if upper is None or interval.from_depth < upper.from_depth:
-                upper = interval
-        if interval.to_depth <= pinch_interval.from_depth + 1e-9:
-            if lower is None or interval.to_depth > lower.to_depth:
-                lower = interval
+        if interval.bottom_elevation >= pinch_interval.top_elevation - 1e-9:
+            if above is None or interval.bottom_elevation < above.bottom_elevation:
+                above = interval
+        if interval.top_elevation <= pinch_interval.bottom_elevation + 1e-9:
+            if below is None or interval.top_elevation > below.top_elevation:
+                below = interval
 
-    contacts: list[float] = []
-    if upper is not None:
-        contacts.append(upper.bottom_elevation)
-    if lower is not None:
-        contacts.append(lower.top_elevation)
+    contacts = []
+    if above is not None:
+        contacts.append(above.bottom_elevation)
+    if below is not None:
+        contacts.append(below.top_elevation)
 
     if not contacts:
         return (pinch_interval.top_elevation + pinch_interval.bottom_elevation) / 2.0
@@ -134,9 +157,20 @@ def _make_polygon(
             return None
         polygon = repaired
 
+    # Renderer expects a single Polygon (.exterior); buffer(0) may yield MultiPolygon.
+    largest = _largest_polygon(polygon)
+    if largest is None or largest.is_empty:
+        logger.warning(
+            "Empty polygon after repair for %s between %s and %s",
+            lithology_code,
+            hole_pair[0],
+            hole_pair[1],
+        )
+        return None
+
     return GeologicalPolygon(
         lithology_code=lithology_code,
-        polygon=polygon,
+        polygon=largest,
         hole_pair=hole_pair,
         is_pinch_out=is_pinch_out,
     )
@@ -154,6 +188,37 @@ def _correlation_sort_key(
         tops.append(right_lookup[key].top_elevation)
     return -max(tops) if tops else float("inf")
 
+
+def _correlation_overrides_by_pair(
+    overrides: Sequence[CorrelationOverride],
+) -> dict[tuple[str, str], tuple[CorrelationOverride, ...]]:
+    buckets: dict[tuple[str, str], list[CorrelationOverride]] = defaultdict(list)
+    for override in overrides:
+        buckets[(override.left_hole_id, override.right_hole_id)].append(override)
+    return {pair: tuple(items) for pair, items in buckets.items()}
+
+
+def _overrides_for_hole_pair(
+    left_hole_id: str,
+    right_hole_id: str,
+    override_index: dict[tuple[str, str], tuple[CorrelationOverride, ...]],
+) -> tuple[CorrelationOverride, ...]:
+    """Return overrides for transect left→right, accepting reversed hole order."""
+    exact = override_index.get((left_hole_id, right_hole_id))
+    if exact:
+        return exact
+    reversed_items = override_index.get((right_hole_id, left_hole_id))
+    if not reversed_items:
+        return ()
+    return tuple(
+        CorrelationOverride(
+            left_hole_id=left_hole_id,
+            right_hole_id=right_hole_id,
+            left_unit_order=item.right_unit_order,
+            right_unit_order=item.left_unit_order,
+        )
+        for item in reversed_items
+    )
 
 def _apply_correlation_overrides(
     left_hole_id: str,
@@ -191,8 +256,13 @@ def _apply_correlation_overrides(
             override.right_unit_order,
             left_layer.lithology_code,
         )
-        merged_left[key] = left_layer
-        merged_right[key] = right_layer
+        # Drop original correlation keys for remapped intervals so they are not
+        # drawn twice (matched override + leftover pinch-out).
+        for lookup, layer in ((merged_left, left_layer), (merged_right, right_layer)):
+            for existing_key, existing_layer in list(lookup.items()):
+                if existing_layer is layer:
+                    del lookup[existing_key]
+            lookup[key] = layer
     return merged_left, merged_right
 
 
@@ -309,24 +379,41 @@ def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[Geologi
     if len(polygons) <= 1:
         return polygons
 
-    ordered = sorted(polygons, key=lambda item: (-item.polygon.bounds[3], item.polygon.bounds[1]))
+    from shapely.ops import unary_union
+
+    ordered = sorted(
+        polygons,
+        key=lambda item: (
+            item.is_pinch_out,
+            -item.polygon.bounds[3],
+            item.polygon.bounds[1],
+        ),
+    )
     resolved: list[GeologicalPolygon] = []
-    occupied: Polygon | None = None
-    for geo_polygon in ordered:
+    occupied_geom: Polygon | None = None
+    batch: list[Polygon] = []
+    batch_limit = 4
+    last_index = len(ordered) - 1
+    for index, geo_polygon in enumerate(ordered):
         geom = geo_polygon.polygon
-        if occupied is not None and not occupied.is_empty:
-            geom = geom.difference(occupied)
+        if occupied_geom is not None and not occupied_geom.is_empty:
+            geom = geom.difference(occupied_geom)
         largest = _largest_polygon(geom)
         if largest is None or largest.is_empty:
             continue
-        clipped = GeologicalPolygon(
-            lithology_code=geo_polygon.lithology_code,
-            polygon=largest,
-            hole_pair=geo_polygon.hole_pair,
-            is_pinch_out=geo_polygon.is_pinch_out,
+        resolved.append(
+            GeologicalPolygon(
+                lithology_code=geo_polygon.lithology_code,
+                polygon=largest,
+                hole_pair=geo_polygon.hole_pair,
+                is_pinch_out=geo_polygon.is_pinch_out,
+            )
         )
-        resolved.append(clipped)
-        occupied = occupied.union(largest) if occupied is not None else largest
+        batch.append(largest)
+        if len(batch) >= batch_limit or index == last_index:
+            chunk = unary_union(batch) if len(batch) > 1 else batch[0]
+            occupied_geom = chunk if occupied_geom is None else occupied_geom.union(chunk)
+            batch.clear()
     return resolved
 
 
@@ -363,14 +450,14 @@ def detect_polygon_overlaps(polygons: list[GeologicalPolygon]) -> list[PolygonOv
         for left_pos, left_index in enumerate(indices):
             left = polygons[left_index]
             left_geom = geoms[left_pos]
+            # Use intersects (not overlaps alone) so nested/contained pairs are found.
             for right_pos in tree.query(left_geom, predicate="intersects"):
                 if right_pos <= left_pos:
                     continue
                 right_index = indices[right_pos]
                 right = polygons[right_index]
-                if left.polygon.touches(right.polygon):
-                    continue
                 intersection = left.polygon.intersection(right.polygon)
+                # Skip empty/tiny area and pure line touches (area < 1e-9).
                 if intersection.is_empty or intersection.area < 1e-9:
                     continue
                 centroid = intersection.centroid
@@ -406,8 +493,12 @@ class CorrelationPairSummary:
     pinch_out_candidates: int
 
     @property
+    def unmatched_keys_count(self) -> int:
+        return len(self.left_only_codes) + len(self.right_only_codes)
+
+    @property
     def match_rate(self) -> float:
-        total = self.matched_count + len(self.left_only_codes) + len(self.right_only_codes)
+        total = self.matched_count + self.unmatched_keys_count
         if total == 0:
             return 1.0
         return self.matched_count / total
@@ -453,6 +544,7 @@ def preview_correlation_health(
     if len(hole_profiles) < 2:
         return []
     summaries: list[CorrelationPairSummary] = []
+    override_index = _correlation_overrides_by_pair(correlation_overrides)
     for (_x_left, left_id, left_intervals, left_lookup), (
         _x_right,
         right_id,
@@ -466,7 +558,7 @@ def preview_correlation_health(
             right_intervals,
             left_lookup,
             right_lookup,
-            correlation_overrides,
+            _overrides_for_hole_pair(left_id, right_id, override_index),
         )
         all_keys = set(left_lookup) | set(right_lookup)
         matched = 0
@@ -511,6 +603,7 @@ def build_stratigraphy(
         return []
 
     polygons: list[GeologicalPolygon] = []
+    override_index = _correlation_overrides_by_pair(correlation_overrides)
     for (
         (x_left, left_id, left_intervals, left_lookup),
         (x_right, right_id, right_intervals, right_lookup),
@@ -526,7 +619,7 @@ def build_stratigraphy(
                 allow_pinch_outs=allow_pinch_outs,
                 left_lookup=left_lookup,
                 right_lookup=right_lookup,
-                correlation_overrides=correlation_overrides,
+                correlation_overrides=_overrides_for_hole_pair(left_id, right_id, override_index),
             )
         )
         polygons.extend(pair_polygons)

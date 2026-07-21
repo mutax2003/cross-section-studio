@@ -16,7 +16,16 @@ import pandas as pd
 from rapidfuzz import fuzz
 
 from constants import CANONICAL_LITHOLOGY_CODES
-from models import COLLAR_COLUMNS, LITHOLOGY_COLUMNS, Collar, Lithology, Transect
+from models import (
+    COLLAR_COLUMNS,
+    LITHOLOGY_COLUMNS,
+    Collar,
+    EnvironmentalReading,
+    Lithology,
+    ScreenInterval,
+    Transect,
+    WaterLevel,
+)
 from projection import TransectGeometry
 
 logger = logging.getLogger(__name__)
@@ -131,25 +140,40 @@ def save_lithology_alias(source_code: str, canonical_code: str, path: Path | Non
     alias_path = path or lithology_aliases_path()
     aliases = dict(load_lithology_aliases(str(alias_path)))
     aliases[_normalize_header(source_code)] = canonical_code
-    alias_path.parent.mkdir(parents=True, exist_ok=True)
-    with alias_path.open("w", encoding="utf-8") as handle:
-        json.dump(aliases, handle, indent=2, sort_keys=True)
-        handle.write("\n")
+    try:
+        alias_path.parent.mkdir(parents=True, exist_ok=True)
+        with alias_path.open("w", encoding="utf-8") as handle:
+            json.dump(aliases, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except (OSError, PermissionError) as exc:
+        logger.warning("Failed to save lithology alias to %s: %s", alias_path, exc)
+        raise RuntimeError(
+            f"Could not save lithology alias to {alias_path}: {exc}"
+        ) from exc
     load_lithology_aliases.cache_clear()
 
 
+@lru_cache(maxsize=1)
+def _canonical_by_lower() -> dict[str, str]:
+    """Lowercase → canonical code map for O(1) case-insensitive matching."""
+    return {canonical.lower(): canonical for canonical in CANONICAL_LITHOLOGY_CODES}
+
+
 def normalize_lithology_code(code: str, aliases: dict[str, str] | None = None) -> str:
+    stripped = code.strip()
+    if not stripped:
+        return ""
     lookup = aliases if aliases is not None else load_lithology_aliases()
-    normalized_key = _normalize_header(code)
-    if normalized_key in lookup:
-        return lookup[normalized_key]
-    title = code.strip().title()
+    normalized_key = _normalize_header(stripped)
+    canonical = _canonical_by_lower().get(normalized_key)
+    if canonical is not None:
+        return canonical
+    title = stripped.title()
     if title in CANONICAL_LITHOLOGY_CODES:
         return title
-    for canonical in CANONICAL_LITHOLOGY_CODES:
-        if canonical.lower() == normalized_key:
-            return canonical
-    return code.strip()
+    if normalized_key in lookup:
+        return lookup[normalized_key]
+    return stripped
 
 
 def normalize_lithologies(
@@ -528,3 +552,189 @@ def analyze_workbook(
 ) -> MappingProposal:
     workbook = pd.ExcelFile(source)
     return propose_workbook_mapping(workbook)
+
+
+@dataclass(frozen=True)
+class WaterSeriesSummary:
+    series_id: str
+    series_label: str
+    hole_count: int
+    missing_hole_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WaterQualitySummary:
+    series: tuple[WaterSeriesSummary, ...]
+    holes_without_any_water: tuple[str, ...]
+    warnings: tuple[str, ...]
+    total_levels: int
+
+
+@dataclass(frozen=True)
+class ScreenQualitySummary:
+    warnings: tuple[str, ...]
+    total_intervals: int
+
+
+def summarize_screen_intervals(
+    collars: Sequence[Collar],
+    screen_intervals: Sequence[ScreenInterval],
+    hole_ids_on_transect: Sequence[str] | None = None,
+) -> ScreenQualitySummary:
+    """Warn when screens extend past total depth or overlap on the same hole."""
+    collar_by_id = {collar.hole_id: collar for collar in collars}
+    hole_set = set(hole_ids_on_transect) if hole_ids_on_transect is not None else None
+    warnings: list[str] = []
+    by_hole: dict[str, list[ScreenInterval]] = {}
+    for interval in screen_intervals:
+        if hole_set is not None and interval.hole_id not in hole_set:
+            continue
+        by_hole.setdefault(interval.hole_id, []).append(interval)
+        collar = collar_by_id.get(interval.hole_id)
+        if collar is not None and interval.to_depth > collar.total_depth + 1e-9:
+            warnings.append(
+                f"{interval.hole_id}: screen to_depth {interval.to_depth:.2f} m exceeds total depth "
+                f"{collar.total_depth:.2f} m"
+            )
+    for hole_id, intervals in by_hole.items():
+        ordered = sorted(intervals, key=lambda item: (item.from_depth, item.to_depth))
+        for left, right in zip(ordered, ordered[1:]):
+            if right.from_depth < left.to_depth - 1e-9:
+                warnings.append(
+                    f"{hole_id}: overlapping screens "
+                    f"{left.from_depth:.2f}-{left.to_depth:.2f} m and "
+                    f"{right.from_depth:.2f}-{right.to_depth:.2f} m"
+                )
+    return ScreenQualitySummary(
+        warnings=tuple(warnings),
+        total_intervals=sum(len(items) for items in by_hole.values()),
+    )
+
+
+def summarize_water_levels(
+    collars: Sequence[Collar],
+    water_levels: Sequence[WaterLevel],
+    hole_ids_on_transect: Sequence[str],
+) -> WaterQualitySummary:
+    """Summarize groundwater coverage for Validate UI and QA heuristics."""
+    transect_holes = tuple(hole_ids_on_transect)
+    hole_set = set(transect_holes)
+    collar_by_id = {collar.hole_id: collar for collar in collars}
+    warnings: list[str] = []
+    by_series: dict[str, list[WaterLevel]] = {}
+    for level in water_levels:
+        if level.hole_id not in hole_set:
+            continue
+        series_id = level.series_id or "default"
+        by_series.setdefault(series_id, []).append(level)
+        collar = collar_by_id.get(level.hole_id)
+        if collar is not None and level.depth > collar.total_depth:
+            warnings.append(
+                f"{level.hole_id} ({series_id}): water depth {level.depth:.2f} m exceeds total depth "
+                f"{collar.total_depth:.2f} m"
+            )
+
+    holes_with_any = {level.hole_id for level in water_levels if level.hole_id in hole_set}
+    holes_without_any = tuple(hole_id for hole_id in transect_holes if hole_id not in holes_with_any)
+    series_summaries: list[WaterSeriesSummary] = []
+    for series_id in sorted(by_series):
+        levels = by_series[series_id]
+        measured_holes = {level.hole_id for level in levels}
+        label = next(
+            (level.series_label for level in levels if level.series_label),
+            series_id,
+        )
+        missing = tuple(hole_id for hole_id in transect_holes if hole_id not in measured_holes)
+        series_summaries.append(
+            WaterSeriesSummary(
+                series_id=series_id,
+                series_label=label,
+                hole_count=len(measured_holes),
+                missing_hole_ids=missing,
+            )
+        )
+    if transect_holes and not by_series:
+        warnings.append("No groundwater readings on the selected transect.")
+    orphan_ids = sorted({level.hole_id for level in water_levels if level.hole_id not in hole_set})
+    if orphan_ids:
+        warnings.append(
+            "Groundwater readings for holes not on the selected transect: " + ", ".join(orphan_ids)
+        )
+    return WaterQualitySummary(
+        series=tuple(series_summaries),
+        holes_without_any_water=holes_without_any,
+        warnings=tuple(warnings),
+        total_levels=sum(len(levels) for levels in by_series.values()),
+    )
+
+
+@dataclass(frozen=True)
+class ParameterSummary:
+    parameter: str
+    hole_count: int
+    missing_hole_ids: tuple[str, ...]
+    min_depth: float
+    max_depth: float
+
+
+@dataclass(frozen=True)
+class EnvironmentalQualitySummary:
+    parameters: tuple[ParameterSummary, ...]
+    holes_without_any_readings: tuple[str, ...]
+    orphan_hole_ids: tuple[str, ...]
+    warnings: tuple[str, ...]
+    total_readings: int
+
+
+def summarize_environmental_readings(
+    collars: Sequence[Collar],
+    readings: Sequence[EnvironmentalReading],
+    hole_ids_on_transect: Sequence[str],
+) -> EnvironmentalQualitySummary:
+    """Summarize lab/parameter coverage for Validate UI."""
+    transect_holes = tuple(hole_ids_on_transect)
+    hole_set = set(transect_holes)
+    collar_by_id = {collar.hole_id: collar for collar in collars}
+    warnings: list[str] = []
+    orphan_hole_ids: set[str] = set()
+    by_parameter: dict[str, list[EnvironmentalReading]] = {}
+
+    for reading in readings:
+        if reading.hole_id not in hole_set:
+            orphan_hole_ids.add(reading.hole_id)
+            continue
+        by_parameter.setdefault(reading.parameter, []).append(reading)
+        collar = collar_by_id.get(reading.hole_id)
+        if collar is not None and reading.sample_depth > collar.total_depth:
+            warnings.append(
+                f"{reading.hole_id} ({reading.parameter}): sample depth {reading.sample_depth:.2f} m "
+                f"exceeds total depth {collar.total_depth:.2f} m"
+            )
+
+    parameter_summaries: list[ParameterSummary] = []
+    for parameter in sorted(by_parameter):
+        items = by_parameter[parameter]
+        measured_holes = {item.hole_id for item in items}
+        depths = [item.sample_depth for item in items]
+        missing = tuple(hole_id for hole_id in transect_holes if hole_id not in measured_holes)
+        parameter_summaries.append(
+            ParameterSummary(
+                parameter=parameter,
+                hole_count=len(measured_holes),
+                missing_hole_ids=missing,
+                min_depth=min(depths),
+                max_depth=max(depths),
+            )
+        )
+
+    if not readings and transect_holes:
+        warnings.append("No environmental/lab readings on the selected transect.")
+    holes_with_any = {reading.hole_id for reading in readings if reading.hole_id in hole_set}
+    holes_without_any = tuple(hole_id for hole_id in transect_holes if hole_id not in holes_with_any)
+    return EnvironmentalQualitySummary(
+        parameters=tuple(parameter_summaries),
+        holes_without_any_readings=holes_without_any,
+        orphan_hole_ids=tuple(sorted(orphan_hole_ids)),
+        warnings=tuple(warnings),
+        total_readings=sum(len(items) for items in by_parameter.values()),
+    )

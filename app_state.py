@@ -44,6 +44,7 @@ SESSION_AI_KEYS = (
     "ai_lithology_suggestions",
     "ai_correlation_suggestions",
     "ai_sheet_roles",
+    "ai_column_suggestions",
     "section_qa_answer",
     "ai_figure_caption",
 )
@@ -83,6 +84,7 @@ DEFAULT_SESSION: dict[str, object] = {
     "ai_lithology_suggestions": None,
     "ai_correlation_suggestions": None,
     "ai_sheet_roles": None,
+    "ai_column_suggestions": None,
     "section_qa_answer": None,
     "nl_transect_text": "",
     "lithology_aliases": None,
@@ -91,6 +93,14 @@ DEFAULT_SESSION: dict[str, object] = {
     "auto_assign_unit_order": True,
     "ai_figure_caption": None,
     "uploaded_name": None,
+    "output_preset": "section_sheet",
+    "allow_pinch_outs": False,
+    "show_ground_surface": True,
+    "show_hatches": True,
+    "show_legend": True,
+    "enable_ai_suggestions": False,
+    "fail_on_overlaps": False,
+    "llm_provider": "groq",
 }
 
 

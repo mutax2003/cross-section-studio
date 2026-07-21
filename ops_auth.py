@@ -22,7 +22,22 @@ def _auth_required() -> bool:
 
 
 def _configured_password() -> str:
-    return os.environ.get("CROSS_SECTION_AUTH_PASSWORD", "").strip()
+    env_password = os.environ.get("CROSS_SECTION_AUTH_PASSWORD", "").strip()
+    if env_password:
+        return env_password
+    try:
+        secrets = getattr(st, "secrets", None)
+        if secrets is not None:
+            for key in ("CROSS_SECTION_AUTH_PASSWORD", "cross_section_auth_password"):
+                try:
+                    value = str(secrets.get(key, "") or "").strip()
+                except Exception:
+                    value = ""
+                if value:
+                    return value
+    except Exception:
+        pass
+    return ""
 
 
 def render_logout_control() -> None:
@@ -38,7 +53,12 @@ def render_logout_control() -> None:
 
 
 def require_auth() -> None:
-    """Stop the app until the shared password is entered (env-gated)."""
+    """Stop the app until the shared password is entered (env/secrets-gated).
+
+    When no password is configured, the gate is a no-op so Cloud demos work
+    without secrets. ``CROSS_SECTION_AUTH_REQUIRED`` still fails closed if a
+    password was expected but missing.
+    """
     password = _configured_password()
     if not password:
         if _auth_required():

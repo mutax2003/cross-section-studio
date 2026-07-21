@@ -12,6 +12,7 @@ from models import DataParser
 from ingestion import DATA_ENTRY_PROFILE_ID, FormatDetector, ingest_workbook
 from workbook_template import (
     build_input_template,
+    build_input_template_bytes,
     load_data_entry_sheets,
     load_project_metadata,
 )
@@ -40,6 +41,18 @@ def test_build_input_template_writes_multi_tabs(tmp_path: Path) -> None:
     assert workbook.sheet_names[0] == "Instructions"
     assert workbook.sheet_names[1] == "Project"
     assert workbook.sheet_names[-1] == "Data Entry"
+
+
+def test_build_input_template_bytes_matches_sheet_set() -> None:
+    from io import BytesIO
+
+    import pandas as pd
+
+    payload = build_input_template_bytes()
+    assert isinstance(payload, (bytes, bytearray))
+    assert len(payload) > 1000
+    workbook = pd.ExcelFile(BytesIO(payload))
+    assert EXPECTED_SHEETS.issubset(set(workbook.sheet_names))
 
 
 def test_format_detector_recognizes_data_entry_template(tmp_path: Path) -> None:

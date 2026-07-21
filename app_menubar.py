@@ -169,6 +169,9 @@ def render_menubar() -> None:
             if _menu_item("Generate & exports", key="menu_help_exports"):
                 _set_help_topic("generate-exports")
                 st.rerun()
+            if _menu_item("Consulting UX (gINT/Strater)", key="menu_help_consulting_ux"):
+                _set_help_topic("consulting-ux")
+                st.rerun()
             if _menu_item("Keyboard shortcuts", key="menu_help_keys", shortcut="Ctrl+/"):
                 _set_help_topic("keyboard-shortcuts")
                 st.rerun()

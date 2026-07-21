@@ -22,7 +22,12 @@ from ai_assistant import (
     preferred_llm_provider_from_env,
     resolve_llm_api_key,
 )
-from app_upload import apply_pending_project_seed
+from app_upload import (
+    apply_pending_project_seed,
+    clear_workbook_session,
+    load_sample_workbook,
+    render_input_template_download,
+)
 from constants import USGS_LITHOLOGY_HATCHES, get_lithology_style, save_lithology_style_override
 from ingestion import DATA_ENTRY_PROFILE_ID, NATIVE_PROFILE_ID, list_profiles
 from models import ConsultingTitleBlock
@@ -72,18 +77,25 @@ def render_sidebar() -> SidebarState:
             "Enter geology in Excel (download the template), then upload here. "
             "Native Collars/Lithology workbooks and field exports with Lat/Long also work."
         )
-        from paths import cross_section_input_template
-
-        template_path = cross_section_input_template()
-        if template_path.exists():
-            st.download_button(
-                "Download template (data entry)",
-                data=template_path.read_bytes(),
-                file_name=template_path.name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="sidebar_download_input_template",
-                help="Fill Collars + Lithology in Excel, then upload with the control below.",
-            )
+        render_input_template_download(
+            key="sidebar_download_input_template",
+            help="Fill Collars + Lithology in Excel, then upload with the control below.",
+        )
+        uploaded_name = st.session_state.get("uploaded_name")
+        if uploaded_name or st.session_state.get("file_bytes"):
+            st.caption(f"Loaded: {uploaded_name or 'workbook.xlsx'}")
+        action_cols = st.columns(2)
+        with action_cols[0]:
+            if st.button("Clear workbook", key="sidebar_clear_workbook"):
+                clear_workbook_session()
+                st.rerun()
+        with action_cols[1]:
+            if st.button("Try sample project", key="sidebar_try_sample"):
+                try:
+                    load_sample_workbook()
+                    st.rerun()
+                except FileNotFoundError as exc:
+                    st.error(str(exc))
         uploaded = st.file_uploader(
             "Upload Excel workbook",
             type=["xlsx"],

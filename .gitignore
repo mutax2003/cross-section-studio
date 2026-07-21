@@ -18,12 +18,18 @@ env/
 *.log
 e2e_test_results.txt
 e2e_smoke_results.txt
+orchestration_reports/
 
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
-.cursor/
+# Keep Cursor rules tracked for cloud/CI agents; ignore other local Cursor state
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
 
-# User / client workbooks (generate sample via scripts/generate_sample_data.py)
+# User / client workbooks (generate others via scripts/generate_sample_data.py)
 *.xlsx
+# Bundled demo for Streamlit Cloud / Try sample project
+!data/sample_boreholes.xlsx

@@ -10,8 +10,9 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 COLLAR_COLUMNS = {"hole_id", "easting", "northing", "elevation", "total_depth"}
 LITHOLOGY_COLUMNS = {"hole_id", "from_depth", "to_depth", "lithology_code"}
 LITHOLOGY_OPTIONAL_COLUMNS = {"hatch_pattern", "unit_order"}
-WATER_COLUMNS = {"hole_id", "depth"}
-WATER_OPTIONAL_COLUMNS = frozenset({"series_id", "series_label", "color", "marker"})
+WATER_COLUMNS = {"hole_id"}
+WATER_VALUE_COLUMNS = frozenset({"depth", "elevation_masl"})
+WATER_OPTIONAL_COLUMNS = frozenset({"series_id", "series_label", "color", "marker", "depth", "elevation_masl"})
 SCREEN_COLUMNS = {"hole_id", "from_depth", "to_depth"}
 GRADIENT_COLUMNS = {"hole_id", "direction"}
 
@@ -71,7 +72,10 @@ class Lithology(BaseModel, frozen=True):
     def optional_unit_order(cls, value: object) -> int | None:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return None
-        return int(value)
+        text = str(value).strip()
+        if not text:
+            return None
+        return int(text)
 
     @model_validator(mode="after")
     def validate_depths(self) -> Lithology:
@@ -85,6 +89,7 @@ class Lithology(BaseModel, frozen=True):
 class WaterLevel(BaseModel, frozen=True):
     hole_id: str
     depth: float
+    elevation_masl: float | None = None
     series_id: str = "default"
     series_label: str = ""
     color: str | None = None
@@ -214,19 +219,52 @@ class Unconformity(BaseModel, frozen=True):
 
 
 class EnvironmentalReading(BaseModel, frozen=True):
-    """Environmental screening hit on a depth interval."""
+    """Environmental / lab sample on a point depth or depth interval."""
 
     hole_id: str
-    from_depth: float
-    to_depth: float
     parameter: str
     value: float
+    depth: float | None = None
+    from_depth: float | None = None
+    to_depth: float | None = None
     unit: str = ""
+    value_label: str = ""
 
     @field_validator("hole_id", "parameter", mode="before")
     @classmethod
     def strip_text(cls, value: object) -> str:
         return str(value).strip()
+
+    @model_validator(mode="after")
+    def validate_depth_fields(self) -> EnvironmentalReading:
+        has_point = self.depth is not None
+        has_interval = self.from_depth is not None or self.to_depth is not None
+        if has_point and has_interval:
+            raise ValueError("provide depth or from_depth/to_depth, not both")
+        if not has_point and (self.from_depth is None or self.to_depth is None):
+            raise ValueError("depth or from_depth and to_depth are required")
+        if has_point and self.depth is not None and self.depth < 0:
+            raise ValueError("depth must be non-negative")
+        if has_interval and self.from_depth is not None and self.to_depth is not None:
+            if self.from_depth < 0 or self.to_depth < 0:
+                raise ValueError("depths must be non-negative")
+            if self.to_depth < self.from_depth:
+                raise ValueError("to_depth must be >= from_depth")
+        return self
+
+    @property
+    def sample_depth(self) -> float:
+        if self.depth is not None:
+            return self.depth
+        assert self.from_depth is not None and self.to_depth is not None
+        return (self.from_depth + self.to_depth) / 2.0
+
+    @property
+    def display_label(self) -> str:
+        if self.value_label:
+            return self.value_label
+        unit_suffix = f" {self.unit}" if self.unit else ""
+        return f"{self.value:g}{unit_suffix}"
 
 
 class RasterLogStrip(BaseModel, frozen=True):
@@ -322,5 +360,13 @@ from parse_ops import (  # noqa: E402
     subset_json_bundle,
     subset_parse_result,
 )
-from parsing import DataParser  # noqa: E402
+
+
+def __getattr__(name: str):
+    """Lazy re-export to avoid models ↔ parsing circular import on cold start."""
+    if name == "DataParser":
+        from parsing import DataParser as _DataParser
+
+        return _DataParser
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

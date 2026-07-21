@@ -38,6 +38,14 @@ def test_ops_auth_uses_constant_time_compare() -> None:
         pass
 
 
+def test_ops_auth_narrows_secrets_exceptions() -> None:
+    source = Path("ops_auth.py").read_text(encoding="utf-8")
+    assert "except (AttributeError, KeyError, TypeError)" in source
+    assert "except FileNotFoundError" in source
+    assert "logger.warning" in source
+    assert "except Exception:" not in source.split("def _configured_password")[1].split("def render_logout")[0]
+
+
 def test_ops_logging_json_format(monkeypatch) -> None:
     monkeypatch.setenv("CROSS_SECTION_LOG_FORMAT", "json")
     from ops_logging import configure_logging

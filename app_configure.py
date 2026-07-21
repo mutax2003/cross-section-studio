@@ -16,6 +16,7 @@ from app_common import (
     _section_facts,
     _session_correlation_overrides,
     _sidebar_heading,
+    safe_lithology_index,
 )
 from app_services import cached_configure_preflight, cached_recommend_transects
 from models import CorrelationOverride, ParseResult, subset_parse_result
@@ -153,6 +154,8 @@ def render_configure_step(
     environmental_parameters: tuple[str, ...] = ()
     show_parameter_labels = True
     parameter_interpolate_segments = True
+    subset_ready = False
+    has_overlap_warnings = False
 
     preflight_selection = _active_transect_selection(
         parse_result,
@@ -169,129 +172,134 @@ def render_configure_step(
         )
         if section_caption:
             st.caption(f"Section line: **{section_caption}**")
+        subset_preflight = None
         try:
-            lithology_index = st.session_state.get("lithology_index")
-            if not isinstance(lithology_index, dict):
-                lithology_index = None
             subset_preflight = subset_parse_result(
                 parse_result,
                 active_ids,
-                lithology_index=lithology_index,
+                lithology_index=safe_lithology_index(parse_result),
             )
         except Exception as exc:
             st.error(f"Could not build transect subset for preflight: {exc}")
-            subset_preflight = parse_result
-        available_params = sorted({reading.parameter for reading in subset_preflight.environmental_readings})
-        if available_params:
-            st.markdown("**Lab / environmental parameters**")
-            options_sig = tuple(available_params)
-            if st.session_state.get("_env_params_options_sig") != options_sig:
-                previous = list(st.session_state.get("environmental_parameters_multiselect") or [])
-                st.session_state.environmental_parameters_multiselect = [
-                    p for p in previous if p in available_params
-                ] or list(available_params)
-                st.session_state._env_params_options_sig = options_sig
-            environmental_parameters = tuple(
-                st.multiselect(
-                    "Parameters to plot on section",
-                    options=available_params,
-                    help="Markers and optional fence lines at sample depths (Environmental sheet).",
-                    key="environmental_parameters_multiselect",
+            subset_preflight = None
+
+        if subset_preflight is None:
+            st.caption("Transect subset unavailable — fix selection or workbook data before generating.")
+        else:
+            subset_ready = True
+            available_params = sorted(
+                {reading.parameter for reading in subset_preflight.environmental_readings}
+            )
+            if available_params:
+                st.markdown("**Lab / environmental parameters**")
+                options_sig = tuple(available_params)
+                if st.session_state.get("_env_params_options_sig") != options_sig:
+                    previous = list(st.session_state.get("environmental_parameters_multiselect") or [])
+                    st.session_state.environmental_parameters_multiselect = [
+                        p for p in previous if p in available_params
+                    ] or list(available_params)
+                    st.session_state._env_params_options_sig = options_sig
+                environmental_parameters = tuple(
+                    st.multiselect(
+                        "Parameters to plot on section",
+                        options=available_params,
+                        help="Markers and optional fence lines at sample depths (Environmental sheet).",
+                        key="environmental_parameters_multiselect",
+                    )
                 )
+                if not environmental_parameters:
+                    st.caption("No parameters selected — environmental markers will not be plotted.")
+                show_parameter_labels = st.toggle(
+                    "Show parameter value labels",
+                    value=True,
+                    key="show_parameter_labels_toggle",
+                )
+                parameter_interpolate_segments = st.toggle(
+                    "Interpolate parameter between adjacent holes",
+                    value=True,
+                    key="parameter_interpolate_segments_toggle",
+                )
+            elif parse_result.environmental_readings:
+                st.caption(
+                    "Environmental readings exist but none fall on the current transect holes."
+                )
+            else:
+                st.caption(
+                    "Add an **Environmental** sheet (`hole_id`, `parameter`, `value`, `depth` or "
+                    "`from_depth`/`to_depth`) to plot lab data by depth. See docs/workbook-format.md."
+                )
+            correlation_overrides = _session_correlation_overrides() + subset_preflight.correlation_overrides
+            max_interp_m = float(
+                max_offset_for_interpolation_m
+                if max_offset_for_interpolation_m is not None
+                else offset_warning_m
             )
-            if not environmental_parameters:
-                st.caption("No parameters selected — environmental markers will not be plotted.")
-            show_parameter_labels = st.toggle(
-                "Show parameter value labels",
-                value=True,
-                key="show_parameter_labels_toggle",
+            overrides_payload = tuple(item.model_dump() for item in correlation_overrides)
+            preflight_json_key = (
+                tuple(active_ids),
+                tuple(active_points),
+                interpretation_mode,
+                allow_pinch_outs,
+                overrides_payload,
+                offset_warning_m,
+                max_interp_m,
+                st.session_state.get("file_hash"),
+                st.session_state.get("parse_signature"),
+                fail_on_overlaps,
             )
-            parameter_interpolate_segments = st.toggle(
-                "Interpolate parameter between adjacent holes",
-                value=True,
-                key="parameter_interpolate_segments_toggle",
+            if st.session_state.get("_preflight_json_key") == preflight_json_key:
+                subset_json = st.session_state["_preflight_subset_json"]
+                overrides_json = st.session_state["_preflight_overrides_json"]
+            else:
+                subset_json = subset_preflight.model_dump_json()
+                overrides_json = json.dumps(list(overrides_payload))
+                st.session_state._preflight_json_key = preflight_json_key
+                st.session_state._preflight_subset_json = subset_json
+                st.session_state._preflight_overrides_json = overrides_json
+            preflight_warnings, pair_summaries = cached_configure_preflight(
+                subset_json,
+                json.dumps(list(active_points)),
+                interpretation_mode,
+                allow_pinch_outs,
+                overrides_json,
+                offset_warning_m,
+                max_interp_m,
+                check_overlaps=fail_on_overlaps,
             )
-        elif parse_result.environmental_readings:
-            st.caption(
-                "Environmental readings exist but none fall on the current transect holes."
-            )
-        else:
-            st.caption(
-                "Add an **Environmental** sheet (`hole_id`, `parameter`, `value`, `depth` or "
-                "`from_depth`/`to_depth`) to plot lab data by depth. See docs/workbook-format.md."
-            )
-        correlation_overrides = _session_correlation_overrides() + subset_preflight.correlation_overrides
-        max_interp_m = float(
-            max_offset_for_interpolation_m
-            if max_offset_for_interpolation_m is not None
-            else offset_warning_m
-        )
-        overrides_payload = tuple(item.model_dump() for item in correlation_overrides)
-        preflight_json_key = (
-            tuple(active_ids),
-            tuple(active_points),
-            interpretation_mode,
-            allow_pinch_outs,
-            overrides_payload,
-            offset_warning_m,
-            max_interp_m,
-            st.session_state.get("lithology_index"),
-            fail_on_overlaps,
-        )
-        if st.session_state.get("_preflight_json_key") == preflight_json_key:
-            subset_json = st.session_state["_preflight_subset_json"]
-            overrides_json = st.session_state["_preflight_overrides_json"]
-        else:
-            subset_json = subset_preflight.model_dump_json()
-            overrides_json = json.dumps(list(overrides_payload))
-            st.session_state._preflight_json_key = preflight_json_key
-            st.session_state._preflight_subset_json = subset_json
-            st.session_state._preflight_overrides_json = overrides_json
-        preflight_warnings, pair_summaries = cached_configure_preflight(
-            subset_json,
-            json.dumps(list(active_points)),
-            interpretation_mode,
-            allow_pinch_outs,
-            overrides_json,
-            offset_warning_m,
-            max_interp_m,
-            check_overlaps=fail_on_overlaps,
-        )
-        for message in preflight_warnings:
-            st.warning(message)
-        has_overlap_warnings = any("Polygon overlap" in message for message in preflight_warnings)
-        if pair_summaries:
-            with st.expander("Correlation health preview", expanded=False):
-                for summary in pair_summaries:
-                    st.write(
-                        f"**{summary.left_hole_id} → {summary.right_hole_id}**: "
-                        f"{summary.matched_count} matched, "
-                        f"pinch-out candidates {summary.pinch_out_candidates}, "
-                        f"match rate {summary.match_rate:.0%}"
-                    )
-                    if summary.left_only_codes or summary.right_only_codes:
-                        st.caption(
-                            f"Left only: {', '.join(summary.left_only_codes) or '—'} · "
-                            f"Right only: {', '.join(summary.right_only_codes) or '—'}"
+            for message in preflight_warnings:
+                st.warning(message)
+            has_overlap_warnings = any("Polygon overlap" in message for message in preflight_warnings)
+            if pair_summaries:
+                with st.expander("Correlation health preview", expanded=False):
+                    for summary in pair_summaries:
+                        st.write(
+                            f"**{summary.left_hole_id} → {summary.right_hole_id}**: "
+                            f"{summary.matched_count} matched, "
+                            f"pinch-out candidates {summary.pinch_out_candidates}, "
+                            f"match rate {summary.match_rate:.0%}"
                         )
-                low_match = [s for s in pair_summaries if s.match_rate < 0.5]
-                if low_match:
-                    st.info(
-                        "Low match rate — consider borehole-only or correlation-lines mode for review."
-                    )
-                render_correlation_assist(pair_summaries, subset_preflight, active_ids)
+                        if summary.left_only_codes or summary.right_only_codes:
+                            st.caption(
+                                f"Left only: {', '.join(summary.left_only_codes) or '—'} · "
+                                f"Right only: {', '.join(summary.right_only_codes) or '—'}"
+                            )
+                    low_match = [s for s in pair_summaries if s.match_rate < 0.5]
+                    if low_match:
+                        st.info(
+                            "Low match rate — consider borehole-only or correlation-lines mode for review."
+                        )
+                    render_correlation_assist(pair_summaries, subset_preflight, active_ids)
 
-        if len(active_ids) >= 2:
-            render_manual_correlation_overrides(active_ids, subset_preflight)
+            if len(active_ids) >= 2:
+                render_manual_correlation_overrides(active_ids, subset_preflight)
 
-        if _session_correlation_overrides():
-            st.info(
-                "Correlation styling locked — manual overrides are active and will persist when the transect changes."
-            )
+            if _session_correlation_overrides():
+                st.info(
+                    "Correlation styling locked — manual overrides are active and will persist when the transect changes."
+                )
 
-        render_section_qa(subset_preflight, active_ids, preflight_warnings)
+            render_section_qa(subset_preflight, active_ids, preflight_warnings)
     else:
-        has_overlap_warnings = False
         st.info(
             "Select holes under **Transect selection** in the sidebar "
             "(By hole sequence / Recommended / coordinates)."
@@ -300,6 +308,7 @@ def render_configure_step(
     can_generate = (
         parse_result is not None
         and preflight_selection is not None
+        and subset_ready
         and not blocking
         and not placeholder_blocks_interp
         and (override_warnings or not has_warnings)

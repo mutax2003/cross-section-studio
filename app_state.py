@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+# Bump when session key shapes change so Cloud reconnects drop stale state.
+SESSION_SCHEMA_VERSION = 2
+
 # Domain key groups for targeted resets
 SESSION_PARSE_KEYS = (
     "file_bytes",
@@ -93,6 +96,7 @@ DEFAULT_SESSION: dict[str, object] = {
     "auto_assign_unit_order": True,
     "ai_figure_caption": None,
     "uploaded_name": None,
+    "workbook_uploader_key": 0,
     "output_preset": "section_sheet",
     "allow_pinch_outs": False,
     "show_ground_surface": True,
@@ -110,6 +114,14 @@ def _clear_keys(session: Any, keys: tuple[str, ...]) -> None:
             session[key] = DEFAULT_SESSION[key]
         elif key in session:
             session[key] = None
+
+
+def clear_parse_session_state(session: Any | None = None) -> None:
+    """Clear workbook parse / detection state."""
+    import streamlit as st
+
+    target = session if session is not None else st.session_state
+    _clear_keys(target, SESSION_PARSE_KEYS)
 
 
 def clear_section_output_state(session: Any | None = None) -> None:
@@ -132,6 +144,12 @@ def init_session_defaults(session: Any | None = None) -> None:
     import streamlit as st
 
     target = session if session is not None else st.session_state
+    current_version = target.get("_schema_version")
+    if current_version != SESSION_SCHEMA_VERSION:
+        clear_parse_session_state(target)
+        clear_section_output_state(target)
+        clear_ai_session_state(target)
+        target["_schema_version"] = SESSION_SCHEMA_VERSION
     for key, value in DEFAULT_SESSION.items():
         if key not in target:
             target[key] = value

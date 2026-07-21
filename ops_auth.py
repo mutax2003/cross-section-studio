@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import time
 
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 
 _MAX_AUTH_ATTEMPTS = 5
 _LOCKOUT_SECONDS = 30.0
@@ -31,12 +34,18 @@ def _configured_password() -> str:
             for key in ("CROSS_SECTION_AUTH_PASSWORD", "cross_section_auth_password"):
                 try:
                     value = str(secrets.get(key, "") or "").strip()
-                except Exception:
+                except FileNotFoundError:
+                    # No secrets.toml — expected for local/AppTest; skip silently.
+                    value = ""
+                except (AttributeError, KeyError, TypeError) as exc:
+                    logger.warning("Auth secret %s unreadable: %s", key, exc)
                     value = ""
                 if value:
                     return value
-    except Exception:
+    except FileNotFoundError:
         pass
+    except (AttributeError, KeyError, TypeError) as exc:
+        logger.warning("Streamlit secrets unavailable for auth password: %s", exc)
     return ""
 
 

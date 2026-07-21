@@ -63,6 +63,7 @@ class DataParser:
         environmental_frame = None
         screens_frame = None
         gradients_frame = None
+        data_entry_precedence_warnings: list[str] = []
         if collars_df is not None and lithology_df is not None:
             collars_frame = _normalize_columns(collars_df)
             lithology_frame = _normalize_columns(lithology_df)
@@ -88,12 +89,24 @@ class DataParser:
                 data_entry = parse_data_entry_sheet(entry_frame)
                 if not data_entry.water.empty:
                     water_frame = _normalize_columns(data_entry.water)
+                    if self._native_optional_sheet_has_rows(workbook, self.WATER_SHEET):
+                        data_entry_precedence_warnings.append(
+                            "Native Water sheet was ignored because Data Entry supplied water rows."
+                        )
                 if not data_entry.environmental.empty:
                     environmental_frame = _normalize_columns(data_entry.environmental)
                 if not data_entry.screens.empty:
                     screens_frame = _normalize_columns(data_entry.screens)
+                    if self._native_optional_sheet_has_rows(workbook, self.SCREENS_SHEET):
+                        data_entry_precedence_warnings.append(
+                            "Native Screens sheet was ignored because Data Entry supplied screen rows."
+                        )
                 if not data_entry.gradients.empty:
                     gradients_frame = _normalize_columns(data_entry.gradients)
+                    if self._native_optional_sheet_has_rows(workbook, self.GRADIENTS_SHEET):
+                        data_entry_precedence_warnings.append(
+                            "Native Gradients sheet was ignored because Data Entry supplied gradient rows."
+                        )
 
             if data_entry is not None and not has_native:
                 collars_frame = _normalize_columns(data_entry.collars)
@@ -177,6 +190,7 @@ class DataParser:
             + screen_errors
             + gradient_errors
             + environmental_errors
+            + data_entry_precedence_warnings
         )
         if errors:
             for message in errors:
@@ -234,6 +248,14 @@ class DataParser:
             if text and text.lower() != "nan":
                 return True
         return False
+
+    def _native_optional_sheet_has_rows(self, workbook: pd.ExcelFile, sheet_name: str) -> bool:
+        """True when a native optional tab exists and has at least one hole_id row."""
+        sheet = self._find_sheet(workbook.sheet_names, sheet_name)
+        if not sheet:
+            return False
+        frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
+        return self._frame_has_hole_rows(frame)
 
     @staticmethod
     def _find_sheet(sheet_names: list[str], target: str) -> str | None:

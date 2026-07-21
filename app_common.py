@@ -335,6 +335,26 @@ def _reanalyze_quality(
         st.session_state.import_report = replace(import_report, quality_report=qa)
 
 
+def safe_lithology_index(
+    parse_result: ParseResult | None = None,
+) -> dict[str, tuple[Lithology, ...]] | None:
+    """Return a usable lithology index from session, or rebuild from parse_result.
+
+    Streamlit may rehydrate index values as plain dicts after deploy; prefer rebuilding.
+    """
+    index = st.session_state.get("lithology_index")
+    if isinstance(index, dict) and index:
+        sample = next(iter(index.values()), ())
+        first = sample[0] if sample else None
+        if first is None or isinstance(first, Lithology):
+            return index  # type: ignore[return-value]
+    if parse_result is not None:
+        rebuilt = lithologies_by_hole(parse_result.lithologies)
+        st.session_state.lithology_index = rebuilt
+        return rebuilt
+    return None
+
+
 def _apply_auto_unit_order_fix(
     parse_result: ParseResult,
     import_report: ImportReport | None,
@@ -505,12 +525,17 @@ def _llm_api_key_for_provider(provider_kind: str) -> str:
             ):
                 try:
                     value = str(secrets.get(secret_key, "") or "").strip()
-                except Exception:
+                except FileNotFoundError:
+                    value = ""
+                except (AttributeError, KeyError, TypeError) as exc:
+                    logger.warning("LLM secret %s unreadable: %s", secret_key, exc)
                     value = ""
                 if value:
                     return value
-    except Exception:
+    except FileNotFoundError:
         pass
+    except (AttributeError, KeyError, TypeError) as exc:
+        logger.warning("Streamlit secrets unavailable for LLM API key: %s", exc)
     from ai_assistant import resolve_llm_api_key
 
     return resolve_llm_api_key(provider_kind, None)

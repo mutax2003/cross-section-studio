@@ -392,6 +392,37 @@ def test_resolve_overlaps_in_pair_keeps_largest_fragment() -> None:
     assert all(polygon.polygon.area > 0 for polygon in resolved)
 
 
+def test_resolve_overlaps_warns_when_clip_discards_significant_area(caplog) -> None:
+    """Heavy overlap after a flushed batch: kept area can fall below 85% of original.
+
+    _resolve_overlaps_in_pair logs logger.warning with lithology codes in that case;
+    geometry algorithm is otherwise unchanged.
+    """
+    import logging
+
+    # Four non-overlapping sands fill the unary_union batch (limit 4), then a
+    # pinch-out clay (sorted later) is clipped against the occupied union.
+    sands = [
+        GeologicalPolygon(
+            lithology_code="Sand",
+            polygon=ShapelyPolygon([(0.0, top), (50.0, top), (50.0, bot), (0.0, bot)]),
+            hole_pair=("BH-01", "BH-02"),
+        )
+        for top, bot in ((100.0, 98.0), (98.0, 96.0), (96.0, 94.0), (94.0, 92.0))
+    ]
+    clay = GeologicalPolygon(
+        lithology_code="Clay",
+        polygon=ShapelyPolygon([(0.0, 99.0), (50.0, 99.0), (50.0, 88.0), (0.0, 88.0)]),
+        hole_pair=("BH-01", "BH-02"),
+        is_pinch_out=True,
+    )
+    with caplog.at_level(logging.WARNING, logger="stratigraphy"):
+        resolved = _resolve_overlaps_in_pair([*sands, clay])
+    assert len(resolved) >= 1
+    assert any("Overlap clip discarded fragments" in record.message for record in caplog.records)
+    assert any("Clay" in record.message for record in caplog.records)
+
+
 def test_preview_correlation_health_reports_unmatched_keys() -> None:
     summaries = preview_correlation_health(_projected_pair_pinch_out(), allow_pinch_outs=True)
     assert len(summaries) == 1

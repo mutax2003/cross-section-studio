@@ -186,3 +186,52 @@ def test_holes_missing_lithology_detects_gaps() -> None:
 def test_sanitize_filename_strips_unsafe_chars() -> None:
     assert sanitize_filename("Section A / Line 1") == "Section_A_Line_1"
     assert sanitize_filename("   ") == "cross_section"
+
+
+def test_init_session_defaults_bumps_schema_and_clears_stale() -> None:
+    from app_state import (
+        SESSION_AI_KEYS,
+        SESSION_PARSE_KEYS,
+        SESSION_SCHEMA_VERSION,
+        SESSION_SECTION_KEYS,
+        init_session_defaults,
+    )
+
+    class _FakeSession(dict):
+        pass
+
+    session = _FakeSession()
+    session["_schema_version"] = 1
+    session["parse_result"] = object()
+    session["svg_bytes"] = b"<svg/>"
+    session["qa_narrative"] = "stale"
+    session["file_bytes"] = b"xlsx"
+    init_session_defaults(session)
+    assert session["_schema_version"] == SESSION_SCHEMA_VERSION
+    for key in SESSION_PARSE_KEYS:
+        if key in session:
+            assert session[key] is None or session[key] == [] or session[key] is False
+    assert session.get("parse_result") is None
+    assert session.get("svg_bytes") is None
+    assert session.get("qa_narrative") is None
+    for key in SESSION_SECTION_KEYS:
+        if key in session:
+            assert session[key] is None or session[key] == []
+    for key in SESSION_AI_KEYS:
+        if key in session:
+            assert session[key] is None
+
+
+def test_init_session_defaults_skips_clear_when_schema_current() -> None:
+    from app_state import SESSION_SCHEMA_VERSION, init_session_defaults
+
+    class _FakeSession(dict):
+        pass
+
+    session = _FakeSession()
+    session["_schema_version"] = SESSION_SCHEMA_VERSION
+    session["parse_result"] = "keep-me"
+    session["svg_bytes"] = b"<svg/>"
+    init_session_defaults(session)
+    assert session["parse_result"] == "keep-me"
+    assert session["svg_bytes"] == b"<svg/>"

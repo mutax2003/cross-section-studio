@@ -13,6 +13,7 @@ from app_common import (
     _active_transect_selection,
     _render_hero,
     _render_sticky_generate_strip,
+    safe_lithology_index,
 )
 from app_configure import render_configure_step, render_transect_sidebar
 from app_generate import render_profile_and_downloads
@@ -67,7 +68,16 @@ _render_hero(
     )
 )
 
+flash_success = st.session_state.pop("_flash_success", None)
+if flash_success:
+    st.success(flash_success)
+flash_error = st.session_state.pop("_flash_error", None)
+if flash_error:
+    st.error(flash_error)
+
 parse_result: ParseResult | None = st.session_state.parse_result
+# Prefer session bytes when the uploader is empty (clear/sample remount) so sample
+# loads and Cloud reconnects keep working without a re-upload widget value.
 upload_source = sidebar.uploaded
 if upload_source is None and st.session_state.get("file_bytes"):
     upload_source = _BytesUpload(
@@ -117,59 +127,59 @@ else:
                     max_offset_for_interpolation_m=sidebar.max_offset_for_interpolation_m,
                 )
 
-            is_stale = False
+            is_stale = True
             transect_label: str | None = None
             if configure_state and configure_state.transect_selection is not None:
                 active_ids, _ = configure_state.transect_selection
                 if len(active_ids) >= 2:
                     transect_label = f"A–A′ {active_ids[0]}→{active_ids[-1]}"
-                import_report = st.session_state.import_report
-                coordinate_reference = sidebar.target_crs or (
-                    import_report.suggested_utm_crs if import_report else ""
-                ) or ""
-                _, current_key = collect_section_build_request(
-                    parse_result,
-                    transect_mode=sidebar.transect_mode,
-                    selected_holes=configure_state.selected_holes,
-                    coordinate_text=configure_state.coordinate_text,
-                    offset_warning_m=sidebar.offset_warning_m,
-                    vertical_exaggeration=sidebar.vertical_exaggeration,
-                    show_hatches=sidebar.show_hatches,
-                    show_legend=sidebar.show_legend,
-                    section_title=sidebar.section_title,
-                    interpretation_mode=sidebar.interpretation_mode,
-                    allow_pinch_outs=sidebar.allow_pinch_outs,
-                    uncertainty_spacing_m=sidebar.uncertainty_spacing_m,
-                    uncertainty_offset_m=sidebar.uncertainty_offset_m,
-                    max_offset_for_interpolation_m=sidebar.max_offset_for_interpolation_m,
-                    show_ground_surface=sidebar.show_ground_surface,
-                    interpolate_water_table=sidebar.interpolate_water_table,
-                    warn_on_correlation_gaps=sidebar.warn_on_correlation_gaps,
-                    show_water_elevation_labels=sidebar.show_water_elevation_labels,
-                    show_water_legend=sidebar.show_water_legend,
-                    show_dry_well_nm=sidebar.show_dry_well_nm,
-                    water_interpolate_across_gaps=sidebar.water_interpolate_across_gaps,
-                    environmental_parameters=configure_state.environmental_parameters,
-                    show_parameter_labels=configure_state.show_parameter_labels,
-                    parameter_interpolate_segments=configure_state.parameter_interpolate_segments,
-                    parameter_interpolate_across_gaps=sidebar.parameter_interpolate_across_gaps,
-                    render_layout=sidebar.render_layout,
-                    track_width_m=sidebar.track_width_m,
-                    coordinate_reference=coordinate_reference,
-                    uses_placeholder_elevation=bool(
-                        import_report and import_report.uses_placeholder_elevation
-                    ),
-                    elevation_mode=configure_state.elevation_mode,
-                    report_preset=sidebar.report_preset,
-                    consulting_title_block=sidebar.consulting_title_block,
-                    selection=configure_state.transect_selection,
-                    fail_on_overlaps=configure_state.fail_on_overlaps,
-                )
-                is_stale = (
-                    st.session_state.render_cache_key is not None
-                    and current_key is not None
-                    and current_key != st.session_state.render_cache_key
-                )
+                    import_report = st.session_state.import_report
+                    coordinate_reference = sidebar.target_crs or (
+                        import_report.suggested_utm_crs if import_report else ""
+                    ) or ""
+                    _, current_key = collect_section_build_request(
+                        parse_result,
+                        transect_mode=sidebar.transect_mode,
+                        selected_holes=configure_state.selected_holes,
+                        coordinate_text=configure_state.coordinate_text,
+                        offset_warning_m=sidebar.offset_warning_m,
+                        vertical_exaggeration=sidebar.vertical_exaggeration,
+                        show_hatches=sidebar.show_hatches,
+                        show_legend=sidebar.show_legend,
+                        section_title=sidebar.section_title,
+                        interpretation_mode=sidebar.interpretation_mode,
+                        allow_pinch_outs=sidebar.allow_pinch_outs,
+                        uncertainty_spacing_m=sidebar.uncertainty_spacing_m,
+                        uncertainty_offset_m=sidebar.uncertainty_offset_m,
+                        max_offset_for_interpolation_m=sidebar.max_offset_for_interpolation_m,
+                        show_ground_surface=sidebar.show_ground_surface,
+                        interpolate_water_table=sidebar.interpolate_water_table,
+                        warn_on_correlation_gaps=sidebar.warn_on_correlation_gaps,
+                        show_water_elevation_labels=sidebar.show_water_elevation_labels,
+                        show_water_legend=sidebar.show_water_legend,
+                        show_dry_well_nm=sidebar.show_dry_well_nm,
+                        water_interpolate_across_gaps=sidebar.water_interpolate_across_gaps,
+                        environmental_parameters=configure_state.environmental_parameters,
+                        show_parameter_labels=configure_state.show_parameter_labels,
+                        parameter_interpolate_segments=configure_state.parameter_interpolate_segments,
+                        parameter_interpolate_across_gaps=sidebar.parameter_interpolate_across_gaps,
+                        render_layout=sidebar.render_layout,
+                        track_width_m=sidebar.track_width_m,
+                        coordinate_reference=coordinate_reference,
+                        uses_placeholder_elevation=bool(
+                            import_report and import_report.uses_placeholder_elevation
+                        ),
+                        elevation_mode=configure_state.elevation_mode,
+                        report_preset=sidebar.report_preset,
+                        consulting_title_block=sidebar.consulting_title_block,
+                        selection=configure_state.transect_selection,
+                        fail_on_overlaps=configure_state.fail_on_overlaps,
+                    )
+                    is_stale = (
+                        st.session_state.render_cache_key is None
+                        or current_key is None
+                        or current_key != st.session_state.render_cache_key
+                    )
 
             preset_key = str(st.session_state.get("output_preset", "section_sheet"))
             _render_sticky_generate_strip(
@@ -323,7 +333,7 @@ else:
                         active_hole_ids,
                         build_request,
                         sidebar.offset_warning_m,
-                        lithology_index=st.session_state.lithology_index,
+                        lithology_index=safe_lithology_index(parse_result),
                     )
                 )
                 st.session_state.svg_bytes = svg_bytes
@@ -343,18 +353,22 @@ else:
                 st.session_state.polygon_overlap_warnings = overlap_warnings
                 st.session_state.render_cache_key = cache_key
                 if sidebar.interpretation_mode == "borehole_only":
-                    st.success(
+                    st.session_state["_flash_success"] = (
                         f"Generated observed-data cross-section across {len(active_hole_ids)} boreholes."
                     )
                 else:
-                    st.success(
+                    st.session_state["_flash_success"] = (
                         f"Generated cross-section with {polygon_count} geological polygons "
                         f"across {len(active_hole_ids)} boreholes."
                     )
                 st.rerun()
             except Exception as exc:
                 logger.exception("Cross-section generation failed")
-                st.error("Cross-section generation failed. See server logs for details.")
+                error_msg = "Cross-section generation failed. See server logs for details."
+                st.session_state["_flash_error"] = error_msg
+                # Keep SVG if present but mark stale so downloads stay gated.
+                st.session_state.render_cache_key = None
+                st.error(st.session_state.pop("_flash_error", error_msg))
                 if os.environ.get("CROSS_SECTION_DEBUG_UI", "").strip().lower() in {
                     "1",
                     "true",

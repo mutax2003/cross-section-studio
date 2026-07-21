@@ -395,12 +395,23 @@ def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[Geologi
     batch_limit = 4
     last_index = len(ordered) - 1
     for index, geo_polygon in enumerate(ordered):
+        original_area = float(geo_polygon.polygon.area)
         geom = geo_polygon.polygon
         if occupied_geom is not None and not occupied_geom.is_empty:
             geom = geom.difference(occupied_geom)
         largest = _largest_polygon(geom)
         if largest is None or largest.is_empty:
             continue
+        # Difference + MultiPolygon keep-largest can discard secondary fragments.
+        if original_area > 0 and largest.area < 0.85 * original_area:
+            logger.warning(
+                "Overlap clip discarded fragments for %s between %s–%s "
+                "(kept %.0f%% of original area)",
+                geo_polygon.lithology_code,
+                geo_polygon.hole_pair[0],
+                geo_polygon.hole_pair[1],
+                100.0 * largest.area / original_area,
+            )
         resolved.append(
             GeologicalPolygon(
                 lithology_code=geo_polygon.lithology_code,

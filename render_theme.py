@@ -56,11 +56,15 @@ def consulting_gw_series_style(series_id: str, level_label: str = "") -> tuple[s
 
 
 def water_has_multiple_series(water_levels) -> bool:
-    """True when more than one GW snapshot series is present."""
+    """True only when two or more distinct GW ``series_id`` values are present.
+
+    A single named series (e.g. all rows ``2024-05``) is not multi-series.
+    Missing / blank ``series_id`` values normalize to ``"default"``.
+    """
     if not water_levels:
         return False
     series_ids = {(getattr(level, "series_id", None) or "default") for level in water_levels}
-    return len(series_ids) > 1 or any(s not in {"", "default"} for s in series_ids)
+    return len(series_ids) > 1
 
 
 def primary_water_depth_by_hole(water_levels) -> dict[str, float]:

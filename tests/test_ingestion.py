@@ -684,3 +684,43 @@ def test_environmental_sheet_accepts_depth_column(tmp_path: Path) -> None:
     assert result.environmental_readings[0].sample_depth == pytest.approx(3.5)
     assert {reading.parameter for reading in result.environmental_readings} == {"Chloride"}
 
+
+def test_data_entry_water_precedence_warns_when_native_ignored(tmp_path: Path) -> None:
+    """Data Entry water wins; native Water rows are ignored with a parse warning."""
+    workbook = tmp_path / "data_entry_water_precedence.xlsx"
+    collars = [
+        {
+            "hole_id": "MW-01",
+            "easting": 0.0,
+            "northing": 0.0,
+            "elevation": 100.0,
+            "total_depth": 30.0,
+        },
+    ]
+    lithology = [
+        {
+            "hole_id": "MW-01",
+            "from_depth": 0.0,
+            "to_depth": 30.0,
+            "lithology_code": "Clay",
+        },
+    ]
+    native_water = [{"hole_id": "MW-01", "depth": 9.9, "series_id": "native"}]
+    data_entry_rows = [
+        ["WATER (optional)", "", "", "", ""],
+        ["hole_id", "depth", "elevation_masl", "series_id", "series_label"],
+        ["MW-01", 1.5, "", "data-entry", "From Data Entry"],
+    ]
+    with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
+        pd.DataFrame(collars).to_excel(writer, sheet_name="Collars", index=False)
+        pd.DataFrame(lithology).to_excel(writer, sheet_name="Lithology", index=False)
+        pd.DataFrame(native_water).to_excel(writer, sheet_name="Water", index=False)
+        pd.DataFrame(data_entry_rows).to_excel(
+            writer, sheet_name="Data Entry", index=False, header=False
+        )
+    result = DataParser().parse_file(workbook)
+    assert len(result.water_levels) == 1
+    assert result.water_levels[0].series_id == "data-entry"
+    assert result.water_levels[0].depth == pytest.approx(1.5)
+    assert any("Native Water sheet was ignored" in message for message in result.errors)
+

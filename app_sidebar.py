@@ -99,6 +99,7 @@ def render_sidebar() -> SidebarState:
         uploaded = st.file_uploader(
             "Upload Excel workbook",
             type=["xlsx"],
+            key=f"workbook_uploader_{st.session_state.get('workbook_uploader_key', 0)}",
             help=(
                 "Upload a filled template, native Collars/Lithology workbook, "
                 "or field export with Lat/Long."

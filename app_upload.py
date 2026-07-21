@@ -50,6 +50,9 @@ def clear_workbook_session() -> None:
     st.session_state.uploaded_name = DEFAULT_SESSION.get("uploaded_name")
     st.session_state.transect_candidates = None
     st.session_state.suggested_offset_m = DEFAULT_SESSION.get("suggested_offset_m", 50.0)
+    st.session_state["workbook_uploader_key"] = (
+        st.session_state.get("workbook_uploader_key", 0) + 1
+    )
 
 
 def input_template_download_payload() -> tuple[bytes, str] | None:
@@ -133,6 +136,9 @@ def load_sample_workbook() -> None:
     st.session_state.quality_report = None
     clear_ai_session_state()
     clear_section_output_state()
+    st.session_state["workbook_uploader_key"] = (
+        st.session_state.get("workbook_uploader_key", 0) + 1
+    )
 
 
 def render_welcome_card() -> None:

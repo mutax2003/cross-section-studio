@@ -61,3 +61,20 @@ def test_primary_water_depth_prefers_last_series_in_workbook_order() -> None:
         WaterLevel(hole_id="BH-02", depth=3.0, series_id="2024-06", series_label="June 2024"),
     )
     assert primary_water_depth_by_hole(levels) == {"BH-01": 2.0, "BH-02": 3.0}
+
+
+def test_water_has_multiple_series_requires_distinct_ids() -> None:
+    from render_theme import water_has_multiple_series
+
+    single_named = (
+        WaterLevel(hole_id="BH-01", depth=1.0, series_id="2024-05", series_label="May 2024"),
+        WaterLevel(hole_id="BH-02", depth=2.0, series_id="2024-05", series_label="May 2024"),
+    )
+    assert water_has_multiple_series(single_named) is False
+
+    multi = (
+        WaterLevel(hole_id="BH-01", depth=1.0, series_id="2024-05", series_label="May 2024"),
+        WaterLevel(hole_id="BH-01", depth=2.0, series_id="2024-06", series_label="June 2024"),
+    )
+    assert water_has_multiple_series(multi) is True
+    assert water_has_multiple_series(()) is False

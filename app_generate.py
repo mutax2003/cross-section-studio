@@ -19,41 +19,56 @@ except ImportError:  # pragma: no cover - ops optional until landed
         return None
 
 
-def _ensure_png_export() -> None:
-    """Build PNG on demand from the last Generate cache keys."""
+def _ensure_png_export() -> bool:
+    """Build PNG on demand from the last Generate cache keys.
+
+    Returns True when session PNG bytes were updated.
+    """
     subset_json = st.session_state.get("section_build_subset_json")
     request_json = st.session_state.get("section_build_request_json")
     if not subset_json or not request_json:
-        return
+        st.error("Generate the section first, then Prepare.")
+        return False
     if st.session_state.get("png_bytes"):
-        return
+        return False
     st.session_state.png_bytes = cached_build_section_png(subset_json, request_json)
+    return True
 
 
-def _ensure_pdf_export() -> None:
-    """Build PDF on demand from the last Generate cache keys."""
+def _ensure_pdf_export() -> bool:
+    """Build PDF on demand from the last Generate cache keys.
+
+    Returns True when session PDF bytes were updated.
+    """
     subset_json = st.session_state.get("section_build_subset_json")
     request_json = st.session_state.get("section_build_request_json")
     if not subset_json or not request_json:
-        return
+        st.error("Generate the section first, then Prepare.")
+        return False
     if st.session_state.get("pdf_bytes"):
-        return
+        return False
     st.session_state.pdf_bytes = cached_build_section_pdf(subset_json, request_json)
+    return True
 
 
-def _ensure_both_exports() -> None:
-    """Build PNG and PDF together from the last Generate cache keys."""
+def _ensure_both_exports() -> bool:
+    """Build PNG and PDF together from the last Generate cache keys.
+
+    Returns True when session export bytes were updated.
+    """
     subset_json = st.session_state.get("section_build_subset_json")
     request_json = st.session_state.get("section_build_request_json")
     if not subset_json or not request_json:
-        return
+        st.error("Generate the section first, then Prepare.")
+        return False
     png_data = st.session_state.get("png_bytes")
     pdf_data = st.session_state.get("pdf_bytes")
     if png_data and pdf_data:
-        return
+        return False
     png_bytes, pdf_bytes = cached_build_section_exports(subset_json, request_json)
     st.session_state.png_bytes = png_bytes
     st.session_state.pdf_bytes = pdf_bytes
+    return True
 
 
 def _audit_section_export(fmt: str, section_title: str) -> None:
@@ -144,8 +159,8 @@ def render_profile_and_downloads(
             )
         elif not is_stale and parse_result_available:
             if st.button("Prepare PNG & PDF", key="prepare_both_exports", width="stretch"):
-                _ensure_both_exports()
-                st.rerun()
+                if _ensure_both_exports():
+                    st.rerun()
         else:
             st.download_button(
                 label="Download PNG" + (" (stale)" if is_stale else ""),
@@ -202,8 +217,8 @@ def render_profile_and_downloads(
                         kwargs={"fmt": "png", "section_title": section_title},
                     )
                 elif st.button("Prepare PNG only", key="prepare_png_export", width="stretch"):
-                    _ensure_png_export()
-                    st.rerun()
+                    if _ensure_png_export():
+                        st.rerun()
             with sep2:
                 if pdf_data:
                     st.download_button(
@@ -216,5 +231,5 @@ def render_profile_and_downloads(
                         kwargs={"fmt": "pdf", "section_title": section_title},
                     )
                 elif st.button("Prepare PDF only", key="prepare_pdf_export", width="stretch"):
-                    _ensure_pdf_export()
-                    st.rerun()
+                    if _ensure_pdf_export():
+                        st.rerun()

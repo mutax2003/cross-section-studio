@@ -23,6 +23,14 @@ REPORT_GRID_COLOR = "#E5E7EB"
 REPORT_GRID_ALPHA = 0.85
 CONSULTING_FIGURE_BG = "#FFFFFF"
 CONSULTING_WATER_COLOR = "#007FFF"
+PARAMETER_READING_COLOR = "#EA580C"
+PARAMETER_PALETTE: tuple[str, ...] = (
+    "#EA580C",
+    "#7C3AED",
+    "#059669",
+    "#DC2626",
+    "#2563EB",
+)
 CONSULTING_SURFACE_COLOR = "#8B6914"
 CONSULTING_NM_COLOR = "#64748B"
 DEFAULT_CONSULTING_NOTES: tuple[str, ...] = (
@@ -33,6 +41,7 @@ CONSULTING_SCALE_BAR_M = 30.0
 
 CONSULTING_GW_SERIES_STYLES: dict[str, tuple[str, str, str]] = {
     "2024-05": ("#5EB8FF", "v", "May 2024"),
+    "2024-06": ("#003399", "P", "June 2024"),
     "2025-06": ("#003399", "P", "June 2025"),
     "default": (CONSULTING_WATER_COLOR, "v", ""),
 }
@@ -52,6 +61,18 @@ def water_has_multiple_series(water_levels) -> bool:
         return False
     series_ids = {(getattr(level, "series_id", None) or "default") for level in water_levels}
     return len(series_ids) > 1 or any(s not in {"", "default"} for s in series_ids)
+
+
+def primary_water_depth_by_hole(water_levels) -> dict[str, float]:
+    """Map hole_id → depth for the primary (lexicographically first) GW series."""
+    if not water_levels:
+        return {}
+    by_series: dict[str, list] = {}
+    for level in water_levels:
+        series_id = getattr(level, "series_id", None) or "default"
+        by_series.setdefault(series_id, []).append(level)
+    primary_series = sorted(by_series)[0]
+    return {level.hole_id: level.depth for level in by_series[primary_series]}
 
 
 def strip_cross_section_prefix(label: str) -> str:

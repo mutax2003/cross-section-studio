@@ -41,6 +41,7 @@ from paths import import_profiles_dir
 PROFILES_DIR = import_profiles_dir()
 OVERRIDES_DIR = PROFILES_DIR / "overrides"
 NATIVE_PROFILE_ID = "native_platform"
+DATA_ENTRY_PROFILE_ID = "data_entry_template"
 
 DEPTH_INTERVAL_PATTERN = re.compile(r"([\d.]+)\s*-\s*([\d.]+)")
 
@@ -101,6 +102,7 @@ class ImportReport:
     uses_placeholder_elevation: bool = False
     suggested_utm_crs: str | None = None
     profile_default_elevation_m: float | None = None
+    project_metadata: dict[str, str] = field(default_factory=dict)
 
 
 def _as_workbook(source: str | Path | BinaryIO | BytesIO | pd.ExcelFile) -> pd.ExcelFile:
@@ -130,21 +132,60 @@ def _resolve_column_name(columns: list[str], expected: str) -> str | None:
     return None
 
 
+def _safe_profile_stem(profile_id: str, *, kind: str) -> str:
+    text = str(profile_id).strip()
+    if not text or any(ch in text for ch in ("/", "\\", "\x00")) or ".." in text:
+        raise ValueError(f"Invalid {kind} id: {profile_id!r}")
+    if Path(text).name != text:
+        raise ValueError(f"Invalid {kind} id: {profile_id!r}")
+    return text
+
+
 def load_profile(profile_id: str) -> ImportProfile:
     if profile_id == NATIVE_PROFILE_ID:
         return _native_profile()
+    if profile_id == DATA_ENTRY_PROFILE_ID:
+        return ImportProfile(
+            id=DATA_ENTRY_PROFILE_ID,
+            label="Cross Section input template (Data Entry)",
+            detect=DetectRules(required_sheets=["Data Entry"]),
+        )
     return _load_profile_from_disk(profile_id)
 
 
 @lru_cache(maxsize=16)
 def _load_profile_from_disk(profile_id: str) -> ImportProfile:
-    path = PROFILES_DIR / f"{profile_id}.json"
+    return _resolve_profile_from_disk(profile_id, depth=0, seen=frozenset())
+
+
+_MAX_PROFILE_EXTENDS_DEPTH = 8
+
+
+def _resolve_profile_from_disk(
+    profile_id: str,
+    *,
+    depth: int,
+    seen: frozenset[str],
+) -> ImportProfile:
+    if depth > _MAX_PROFILE_EXTENDS_DEPTH:
+        raise ValueError(f"Import profile extends chain too deep (>{_MAX_PROFILE_EXTENDS_DEPTH})")
+    if profile_id in seen:
+        raise ValueError(f"Circular import profile extends involving {profile_id!r}")
+    stem = _safe_profile_stem(profile_id, kind="profile")
+    path = (PROFILES_DIR / f"{stem}.json").resolve()
+    if not path.is_relative_to(PROFILES_DIR.resolve()):
+        raise ValueError(f"Import profile path escapes profiles dir: {profile_id}")
     if not path.exists():
         raise FileNotFoundError(f"Import profile not found: {profile_id}")
 
     data = json.loads(path.read_text(encoding="utf-8"))
-    if data.get("extends"):
-        base = load_profile(data["extends"]).model_dump()
+    extends = data.get("extends")
+    if extends:
+        base = _resolve_profile_from_disk(
+            str(extends),
+            depth=depth + 1,
+            seen=seen | {profile_id},
+        ).model_dump()
         base.update({key: value for key, value in data.items() if key != "extends"})
         return ImportProfile.model_validate(base)
     return ImportProfile.model_validate(data)
@@ -167,7 +208,10 @@ def _native_profile() -> ImportProfile:
 def load_override(override_id: str | None) -> ImportProfile | None:
     if not override_id:
         return None
-    path = OVERRIDES_DIR / f"{override_id}.json"
+    stem = _safe_profile_stem(override_id, kind="override")
+    path = (OVERRIDES_DIR / f"{stem}.json").resolve()
+    if not path.is_relative_to(OVERRIDES_DIR.resolve()):
+        raise ValueError(f"Import override path escapes overrides dir: {override_id}")
     if not path.exists():
         raise FileNotFoundError(f"Import override not found: {override_id}")
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -255,6 +299,14 @@ class FormatDetector:
         workbook = _as_workbook(source)
         sheet_names = workbook.sheet_names
         sheet_names_lower = {_normalize_header(name): name for name in sheet_names}
+
+        if "data_entry" in sheet_names_lower:
+            return DetectionResult(
+                profile_id=DATA_ENTRY_PROFILE_ID,
+                label="Cross Section input template (Data Entry)",
+                confidence=1.0,
+                is_native=True,
+            )
 
         if "collars" in sheet_names_lower and "lithology" in sheet_names_lower:
             collars_sheet = sheet_names_lower["collars"]
@@ -395,6 +447,18 @@ def _read_field_data_total_depths(workbook: pd.ExcelFile) -> dict[str, float]:
     return frame.groupby("_hole_id", as_index=True)["_td"].max().astype(float).to_dict()
 
 
+def _field_data_maps(workbook: pd.ExcelFile) -> tuple[dict[str, float], dict[str, float]]:
+    """Read Field Data RL and TD once per workbook (cached on the ExcelFile instance)."""
+    cached = getattr(workbook, "_xs_field_data_maps", None)
+    if cached is None:
+        cached = (
+            _read_field_data_collar_elevations(workbook),
+            _read_field_data_total_depths(workbook),
+        )
+        workbook._xs_field_data_maps = cached  # type: ignore[attr-defined]
+    return cached
+
+
 class FieldExportAdapter:
     def adapt(
         self,
@@ -404,7 +468,7 @@ class FieldExportAdapter:
         elevation_m: float | None = None,
         target_crs: str | None = None,
         workbook: pd.ExcelFile | None = None,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    ) -> tuple[pd.DataFrame, pd.DataFrame, str | None]:
         active_workbook = workbook or _as_workbook(source)
         sheet_key = _normalize_header(profile.lithology_sheet)
         sheet_lookup = {_normalize_header(name): name for name in active_workbook.sheet_names}
@@ -472,8 +536,7 @@ class FieldExportAdapter:
             for hole_id in max_depth_by_hole.index
         }
 
-        measured_td = _read_field_data_total_depths(active_workbook)
-        measured_rl = _read_field_data_collar_elevations(active_workbook)
+        measured_rl, measured_td = _field_data_maps(active_workbook)
         for hole_id, rl in measured_rl.items():
             if hole_id in collar_accum:
                 collar_accum[hole_id]["elevation"] = float(rl)
@@ -498,7 +561,13 @@ class FieldExportAdapter:
             ["hole_id", "from_depth"],
         )
         collars_out = collars_df[["hole_id", "easting", "northing", "elevation", "total_depth"]].copy()
-        return collars_out, lithology_df
+        suggested_utm_crs: str | None = None
+        if profile.coordinates.mode == "wgs84_to_utm" and {"latitude", "longitude"}.issubset(frame.columns):
+            lats = pd.to_numeric(frame["latitude"], errors="coerce").dropna()
+            lons = pd.to_numeric(frame["longitude"], errors="coerce").dropna()
+            if not lats.empty and not lons.empty:
+                suggested_utm_crs = suggest_utm_crs(lats.tolist(), lons.tolist())
+        return collars_out, lithology_df, suggested_utm_crs
 
 
 def _native_adapt(
@@ -526,6 +595,10 @@ def _detect_optional_workbook_sheets(workbook: pd.ExcelFile) -> list[str]:
         "faults": "Faults",
         "unconformities": "Unconformities",
         "field_data": "Field Data",
+        "data_entry": "Data Entry",
+        "instructions": "Instructions",
+        "screens": "Screens",
+        "gradients": "Gradients",
     }
     detected: list[str] = []
     for sheet_name in workbook.sheet_names:
@@ -564,17 +637,16 @@ def ingest_workbook(
         if "Field Data" not in optional_sheets:
             optional_sheets.append("Field Data")
         if resolved_profile_id != NATIVE_PROFILE_ID:
-            measured = _read_field_data_total_depths(workbook)
-            measured_rl = _read_field_data_collar_elevations(workbook)
-            if measured:
+            measured_rl, measured_td = _field_data_maps(workbook)
+            if measured_td:
                 warnings.append(
-                    f"Field Data sheet: applied measured total depth for {len(measured)} hole(s)."
+                    f"Field Data sheet: applied measured total depth for {len(measured_td)} hole(s)."
                 )
             if measured_rl:
                 warnings.append(
                     f"Field Data sheet: applied collar RL for {len(measured_rl)} hole(s)."
                 )
-            if not measured:
+            if not measured_td:
                 warnings.append(
                     "Field Data sheet detected — no TD column mapped; total depth inferred from lithology."
                 )
@@ -583,25 +655,53 @@ def ingest_workbook(
                 "Field Data sheet detected — not used for stratigraphy (OVA overlay is future work)."
             )
 
-    if resolved_profile_id == NATIVE_PROFILE_ID:
-        collars_df, lithology_df, mapping_proposal = _native_adapt(
-            source,
-            workbook=workbook,
-        )
+    project_metadata: dict[str, str] = {}
+    if resolved_profile_id == DATA_ENTRY_PROFILE_ID:
+        from workbook_template import load_project_metadata
+
+        profile_label = "Cross Section input template (multi-tab)"
+        if hasattr(source, "seek"):
+            source.seek(0)
+        project_metadata = load_project_metadata(source)
+        if hasattr(source, "seek"):
+            source.seek(0)
+        parse_result = DataParser().parse_file(source, lithology_aliases=aliases)
+        if "Data Entry" not in optional_sheets:
+            optional_sheets.append("Data Entry")
+        if project_metadata and "Project" not in optional_sheets:
+            optional_sheets.append("Project")
+        if project_metadata:
+            warnings.append(
+                "Loaded Project / Data Entry metadata — consulting title fields will be seeded on upload."
+            )
+        else:
+            warnings.append(
+                "Loaded input template workbook — no PROJECT metadata found."
+            )
+    elif resolved_profile_id == NATIVE_PROFILE_ID:
+        # Full workbook parse so optional Water / Environmental / Screens / Gradients load.
+        # Avoid pre-supplying collars_df/lithology_df (that path skips overlay sheets).
         profile_label = "Native platform (Collars + Lithology)"
+        mapping_proposal = propose_workbook_mapping(workbook)
+        if hasattr(source, "seek"):
+            source.seek(0)
+        parse_result = DataParser().parse_file(source, lithology_aliases=aliases)
     else:
         profile = load_override(override_id) if override_id else load_profile(resolved_profile_id)
         resolved_profile_id = profile.id
         profile_label = profile.label
         profile_default_elevation_m = profile.defaults.elevation_m
 
-        collars_df, lithology_df = FieldExportAdapter().adapt(
+        collars_df, lithology_df, suggested_from_adapt = FieldExportAdapter().adapt(
             source,
             profile,
             elevation_m=elevation_m,
             target_crs=target_crs,
             workbook=workbook,
         )
+        if suggested_from_adapt and target_crs is None:
+            suggested_utm_crs = suggested_from_adapt
+            warnings.append(f"Suggested target CRS from coordinates: {suggested_utm_crs}")
         for hole_id, offset in profile.coordinate_offsets_m.items():
             if len(offset) == 2:
                 offsets_applied[hole_id] = (float(offset[0]), float(offset[1]))
@@ -610,35 +710,20 @@ def ingest_workbook(
                 f"Collar elevation uses profile default ({profile.defaults.elevation_m:.1f} m) — "
                 "set sidebar elevation for absolute RL sections."
             )
-        if profile.coordinates.mode == "wgs84_to_utm" and "latitude" in profile.columns:
-            sheet_key = _normalize_header(profile.lithology_sheet)
-            sheet_lookup = {_normalize_header(name): name for name in workbook.sheet_names}
-            if sheet_key in sheet_lookup:
-                lith_raw = pd.read_excel(workbook, sheet_name=sheet_lookup[sheet_key])
-                lat_col = _resolve_column_name(list(lith_raw.columns), profile.columns.get("latitude", "Lat"))
-                lon_col = _resolve_column_name(list(lith_raw.columns), profile.columns.get("longitude", "Long"))
-                if lat_col and lon_col:
-                    lats = pd.to_numeric(lith_raw[lat_col], errors="coerce").dropna()
-                    lons = pd.to_numeric(lith_raw[lon_col], errors="coerce").dropna()
-                    if not lats.empty and not lons.empty:
-                        suggested_utm_crs = suggest_utm_crs(lats.tolist(), lons.tolist())
-                        if suggested_utm_crs and target_crs is None:
-                            warnings.append(f"Suggested target CRS from coordinates: {suggested_utm_crs}")
+        parse_result = DataParser().parse_file(
+            source,
+            collars_df=collars_df,
+            lithology_df=lithology_df,
+            lithology_aliases=aliases,
+        )
 
     placeholder_elevation = (
         profile_default_elevation_m
-        if resolved_profile_id != NATIVE_PROFILE_ID
+        if resolved_profile_id not in {NATIVE_PROFILE_ID, DATA_ENTRY_PROFILE_ID}
         else None
     )
     if elevation_m is not None:
         placeholder_elevation = None
-
-    parse_result = DataParser().parse_file(
-        source,
-        collars_df=collars_df,
-        lithology_df=lithology_df,
-        lithology_aliases=aliases,
-    )
 
     had_unit_order_column = lithology_has_unit_order_column(parse_result.lithologies)
     unit_order_auto_assigned = False
@@ -655,6 +740,8 @@ def ingest_workbook(
                 lithologies=new_lithologies,
                 errors=parse_result.errors,
                 water_levels=parse_result.water_levels,
+                screen_intervals=parse_result.screen_intervals,
+                vertical_gradients=parse_result.vertical_gradients,
                 deviation_readings=parse_result.deviation_readings,
                 correlation_overrides=parse_result.correlation_overrides,
                 faults=parse_result.faults,
@@ -694,6 +781,7 @@ def ingest_workbook(
         uses_placeholder_elevation=uses_placeholder,
         suggested_utm_crs=suggested_utm_crs,
         profile_default_elevation_m=profile_default_elevation_m,
+        project_metadata=project_metadata,
     )
     return parse_result, report
 
@@ -712,11 +800,36 @@ def export_platform_workbook(
     detection = FormatDetector().detect(workbook) if profile_id is None else None
     resolved_profile_id = profile_id or detection.profile_id
 
-    if resolved_profile_id == NATIVE_PROFILE_ID:
+    if resolved_profile_id == DATA_ENTRY_PROFILE_ID:
+        parse_result = DataParser().parse_file(source)
+        collars_df = pd.DataFrame(
+            [
+                {
+                    "hole_id": collar.hole_id,
+                    "easting": collar.easting,
+                    "northing": collar.northing,
+                    "elevation": collar.elevation,
+                    "total_depth": collar.total_depth,
+                }
+                for collar in parse_result.collars
+            ]
+        )
+        lithology_df = pd.DataFrame(
+            [
+                {
+                    "hole_id": item.hole_id,
+                    "from_depth": item.from_depth,
+                    "to_depth": item.to_depth,
+                    "lithology_code": item.lithology_code,
+                }
+                for item in parse_result.lithologies
+            ]
+        )
+    elif resolved_profile_id == NATIVE_PROFILE_ID:
         collars_df, lithology_df, _ = _native_adapt(source, workbook=workbook)
     else:
         profile = load_override(override_id) if override_id else load_profile(resolved_profile_id)
-        collars_df, lithology_df = FieldExportAdapter().adapt(
+        collars_df, lithology_df, _ = FieldExportAdapter().adapt(
             source,
             profile,
             elevation_m=elevation_m,

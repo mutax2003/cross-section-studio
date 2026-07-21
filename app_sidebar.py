@@ -14,7 +14,6 @@ from app_common import (
     _default_consulting_notes,
     _llm_api_key_for_provider,
     _report_context_from_selection,
-    _sidebar_heading,
     llm_disabled_by_deployment,
 )
 from ai_assistant import (
@@ -66,117 +65,117 @@ class SidebarState:
 
 def render_sidebar() -> SidebarState:
     apply_pending_project_seed()
-    _sidebar_heading("Data source")
-    from paths import cross_section_input_template
+    has_parsed = st.session_state.get("parse_result") is not None
 
-    st.caption(
-        "Enter geology in Excel (download the template), then upload here. "
-        "Native Collars/Lithology workbooks and field exports with Lat/Long also work."
-    )
-    template_path = cross_section_input_template()
-    if template_path.exists():
-        st.download_button(
-            "Download template (data entry)",
-            data=template_path.read_bytes(),
-            file_name=template_path.name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="sidebar_download_input_template",
-            help="Fill Collars + Lithology in Excel, then upload with the control below.",
+    with st.expander("Data source", expanded=True):
+        st.caption(
+            "Enter geology in Excel (download the template), then upload here. "
+            "Native Collars/Lithology workbooks and field exports with Lat/Long also work."
         )
-    uploaded = st.file_uploader(
-        "Upload Excel workbook",
-        type=["xlsx"],
-        help=(
-            "Upload a filled template, native Collars/Lithology workbook, "
-            "or field export with Lat/Long."
-        ),
-    )
-    if uploaded is not None:
-        st.session_state.uploaded_name = uploaded.name
+        from paths import cross_section_input_template
 
-    selected_profile_key, override_id, default_elevation_m, target_crs = _render_import_settings(
-        expanded=bool(uploaded) or bool(st.session_state.get("file_bytes")),
-    )
+        template_path = cross_section_input_template()
+        if template_path.exists():
+            st.download_button(
+                "Download template (data entry)",
+                data=template_path.read_bytes(),
+                file_name=template_path.name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="sidebar_download_input_template",
+                help="Fill Collars + Lithology in Excel, then upload with the control below.",
+            )
+        uploaded = st.file_uploader(
+            "Upload Excel workbook",
+            type=["xlsx"],
+            help=(
+                "Upload a filled template, native Collars/Lithology workbook, "
+                "or field export with Lat/Long."
+            ),
+        )
+        if uploaded is not None:
+            st.session_state.uploaded_name = uploaded.name
 
-    st.divider()
-    _sidebar_heading("Section output")
-    output_preset = st.selectbox(
-        "Output style",
-        options=tuple(OUTPUT_PRESET_LABELS.keys()),
-        format_func=lambda key: OUTPUT_PRESET_LABELS[key],
-        key="output_preset",
-        help="Consulting report includes footer title block and groundwater legend.",
-    )
-    preset_config = resolve_output_preset(output_preset)
-    render_layout = preset_config.render_layout
-    report_preset = preset_config.report_preset
-    is_consulting_layout = render_layout == "consulting_section"
-    if st.session_state.get("_synced_output_preset") != output_preset:
-        st.session_state.allow_pinch_outs = preset_config.allow_pinch_outs
-        st.session_state.show_ground_surface = preset_config.show_ground_surface
-        st.session_state.show_legend = preset_config.show_legend
-        st.session_state._synced_output_preset = output_preset
+        selected_profile_key, override_id, default_elevation_m, target_crs = _render_import_settings(
+            expanded=bool(uploaded) or bool(st.session_state.get("file_bytes")),
+        )
 
-    interpretation_mode = st.radio(
-        "Interpretation",
-        options=["interpolated", "correlation_lines", "borehole_only"],
-        format_func=lambda value: {
-            "interpolated": "Connect layers between holes",
-            "correlation_lines": "Contact lines only (no shading)",
-            "borehole_only": "Observed logs only (no inter-hole fill)",
-        }[value],
-        help=(
-            "Interpolated: correlate lithology between boreholes. "
-            "Contact lines: fence contacts without fill. "
-            "Observed only: stick logs without correlation."
-        ),
-    )
-    allow_pinch_outs = st.toggle(
-        "Show layers that thin out between holes",
-        key="allow_pinch_outs",
-        disabled=interpretation_mode == "borehole_only",
-        help="When off, units logged in only one hole are not inferred across the section (pinch-outs).",
-    )
-    show_ground_surface = st.toggle(
-        "Show ground surface (collar RL)",
-        key="show_ground_surface",
-        disabled=report_preset,
-        help="Linear interpolation between collar elevations — not a DEM.",
-    )
-    show_hatches = st.toggle(
-        "Hatch patterns",
-        key="show_hatches",
-        help="USGS-style hatch patterns on lithology fills.",
-    )
-    if "section_title" not in st.session_state:
-        st.session_state.section_title = "Borehole Cross-Section"
-    section_title = st.text_input("Section title", key="section_title")
-    vertical_exaggeration = st.slider(
-        "Vertical exaggeration",
-        min_value=1.0,
-        max_value=20.0,
-        value=5.0,
-        step=0.5,
-        key="vertical_exaggeration",
-    )
+    with st.expander("Section output", expanded=has_parsed):
+        output_preset = st.selectbox(
+            "Output style",
+            options=tuple(OUTPUT_PRESET_LABELS.keys()),
+            format_func=lambda key: OUTPUT_PRESET_LABELS[key],
+            key="output_preset",
+            help="Consulting report includes footer title block and groundwater legend.",
+        )
+        preset_config = resolve_output_preset(output_preset)
+        render_layout = preset_config.render_layout
+        report_preset = preset_config.report_preset
+        is_consulting_layout = render_layout == "consulting_section"
+        if st.session_state.get("_synced_output_preset") != output_preset:
+            st.session_state.allow_pinch_outs = preset_config.allow_pinch_outs
+            st.session_state.show_ground_surface = preset_config.show_ground_surface
+            st.session_state.show_legend = preset_config.show_legend
+            st.session_state._synced_output_preset = output_preset
 
-    st.divider()
-    _sidebar_heading("Transect thresholds")
-    if st.session_state.pop("pending_transect_mode", None):
-        st.session_state.transect_definition_mode = "By hole sequence"
-    transect_mode = st.radio(
-        "Transect definition mode",
-        options=["By hole sequence", "By coordinates", "Recommended"],
-        key="transect_definition_mode",
-    )
-    _apply_pending_offset_thresholds()
-    offset_warning_m = st.number_input(
-        "Transect offset warning (m)",
-        min_value=1.0,
-        step=5.0,
-        key="offset_warning_m",
-        help="Warn when a selected borehole is farther than this from the transect line",
-    )
+        interpretation_mode = st.radio(
+            "Interpretation",
+            options=["interpolated", "correlation_lines", "borehole_only"],
+            format_func=lambda value: {
+                "interpolated": "Connect layers between holes",
+                "correlation_lines": "Contact lines only (no shading)",
+                "borehole_only": "Observed logs only (no inter-hole fill)",
+            }[value],
+            help=(
+                "Interpolated: correlate lithology between boreholes. "
+                "Contact lines: fence contacts without fill. "
+                "Observed only: stick logs without correlation."
+            ),
+        )
+        allow_pinch_outs = st.toggle(
+            "Show layers that thin out between holes",
+            key="allow_pinch_outs",
+            disabled=interpretation_mode == "borehole_only",
+            help="When off, units logged in only one hole are not inferred across the section (pinch-outs).",
+        )
+        show_ground_surface = st.toggle(
+            "Show ground surface (collar RL)",
+            key="show_ground_surface",
+            disabled=report_preset,
+            help="Linear interpolation between collar elevations — not a DEM.",
+        )
+        show_hatches = st.toggle(
+            "Hatch patterns",
+            key="show_hatches",
+            help="USGS-style hatch patterns on lithology fills.",
+        )
+        if "section_title" not in st.session_state:
+            st.session_state.section_title = "Borehole Cross-Section"
+        section_title = st.text_input("Section title", key="section_title")
+        vertical_exaggeration = st.slider(
+            "Vertical exaggeration",
+            min_value=1.0,
+            max_value=20.0,
+            value=5.0,
+            step=0.5,
+            key="vertical_exaggeration",
+        )
+
+        st.markdown("**Transect thresholds**")
+        if st.session_state.pop("pending_transect_mode", None):
+            st.session_state.transect_definition_mode = "By hole sequence"
+        transect_mode = st.radio(
+            "Transect definition mode",
+            options=["By hole sequence", "By coordinates", "Recommended"],
+            key="transect_definition_mode",
+        )
+        _apply_pending_offset_thresholds()
+        offset_warning_m = st.number_input(
+            "Transect offset warning (m)",
+            min_value=1.0,
+            step=5.0,
+            key="offset_warning_m",
+            help="Warn when a selected borehole is farther than this from the transect line",
+        )
 
     track_width_m = 3.0
     interpolate_water_table = preset_config.interpolate_water_table
@@ -196,7 +195,7 @@ def render_sidebar() -> SidebarState:
     target_crs: str | None = "EPSG:32611"
     consulting_title_block: ConsultingTitleBlock | None = None
 
-    with st.expander("Advanced settings", expanded=False):
+    with st.expander("Advanced", expanded=False):
         track_width_m = st.slider(
             "Track width (m)",
             min_value=1.5,
@@ -282,6 +281,8 @@ def render_sidebar() -> SidebarState:
     if is_consulting_layout:
         with st.expander("Consulting report sheet", expanded=True):
             consulting_title_block = _render_consulting_report_sheet(section_title)
+    else:
+        consulting_title_block = None
 
     return SidebarState(
         uploaded=uploaded,

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
-from typing import Protocol, Sequence
+from typing import Literal, Protocol, Sequence
 
 from ai_quality import ColumnMapping, MappingProposal, QualityIssue
 from constants import CANONICAL_LITHOLOGY_CODES
@@ -24,7 +27,7 @@ CANONICAL_LITHOLOGY_COLUMNS = [
     "hatch_pattern",
     "unit_order",
 ]
-CANONICAL_WATER_COLUMNS = ["hole_id", "depth"]
+CANONICAL_WATER_COLUMNS = ["hole_id", "depth", "elevation_masl"]
 CANONICAL_SCREEN_COLUMNS = ["hole_id", "from_depth", "to_depth"]
 CANONICAL_GRADIENT_COLUMNS = ["hole_id", "direction"]
 _SHEET_CANONICAL_COLUMNS: dict[str, list[str]] = {
@@ -213,12 +216,46 @@ class LLMProvider(Protocol):
         ...
 
 
-class OpenAIProvider:
-    """Optional OpenAI-backed provider; disabled when API key is missing."""
+LLMProviderKind = Literal["groq", "gemini", "openai"]
+DEFAULT_LLM_PROVIDER: LLMProviderKind = "groq"
+FREE_LLM_PROVIDERS: tuple[LLMProviderKind, ...] = ("groq", "gemini")
+# Prefer free tiers first when auto-detecting from environment keys.
+_LLM_PROVIDER_PREFERENCE: tuple[LLMProviderKind, ...] = ("groq", "gemini", "openai")
 
-    def __init__(self, api_key: str, model: str = "gpt-4o-mini") -> None:
+_LLM_ENV_KEYS: dict[LLMProviderKind, str] = {
+    "groq": "GROQ_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "openai": "OPENAI_API_KEY",
+}
+
+
+def _load_json_content(text: str) -> dict:
+    """Parse model output, tolerating optional ```json fences."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    payload = json.loads(cleaned or "{}")
+    if not isinstance(payload, dict):
+        raise ValueError("LLM response JSON must be an object")
+    return payload
+
+
+class OpenAICompatibleProvider:
+    """Chat-completions provider for OpenAI and OpenAI-compatible APIs (e.g. Groq)."""
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str,
+        base_url: str | None = None,
+        timeout_s: float = 60.0,
+    ) -> None:
         self.api_key = api_key
         self.model = model
+        self.base_url = base_url
+        self.timeout_s = timeout_s
 
     def complete_json(self, system_prompt: str, user_prompt: str) -> dict:
         try:
@@ -226,7 +263,10 @@ class OpenAIProvider:
         except ImportError as exc:
             raise RuntimeError("openai package is not installed") from exc
 
-        client = OpenAI(api_key=self.api_key)
+        client_kwargs: dict[str, object] = {"api_key": self.api_key, "timeout": self.timeout_s}
+        if self.base_url:
+            client_kwargs["base_url"] = self.base_url
+        client = OpenAI(**client_kwargs)
         response = client.chat.completions.create(
             model=self.model,
             response_format={"type": "json_object"},
@@ -237,7 +277,116 @@ class OpenAIProvider:
             temperature=0.0,
         )
         content = response.choices[0].message.content or "{}"
-        return json.loads(content)
+        return _load_json_content(content)
+
+
+class OpenAIProvider(OpenAICompatibleProvider):
+    """Paid OpenAI API."""
+
+    def __init__(self, api_key: str, model: str = "gpt-4o-mini") -> None:
+        super().__init__(api_key, model=model)
+
+
+class GroqProvider(OpenAICompatibleProvider):
+    """Groq free tier — OpenAI-compatible endpoint."""
+
+    def __init__(self, api_key: str, model: str = "llama-3.1-8b-instant") -> None:
+        super().__init__(
+            api_key,
+            model=model,
+            base_url="https://api.groq.com/openai/v1",
+        )
+
+
+class GeminiProvider:
+    """Google Gemini free tier via Generative Language API."""
+
+    def __init__(self, api_key: str, model: str = "gemini-2.0-flash") -> None:
+        self.api_key = api_key
+        self.model = model
+
+    def complete_json(self, system_prompt: str, user_prompt: str) -> dict:
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}"
+            ":generateContent"
+        )
+        body = json.dumps(
+            {
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.0,
+                    "responseMimeType": "application/json",
+                },
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": self.api_key,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            # Never echo API keys that might appear in upstream error payloads.
+            safe_detail = detail.replace(self.api_key, "[redacted]")[:500]
+            raise RuntimeError(f"Gemini API error {exc.code}: {safe_detail}") from exc
+        candidates = payload.get("candidates") or []
+        if not candidates:
+            raise RuntimeError("Gemini API returned no candidates")
+        parts = candidates[0].get("content", {}).get("parts") or []
+        if not parts:
+            raise RuntimeError("Gemini API returned empty content")
+        return _load_json_content(str(parts[0].get("text", "{}")))
+
+
+def resolve_llm_api_key(provider: LLMProviderKind, api_key: str | None = None) -> str:
+    """Return trimmed API key from argument or ``GROQ_API_KEY`` / ``GEMINI_API_KEY`` / ``OPENAI_API_KEY``."""
+    key = (api_key or "").strip()
+    if key:
+        return key
+    return os.environ.get(_LLM_ENV_KEYS[provider], "").strip()
+
+
+def is_free_llm_provider(provider: str | LLMProviderKind) -> bool:
+    """True for Groq / Gemini free-tier providers."""
+    return str(provider).strip().lower() in FREE_LLM_PROVIDERS
+
+
+def preferred_llm_provider_from_env() -> LLMProviderKind | None:
+    """Return the first provider with an env API key (Groq → Gemini → OpenAI)."""
+    for kind in _LLM_PROVIDER_PREFERENCE:
+        if resolve_llm_api_key(kind, None):
+            return kind
+    return None
+
+
+def build_llm_provider(
+    provider: str | LLMProviderKind = DEFAULT_LLM_PROVIDER,
+    api_key: str | None = None,
+) -> LLMProvider | None:
+    """Construct an LLM provider when a key is available; otherwise return None."""
+    kind: LLMProviderKind
+    normalized = (provider or DEFAULT_LLM_PROVIDER).strip().lower()
+    if normalized not in _LLM_ENV_KEYS:
+        logger.warning("Unknown LLM provider %r; defaulting to Groq", provider)
+        kind = DEFAULT_LLM_PROVIDER
+    else:
+        kind = normalized  # type: ignore[assignment]
+    key = resolve_llm_api_key(kind, api_key)
+    if not key:
+        return None
+    if kind == "gemini":
+        return GeminiProvider(key)
+    if kind == "openai":
+        return OpenAIProvider(key)
+    return GroqProvider(key)
 
 
 _MOCK_DEFAULTS: dict[str, dict] = {
@@ -946,7 +1095,14 @@ def _local_section_answer(question: str, facts: dict) -> str:
     if "water" in text or "groundwater" in text or "gw" in text:
         if not water:
             return "No water levels are loaded for the active transect."
-        parts = [f"{hole} at {depth} m depth" for hole, depth in water.items()]
+        parts: list[str] = []
+        for hole, depth_value in water.items():
+            if isinstance(depth_value, dict):
+                for series_id, depth in depth_value.items():
+                    label = series_id if series_id != "default" else "default"
+                    parts.append(f"{hole} ({label}) at {depth} m depth")
+            else:
+                parts.append(f"{hole} at {depth_value} m depth")
         return "Water levels: " + "; ".join(parts) + "."
     if "hole" in text or "well" in text or "which" in text and "transect" in text:
         if hole_ids:
@@ -986,22 +1142,29 @@ def _local_sheet_roles(
     sheet_names: Sequence[str],
     headers_by_sheet: dict[str, Sequence[str]],
 ) -> tuple[SheetRoleSuggestion, ...]:
+    from ai_quality import SHEET_ALIASES
+
+    collar_aliases = SHEET_ALIASES.get("collars", set())
+    lithology_aliases = SHEET_ALIASES.get("lithology", set())
     suggestions: list[SheetRoleSuggestion] = []
     for name in sheet_names:
         key = name.strip().lower().replace(" ", "_")
+        key_compact = key.replace("_", "")
+        name_tokens = {key, key_compact, name.strip().lower()}
         headers = {str(item).strip().lower() for item in headers_by_sheet.get(name, [])}
         role = "unknown"
         confidence = 0.4
         rationale = "No strong header match"
-        if key in {"collars", "collar", "boreholes", "holes"} or (
+        if name_tokens & collar_aliases or (
             {"easting", "northing"} <= headers or {"lat", "long"} <= headers or {"latitude", "longitude"} <= headers
         ):
             role = "collars"
             confidence = 0.85
             rationale = "Name or coordinate headers"
-        elif key in {"lithology", "lith", "geology", "stratigraphy"} or (
-            {"from_depth", "to_depth"} <= headers or {"from", "to"} <= headers
-        ) and "lithology" in " ".join(headers):
+        elif name_tokens & lithology_aliases or (
+            ({"from_depth", "to_depth"} <= headers or {"from", "to"} <= headers)
+            and "lithology" in " ".join(headers)
+        ):
             role = "lithology"
             confidence = 0.85
             rationale = "Depth interval headers"

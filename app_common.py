@@ -4,40 +4,36 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import TYPE_CHECKING, Any, Sequence
 
 from dataclasses import dataclass, replace
 
-import pandas as pd
 import streamlit as st
 
-from ai_assistant import AIAssistant, OpenAIProvider
+from ai_assistant import AIAssistant, build_llm_provider
 
 if TYPE_CHECKING:
     from ai_assistant import ReportMetadataSuggestion
 
 from ai_quality import analyze_parsed_data, load_lithology_aliases
-from app_services import cached_build_section, cached_ingest_workbook
+from app_services import cached_ingest_workbook
 from app_state import clear_section_output_state
-from constants import USGS_LITHOLOGY_HATCHES, get_lithology_style
+from constants import DEFAULT_LITHOLOGY_COLOR, USGS_LITHOLOGY_HATCHES, get_lithology_style, normalize_hex_colour
 from ingestion import ImportReport
 from models import (
     ConsultingTitleBlock,
     CorrelationOverride,
     Lithology,
     ParseResult,
-    Transect,
     apply_unit_order_fix,
     lithologies_by_hole,
-    subset_parse_result,
 )
-from projection import off_transect_warnings
 from section_build_request import SectionBuildRequest
 from ui_helpers import (
     active_transect_selection,
     dedupe_messages,
     escape_html,
-    holes_missing_lithology,
     legend_hatch_background,
     svg_display_meta,
 )
@@ -45,6 +41,39 @@ from ui_helpers import (
 logger = logging.getLogger(__name__)
 
 _WORKFLOW_LABELS = ("Upload", "Validate", "Configure", "Generate")
+_LLM_DISABLE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def llm_disabled_by_deployment() -> bool:
+    """True when CROSS_SECTION_DISABLE_LLM blocks third-party LLM calls."""
+    return os.environ.get("CROSS_SECTION_DISABLE_LLM", "").strip().lower() in _LLM_DISABLE_VALUES
+
+
+def llm_assist_status_caption() -> str:
+    """One-line status for Validate / Configure AI actions."""
+    if llm_disabled_by_deployment():
+        return "Assist mode: **LLM disabled by deployment** — local rules only."
+    if st.session_state.get("enable_ai_suggestions"):
+        provider = str(st.session_state.get("llm_provider", "groq"))
+        tier = "free" if provider in {"groq", "gemini"} else "paid"
+        return (
+            f"Assist mode: **LLM enabled** (`{provider}`, {tier}) — "
+            "local rules + provider polish."
+        )
+    return (
+        "Assist mode: **Local rules** — set `GROQ_API_KEY` or `GEMINI_API_KEY` "
+        "(or enable LLM in the sidebar) for free-tier polish."
+    )
+
+
+def llm_suggestions_available() -> bool:
+    """True when column-mapping LLM suggestions can run (toggle + key + not disabled)."""
+    if llm_disabled_by_deployment():
+        return False
+    if not st.session_state.get("enable_ai_suggestions"):
+        return False
+    provider_kind = str(st.session_state.get("llm_provider", "groq"))
+    return bool(_llm_api_key_for_provider(provider_kind))
 
 
 def _render_workflow_stepper(stage: int) -> None:
@@ -64,16 +93,59 @@ def _render_workflow_stepper(stage: int) -> None:
 
 
 def _render_hero(stage: int) -> None:
+    compact = stage >= 1
+    hero_class = "app-hero compact" if compact else "app-hero"
+    tagline = (
+        ""
+        if compact
+        else "<p>Upload · validate · configure · export publication-ready borehole profiles.</p>"
+    )
     st.markdown(
-        """
-<div class="app-hero">
+        f"""
+<div class="{hero_class}">
   <h1>Cross Section Studio</h1>
-  <p>Upload borehole data, validate stratigraphy, and generate publication-ready profiles with USGS-style fills and hatch patterns.</p>
+  {tagline}
 </div>
 """,
         unsafe_allow_html=True,
     )
     _render_workflow_stepper(stage)
+
+
+def _render_sticky_generate_strip(
+    *,
+    has_svg: bool,
+    can_generate: bool,
+    is_stale: bool,
+    section_title: str,
+) -> None:
+    """Thin action bar under hero when a section exists or parse is ready."""
+    if has_svg:
+        status = (
+            f"<strong>{escape_html(section_title)}</strong> — "
+            + ("settings changed — regenerate before export" if is_stale else "profile ready")
+        )
+    else:
+        status = f"<strong>{escape_html(section_title)}</strong> — configure transect, then generate"
+    col_status, col_action = st.columns([4, 1])
+    with col_status:
+        st.markdown(
+            f'<div class="generate-strip"><span class="strip-status">{status}</span></div>',
+            unsafe_allow_html=True,
+        )
+    with col_action:
+        if has_svg:
+            if st.button(
+                "Regenerate",
+                type="primary",
+                disabled=not can_generate,
+                key="sticky_regenerate",
+                width="stretch",
+            ):
+                st.session_state["_regenerate_requested"] = True
+                st.rerun()
+    if has_svg and not can_generate:
+        st.caption("Open **Setup — Validate & Configure** to resolve blocking issues.")
 
 
 def _metric_tone(error_count: int, warning_count: int, *, errors_only: bool = False) -> str:
@@ -102,6 +174,11 @@ def _render_profile_chips(
     hole_count: int | None,
     polygon_count: int | None,
     is_stale: bool,
+    preset_label: str | None = None,
+    render_layout: str | None = None,
+    transect_label: str | None = None,
+    png_ready: bool = False,
+    pdf_ready: bool = False,
 ) -> None:
     mode_label = (
         "Observed only"
@@ -112,12 +189,26 @@ def _render_profile_chips(
         f'<span class="chip brand">{escape_html(mode_label)}</span>',
         f'<span class="chip">VE {escape_html(vertical_exaggeration)}×</span>',
     ]
+    if preset_label:
+        chips.append(f'<span class="chip">{escape_html(preset_label)}</span>')
+    if render_layout and render_layout != "section_sheet":
+        layout_short = {
+            "consulting_section": "Consulting sheet",
+            "chart": "Chart",
+        }.get(render_layout, render_layout.replace("_", " "))
+        chips.append(f'<span class="chip">{escape_html(layout_short)}</span>')
     if hole_count is not None:
         chips.append(f'<span class="chip">{escape_html(hole_count)} boreholes</span>')
+    if transect_label:
+        chips.append(f'<span class="chip">{escape_html(transect_label)}</span>')
     if polygon_count is not None and interpretation_mode == "interpolated":
         chips.append(f'<span class="chip">{escape_html(polygon_count)} polygons</span>')
-    if is_stale:
-        chips.append('<span class="chip warn">Settings changed</span>')
+    freshness = "Stale" if is_stale else "Fresh"
+    chips.append(
+        f'<span class="chip {"warn" if is_stale else ""}">{freshness}</span>'
+    )
+    export_bits = [f"PNG {'✓' if png_ready else '—'}", f"PDF {'✓' if pdf_ready else '—'}"]
+    chips.append(f'<span class="chip">{" · ".join(export_bits)}</span>')
     st.markdown(f'<div class="profile-header">{"".join(chips)}</div>', unsafe_allow_html=True)
 
 
@@ -139,11 +230,12 @@ def _render_lithology_legend(codes: list[str]) -> None:
     rows = []
     for code in sorted(codes):
         style = get_lithology_style(code)
-        hatch = USGS_LITHOLOGY_HATCHES.get(code, "..")
+        hatch = style.hatch or USGS_LITHOLOGY_HATCHES.get(code, "..")
         hatch_bg = legend_hatch_background(hatch)
+        color = normalize_hex_colour(style.color) or DEFAULT_LITHOLOGY_COLOR
         rows.append(
             f'<div class="legend-row">'
-            f'<span class="legend-swatch" style="background-color:{style.color};'
+            f'<span class="legend-swatch" style="background-color:{color};'
             f'background-image:{hatch_bg};"></span>'
             f"<strong>{escape_html(code)}</strong>"
             f"</div>"
@@ -381,22 +473,57 @@ def _parse_signature_key(
     return json.dumps(payload, sort_keys=True, default=str)
 
 
-def _health_emoji(error_count: int, warning_count: int) -> str:
+def _health_status_label(error_count: int, warning_count: int) -> str:
     if error_count > 0:
-        return "🔴"
+        return "Needs fixes"
     if warning_count > 0:
-        return "🟡"
-    return "🟢"
+        return "Review warnings"
+    return "Ready"
+
+
+def _llm_api_key_for_provider(provider_kind: str) -> str:
+    """Resolve API key from ephemeral UI input, Streamlit secrets, or environment.
+
+    Never reads durable ``llm_api_key`` / ``openai_api_key`` session keys.
+    """
+    runtime = str(
+        st.session_state.get(f"_llm_api_key_runtime_{provider_kind}")
+        or st.session_state.get("_llm_api_key_runtime")
+        or ""
+    ).strip()
+    if runtime:
+        return runtime
+    try:
+        secrets = getattr(st, "secrets", None)
+        if secrets is not None:
+            for secret_key in (
+                f"{provider_kind}_api_key",
+                f"{str(provider_kind).upper()}_API_KEY",
+                "GROQ_API_KEY",
+                "GEMINI_API_KEY",
+                "OPENAI_API_KEY",
+            ):
+                try:
+                    value = str(secrets.get(secret_key, "") or "").strip()
+                except Exception:
+                    value = ""
+                if value:
+                    return value
+    except Exception:
+        pass
+    from ai_assistant import resolve_llm_api_key
+
+    return resolve_llm_api_key(provider_kind, None)
 
 
 def _build_assistant() -> AIAssistant:
-    """Return LLM-backed assistant only when toggle is on and an API key is set."""
-    if not st.session_state.get("enable_ai_suggestions"):
+    """Return LLM-backed assistant when enabled and an API key is set."""
+    if llm_disabled_by_deployment() or not st.session_state.get("enable_ai_suggestions"):
         return AIAssistant(None)
-    api_key = st.session_state.get("openai_api_key", "").strip()
-    if api_key:
-        return AIAssistant(OpenAIProvider(api_key=api_key))
-    return AIAssistant(None)
+    provider_kind = st.session_state.get("llm_provider", "groq")
+    api_key = _llm_api_key_for_provider(str(provider_kind))
+    provider = build_llm_provider(provider_kind, api_key or None)
+    return AIAssistant(provider)
 
 
 def _default_consulting_notes() -> tuple[str, ...]:
@@ -407,28 +534,44 @@ def _default_consulting_notes() -> tuple[str, ...]:
 
 
 def _apply_report_suggestion(suggestion: ReportMetadataSuggestion) -> None:
-    st.session_state.consulting_section_label = suggestion.section_label
-    st.session_state.consulting_map_scale = suggestion.map_scale
-    st.session_state.consulting_notes = "\n".join(suggestion.notes)
-    st.session_state.consulting_prepared_for = suggestion.prepared_for
-    st.session_state.consulting_prepared_by = suggestion.prepared_by
-    st.session_state.consulting_source = suggestion.source
-    st.session_state.consulting_project_number = suggestion.project_number
-    st.session_state.consulting_start_label = suggestion.transect_start_label
-    st.session_state.consulting_end_label = suggestion.transect_end_label
-    st.session_state.ai_figure_caption = suggestion.figure_caption
+    """Queue AI report fields for the next sidebar render (widget-safe)."""
+    notes_lines = [str(note).strip() for note in suggestion.notes if str(note).strip()]
+    caption = (suggestion.figure_caption or "").strip()
+    if caption and not any(
+        caption.casefold() == note.casefold() or caption.casefold() in note.casefold()
+        for note in notes_lines
+    ):
+        notes_lines = [caption, *notes_lines]
+    pending = dict(st.session_state.get("_pending_project_seed") or {})
+    pending.update(
+        {
+            "consulting_section_label": suggestion.section_label,
+            "consulting_map_scale": suggestion.map_scale,
+            "consulting_notes": "\n".join(notes_lines),
+            "consulting_prepared_for": suggestion.prepared_for,
+            "consulting_prepared_by": suggestion.prepared_by,
+            "consulting_source": suggestion.source,
+            "consulting_project_number": suggestion.project_number,
+            "consulting_start_label": suggestion.transect_start_label,
+            "consulting_end_label": suggestion.transect_end_label,
+            "section_title": suggestion.section_label,
+        }
+    )
+    st.session_state["_pending_project_seed"] = pending
+    st.session_state.ai_figure_caption = suggestion.figure_caption or None
 
 
 def _water_and_nm(
     parse_result: ParseResult,
     hole_ids: Sequence[str],
-) -> tuple[dict[str, float], list[str]]:
+) -> tuple[dict[str, dict[str, float]], list[str]]:
     hole_set = set(hole_ids)
-    water = {
-        level.hole_id: level.depth
-        for level in parse_result.water_levels
-        if level.hole_id in hole_set
-    }
+    water: dict[str, dict[str, float]] = {}
+    for level in parse_result.water_levels:
+        if level.hole_id not in hole_set:
+            continue
+        series_id = level.series_id or "default"
+        water.setdefault(level.hole_id, {})[series_id] = level.depth
     nm_holes = [hole_id for hole_id in hole_ids if hole_id not in water]
     return water, nm_holes
 
@@ -444,7 +587,7 @@ def _report_context_from_selection(
     water, nm_holes = _water_and_nm(parse_result, hole_ids)
     return {
         "hole_ids": list(hole_ids),
-        "water_measurement_count": len(water),
+        "water_measurement_count": sum(len(series) for series in water.values()),
         "nm_hole_ids": nm_holes,
         "vertical_exaggeration": vertical_exaggeration,
         "map_scale": map_scale,

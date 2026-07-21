@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import logging
 from io import BytesIO
-from pathlib import Path
 
 import streamlit as st
 
@@ -14,11 +13,10 @@ from app_state import clear_ai_session_state, clear_section_output_state
 from ingestion import NATIVE_PROFILE_ID, FormatDetector
 from models import ParseResult, lithologies_by_hole
 from ops_audit import audit_event
+from paths import sample_boreholes_workbook
 from projection import suggest_offset_threshold_m
 
 logger = logging.getLogger(__name__)
-
-SAMPLE_WORKBOOK = Path(__file__).resolve().parent / "data" / "sample_boreholes.xlsx"
 
 
 class _BytesUpload:
@@ -33,18 +31,28 @@ class _BytesUpload:
 
 
 def load_sample_workbook() -> None:
-    """Load the bundled sample workbook into session for demo use."""
-    if not SAMPLE_WORKBOOK.exists():
+    """Load the bundled sample workbook into session for demo use.
+
+    Sets ``file_bytes`` and clears detection/parse so the next
+    ``handle_workbook_upload`` pass re-detects and parses (same path as a
+    fresh file upload). Without clearing detection, sample load would skip
+    parse because bytes already match session state.
+    """
+    sample_path = sample_boreholes_workbook()
+    if not sample_path.exists():
         raise FileNotFoundError(
-            f"Sample workbook not found at {SAMPLE_WORKBOOK}. "
+            f"Sample workbook not found at {sample_path}. "
             "Run: python scripts/generate_sample_data.py"
         )
-    data = SAMPLE_WORKBOOK.read_bytes()
+    data = sample_path.read_bytes()
     st.session_state.file_bytes = data
-    st.session_state.uploaded_name = SAMPLE_WORKBOOK.name
+    st.session_state.uploaded_name = sample_path.name
     st.session_state.file_hash = hashlib.sha256(data).hexdigest()[:24]
     st.session_state.parse_result = None
     st.session_state.parse_signature = None
+    st.session_state.detection_result = None
+    st.session_state.import_report = None
+    st.session_state.quality_report = None
     clear_ai_session_state()
     clear_section_output_state()
 
@@ -174,7 +182,8 @@ def handle_workbook_upload(
 ) -> ParseResult | None:
     """Detect format, parse workbook when needed, return current parse result."""
     file_bytes = uploaded.getvalue()
-    if st.session_state.file_bytes != file_bytes:
+    bytes_changed = st.session_state.file_bytes != file_bytes
+    if bytes_changed:
         st.session_state.file_bytes = file_bytes
         st.session_state.file_hash = hashlib.sha256(file_bytes).hexdigest()[:24]
         st.session_state.parse_result = None
@@ -191,6 +200,11 @@ def handle_workbook_upload(
         st.session_state.parse_signature = None
         st.session_state.transect_selection_key = None
         st.session_state.transect_selection = None
+        st.session_state.detection_result = None
+
+    # Re-detect when bytes change OR sample/menubar load cleared detection while
+    # leaving file_bytes already set (otherwise parse never runs).
+    if bytes_changed or st.session_state.get("detection_result") is None:
         try:
             st.session_state.detection_result = FormatDetector().detect(BytesIO(file_bytes))
             st.session_state.pop("upload_banner_error", None)

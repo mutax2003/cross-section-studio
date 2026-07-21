@@ -169,11 +169,18 @@ def render_configure_step(
         )
         if section_caption:
             st.caption(f"Section line: **{section_caption}**")
-        subset_preflight = subset_parse_result(
-            parse_result,
-            active_ids,
-            lithology_index=st.session_state.lithology_index,
-        )
+        try:
+            lithology_index = st.session_state.get("lithology_index")
+            if not isinstance(lithology_index, dict):
+                lithology_index = None
+            subset_preflight = subset_parse_result(
+                parse_result,
+                active_ids,
+                lithology_index=lithology_index,
+            )
+        except Exception as exc:
+            st.error(f"Could not build transect subset for preflight: {exc}")
+            subset_preflight = parse_result
         available_params = sorted({reading.parameter for reading in subset_preflight.environmental_readings})
         if available_params:
             st.markdown("**Lab / environmental parameters**")

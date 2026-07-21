@@ -6,7 +6,17 @@ import json
 from collections import defaultdict
 from typing import Sequence
 
-from models import Lithology, ParseResult
+from itertools import chain
+
+from models import (
+    DeviationReading,
+    EnvironmentalReading,
+    Lithology,
+    ParseResult,
+    ScreenInterval,
+    VerticalGradient,
+    WaterLevel,
+)
 
 def lithologies_by_hole(
     lithologies: Sequence[Lithology],
@@ -63,7 +73,7 @@ def assign_missing_unit_orders(
             for interval in sorted_intervals
             if interval.unit_order is not None
         }
-        next_order = 1
+        next_order = (max(used_orders) + 1) if used_orders else 1
         hole_changed = False
         reassigned: list[Lithology] = []
         for interval in sorted_intervals:
@@ -153,29 +163,53 @@ def subset_parse_result(
         lithology_index = lithologies_by_hole(parse_result.lithologies)
     selected_lithologies = tuple(
         lithology
+        if isinstance(lithology, Lithology)
+        else Lithology.model_validate(lithology)
         for hole_id in hole_ids
-        for lithology in lithology_index.get(hole_id, ())
+        for lithology in (lithology_index.get(hole_id) or ())
     )
-    def _for_holes(items):
-        return tuple(item for item in items if item.hole_id in hole_set)
+    water_levels: list[WaterLevel] = []
+    screen_intervals: list[ScreenInterval] = []
+    vertical_gradients: list[VerticalGradient] = []
+    deviation_readings: list[DeviationReading] = []
+    environmental_readings: list[EnvironmentalReading] = []
+    for item in chain(
+        parse_result.water_levels,
+        parse_result.screen_intervals,
+        parse_result.vertical_gradients,
+        parse_result.deviation_readings,
+        parse_result.environmental_readings,
+    ):
+        if item.hole_id not in hole_set:
+            continue
+        if isinstance(item, WaterLevel):
+            water_levels.append(item)
+        elif isinstance(item, ScreenInterval):
+            screen_intervals.append(item)
+        elif isinstance(item, VerticalGradient):
+            vertical_gradients.append(item)
+        elif isinstance(item, DeviationReading):
+            deviation_readings.append(item)
+        elif isinstance(item, EnvironmentalReading):
+            environmental_readings.append(item)
 
-    return ParseResult(
-        collars=ordered_collars,
-        lithologies=selected_lithologies,
-        errors=parse_result.errors,
-        water_levels=_for_holes(parse_result.water_levels),
-        screen_intervals=_for_holes(parse_result.screen_intervals),
-        vertical_gradients=_for_holes(parse_result.vertical_gradients),
-        deviation_readings=_for_holes(parse_result.deviation_readings),
-        correlation_overrides=tuple(
-            override
-            for override in parse_result.correlation_overrides
-            if (override.left_hole_id, override.right_hole_id) in hole_pairs
-            or (override.right_hole_id, override.left_hole_id) in hole_pairs
-        ),
-        faults=parse_result.faults,
-        unconformities=parse_result.unconformities,
-        environmental_readings=_for_holes(parse_result.environmental_readings),
+    # model_copy avoids full-graph revalidation quirks when filtering already-valid rows
+    return parse_result.model_copy(
+        update={
+            "collars": ordered_collars,
+            "lithologies": selected_lithologies,
+            "water_levels": tuple(water_levels),
+            "screen_intervals": tuple(screen_intervals),
+            "vertical_gradients": tuple(vertical_gradients),
+            "deviation_readings": tuple(deviation_readings),
+            "correlation_overrides": tuple(
+                override
+                for override in parse_result.correlation_overrides
+                if (override.left_hole_id, override.right_hole_id) in hole_pairs
+                or (override.right_hole_id, override.left_hole_id) in hole_pairs
+            ),
+            "environmental_readings": tuple(environmental_readings),
+        }
     )
 
 

@@ -72,10 +72,24 @@ class Lithology(BaseModel, frozen=True):
     def optional_unit_order(cls, value: object) -> int | None:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return None
+        if isinstance(value, bool):
+            raise ValueError("unit_order must be an integer")
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            if not value.is_integer():
+                raise ValueError("unit_order must be a whole number")
+            return int(value)
         text = str(value).strip()
         if not text:
             return None
-        return int(text)
+        try:
+            number = float(text)
+        except ValueError as exc:
+            raise ValueError("unit_order must be an integer") from exc
+        if not number.is_integer():
+            raise ValueError("unit_order must be a whole number")
+        return int(number)
 
     @model_validator(mode="after")
     def validate_depths(self) -> Lithology:

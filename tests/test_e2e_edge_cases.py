@@ -225,7 +225,7 @@ def test_e2e_fuzzy_headers_workbook() -> None:
     )
     assert len(result.collars) == 2
     codes = {lit.lithology_code for lit in result.lithologies}
-    assert "Sandstone" in codes
+    assert "Sand" in codes
     assert "Clay" in codes
 
     projected, polygons, svg_bytes = run_pipeline(
@@ -718,6 +718,48 @@ def test_subset_parse_result_preserves_only_requested_holes() -> None:
     assert len(subset.collars) == 1
     assert subset.collars[0].hole_id == "A"
     assert len(subset.lithologies) == 1
+
+
+def test_lithology_unit_order_accepts_excel_floats() -> None:
+    lit = Lithology(
+        hole_id="A",
+        from_depth=0.0,
+        to_depth=5.0,
+        lithology_code="Clay",
+        unit_order=1.0,
+    )
+    assert lit.unit_order == 1
+    assert (
+        Lithology(
+            hole_id="A",
+            from_depth=0.0,
+            to_depth=5.0,
+            lithology_code="Clay",
+            unit_order="2.0",
+        ).unit_order
+        == 2
+    )
+
+
+def test_subset_parse_result_accepts_dict_lithology_index() -> None:
+    parse_result = ParseResult(
+        collars=(
+            Collar(hole_id="A", easting=0.0, northing=0.0, elevation=1.0, total_depth=5.0),
+            Collar(hole_id="B", easting=1.0, northing=0.0, elevation=1.0, total_depth=5.0),
+        ),
+        lithologies=(
+            Lithology(hole_id="A", from_depth=0.0, to_depth=5.0, lithology_code="Clay", unit_order=1.0),
+            Lithology(hole_id="B", from_depth=0.0, to_depth=5.0, lithology_code="Silt", unit_order=1.0),
+        ),
+        errors=(),
+    )
+    index = {
+        "A": (parse_result.lithologies[0].model_dump(),),
+        "B": (parse_result.lithologies[1].model_dump(),),
+    }
+    subset = subset_parse_result(parse_result, ("A", "B"), lithology_index=index)
+    assert len(subset.lithologies) == 2
+    assert subset.lithologies[0].unit_order == 1
 
 
 def test_subset_parse_result_preserves_hole_order() -> None:

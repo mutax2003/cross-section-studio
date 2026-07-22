@@ -242,7 +242,7 @@ def _render_accelerator_buttons() -> None:
 
 
 def _inject_shortcut_bridge() -> None:
-    """Ctrl/Cmd accelerators via a zero-height ``st.iframe`` HTML bridge."""
+    """Ctrl/Cmd accelerators via a 1px ``st.iframe`` HTML bridge (height must be > 0)."""
     mapping = {
         "sample": ACCEL_SAMPLE,
         "generate": ACCEL_GENERATE,
@@ -331,7 +331,7 @@ def _inject_shortcut_bridge() -> None:
 }})();
 </script>
 """,
-        height=0,
+        height=1,
     )
 
 

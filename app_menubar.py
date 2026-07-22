@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from app_state import clear_ai_session_state, clear_section_output_state
 from app_upload import load_sample_workbook
@@ -243,13 +242,7 @@ def _render_accelerator_buttons() -> None:
 
 
 def _inject_shortcut_bridge() -> None:
-    """Ctrl/Cmd accelerators via Streamlit's HTML component (no extra deps).
-
-    Streamlit 1.58+ exposes ``st.iframe(src=url)`` for URL-only embeds (no inline
-    ``srcdoc``). This bridge must attach a keydown listener on the parent document,
-    so ``components.html`` remains the supported path until Streamlit allows inline
-    iframe HTML or a static bridge asset URL.
-    """
+    """Ctrl/Cmd accelerators via a zero-height ``st.iframe`` HTML bridge."""
     mapping = {
         "sample": ACCEL_SAMPLE,
         "generate": ACCEL_GENERATE,
@@ -261,7 +254,7 @@ def _inject_shortcut_bridge() -> None:
     labels_js = {
         key: label.replace("\\", "\\\\").replace("'", "\\'") for key, label in mapping.items()
     }
-    components.html(
+    st.iframe(
         f"""
 <script>
 (function () {{

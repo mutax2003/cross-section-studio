@@ -24,10 +24,12 @@ orchestration_reports/
 Thumbs.db
 .idea/
 .vscode/
-# Keep Cursor rules tracked for cloud/CI agents; ignore other local Cursor state
+# Keep Cursor rules and project skills tracked for cloud/CI agents; ignore other local Cursor state
 .cursor/*
 !.cursor/rules/
 !.cursor/rules/**
+!.cursor/skills/
+!.cursor/skills/**
 
 # User / client workbooks (generate others via scripts/generate_sample_data.py)
 *.xlsx

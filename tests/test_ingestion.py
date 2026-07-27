@@ -283,8 +283,8 @@ def test_ingest_native_sample_workbook() -> None:
     assert report.mapping_proposal is not None
 
 
-@pytest.mark.skipif(not SOURCE.exists(), reason="Advantage source workbook not vendored in data/fixtures")
 def test_ingest_advantage_workbook() -> None:
+    assert SOURCE.exists(), "Commit data/fixtures/advantage_phase2_source.xlsx (synthetic CI fixture)"
     result, report = ingest_workbook(
         SOURCE,
         profile_id="field_export_v1",
@@ -300,16 +300,15 @@ def test_ingest_advantage_workbook() -> None:
 
 
 def test_ingest_advantage_platform_workbook() -> None:
-    if not OUTPUT.exists():
-        pytest.skip("Vendored platform workbook missing at data/advantage_phase2_platform.xlsx")
+    assert OUTPUT.exists(), "Commit data/advantage_phase2_platform.xlsx (synthetic CI fixture)"
     result, report = ingest_workbook(OUTPUT)
     assert len(result.collars) >= 20
     assert len(result.lithologies) >= 50
     assert report.profile_id == NATIVE_PROFILE_ID
 
 
-@pytest.mark.skipif(not SOURCE.exists(), reason="Advantage source workbook not vendored in data/fixtures")
 def test_export_advantage_via_generic_cli_path(tmp_path: Path) -> None:
+    assert SOURCE.exists(), "Commit data/fixtures/advantage_phase2_source.xlsx (synthetic CI fixture)"
     out = tmp_path / "converted.xlsx"
     collars, lithology = export_platform_workbook(
         SOURCE,
@@ -322,8 +321,8 @@ def test_export_advantage_via_generic_cli_path(tmp_path: Path) -> None:
     assert len(lithology) == 70
 
 
-@pytest.mark.skipif(not SOURCE.exists(), reason="Advantage source workbook not vendored in data/fixtures")
 def test_auto_detect_advantage_source() -> None:
+    assert SOURCE.exists(), "Commit data/fixtures/advantage_phase2_source.xlsx (synthetic CI fixture)"
     detection = FormatDetector().detect(SOURCE)
     assert detection.profile_id == "field_export_v1"
 

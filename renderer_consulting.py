@@ -72,9 +72,10 @@ class ConsultingLayoutMixin:
             )
 
         ctx = self._hole_context(projected_df)
-        fig_width = max(11.0, min(24.0, 8.0 + ctx.x_span / 25.0))
-        fig = plt.figure(figsize=(fig_width, 8.5))
+        # Lock letter landscape (11×8.5 in) so PNG/PDF match client page extracts.
+        fig = plt.figure(figsize=(11.0, 8.5))
         fig.patch.set_facecolor(CONSULTING_FIGURE_BG)
+        fig.subplots_adjust(left=0.06, right=0.97, top=0.97, bottom=0.04)
         grid = GridSpec(3, 1, figure=fig, height_ratios=[58, 12, 22], hspace=0.12)
         ax = fig.add_subplot(grid[0, 0])
         sub_gs = grid[1, 0].subgridspec(1, 3, width_ratios=[32, 36, 32], wspace=0.14)
@@ -561,7 +562,11 @@ class ConsultingLayoutMixin:
             transform=ax_center.transAxes,
             clip_on=False,
         )
-        ve_text = f"{self.vertical_exaggeration:.0f}× VERTICAL EXAGGERATION"
+        ve_text = (
+            "NO VERTICAL EXAGGERATION"
+            if abs(float(self.vertical_exaggeration) - 1.0) < 1e-9
+            else f"{self.vertical_exaggeration:.0f}× VERTICAL EXAGGERATION"
+        )
         ax_center.text(
             0.5,
             0.18,

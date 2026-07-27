@@ -52,13 +52,13 @@ result = build_cross_section(
 | `_DEFAULT_EXPORT_FORMATS` | `{"svg"}` | Tests, smoke scripts (default when `export_formats` omitted) |
 | `SVG_PNG_EXPORT_FORMATS` | `{"svg", "png"}` | Scripts / callers that need raster without PDF |
 | `PDF_EXPORT_FORMATS` | `{"pdf"}` | PDF-only callers |
-| `ALL_EXPORT_FORMATS` | `{"svg", "png", "pdf"}` | Scripts / one-shot full export (not Streamlit Generate) |
+| `ALL_EXPORT_FORMATS` | `{"svg", "png", "pdf"}` | Streamlit Generate/Prepare bundle (`cached_build_section_bundle`); scripts / one-shot full export |
 
-Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes the same figure to requested formats. PDF uses `report_export.export_section_pdf()` with the existing figure (no second render when `section_figure` is passed).
+Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes the same figure to requested formats. PDF uses `report_export.export_section_pdf()` with the existing figure (no second render when `section_figure` is passed). Consulting exports use a fixed letter landscape canvas (`figsize=(11, 8.5)`, `bbox_inches=None`) so PNG at 300 dpi is ≈ 3300×2550.
 
 ## Flow
 
-**Geometry stage:** `compute_section_geometry()` — projection, stratigraphy, overlap/correlation QA, lithology codes. `build_cross_section()` calls it then renders/exports. Prepare today uses one PNG+PDF pass via `cached_build_section_exports()`; reusing the SVG Generate figure for Prepare remains future work.
+**Geometry stage:** `compute_section_geometry()` — projection, stratigraphy, overlap/correlation QA, lithology codes. `build_cross_section()` calls it then renders/exports. Streamlit Generate and Prepare share `cached_build_section_bundle()` (one SVG+PNG+PDF render; no second draw on Prepare).
 
 1. `Transect(points=...)` → `project_boreholes()` → projected DataFrame
 2. `filter_projected_for_interpolation()` / `_filter_projected_for_interpolation()` when `max_offset_for_interpolation_m` set — drops **whole holes** whose **max** `offset_distance` exceeds the threshold (unique `hole_id`, not individual lithology rows); requires ≥2 holes remaining
@@ -88,10 +88,10 @@ Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes t
 
 ## Streamlit export strategy
 
-- **Generate:** `cached_build_section()` builds **SVG only** (`frozenset({"svg"})`)
-- **Deliverables (primary):** **Prepare PNG & PDF** via `cached_build_section_exports()` (one PNG+PDF pass; geometry still rebuilt vs Generate)
-- **Deliverables (secondary):** format-scoped `cached_build_section_png()` / `cached_build_section_pdf()` under a Prepare-formats expander
-- **Future:** reuse `SectionGeometry` / Generate SVG figure for Prepare exports (not implemented yet)
+- **Generate / Prepare:** `cached_build_section_bundle()` runs **one** matplotlib render with `ALL_EXPORT_FORMATS`; Generate returns SVG to the UI; Prepare reads PNG/PDF from the same `@st.cache_data` entry (no second draw)
+- **Wrappers:** `cached_build_section()` / `cached_build_section_exports()` / `cached_build_section_png()` / `cached_build_section_pdf()` all delegate to the bundle
+- **Geometry:** `cached_compute_section_geometry()` still pickles `SectionGeometry` for Configure preflight / reuse APIs
+- **API:** `render_cross_section_from_geometry()` renders from precomputed geometry without re-projecting
 
 ## Overlap gating (production QA)
 
@@ -106,9 +106,8 @@ UI path: Configure step can optionally **block export on polygon overlaps** (imp
 
 ## Consumers
 
-- `app_services.cached_build_section()` — SVG-only on Generate
-- `app_services.cached_build_section_exports()` — primary Prepare PNG & PDF
-- `app_services.cached_build_section_png()` / `cached_build_section_pdf()` — secondary format-scoped Prepare
+- `app_services.cached_build_section_bundle()` — one SVG+PNG+PDF render shared by Generate and Prepare
+- `app_services.cached_build_section()` / `cached_build_section_exports()` / `cached_build_section_png()` / `cached_build_section_pdf()` — thin wrappers over the bundle
 - `app_services.cached_configure_preflight()` — Configure correlation + overlap QA
 - `scripts/smoke_test.py` — end-to-end smoke via `build_cross_section()`
 - `tests/conftest.py` — `run_pipeline()`

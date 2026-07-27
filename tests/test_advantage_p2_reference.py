@@ -96,6 +96,9 @@ def test_advantage_p2_chloride_transect_renders() -> None:
         environmental_readings=parse_result.environmental_readings,
         environmental_parameters=("Chloride",),
         show_parameter_labels=True,
+        parameter_interpolate_segments=spec.parameter_interpolate_segments,
+        interpretation_mode=spec.interpretation_mode,  # type: ignore[arg-type]
+        elevation_mode=spec.elevation_mode,
     )
     assert_valid_svg(result.svg_bytes)
     text = result.svg_bytes.decode("utf-8", errors="ignore")

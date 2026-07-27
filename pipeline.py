@@ -330,6 +330,87 @@ def build_cross_section(
         deviation_readings=deviation_readings,
         warn_on_correlation_gaps=warn_on_correlation_gaps,
     )
+    return render_cross_section_from_geometry(
+        geometry,
+        transect_points,
+        vertical_exaggeration=vertical_exaggeration,
+        show_hatches=show_hatches,
+        show_legend=show_legend,
+        title=title,
+        interpretation_mode=interpretation_mode,
+        water_levels=water_levels,
+        uncertainty_spacing_m=uncertainty_spacing_m,
+        uncertainty_offset_m=uncertainty_offset_m,
+        faults=faults,
+        unconformities=unconformities,
+        environmental_readings=environmental_readings,
+        figure_metadata=figure_metadata,
+        show_ground_surface=show_ground_surface,
+        interpolate_water_table=interpolate_water_table,
+        show_water_elevation_labels=show_water_elevation_labels,
+        show_water_legend=show_water_legend,
+        show_dry_well_nm=show_dry_well_nm,
+        water_interpolate_across_gaps=water_interpolate_across_gaps,
+        environmental_parameters=environmental_parameters,
+        show_parameter_labels=show_parameter_labels,
+        parameter_interpolate_segments=parameter_interpolate_segments,
+        parameter_interpolate_across_gaps=parameter_interpolate_across_gaps,
+        render_layout=render_layout,
+        track_width_m=track_width_m,
+        elevation_mode=elevation_mode,
+        raster_log_strips=raster_log_strips,
+        export_formats=export_formats,
+        consulting_title_block=consulting_title_block,
+        screen_intervals=screen_intervals,
+        vertical_gradients=vertical_gradients,
+    )
+
+
+def render_cross_section_from_geometry(
+    geometry: SectionGeometry,
+    transect_points: Sequence[tuple[float, float]],
+    *,
+    vertical_exaggeration: float = 1.0,
+    show_hatches: bool = True,
+    show_legend: bool = True,
+    title: str = "Borehole Cross-Section",
+    interpretation_mode: InterpretationMode = "interpolated",
+    water_levels: Sequence[WaterLevel] | None = None,
+    uncertainty_spacing_m: float = _DEFAULT_UNCERTAINTY_SPACING_M,
+    uncertainty_offset_m: float = DEFAULT_OFFSET_WARNING_M,
+    faults: Sequence[Fault] = (),
+    unconformities: Sequence[Unconformity] = (),
+    environmental_readings: Sequence[EnvironmentalReading] = (),
+    figure_metadata: SectionFigureMetadata | None = None,
+    show_ground_surface: bool = True,
+    interpolate_water_table: bool = False,
+    show_water_elevation_labels: bool | None = None,
+    show_water_legend: bool | None = None,
+    show_dry_well_nm: bool | None = None,
+    water_interpolate_across_gaps: bool | None = None,
+    environmental_parameters: Sequence[str] | None = None,
+    show_parameter_labels: bool | None = None,
+    parameter_interpolate_segments: bool | None = None,
+    parameter_interpolate_across_gaps: bool | None = None,
+    render_layout: str = "section_sheet",
+    track_width_m: float = 3.0,
+    elevation_mode: str = "absolute",
+    raster_log_strips: Sequence[RasterLogStrip] = (),
+    export_formats: frozenset[str] | None = None,
+    consulting_title_block: ConsultingTitleBlock | None = None,
+    screen_intervals: Sequence[ScreenInterval] | None = None,
+    vertical_gradients: Sequence[VerticalGradient] | None = None,
+) -> CrossSectionResult:
+    """Render/export from precomputed ``SectionGeometry`` (Prepare can reuse Generate geometry)."""
+    export_formats = _normalize_export_formats(export_formats)
+    interpretation_mode = validate_interpretation_mode(interpretation_mode)
+    if vertical_exaggeration <= 0:
+        raise ValueError("vertical_exaggeration must be positive")
+    if uncertainty_spacing_m <= 0:
+        raise ValueError("uncertainty_spacing_m must be positive")
+    if uncertainty_offset_m <= 0:
+        raise ValueError("uncertainty_offset_m must be positive")
+
     projected = geometry.projected
     polygons = geometry.polygons
     lithology_codes = geometry.lithology_codes

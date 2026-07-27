@@ -4,3 +4,6 @@ pytest>=8
 pytest-cov>=5
 ruff>=0.6
 pip-audit>=2.7
+
+# Optional: PDF reference extracts for figure parity
+pymupdf>=1.24

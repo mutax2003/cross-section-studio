@@ -36,8 +36,8 @@ def test_parse_depth_interval() -> None:
     assert parse_depth_interval("2.50-4.00m") == (2.5, 4.0)
 
 
-@pytest.mark.skipif(not SOURCE.exists(), reason="Advantage source workbook not vendored in data/fixtures")
 def test_convert_advantage_export() -> None:
+    assert SOURCE.exists(), "Commit data/fixtures/advantage_phase2_source.xlsx (synthetic CI fixture)"
     collars, lithology = convert_advantage_export(SOURCE, OUTPUT)
     assert len(collars) == 23
     assert len(lithology) == 70
@@ -62,8 +62,7 @@ def test_convert_advantage_export() -> None:
 
 
 def test_advantage_platform_workbook_ingests() -> None:
-    if not OUTPUT.exists():
-        pytest.skip("Converted Advantage workbook missing — commit data/advantage_phase2_platform.xlsx")
+    assert OUTPUT.exists(), "Commit data/advantage_phase2_platform.xlsx (synthetic CI fixture)"
     from models import DataParser
 
     result = DataParser().parse_file(OUTPUT)
@@ -71,7 +70,6 @@ def test_advantage_platform_workbook_ingests() -> None:
     assert len(result.lithologies) >= 50
 
 
-@pytest.mark.skipif(not OUTPUT.exists(), reason="Converted workbook not built yet")
 def test_advantage_transect_svgs_exist() -> None:
     transect_dir = ROOT / "data" / "advantage_transects"
     for name in ("cross_section_a_ew.svg", "cross_section_b_ns.svg", "cross_section_c_diagonal.svg"):

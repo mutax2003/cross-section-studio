@@ -124,6 +124,11 @@ def render_sidebar() -> SidebarState:
         render_layout = preset_config.render_layout
         report_preset = preset_config.report_preset
         is_consulting_layout = render_layout == "consulting_section"
+        interpolate_water_table = preset_config.interpolate_water_table
+        show_water_elevation_labels = is_consulting_layout
+        show_water_legend = is_consulting_layout
+        show_dry_well_nm = is_consulting_layout
+        water_interpolate_across_gaps = False
         if st.session_state.get("_synced_output_preset") != output_preset:
             st.session_state.allow_pinch_outs = preset_config.allow_pinch_outs
             st.session_state.show_ground_surface = preset_config.show_ground_surface
@@ -156,6 +161,36 @@ def render_sidebar() -> SidebarState:
             disabled=report_preset,
             help="Linear interpolation between collar elevations — not a DEM.",
         )
+        with st.expander("Groundwater", expanded=False):
+            if is_consulting_layout:
+                st.caption("Consulting layout forces groundwater labels, legend, and interpolation on.")
+            interpolate_water_table = st.toggle(
+                "Interpolate water table between holes",
+                value=interpolate_water_table,
+                disabled=is_consulting_layout,
+                help="When off, only measured water levels are shown as points.",
+            )
+            show_water_elevation_labels = st.toggle(
+                "Show water elevation labels",
+                value=show_water_elevation_labels,
+                disabled=is_consulting_layout,
+            )
+            show_water_legend = st.toggle(
+                "Show groundwater legend",
+                value=show_water_legend,
+                disabled=is_consulting_layout,
+            )
+            show_dry_well_nm = st.toggle(
+                "Show dry-well NM markers",
+                value=show_dry_well_nm,
+                disabled=is_consulting_layout,
+            )
+            water_interpolate_across_gaps = st.toggle(
+                "Interpolate water across gaps",
+                value=water_interpolate_across_gaps,
+                disabled=is_consulting_layout,
+                help="When off, dashed lines connect only consecutive measured holes.",
+            )
         show_hatches = st.toggle(
             "Hatch patterns",
             key="show_hatches",
@@ -191,11 +226,6 @@ def render_sidebar() -> SidebarState:
         )
 
     track_width_m = 3.0
-    interpolate_water_table = preset_config.interpolate_water_table
-    show_water_elevation_labels = is_consulting_layout
-    show_water_legend = is_consulting_layout
-    show_dry_well_nm = is_consulting_layout
-    water_interpolate_across_gaps = False
     parameter_interpolate_across_gaps = False
     warn_on_correlation_gaps = False
     show_legend = preset_config.show_legend
@@ -217,33 +247,6 @@ def render_sidebar() -> SidebarState:
             step=0.5,
             disabled=report_preset or is_consulting_layout,
             help="Width of each borehole column on the section profile.",
-        )
-        interpolate_water_table = st.toggle(
-            "Interpolate water table between holes",
-            value=interpolate_water_table,
-            disabled=is_consulting_layout,
-            help="When off, only measured water levels are shown as points.",
-        )
-        show_water_elevation_labels = st.toggle(
-            "Show water elevation labels",
-            value=show_water_elevation_labels,
-            disabled=is_consulting_layout,
-        )
-        show_water_legend = st.toggle(
-            "Show groundwater legend",
-            value=show_water_legend,
-            disabled=is_consulting_layout,
-        )
-        show_dry_well_nm = st.toggle(
-            "Show dry-well NM markers",
-            value=show_dry_well_nm,
-            disabled=is_consulting_layout,
-        )
-        water_interpolate_across_gaps = st.toggle(
-            "Interpolate water across gaps",
-            value=water_interpolate_across_gaps,
-            disabled=is_consulting_layout,
-            help="When off, dashed lines connect only consecutive measured holes.",
         )
         parameter_interpolate_across_gaps = st.toggle(
             "Interpolate parameters across gaps",

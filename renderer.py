@@ -118,6 +118,9 @@ def _group_water_levels(
 _PARAMETER_LABEL_MIN_GAP_PTS = 26.0
 _PARAMETER_LABEL_DX = 8.0
 _PARAMETER_LABEL_BASE_DY = 0.0
+_PARAMETER_LABEL_LEADER_EPS_PTS = 2.5
+_PARAMETER_LABEL_FONTSIZE = 6.5
+_PARAMETER_LABEL_FONTSIZE_CONSULTING = 7.25
 _PARAMETER_LABEL_BBOX = {
     "boxstyle": "square,pad=0.12",
     "facecolor": "white",
@@ -227,7 +230,12 @@ def _resolve_parameter_label_offsets(
             if last_text_y is not None and text_y > last_text_y - min_gap_pts:
                 text_y = last_text_y - min_gap_pts
                 dy = text_y - marker_y_pts
-            draw_leader = abs(dy - _PARAMETER_LABEL_BASE_DY) > 2.5
+            # Keep labels inside axes (inverted Y still has y0/y1 span).
+            y_lo_pts = min(float(y0), float(y1)) * pts_per_data
+            y_hi_pts = max(float(y0), float(y1)) * pts_per_data
+            text_y = min(max(text_y, y_lo_pts + min_gap_pts * 0.25), y_hi_pts - min_gap_pts * 0.25)
+            dy = text_y - marker_y_pts
+            draw_leader = abs(dy - _PARAMETER_LABEL_BASE_DY) > _PARAMETER_LABEL_LEADER_EPS_PTS
             offsets[label_index] = (_PARAMETER_LABEL_DX, dy, draw_leader)
             last_text_y = text_y
     return offsets
@@ -1278,9 +1286,14 @@ class CrossSectionRenderer(
                 continue
             ax.scatter(marker_xs, marker_ys, marker=marker, c=color, s=49, zorder=8)
             label_offsets = _resolve_parameter_label_offsets(ax, marker_labels)
+            font_size = (
+                _PARAMETER_LABEL_FONTSIZE_CONSULTING
+                if getattr(self.profile, "layout", "") == "consulting_section"
+                else _PARAMETER_LABEL_FONTSIZE
+            )
             label_base_kwargs: dict[str, object] = {
                 "textcoords": "offset points",
-                "fontsize": 6.5,
+                "fontsize": font_size,
                 "color": color,
                 "zorder": 9,
                 "clip_on": False,
@@ -1291,10 +1304,11 @@ class CrossSectionRenderer(
             leader_props = {
                 "arrowstyle": "-",
                 "color": color,
-                "lw": 0.45,
+                "lw": 0.55,
+                "linestyle": "--",
                 "shrinkA": 2,
                 "shrinkB": 1,
-                "alpha": 0.65,
+                "alpha": 0.7,
             }
             for (x_profile, y, label_text), (dx, dy, draw_leader) in zip(
                 marker_labels, label_offsets, strict=True
@@ -1477,22 +1491,45 @@ class CrossSectionRenderer(
             lines.append("WARNING: placeholder collar elevation")
         return lines
 
+    def _savefig_kwargs(self) -> dict[str, object]:
+        """Consulting uses fixed letter page; other layouts keep tight crop."""
+        if getattr(self.profile, "layout", "") == "consulting_section":
+            return {"bbox_inches": None, "pad_inches": 0.05}
+        return {"bbox_inches": "tight"}
+
     def to_svg_bytes(self, fig: Figure) -> bytes:
         buffer = io.BytesIO()
-        fig.savefig(buffer, format="svg", bbox_inches="tight", facecolor=fig.get_facecolor(), metadata={"Creator": "Cross Section Studio"})
+        fig.savefig(
+            buffer,
+            format="svg",
+            facecolor=fig.get_facecolor(),
+            metadata={"Creator": "Cross Section Studio"},
+            **self._savefig_kwargs(),
+        )
         buffer.seek(0)
         return buffer.getvalue()
 
     def to_png_bytes(self, fig: Figure, *, dpi: int = 300) -> bytes:
         buffer = io.BytesIO()
-        fig.savefig(buffer, format="png", dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
+        fig.savefig(
+            buffer,
+            format="png",
+            dpi=dpi,
+            facecolor=fig.get_facecolor(),
+            **self._savefig_kwargs(),
+        )
         buffer.seek(0)
         return buffer.getvalue()
 
     def to_pdf_bytes(self, fig: Figure) -> bytes:
         """Single-page vector PDF of the rendered figure."""
         buffer = io.BytesIO()
-        fig.savefig(buffer, format="pdf", bbox_inches="tight", facecolor=fig.get_facecolor())
+        fig.savefig(
+            buffer,
+            format="pdf",
+            facecolor=fig.get_facecolor(),
+            **self._savefig_kwargs(),
+        )
         buffer.seek(0)
         return buffer.getvalue()
 

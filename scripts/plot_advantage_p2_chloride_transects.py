@@ -1,4 +1,9 @@
-"""Export Advantage Phase 2 chloride cross-section SVGs (Figs 6–7)."""
+"""Export Advantage Phase 2 chloride cross-section figures (Figs 6–7).
+
+Writes SVG under ``data/advantage_p2_transects/`` and PNG/SVG under
+``data/Data2/test_output/`` using parity filenames expected by
+``scripts/compare_figure_parity.py``.
+"""
 
 from __future__ import annotations
 
@@ -18,9 +23,16 @@ from advantage_p2_reference.transects import ADVANTAGE_P2_TRANSECTS
 from pipeline import build_cross_section
 
 DEFAULT_OUTPUT_DIR = ROOT / "data" / "advantage_p2_transects"
+PARITY_OUTPUT_DIR = ROOT / "data" / "Data2" / "test_output"
+
+# Parity script expects these stems under Data2/test_output/
+_PARITY_STEM: dict[str, str] = {
+    "A_A": "fig6_aa_lithology_chlorides",
+    "B_B": "fig7_bb_lithology_chlorides",
+}
 
 
-def generate_transect_svg(transect_id: str, output_dir: Path) -> Path:
+def generate_transect(transect_id: str, output_dir: Path, *, parity_dir: Path) -> Path:
     spec, parse_result = build_parse_result(transect_id)
     transect_points = [
         (collar.easting, collar.northing) for collar in parse_result.collars
@@ -36,17 +48,29 @@ def generate_transect_svg(transect_id: str, output_dir: Path) -> Path:
         environmental_readings=parse_result.environmental_readings,
         environmental_parameters=("Chloride",),
         show_parameter_labels=True,
-        parameter_interpolate_segments=True,
+        parameter_interpolate_segments=spec.parameter_interpolate_segments,
+        interpretation_mode=spec.interpretation_mode,  # type: ignore[arg-type]
+        elevation_mode=spec.elevation_mode,
+        export_formats=frozenset({"svg", "png"}),
     )
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{spec.output_stem}.svg"
-    output_path.write_bytes(result.svg_bytes)
-    return output_path
+    parity_dir.mkdir(parents=True, exist_ok=True)
+
+    svg_path = output_dir / f"{spec.output_stem}.svg"
+    svg_path.write_bytes(result.svg_bytes)
+
+    parity_stem = _PARITY_STEM.get(transect_id, spec.output_stem)
+    (parity_dir / f"{parity_stem}.svg").write_bytes(result.svg_bytes)
+    if result.png_bytes:
+        (parity_dir / f"{parity_stem}.png").write_bytes(result.png_bytes)
+        (output_dir / f"{spec.output_stem}.png").write_bytes(result.png_bytes)
+    return svg_path
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Export Advantage P2 chloride transect SVGs")
+    parser = argparse.ArgumentParser(description="Export Advantage P2 chloride transect figures")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--parity-dir", type=Path, default=PARITY_OUTPUT_DIR)
     parser.add_argument(
         "--transect",
         choices=tuple(ADVANTAGE_P2_TRANSECTS),
@@ -57,7 +81,7 @@ def main() -> None:
 
     transect_ids = (args.transect,) if args.transect else tuple(ADVANTAGE_P2_TRANSECTS)
     for transect_id in transect_ids:
-        path = generate_transect_svg(transect_id, args.output_dir)
+        path = generate_transect(transect_id, args.output_dir, parity_dir=args.parity_dir)
         print(f"Wrote {path}")
 
 

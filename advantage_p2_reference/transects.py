@@ -1,4 +1,8 @@
-"""Transect registry for Advantage Phase 2 chloride cross-sections (Figs 6–7)."""
+"""Transect registry for Advantage Phase 2 chloride cross-sections (Figs 6–7).
+
+Chainage and presentation defaults mirror the client PDF extracts under
+``data/pdf_extract_p2/`` (depth sticks, ~30 m span, VE = 1).
+"""
 
 from __future__ import annotations
 
@@ -11,7 +15,7 @@ PREPARED_FOR = "C-GROUP ENERGY INC."
 PREPARED_BY = "ECOVENTURE"
 SOURCE = "ECOVENTURE 2026"
 REPORT_DATE = "06/24/26"
-DRAWN_BY = "SL/JG"
+DRAWN_BY = "SL"
 REVISED = "EC 06/24/26-xsec"
 
 
@@ -22,7 +26,10 @@ class TransectSpec:
     hole_ids: tuple[str, ...]
     profile_eastings: tuple[float, ...]
     title_block: ConsultingTitleBlock
-    vertical_exaggeration: float = 5.0
+    vertical_exaggeration: float = 1.0
+    elevation_mode: str = "relative"
+    interpretation_mode: str = "borehole_only"
+    parameter_interpolate_segments: bool = False
     output_stem: str = ""
 
     def __post_init__(self) -> None:
@@ -57,19 +64,15 @@ def _title_block(
         project_number=PROJECT_NUMBER,
         source=SOURCE,
         date=REPORT_DATE,
-        notes=("NOTE: masl DENOTES METRES ABOVE SEA LEVEL.",),
+        notes=("NOTE: mbgs DENOTES METRES BELOW GROUND SURFACE.",),
         drawn_by=DRAWN_BY,
         revised=REVISED,
         prepared_for=PREPARED_FOR,
         prepared_by=PREPARED_BY,
         screen_legend_label="SCREENED INTERVAL",
-        y_axis_label="ELEVATION ABOVE SEA LEVEL (MASL)",
+        y_axis_label="DEPTH (mbgs)",
         show_gradient_legend=False,
     )
-
-
-def _evenly_spaced_eastings(count: int, spacing_m: float = 40.0) -> tuple[float, ...]:
-    return tuple(index * spacing_m for index in range(count))
 
 
 ADVANTAGE_P2_TRANSECTS: dict[str, TransectSpec] = {
@@ -85,16 +88,17 @@ ADVANTAGE_P2_TRANSECTS: dict[str, TransectSpec] = {
             "2017-BH10",
             "BH23-07",
         ),
-        profile_eastings=_evenly_spaced_eastings(7, 45.0),
+        # Approximate client Fig 6 chainage (distance axis ~0–32 m).
+        profile_eastings=(1.0, 8.0, 11.0, 15.0, 25.0, 28.0, 32.0),
         title_block=_title_block(
-            section_label="A - A' WITH CHLORIDE AVERAGES",
+            section_label="A-A'",
             figure_number="6",
-            map_scale="1:1 000",
-            scale_bar_m=30.0,
+            map_scale="1:200",
+            scale_bar_m=5.0,
             start_primary="A",
-            start_secondary="NORTHWEST",
+            start_secondary="WEST",
             end_primary="A'",
-            end_secondary="SOUTHEAST",
+            end_secondary="EAST",
         ),
         output_stem="fig_6_cross_section_a_a",
     ),
@@ -110,16 +114,17 @@ ADVANTAGE_P2_TRANSECTS: dict[str, TransectSpec] = {
             "BH24-08",
             "BH23-01",
         ),
-        profile_eastings=_evenly_spaced_eastings(7, 45.0),
+        # Compact ~30 m span matching client Fig 7 distance ticks.
+        profile_eastings=(0.0, 5.0, 10.0, 15.0, 20.0, 26.0, 32.0),
         title_block=_title_block(
-            section_label="B - B' WITH CHLORIDE AVERAGES",
+            section_label="B-B'",
             figure_number="7",
-            map_scale="1:1 000",
-            scale_bar_m=30.0,
+            map_scale="1:200",
+            scale_bar_m=5.0,
             start_primary="B",
-            start_secondary="NORTHWEST",
+            start_secondary="SOUTH",
             end_primary="B'",
-            end_secondary="SOUTHEAST",
+            end_secondary="NORTH",
         ),
         output_stem="fig_7_cross_section_b_b",
     ),

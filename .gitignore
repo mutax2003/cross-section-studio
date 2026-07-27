@@ -33,3 +33,6 @@ Thumbs.db
 *.xlsx
 # Bundled demo for Streamlit Cloud / Try sample project
 !data/sample_boreholes.xlsx
+# Synthetic Advantage CI fixtures (built by tests/fixtures/advantage_synthetic.py)
+!data/fixtures/advantage_phase2_source.xlsx
+!data/advantage_phase2_platform.xlsx

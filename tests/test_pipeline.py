@@ -14,6 +14,7 @@ from pipeline import (
     auto_scale_bar_m,
     build_cross_section,
     compute_section_geometry,
+    render_cross_section_from_geometry,
     validate_interpretation_mode,
 )
 from tests.conftest import assert_valid_svg
@@ -50,6 +51,29 @@ def test_compute_section_geometry_returns_projected_and_polygons() -> None:
     assert len(polygons) == 1
     assert codes == ["Clay"]
     assert_valid_svg(svg_bytes)
+
+
+def test_render_cross_section_from_geometry_reuses_polygons() -> None:
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=10.0),
+    ]
+    lithologies = [
+        Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+        Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+    ]
+    transect = [(0.0, 0.0), (50.0, 0.0)]
+    geometry = compute_section_geometry(collars, lithologies, transect)
+    svg_result = render_cross_section_from_geometry(
+        geometry, transect, export_formats=frozenset({"svg"})
+    )
+    png_result = render_cross_section_from_geometry(
+        geometry, transect, export_formats=frozenset({"png"})
+    )
+    assert_valid_svg(svg_result.svg_bytes)
+    assert png_result.png_bytes
+    assert len(png_result.polygons) == len(geometry.polygons)
+    assert png_result.lithology_codes == geometry.lithology_codes
 
 
 def test_build_cross_section_returns_svg() -> None:

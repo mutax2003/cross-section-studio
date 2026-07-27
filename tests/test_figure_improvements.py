@@ -146,6 +146,31 @@ def test_consulting_layout_exports_single_page_pdf() -> None:
     assert len(result.pdf_bytes) > 500
 
 
+def test_consulting_png_uses_letter_landscape_canvas() -> None:
+    """Consulting PNG is letter landscape at 300 dpi (no tight bbox crop)."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    spec, subset = build_subset("A_A")
+    transect_points = [(collar.easting, collar.northing) for collar in subset.collars]
+    result = build_cross_section(
+        subset.collars,
+        subset.lithologies,
+        transect_points,
+        render_layout="consulting_section",
+        vertical_exaggeration=spec.vertical_exaggeration,
+        consulting_title_block=spec.title_block,
+        screen_intervals=subset.screen_intervals,
+        export_formats=frozenset({"png"}),
+    )
+    assert result.png_bytes
+    width, height = Image.open(BytesIO(result.png_bytes)).size
+    # 11.0 × 8.5 in × 300 dpi = 3300 × 2550
+    assert abs(width - 3300) <= 40, width
+    assert abs(height - 2550) <= 40, height
+
+
 def test_fail_on_overlaps_blocks_export(monkeypatch: pytest.MonkeyPatch) -> None:
     from models import Collar, Lithology
     from stratigraphy import PolygonOverlap

@@ -11,7 +11,7 @@ alwaysApply: false
 - **Image:** `python:3.12-slim` + `libgeos-dev` (Shapely)
 - **Entry:** `streamlit run app.py --server.headless=true --server.address=0.0.0.0 --server.port=8501`
 - **Healthcheck:** `/_stcore/health` on port 8501
-- **COPY modules:** `COPY *.py ./` (all root Python modules), `data/`, `docs/`, `.streamlit/`; Dockerfile **always** `COPY gwm_reference ./gwm_reference` (image/test fixtures — not required by app runtime). **`advantage_p2_reference` is not copied today** — host/CI pytest covers those tests; add `COPY` only if the image must run them.
+- **COPY modules:** `COPY *.py ./` (all root Python modules), `data/`, `docs/`, `.streamlit/`; Dockerfile **always** `COPY gwm_reference ./gwm_reference` and `COPY advantage_p2_reference ./advantage_p2_reference` (test/reference packages). Do **not** add either to PyInstaller hiddenimports unless the frozen app imports them at runtime.
 - **`.dockerignore`:** keep `!docs/help/**` (and any other allowlisted `*.md`) so Help topics survive `*.md` ignores
 - **`launcher.py` is not used in Docker** — container runs `app.py` directly (CMD often `python -m streamlit run …`)
 
@@ -50,7 +50,7 @@ Resolves resource roots for frozen vs dev environments:
 
 When adding a new Python module imported at runtime:
 
-1. Add to **`Dockerfile` COPY** if needed by Streamlit (root `*.py` covers most; add packages like `advantage_p2_reference/` only if the image runs those tests)
+1. Add to **`Dockerfile` COPY** if needed by Streamlit (root `*.py` covers most; `gwm_reference/` and `advantage_p2_reference/` are already copied)
 2. Add to **`cross_section_studio.spec`** datas/hiddenimports when the module is imported at runtime and present on the build branch (`ops_*`, `workbook_template`, `ui_output_presets`, `app_menubar`, `docs/help`)
 3. Document in **`borehole-module-catalog.mdc`** module table
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 from io import BytesIO
 from typing import Any
 
@@ -11,7 +12,9 @@ import streamlit as st
 from ingestion import ingest_workbook
 from models import CorrelationOverride, ParseResult, SectionFigureMetadata, Transect
 from pipeline import (
-    build_cross_section,
+    ALL_EXPORT_FORMATS,
+    compute_section_geometry,
+    render_cross_section_from_geometry,
     filter_projected_for_interpolation,
     validate_interpretation_mode,
 )
@@ -80,37 +83,55 @@ def _build_section_kwargs(
     return figure_metadata, mode, overrides
 
 
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=16)
+def cached_compute_section_geometry(subset_json: str, request_json: str) -> bytes:
+    """Pickled ``SectionGeometry`` shared by Generate SVG and Prepare PNG/PDF."""
+    subset = ParseResult.model_validate_json(subset_json)
+    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+    _figure_metadata, mode, overrides = _build_section_kwargs(subset, request)
+    geometry = compute_section_geometry(
+        subset.collars,
+        subset.lithologies,
+        request.transect_points,
+        offset_warning_m=request.offset_warning_m,
+        interpretation_mode=mode,
+        allow_pinch_outs=request.allow_pinch_outs,
+        max_offset_for_interpolation_m=request.max_offset_for_interpolation_m,
+        correlation_overrides=overrides,
+        deviation_readings=request.deviation_readings or subset.deviation_readings,
+        warn_on_correlation_gaps=request.warn_on_correlation_gaps,
+        fail_on_overlaps=request.fail_on_overlaps,
+    )
+    return pickle.dumps(geometry, protocol=pickle.HIGHEST_PROTOCOL)
+
+
 def _run_build_cross_section(
     subset: ParseResult,
     request: SectionBuildRequest,
     *,
     export_formats: frozenset[str],
+    subset_json: str,
+    request_json: str,
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
-    figure_metadata, mode, overrides = _build_section_kwargs(subset, request)
-    result = build_cross_section(
-        subset.collars,
-        subset.lithologies,
+    figure_metadata, mode, _overrides = _build_section_kwargs(subset, request)
+    geometry = pickle.loads(cached_compute_section_geometry(subset_json, request_json))
+    result = render_cross_section_from_geometry(
+        geometry,
         request.transect_points,
         vertical_exaggeration=request.vertical_exaggeration,
         show_hatches=request.show_hatches,
         show_legend=request.show_legend,
         title=request.section_title,
         interpretation_mode=mode,
-        allow_pinch_outs=request.allow_pinch_outs,
         water_levels=request.water_levels or subset.water_levels or None,
-        offset_warning_m=request.offset_warning_m,
         uncertainty_spacing_m=request.uncertainty_spacing_m,
         uncertainty_offset_m=request.uncertainty_offset_m,
-        max_offset_for_interpolation_m=request.max_offset_for_interpolation_m,
-        correlation_overrides=overrides,
         faults=request.faults or subset.faults,
         unconformities=request.unconformities or subset.unconformities,
         environmental_readings=request.environmental_readings or subset.environmental_readings,
-        deviation_readings=request.deviation_readings or subset.deviation_readings,
         figure_metadata=figure_metadata,
         show_ground_surface=request.show_ground_surface,
         interpolate_water_table=request.interpolate_water_table,
-        warn_on_correlation_gaps=request.warn_on_correlation_gaps,
         show_water_elevation_labels=request.show_water_elevation_labels,
         show_water_legend=request.show_water_legend,
         show_dry_well_nm=request.show_dry_well_nm,
@@ -127,7 +148,6 @@ def _run_build_cross_section(
         consulting_title_block=request.consulting_title_block,
         screen_intervals=request.screen_intervals or subset.screen_intervals,
         vertical_gradients=request.vertical_gradients or subset.vertical_gradients,
-        fail_on_overlaps=request.fail_on_overlaps,
     )
     return (
         result.svg_bytes,
@@ -140,15 +160,30 @@ def _run_build_cross_section(
 
 
 @st.cache_data(show_spinner=False, ttl=3600, max_entries=16)
+def cached_build_section_bundle(
+    subset_json: str,
+    request_json: str,
+) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
+    """One matplotlib render → SVG+PNG+PDF. Generate and Prepare share this cache."""
+    subset = ParseResult.model_validate_json(subset_json)
+    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+    return _run_build_cross_section(
+        subset,
+        request,
+        export_formats=ALL_EXPORT_FORMATS,
+        subset_json=subset_json,
+        request_json=request_json,
+    )
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=16)
 def cached_build_section(
     subset_json: str,
     request_json: str,
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
-    """Fast path: SVG (+ empty PNG/PDF placeholders). Use ``cached_build_section_exports`` for deliverables."""
-    subset = ParseResult.model_validate_json(subset_json)
-    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
-    svg, _png, _pdf, count, codes, warnings = _run_build_cross_section(
-        subset, request, export_formats=frozenset({"svg"})
+    """SVG-first UI path; reuses ``cached_build_section_bundle`` (no second draw for Prepare)."""
+    svg, _png, _pdf, count, codes, warnings = cached_build_section_bundle(
+        subset_json, request_json
     )
     return svg, b"", b"", count, codes, warnings
 
@@ -158,11 +193,9 @@ def cached_build_section_png(
     subset_json: str,
     request_json: str,
 ) -> bytes:
-    """Lazy PNG-only deliverable (avoids PDF work when only PNG is needed)."""
-    subset = ParseResult.model_validate_json(subset_json)
-    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
-    _svg, png, _pdf, _count, _codes, _warnings = _run_build_cross_section(
-        subset, request, export_formats=frozenset({"png"})
+    """PNG deliverable from the shared Generate/Prepare bundle cache."""
+    _svg, png, _pdf, _count, _codes, _warnings = cached_build_section_bundle(
+        subset_json, request_json
     )
     return png
 
@@ -172,11 +205,9 @@ def cached_build_section_pdf(
     subset_json: str,
     request_json: str,
 ) -> bytes:
-    """Lazy PDF-only deliverable (avoids PNG work when only PDF is needed)."""
-    subset = ParseResult.model_validate_json(subset_json)
-    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
-    _svg, _png, pdf, _count, _codes, _warnings = _run_build_cross_section(
-        subset, request, export_formats=frozenset({"pdf"})
+    """PDF deliverable from the shared Generate/Prepare bundle cache."""
+    _svg, _png, pdf, _count, _codes, _warnings = cached_build_section_bundle(
+        subset_json, request_json
     )
     return pdf
 
@@ -186,14 +217,11 @@ def cached_build_section_exports(
     subset_json: str,
     request_json: str,
 ) -> tuple[bytes, bytes]:
-    """Build PNG+PDF in one pipeline pass (Prepare both)."""
-    subset = ParseResult.model_validate_json(subset_json)
-    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
-    _svg, png, pdf, _count, _codes, _warnings = _run_build_cross_section(
-        subset, request, export_formats=frozenset({"png", "pdf"})
+    """PNG+PDF from the shared bundle (cache hit after Generate)."""
+    _svg, png, pdf, _count, _codes, _warnings = cached_build_section_bundle(
+        subset_json, request_json
     )
     return png, pdf
-
 
 
 def preflight_correlation_health(

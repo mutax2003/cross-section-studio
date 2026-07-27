@@ -22,6 +22,7 @@
 | `CROSS_SECTION_DEBUG_UI` | `1`/`true` — show full generate tracebacks in the UI (dev only) |
 | `CROSS_SECTION_PORT` | Desktop launcher port override |
 | `SENTRY_DSN` / `SENTRY_TRACES_RATE` / `SENTRY_ENVIRONMENT` | Optional APM (PII scrubbed; sample rate clamped 0–1) |
+| `STREAMLIT_API_TOKEN` | Streamlit Community Cloud API deploy (`scripts/deploy_streamlit_cloud.py`). Create at [share.streamlit.io](https://share.streamlit.io) → Settings → API tokens |
 | `GROQ_API_KEY` | **Recommended free LLM** — [console.groq.com](https://console.groq.com); auto-enables Assist when set |
 | `GEMINI_API_KEY` | Free LLM alternative — [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
 | `OPENAI_API_KEY` | Optional paid LLM |
@@ -48,9 +49,12 @@ Help markdown lives in `docs/help/` (bundled for desktop; Docker keeps `docs/hel
 1. Run the full E2E gate (see [README](../README.md)).
 2. Bump version tag if releasing a build artifact.
 3. Regenerate GWM figures: `python scripts/plot_ecoventure_gwm.py --transect all`
-4. Run parity check: `python scripts/compare_figure_parity.py --suite all` (missing pairs hard-fail; add `--warn-only` to soften MSE). Optional `--require-same-size` when reference/generated DPI match.
-5. For Windows zip: `powershell -File scripts/build_windows.ps1`
-6. For Docker: `docker build -t cross-section-studio .`
+4. Refresh PDF reference extracts at 300 dpi (needs PyMuPDF): `python scripts/extract_pdf_figures.py --suite all`
+5. Ensure P2 generated PNGs exist under `data/Data2/test_output/` (`fig6_aa_lithology_chlorides.png`, `fig7_bb_lithology_chlorides.png`)
+6. Run parity check: `python scripts/compare_figure_parity.py --suite all` (missing pairs hard-fail; `--warn-only` softens MSE). Optional `--require-same-size` only when crops/DPI truly match.
+7. Rebuild Windows desktop: `powershell -File scripts/build_windows.ps1`
+8. For Docker: `docker build -t cross-section-studio .`
+9. Streamlit Cloud: push `main`, or `STREAMLIT_API_TOKEN=… python scripts/deploy_streamlit_cloud.py`
 
 ## Troubleshooting
 

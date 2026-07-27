@@ -31,9 +31,16 @@ jobs:
 
       - name: Ruff
         run: |
-          ruff check app.py app_build.py app_configure.py app_services.py app_state.py app_upload.py \
-            section_build_request.py paths.py pipeline.py projection.py stratigraphy.py ingestion.py \
-            gwm_reference tests/test_streamlit_app.py tests/test_pipeline.py
+          ruff check app.py app_build.py app_common.py app_configure.py app_generate.py \
+            app_services.py app_sidebar.py app_state.py app_upload.py app_validate.py \
+            section_build_request.py paths.py pipeline.py projection.py stratigraphy.py \
+            ingestion.py parsing.py parse_ops.py models.py constants.py \
+            renderer.py renderer_common.py renderer_consulting.py renderer_chart.py \
+            renderer_section_sheet.py render_profiles.py render_theme.py \
+            ai_quality.py ui_output_presets.py workbook_template.py \
+            gwm_reference advantage_p2_reference \
+            tests/test_streamlit_app.py tests/test_pipeline.py tests/test_ingestion.py \
+            tests/test_advantage_conversion.py
 
       - name: Engine coverage gate
         run: |

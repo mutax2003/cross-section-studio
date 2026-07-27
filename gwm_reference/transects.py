@@ -123,13 +123,13 @@ GWM_TRANSECTS: dict[str, TransectSpec] = {
         figure_number="5",
         hole_ids=(
             "BH18-07",
-            "MW18-20",
-            "BH18-03",
+            "MW18-19",
             "BH18-04",
-            "MW18-21",
-            "MW18-16",
+            "BH18-05",
+            "MW18-20",
+            "MW18-17",
         ),
-        profile_eastings=(0.0, 116.0, 232.0, 348.0, 464.0, 580.0),
+        profile_eastings=(0.0, 245.0, 260.0, 360.0, 410.0, 570.0),
         title_block=_title_block(
             section_label="C - C'",
             figure_number="5",

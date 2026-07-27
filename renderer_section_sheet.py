@@ -53,16 +53,31 @@ class SectionSheetLayoutMixin:
             z_min, z_max = self._uncertainty_y_bounds(hole_summary)
             self._draw_uncertainty_zones(ax, hole_summary, z_min, z_max, collar_lookup)
 
-        self._draw_fence_polygons(ax, polygons, style_cache, ve, alpha=self.profile.fence_alpha)
+        self._draw_fence_polygons(
+            ax, polygons, style_cache, ve, alpha=self.profile.fence_alpha, collar_lookup=collar_lookup
+        )
 
         collar_depths = collar_depths or {}
         if self.profile.show_sky_fill or self.profile.show_ground_surface:
             self._draw_sky_and_surface(ax, hole_summary, collar_lookup)
 
+        interval_collars = self._collar_values(
+            projected_df["hole_id"],
+            projected_df["collar_elevation"],
+            collar_lookup,
+        )
         if self.show_stick_logs and self.profile.show_track_lithology:
-            self._draw_track_lithology(ax, projected_df, style_cache, track_half, collar_lookup)
+            self._draw_track_lithology(
+                ax,
+                projected_df,
+                style_cache,
+                track_half,
+                collar_lookup,
+                collar_arr=interval_collars,
+            )
         if self.profile.show_track_border:
             self._draw_track_borders(ax, hole_summary, collar_depths, collar_lookup, track_half)
+        profile_lookup = ctx.profile_lookup
         if self.screen_intervals:
             self._draw_screen_intervals(
                 ax,
@@ -70,19 +85,44 @@ class SectionSheetLayoutMixin:
                 self.screen_intervals,
                 collar_lookup,
                 track_half,
+                profile_lookup=profile_lookup,
             )
         if self.profile.show_contact_ticks:
-            self._draw_contact_ticks(ax, projected_df, track_half, collar_lookup)
+            self._draw_contact_ticks(
+                ax,
+                projected_df,
+                track_half,
+                collar_lookup,
+                collar_arr=interval_collars,
+            )
         self._draw_deviated_centerlines(ax, projected_df, collar_lookup)
         self._draw_raster_strips(ax, ctx.x_by_hole, collar_lookup, track_half)
 
         if self.profile.show_overlap_markers and self.overlap_pairs:
-            self._draw_overlap_markers(ax, collar_lookup)
+            self._draw_overlap_markers(ax, collar_lookup, hole_summary=hole_summary)
         if water_levels:
-            self._draw_water_table(ax, hole_summary, water_levels, collar_lookup)
-        self._draw_faults(ax, collar_lookup)
-        self._draw_unconformities(ax, collar_lookup)
-        self._draw_environmental_markers(ax, ctx.x_by_hole, collar_lookup)
+            self._draw_water_table(
+                ax,
+                hole_summary,
+                water_levels,
+                collar_lookup,
+                label_elevations=self.profile.show_water_elevation_labels,
+                label_dry_wells=self.profile.show_dry_well_nm,
+                label_series_gaps=self.profile.show_dry_well_nm,
+                profile_lookup=profile_lookup,
+            )
+            if self.profile.show_water_legend and self.water_series_legend:
+                self._draw_compact_water_legend(ax)
+        self._draw_faults(ax, collar_lookup, hole_summary=hole_summary)
+        self._draw_unconformities(ax, collar_lookup, hole_summary=hole_summary)
+        self._draw_parameter_readings(
+            ax,
+            hole_summary,
+            collar_lookup,
+            profile_lookup=profile_lookup,
+        )
+        if self.parameter_series_legend:
+            self._draw_compact_parameter_legend(ax)
         if self.profile.show_eol_bar:
             self._draw_eol_bars(ax, hole_summary, collar_depths, collar_lookup, track_half)
 

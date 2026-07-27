@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import textwrap
 from typing import Sequence
 
 import matplotlib as mpl
@@ -30,12 +31,16 @@ from render_theme import (
     CONSULTING_WATER_COLOR,
     DEFAULT_CONSULTING_NOTES,
     LABEL_COLOR,
+    PARAMETER_READING_COLOR,
+    OVERLAP_MARKER_COLOR,
+    PINCH_OUT_ALPHA,
     REPORT_GRID_ALPHA,
     REPORT_GRID_COLOR,
     STICK_COLOR,
     TRACK_BORDER_COLOR,
     TRACK_FILL_COLOR,
     consulting_section_title,
+    primary_water_depth_by_hole,
     water_has_multiple_series,
 )
 
@@ -57,14 +62,22 @@ class ConsultingLayoutMixin:
         title_block = self.consulting_title_block or ConsultingTitleBlock(section_label=self.title)
         if not title_block.notes:
             title_block = title_block.model_copy(update={"notes": DEFAULT_CONSULTING_NOTES})
+        if (
+            self.disclaimer
+            and self.interpretation_mode in {"interpolated", "correlation_lines"}
+            and self.disclaimer not in title_block.notes
+        ):
+            title_block = title_block.model_copy(
+                update={"notes": (*title_block.notes, self.disclaimer)}
+            )
 
         ctx = self._hole_context(projected_df)
         fig_width = max(11.0, min(24.0, 8.0 + ctx.x_span / 25.0))
         fig = plt.figure(figsize=(fig_width, 8.5))
         fig.patch.set_facecolor(CONSULTING_FIGURE_BG)
-        grid = GridSpec(3, 1, figure=fig, height_ratios=[62, 8, 22], hspace=0.06)
+        grid = GridSpec(3, 1, figure=fig, height_ratios=[58, 12, 22], hspace=0.12)
         ax = fig.add_subplot(grid[0, 0])
-        sub_gs = grid[1, 0].subgridspec(1, 3, width_ratios=[35, 30, 35], wspace=0.08)
+        sub_gs = grid[1, 0].subgridspec(1, 3, width_ratios=[32, 36, 32], wspace=0.14)
         ax_scale = fig.add_subplot(sub_gs[0, 0])
         ax_center = fig.add_subplot(sub_gs[0, 1])
         ax_notes = fig.add_subplot(sub_gs[0, 2])
@@ -86,7 +99,9 @@ class ConsultingLayoutMixin:
             water_levels_list = list(water_levels or [])
             profile_lookup = ctx.profile_lookup
 
-            self._draw_fence_polygons(ax, polygons, style_cache, ve, alpha=self.profile.fence_alpha)
+            self._draw_fence_polygons(
+                ax, polygons, style_cache, ve, alpha=self.profile.fence_alpha, collar_lookup=collar_lookup
+            )
             self._draw_consulting_surface(ax, hole_summary, collar_lookup)
             self._draw_well_columns(ax, hole_summary, collar_depths, collar_lookup, track_half)
             self._draw_screen_intervals(
@@ -103,8 +118,9 @@ class ConsultingLayoutMixin:
                 hole_summary,
                 water_levels_list,
                 collar_lookup,
-                label_elevations=True,
-                label_dry_wells=not multi_series,
+                label_elevations=self.profile.show_water_elevation_labels,
+                label_dry_wells=self.profile.show_dry_well_nm and not multi_series,
+                label_series_gaps=self.profile.show_dry_well_nm,
                 water_color=CONSULTING_WATER_COLOR,
                 profile_lookup=profile_lookup,
             )
@@ -118,15 +134,17 @@ class ConsultingLayoutMixin:
             )
             self._draw_well_id_labels(ax, hole_summary)
             self._draw_transect_end_labels(ax, title_block)
-            self._draw_faults(ax, collar_lookup)
-            self._draw_unconformities(ax, collar_lookup)
+            if self.profile.show_overlap_markers and self.overlap_pairs:
+                self._draw_overlap_markers(ax, collar_lookup, hole_summary=hole_summary)
+            self._draw_faults(ax, collar_lookup, hole_summary=hole_summary)
+            self._draw_unconformities(ax, collar_lookup, hole_summary=hole_summary)
 
             y_label = (
                 "Depth below collar (m)"
                 if self.profile.y_axis_mode == "depth_below_collar"
                 else (title_block.y_axis_label or self.profile.y_axis_label or "ELEVATION (m)")
             )
-            ax.set_xlabel("DISTANCE (m)", fontsize=10, labelpad=6, color=LABEL_COLOR)
+            ax.set_xlabel("DISTANCE (m)", fontsize=10, labelpad=2, color=LABEL_COLOR)
             ax.set_ylabel(y_label, fontsize=10, labelpad=6, color=LABEL_COLOR)
             ax.set_aspect("auto")
             for spine in ax.spines.values():
@@ -135,6 +153,20 @@ class ConsultingLayoutMixin:
 
             if self.profile.y_axis_mode == "depth_below_collar":
                 ax.invert_yaxis()
+
+            if (
+                getattr(self.profile, "consulting_axis_from_zero", False)
+                and self.profile.y_axis_mode != "depth_below_collar"
+            ):
+                self._apply_consulting_axis_limits(ax, hole_summary, track_half, water_levels_list)
+
+            # Parameter labels after axis limits so collision spacing uses final ylim.
+            self._draw_parameter_readings(
+                ax,
+                hole_summary,
+                collar_lookup,
+                profile_lookup=profile_lookup,
+            )
 
             ax_right: plt.Axes | None = None
             if self.profile.show_dual_y_axes:
@@ -151,6 +183,73 @@ class ConsultingLayoutMixin:
 
             self._draw_subtitle_band(ax_scale, ax_center, ax_notes, title_block)
             self._draw_cad_title_block(ax_block, style_cache, lithology_codes, title_block)
+            self._draw_consulting_footers(fig)
+        return fig
+
+    def _apply_consulting_axis_limits(
+        self,
+        ax,
+        hole_summary: pd.DataFrame,
+        track_half: float,
+        water_levels: Sequence[WaterLevel],
+    ) -> None:
+        if hole_summary.empty:
+            return
+        ve = self.vertical_exaggeration
+        x_max = float(hole_summary["x_profile"].max())
+        x_pad = max(track_half, 5.0)
+        ax.set_xlim(0.0, x_max + x_pad)
+        y_min, y_max = self._uncertainty_y_bounds(hole_summary)
+        y_pad = max(ve * 2.0, ve)
+        collar_lookup = {
+            str(row.hole_id): float(row.collar_elevation)
+            for row in hole_summary.itertuples(index=False)
+        }
+        if water_levels and self.profile.show_water_elevation_labels:
+            for level in water_levels:
+                collar_rl = collar_lookup.get(level.hole_id)
+                if collar_rl is None:
+                    continue
+                water_y = self._plot_y(collar_rl - level.depth, collar_rl)
+                y_min = min(y_min, water_y)
+                y_max = max(y_max, water_y)
+        # Include active environmental sample depths so chloride markers are not clipped.
+        active = {name.strip() for name in (self.environmental_parameters or ()) if name.strip()}
+        if active and self.environmental_readings:
+            for reading in self.environmental_readings:
+                if reading.parameter not in active:
+                    continue
+                collar_rl = collar_lookup.get(reading.hole_id)
+                if collar_rl is None:
+                    continue
+                for depth in (
+                    reading.sample_depth,
+                    reading.from_depth,
+                    reading.to_depth,
+                ):
+                    if depth is None:
+                        continue
+                    sample_y = self._plot_y(collar_rl - float(depth), collar_rl)
+                    y_min = min(y_min, sample_y)
+                    y_max = max(y_max, sample_y)
+        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+    def _draw_consulting_footers(self, fig: Figure) -> None:
+        footer_y = 0.01
+        if self.overlap_pairs and self.profile.show_overlap_footer:
+            fig.text(
+                0.5,
+                footer_y,
+                (
+                    f"Polygon overlap markers ({len(self.overlap_pairs)}): "
+                    "review layer correlation between adjacent holes."
+                ),
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                color=OVERLAP_MARKER_COLOR,
+            )
+            footer_y += 0.02
         return fig
 
     def _apply_report_grid(self, ax, ax_right=None, *, consulting: bool = False, x_major_step: float | None = None) -> None:
@@ -242,7 +341,7 @@ class ConsultingLayoutMixin:
     ) -> None:
         if not vertical_gradients or hole_summary.empty:
             return
-        water_depth_by_hole = {level.hole_id: level.depth for level in water_levels}
+        water_depth_by_hole = primary_water_depth_by_hole(water_levels)
         if profile_lookup is None:
             profile_lookup = self._profile_lookup(hole_summary, collar_lookup)
         arrow_len = 0.12 * self.vertical_exaggeration
@@ -337,7 +436,7 @@ class ConsultingLayoutMixin:
         )
         if not start_primary and not start_secondary and not end_primary and not end_secondary:
             return
-        header_transform = ax.get_xaxis_transform()
+        header_transform = ax.transAxes
         if start_primary or start_secondary:
             start_lines = [line for line in (start_primary, start_secondary) if line]
             ax.text(
@@ -386,15 +485,15 @@ class ConsultingLayoutMixin:
         map_scale = title_block.map_scale or "1:1000"
         scale_bar_m = title_block.scale_bar_m or CONSULTING_SCALE_BAR_M
         bar_x = 0.02
-        bar_y = 0.62
-        bar_w = 0.88
+        bar_y = 0.55
+        bar_w = 0.72
         tick_step = 10.0
         tick_marks = tuple(np.arange(0.0, scale_bar_m + tick_step * 0.5, tick_step))
         for tick_m in tick_marks:
             tick_x = bar_x + (tick_m / scale_bar_m) * bar_w
             ax_scale.plot(
                 [tick_x, tick_x],
-                [bar_y - 0.06, bar_y + 0.06],
+                [bar_y - 0.05, bar_y + 0.05],
                 color=STICK_COLOR,
                 linewidth=1.0,
                 transform=ax_scale.transAxes,
@@ -402,7 +501,7 @@ class ConsultingLayoutMixin:
             )
             ax_scale.text(
                 tick_x,
-                bar_y - 0.12,
+                bar_y - 0.10,
                 f"{int(tick_m)}",
                 ha="center",
                 va="top",
@@ -420,11 +519,11 @@ class ConsultingLayoutMixin:
             clip_on=False,
         )
         ax_scale.text(
-            bar_x + bar_w / 2.0,
-            bar_y - 0.22,
+            bar_x + bar_w + 0.03,
+            bar_y,
             "Metres",
-            ha="center",
-            va="top",
+            ha="left",
+            va="center",
             fontsize=7,
             color=LABEL_COLOR,
             transform=ax_scale.transAxes,
@@ -434,7 +533,7 @@ class ConsultingLayoutMixin:
             0.12,
             f"SCALE {map_scale}",
             ha="center",
-            va="bottom",
+            va="center",
             fontsize=7,
             fontweight="bold",
             color=LABEL_COLOR,
@@ -444,18 +543,19 @@ class ConsultingLayoutMixin:
         section_title = consulting_section_title(title_block.section_label or self.title)
         ax_center.text(
             0.5,
-            0.72,
+            0.58,
             section_title,
             ha="center",
             va="center",
-            fontsize=10,
+            fontsize=9,
             fontweight="bold",
             color=LABEL_COLOR,
             transform=ax_center.transAxes,
+            wrap=True,
         )
         ax_center.plot(
-            [0.12, 0.88],
-            [0.64, 0.64],
+            [0.10, 0.90],
+            [0.38, 0.38],
             color=LABEL_COLOR,
             linewidth=0.8,
             transform=ax_center.transAxes,
@@ -464,7 +564,7 @@ class ConsultingLayoutMixin:
         ve_text = f"{self.vertical_exaggeration:.0f}× VERTICAL EXAGGERATION"
         ax_center.text(
             0.5,
-            0.28,
+            0.18,
             ve_text,
             ha="center",
             va="center",
@@ -475,8 +575,8 @@ class ConsultingLayoutMixin:
 
         notes = title_block.notes or DEFAULT_CONSULTING_NOTES
         ax_notes.text(
-            0.02,
-            0.92,
+            0.04,
+            0.86,
             "NOTES:",
             ha="left",
             va="top",
@@ -485,20 +585,20 @@ class ConsultingLayoutMixin:
             color=LABEL_COLOR,
             transform=ax_notes.transAxes,
         )
-        note_y = 0.78
+        note_y = 0.68
         for index, note in enumerate(notes[:4], start=1):
             ax_notes.text(
-                0.02,
+                0.04,
                 note_y,
                 f"{index}. {note}",
                 ha="left",
                 va="top",
-                fontsize=7,
+                fontsize=6.5,
                 color=LABEL_COLOR,
                 transform=ax_notes.transAxes,
                 wrap=True,
             )
-            note_y -= 0.18
+            note_y -= 0.22
 
     def _draw_cad_title_block(
         self,
@@ -510,166 +610,47 @@ class ConsultingLayoutMixin:
         ax.set_axis_off()
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
-        border = Rectangle(
-            (0.01, 0.05),
-            0.98,
-            0.9,
-            fill=False,
-            edgecolor="#94A3B8",
-            linewidth=1.0,
-            transform=ax.transAxes,
-            clip_on=False,
-        )
-        ax.add_patch(border)
-        for x_pos in (0.34, 0.66):
-            ax.plot(
-                [x_pos, x_pos],
-                [0.05, 0.95],
-                color="#94A3B8",
-                linewidth=0.8,
-                transform=ax.transAxes,
-                clip_on=False,
-            )
-        ax.plot(
-            [0.66, 0.66],
-            [0.55, 0.95],
-            color="#94A3B8",
-            linewidth=0.8,
-            transform=ax.transAxes,
-            clip_on=False,
-        )
 
-        y = 0.82
-        ax.text(0.04, y, "LEGEND", fontsize=9, fontweight="bold", color=LABEL_COLOR, transform=ax.transAxes)
-        y -= 0.12
-        swatch_w = 0.035
-        for code in lithology_codes[:8]:
-            style = self._resolve_style(code, style_cache)
-            rect = Rectangle(
-                (0.04, y - 0.03),
-                swatch_w,
-                0.05,
-                facecolor=style.color,
-                edgecolor=style.edge_color,
-                linewidth=0.6,
-                transform=ax.transAxes,
+        # Three independent panels so legend / title / prepared content stay boxed.
+        legend_box = (0.01, 0.05, 0.32, 0.90)
+        has_right = bool(title_block.prepared_for or title_block.prepared_by)
+        if has_right:
+            title_box = (0.34, 0.05, 0.31, 0.90)
+            right_box = (0.66, 0.05, 0.33, 0.90)
+            panels = (legend_box, title_box, right_box)
+        else:
+            # Give the title/meta table the remaining width when no prepared logos.
+            title_box = (0.34, 0.05, 0.65, 0.90)
+            right_box = None
+            panels = (legend_box, title_box)
+        for box in panels:
+            ax.add_patch(
+                Rectangle(
+                    (box[0], box[1]),
+                    box[2],
+                    box[3],
+                    fill=False,
+                    edgecolor="#94A3B8",
+                    linewidth=1.0,
+                    transform=ax.transAxes,
+                    clip_on=False,
+                )
             )
-            ax.add_patch(rect)
-            ax.text(
-                0.085,
-                y,
-                code.upper(),
-                fontsize=8,
-                va="center",
-                color=LABEL_COLOR,
-                transform=ax.transAxes,
-            )
-            y -= 0.11
 
-        sym_y = y - 0.02
-        screen_rect = Rectangle(
-            (0.04, sym_y - 0.03),
-            swatch_w,
-            0.05,
-            facecolor="none",
-            edgecolor=TRACK_BORDER_COLOR,
-            linewidth=0.6,
-            hatch="///",
-            transform=ax.transAxes,
+        self._draw_legend_panel(
+            ax,
+            style_cache,
+            lithology_codes,
+            title_block,
+            panel=legend_box,
         )
-        ax.add_patch(screen_rect)
-        ax.text(
-            0.085,
-            sym_y,
-            title_block.screen_legend_label or "SCREENED INTERVAL",
-            fontsize=7,
-            va="center",
-            color=LABEL_COLOR,
-            transform=ax.transAxes,
-        )
-        sym_y -= 0.1
-        if title_block.show_gradient_legend and self.vertical_gradients:
-            arrow = FancyArrow(
-                0.055,
-                sym_y - 0.01,
-                0.0,
-                0.035,
-                width=0.008,
-                head_width=0.02,
-                head_length=0.012,
-                length_includes_head=True,
-                transform=ax.transAxes,
-                facecolor=CONSULTING_WATER_COLOR,
-                edgecolor=CONSULTING_WATER_COLOR,
-                clip_on=False,
-            )
-            ax.add_patch(arrow)
-            ax.text(
-                0.085,
-                sym_y,
-                "VERTICAL GRADIENT DIRECTION",
-                fontsize=7,
-                va="center",
-                color=LABEL_COLOR,
-                transform=ax.transAxes,
-            )
-            sym_y -= 0.1
-        gw_legend = self.water_series_legend or [
-            {
-                "color": CONSULTING_WATER_COLOR,
-                "marker": "v",
-                "elevation_label": "GROUNDWATER ELEVATION masl",
-                "level_label": "GROUNDWATER LEVEL (masl)",
-            }
-        ]
-        for entry in gw_legend:
-            color = entry.get("color", CONSULTING_WATER_COLOR)
-            marker = entry.get("marker", "v")
-            ax.plot(
-                [0.04, 0.075],
-                [sym_y, sym_y - 0.03],
-                marker=marker,
-                color=color,
-                linewidth=0,
-                markersize=6,
-                transform=ax.transAxes,
-                clip_on=False,
-            )
-            ax.text(
-                0.085,
-                sym_y - 0.015,
-                entry.get("elevation_label", "GROUNDWATER ELEVATION masl"),
-                fontsize=7,
-                va="center",
-                color=LABEL_COLOR,
-                transform=ax.transAxes,
-            )
-            sym_y -= 0.07
-            ax.plot(
-                [0.04, 0.075],
-                [sym_y, sym_y],
-                color=color,
-                linewidth=1.5,
-                linestyle="--",
-                transform=ax.transAxes,
-                clip_on=False,
-            )
-            ax.text(
-                0.085,
-                sym_y,
-                entry.get("level_label", "GROUNDWATER LEVEL (masl)"),
-                fontsize=7,
-                va="center",
-                color=LABEL_COLOR,
-                transform=ax.transAxes,
-            )
-            sym_y -= 0.1
 
         meta_rows: list[tuple[str, str]] = []
         if title_block.project_number:
             meta_rows.append(("PROJECT", title_block.project_number))
-        if title_block.section_label:
-            meta_rows.append(("TITLE", consulting_section_title(title_block.section_label)))
+        section_label = title_block.section_label or self.title
+        if section_label:
+            meta_rows.append(("TITLE", consulting_section_title(section_label)))
         if title_block.source:
             meta_rows.append(("SOURCE", title_block.source))
         if title_block.map_scale:
@@ -682,9 +663,11 @@ class ConsultingLayoutMixin:
             meta_rows.append(("REVISED", title_block.revised))
         if title_block.figure_number:
             meta_rows.append(("FIGURE NO.", title_block.figure_number))
-        self._draw_title_block_metadata_table(ax, meta_rows)
+        self._draw_title_block_metadata_table(ax, meta_rows, panel=title_box)
 
-        right_x = 0.68
+        if right_box is None:
+            return
+        right_x = right_box[0] + 0.03
         if title_block.prepared_for:
             ax.text(
                 right_x,
@@ -724,6 +707,229 @@ class ConsultingLayoutMixin:
             )
             self._draw_logo_image(ax, title_block.logo_prepared_by_bytes, (0.78, 0.22))
 
+    def _draw_legend_panel(
+        self,
+        ax,
+        style_cache: dict,
+        lithology_codes: list[str],
+        title_block: ConsultingTitleBlock,
+        *,
+        panel: tuple[float, float, float, float],
+    ) -> None:
+        left, bottom, width, height = panel
+        pad_x = 0.025
+        pad_y = 0.04
+        content_left = left + pad_x
+        content_top = bottom + height - pad_y
+        content_bottom = bottom + pad_y
+        text_x = content_left + 0.05
+        swatch_w = 0.03
+
+        entries: list[tuple[str, str, dict[str, object]]] = []
+        for code in lithology_codes[:8]:
+            style = self._resolve_style(code, style_cache)
+            entries.append(
+                (
+                    "swatch",
+                    code.upper(),
+                    {
+                        "facecolor": style.color,
+                        "edgecolor": style.edge_color,
+                        "hatch": None,
+                    },
+                )
+            )
+        entries.append(
+            (
+                "swatch",
+                title_block.screen_legend_label or "SCREENED INTERVAL",
+                {
+                    "facecolor": TRACK_FILL_COLOR,
+                    "edgecolor": TRACK_BORDER_COLOR,
+                    "hatch": "///",
+                },
+            )
+        )
+        if title_block.show_gradient_legend and self.vertical_gradients:
+            entries.append(("gradient", "VERTICAL GRADIENT DIRECTION", {}))
+
+        gw_legend = self.water_series_legend or [
+            {
+                "color": CONSULTING_WATER_COLOR,
+                "marker": "v",
+                "elevation_label": "GROUNDWATER ELEVATION masl",
+                "level_label": "GROUNDWATER LEVEL (masl)",
+            }
+        ]
+        compact_gw = bool(getattr(self.profile, "compact_water_legend", False))
+        gw_linestyle = "-" if getattr(self.profile, "water_line_solid", False) else "--"
+        for entry in gw_legend:
+            if compact_gw:
+                legend_label = entry.get("level_label") or entry.get(
+                    "elevation_label", "GROUNDWATER LEVEL (masl)"
+                )
+                entries.append(
+                    (
+                        "line_marker",
+                        str(legend_label),
+                        {
+                            "color": entry.get("color", CONSULTING_WATER_COLOR),
+                            "marker": entry.get("marker", "v"),
+                            "linestyle": gw_linestyle,
+                        },
+                    )
+                )
+            else:
+                entries.append(
+                    (
+                        "marker",
+                        str(entry.get("elevation_label", "GROUNDWATER ELEVATION masl")),
+                        {
+                            "color": entry.get("color", CONSULTING_WATER_COLOR),
+                            "marker": entry.get("marker", "v"),
+                        },
+                    )
+                )
+                entries.append(
+                    (
+                        "line",
+                        str(entry.get("level_label", "GROUNDWATER LEVEL (masl)")),
+                        {
+                            "color": entry.get("color", CONSULTING_WATER_COLOR),
+                            "linestyle": gw_linestyle,
+                        },
+                    )
+                )
+
+        for entry in getattr(self, "parameter_series_legend", None) or []:
+            entries.append(
+                (
+                    "line_marker",
+                    str(entry.get("label", entry.get("parameter", "PARAMETER"))),
+                    {
+                        "color": entry.get("color", PARAMETER_READING_COLOR),
+                        "marker": entry.get("marker", "D"),
+                        "linestyle": "--",
+                    },
+                )
+            )
+        if getattr(self, "_has_pinch_out", False) and getattr(self.profile, "show_pinch_out_legend", True):
+            entries.append(
+                (
+                    "line",
+                    "INFERRED PINCH-OUT",
+                    {"color": LABEL_COLOR, "linestyle": "--"},
+                )
+            )
+
+        # Header + entries must stay inside the legend box.
+        n_rows = 1 + len(entries)
+        step = min(0.10, max(0.055, (content_top - content_bottom) / max(n_rows, 1)))
+        font_size = 7.5 if step >= 0.08 else 6.5
+        y = content_top
+        ax.text(
+            content_left,
+            y,
+            "LEGEND",
+            fontsize=8.5,
+            fontweight="bold",
+            color=LABEL_COLOR,
+            transform=ax.transAxes,
+            va="top",
+            clip_on=True,
+        )
+        y -= step
+
+        max_label_chars = 36 if width < 0.34 else 42
+        for kind, label, style in entries:
+            if y < content_bottom + 0.02:
+                break
+            display = label
+            if len(label) > max_label_chars:
+                # Prefer keeping a trailing "(MAY 2024)" / "(JUNE 2024)" date tag.
+                paren = label.rfind("(")
+                if paren > 0 and label.endswith(")") and len(label) - paren <= 14:
+                    prefix_budget = max_label_chars - (len(label) - paren) - 1
+                    if prefix_budget >= 8:
+                        display = label[:prefix_budget].rstrip(" -:") + "…" + label[paren:]
+                    else:
+                        display = label[: max_label_chars - 1] + "…"
+                else:
+                    display = label[: max_label_chars - 1] + "…"
+            if kind == "swatch":
+                rect = Rectangle(
+                    (content_left, y - 0.022),
+                    swatch_w,
+                    0.04,
+                    facecolor=style["facecolor"],
+                    edgecolor=style["edgecolor"],
+                    linewidth=0.6,
+                    hatch=style.get("hatch"),
+                    transform=ax.transAxes,
+                    clip_on=True,
+                )
+                ax.add_patch(rect)
+            elif kind == "gradient":
+                arrow = FancyArrow(
+                    content_left + 0.012,
+                    y - 0.01,
+                    0.0,
+                    0.03,
+                    width=0.006,
+                    head_width=0.016,
+                    head_length=0.01,
+                    length_includes_head=True,
+                    transform=ax.transAxes,
+                    facecolor=CONSULTING_WATER_COLOR,
+                    edgecolor=CONSULTING_WATER_COLOR,
+                    clip_on=True,
+                )
+                ax.add_patch(arrow)
+            elif kind == "marker":
+                ax.plot(
+                    [content_left, content_left + 0.03],
+                    [y, y - 0.02],
+                    marker=style.get("marker", "v"),
+                    color=style.get("color", CONSULTING_WATER_COLOR),
+                    linewidth=0,
+                    markersize=5,
+                    transform=ax.transAxes,
+                    clip_on=True,
+                )
+            elif kind == "line":
+                ax.plot(
+                    [content_left, content_left + 0.03],
+                    [y, y],
+                    color=style.get("color", LABEL_COLOR),
+                    linewidth=1.4,
+                    linestyle=style.get("linestyle", "--"),
+                    transform=ax.transAxes,
+                    clip_on=True,
+                )
+            else:  # line_marker
+                ax.plot(
+                    [content_left, content_left + 0.03],
+                    [y, y],
+                    marker=style.get("marker", "D"),
+                    color=style.get("color", PARAMETER_READING_COLOR),
+                    linewidth=1.4,
+                    linestyle=style.get("linestyle", "--"),
+                    markersize=5,
+                    transform=ax.transAxes,
+                    clip_on=True,
+                )
+            ax.text(
+                text_x,
+                y,
+                display,
+                fontsize=font_size,
+                va="center",
+                color=LABEL_COLOR,
+                transform=ax.transAxes,
+                clip_on=True,
+            )
+            y -= step
+
     def _draw_logo_image(self, ax, logo_bytes: bytes | None, position: tuple[float, float]) -> None:
         if not logo_bytes:
             return
@@ -746,13 +952,28 @@ class ConsultingLayoutMixin:
         self,
         ax,
         rows: list[tuple[str, str]],
+        *,
+        panel: tuple[float, float, float, float] | None = None,
     ) -> None:
         if not rows:
             return
-        table_left = 0.35
-        table_bottom = 0.08
-        table_width = 0.30
-        row_height = 0.84 / max(len(rows), 1)
+        if panel is None:
+            table_left, table_bottom, table_width, table_height = 0.35, 0.08, 0.30, 0.84
+        else:
+            table_left, table_bottom, table_width, table_height = panel
+            # Inset slightly so cell rules sit inside the panel border.
+            inset = 0.01
+            table_left += inset
+            table_bottom += inset
+            table_width -= 2 * inset
+            table_height -= 2 * inset
+
+        label_col_w = min(0.09, table_width * 0.28)
+        value_col_w = table_width - label_col_w
+        row_height = table_height / max(len(rows), 1)
+        # Character budget from panel fraction; consulting sheets are typically wide.
+        max_chars = max(28, int(value_col_w * 170))
+
         for index, (label, value) in enumerate(rows):
             row_bottom = table_bottom + (len(rows) - index - 1) * row_height
             ax.plot(
@@ -764,7 +985,7 @@ class ConsultingLayoutMixin:
                 clip_on=False,
             )
             ax.plot(
-                [table_left + 0.11, table_left + 0.11],
+                [table_left + label_col_w, table_left + label_col_w],
                 [row_bottom, row_bottom + row_height],
                 color="#94A3B8",
                 linewidth=0.6,
@@ -773,44 +994,49 @@ class ConsultingLayoutMixin:
             )
             ax.text(
                 table_left + 0.01,
-                row_bottom + row_height * 0.55,
+                row_bottom + row_height * 0.5,
                 label,
                 fontsize=7,
                 fontweight="bold",
                 va="center",
                 color=LABEL_COLOR,
                 transform=ax.transAxes,
+                clip_on=True,
             )
-            ax.text(
-                table_left + 0.12,
-                row_bottom + row_height * 0.55,
-                value,
-                fontsize=7,
-                va="center",
-                color=LABEL_COLOR,
-                transform=ax.transAxes,
-                wrap=True,
-            )
+            wrapped = textwrap.wrap(str(value), width=max_chars) or [""]
+            max_lines = max(2, int(row_height / 0.09))
+            if len(wrapped) > max_lines:
+                wrapped = wrapped[:max_lines]
+                if len(wrapped[-1]) > 3:
+                    wrapped[-1] = wrapped[-1][: max(3, len(wrapped[-1]) - 1)] + "…"
+            line_gap = min(0.10, (row_height * 0.7) / max(len(wrapped), 1))
+            text_top = row_bottom + row_height * 0.5 + (len(wrapped) - 1) * line_gap * 0.5
+            for line_index, line in enumerate(wrapped):
+                ax.text(
+                    table_left + label_col_w + 0.012,
+                    text_top - line_index * line_gap,
+                    line,
+                    fontsize=6.5 if len(wrapped) > 1 else 7,
+                    va="center",
+                    ha="left",
+                    color=LABEL_COLOR,
+                    transform=ax.transAxes,
+                    clip_on=True,
+                )
+
         top_y = table_bottom + len(rows) * row_height
+        for x_pos in (table_left, table_left + table_width):
+            ax.plot(
+                [x_pos, x_pos],
+                [table_bottom, top_y],
+                color="#94A3B8",
+                linewidth=0.6,
+                transform=ax.transAxes,
+                clip_on=False,
+            )
         ax.plot(
             [table_left, table_left + table_width],
             [top_y, top_y],
-            color="#94A3B8",
-            linewidth=0.6,
-            transform=ax.transAxes,
-            clip_on=False,
-        )
-        ax.plot(
-            [table_left, table_left],
-            [table_bottom, top_y],
-            color="#94A3B8",
-            linewidth=0.6,
-            transform=ax.transAxes,
-            clip_on=False,
-        )
-        ax.plot(
-            [table_left + table_width, table_left + table_width],
-            [table_bottom, top_y],
             color="#94A3B8",
             linewidth=0.6,
             transform=ax.transAxes,

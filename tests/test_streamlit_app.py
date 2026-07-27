@@ -91,12 +91,26 @@ def test_streamlit_generate_smoke(sample_workbook: Path) -> None:
     at.run()
     at.file_uploader[0].upload("sample.xlsx", sample_workbook.read_bytes()).run()
     assert not at.exception
+    assert at.session_state["parse_result"] is not None
+
+    hole_ids = list(at.session_state["hole_ids"])
+    assert len(hole_ids) >= 2
+    at.session_state["hole_sequence_multiselect"] = hole_ids[: min(4, len(hole_ids))]
+    for box in at.checkbox:
+        label = box.label or ""
+        if "Allow generate with warnings" in label:
+            box.set_value(True)
+            break
+    at.run()
 
     generate_buttons = [btn for btn in at.button if btn.label == "Generate Cross-Section"]
-    if not generate_buttons:
-        pytest.skip("Generate button not rendered (transect/configure prerequisites)")
-    if generate_buttons[0].disabled:
-        pytest.skip("Generate disabled — sample QA/configure state not satisfied in AppTest")
+    assert generate_buttons, (
+        "Generate Cross-Section missing after upload+transect setup; "
+        f"buttons={[b.label for b in at.button]}"
+    )
+    assert not generate_buttons[0].disabled, (
+        "Generate disabled — check QA blocking / placeholder elev / transect / overlaps"
+    )
     generate_buttons[0].click().run()
     assert not at.exception
     assert "svg_bytes" in at.session_state and at.session_state["svg_bytes"]

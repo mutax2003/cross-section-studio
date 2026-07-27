@@ -11,7 +11,7 @@ Engineering-grade **Borehole Cross-Section Generation Platform** (Python 3.12, S
 
 **Never** mix projection **math** into renderer, stratigraphy **logic** into models, or UI widgets into engine modules.
 
-**Allowed exceptions:** renderer may import stratigraphy **types** (`GeologicalPolygon`); renderers may consume projected DataFrame columns; `models.py` may re-export parse helpers for compat (new parse logic stays in `parsing`/`parse_ops`); `app_services.py` may import Streamlit for `@st.cache_data` only.
+**Allowed exceptions:** renderer may import stratigraphy **types** (`GeologicalPolygon`); renderers may consume projected DataFrame columns; `models.py` may re-export parse helpers for compat (new parse logic stays in `parsing`/`parse_ops`); `app_services.py` may import Streamlit for `@st.cache_data` and may call projection/stratigraphy for **cached build / Configure preflight** only (no widgets; no new geometry algorithms).
 
 ## Canonical paths
 

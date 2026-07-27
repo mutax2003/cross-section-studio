@@ -26,6 +26,16 @@ def test_normalize_lithology_alias() -> None:
     assert normalize_lithology_code("sandstone", aliases) == "Sandstone"
 
 
+def test_normalize_lithology_sand_not_remapped_to_sandstone() -> None:
+    aliases = load_lithology_aliases()
+    assert normalize_lithology_code("Sand", aliases) == "Sand"
+    assert normalize_lithology_code("sand", aliases) == "Sand"
+    assert normalize_lithology_code("SAND", aliases) == "Sand"
+    assert normalize_lithology_code("Sandstone", aliases) == "Sandstone"
+    assert normalize_lithology_code("snd", aliases) == "Sand"
+    assert normalize_lithology_code("sst", aliases) == "Sandstone"
+
+
 def test_fuzzy_column_mapping() -> None:
     mappings = propose_column_mappings(
         ["BH", "East", "North", "RL", "TD"],
@@ -126,3 +136,26 @@ def test_off_transect_warning() -> None:
     transect = Transect(points=[(0.0, 0.0), (100.0, 0.0)])
     report = analyze_parsed_data(collars, lithologies, transect=transect, offset_threshold_m=50.0)
     assert any(issue.code == "off_transect" for issue in report.issues)
+
+
+def test_summarize_environmental_readings() -> None:
+    from ai_quality import summarize_environmental_readings
+    from models import EnvironmentalReading
+
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=10.0),
+    ]
+    readings = [
+        EnvironmentalReading(hole_id="BH-01", parameter="Chloride", value=120.0, depth=3.5, unit="mg/L"),
+        EnvironmentalReading(hole_id="BH-02", parameter="Chloride", value=85.0, depth=4.0, unit="mg/L"),
+        EnvironmentalReading(hole_id="BH-01", parameter="Benzene", value=0.5, depth=2.0, unit="mg/L"),
+    ]
+    summary = summarize_environmental_readings(collars, readings, ("BH-01", "BH-02"))
+    assert summary.total_readings == 3
+    assert tuple(param.parameter for param in summary.parameters) == ("Benzene", "Chloride")
+    chloride = next(param for param in summary.parameters if param.parameter == "Chloride")
+    assert chloride.hole_count == 2
+    assert chloride.min_depth == pytest.approx(3.5)
+    assert chloride.max_depth == pytest.approx(4.0)
+    assert summary.holes_without_any_readings == ()

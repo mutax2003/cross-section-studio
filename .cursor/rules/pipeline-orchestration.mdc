@@ -33,15 +33,17 @@ result = build_cross_section(
     render_layout="section_sheet",  # or consulting_section / chart
     export_formats=None,  # default {"svg"}; use SVG_PNG_EXPORT_FORMATS or ALL_EXPORT_FORMATS
     # ... water_levels, consulting_title_block, screen_intervals, vertical_gradients,
+    # environmental_readings, environmental_parameters, elevation_mode, raster_log_strips,
     # warn_on_correlation_gaps, show_water_elevation_labels, show_water_legend,
     # show_dry_well_nm, water_interpolate_across_gaps, etc.
 )
+# Non-empty environmental_parameters forces show_parameter_markers=True on the render profile.
 # result.svg_bytes, result.polygons, result.overlap_warnings, ...
 # Legacy unpack still works: proj, polys, svg, png, pdf, codes, warns = result
 ```
 
 
-`SectionBuildRequest` (in `section_build_request.py`) bundles UI render params and provides `cache_key(hole_ids)` for Streamlit. Note: pipeline defaults `allow_pinch_outs=True`; **`SectionBuildRequest.allow_pinch_outs` defaults `False`** (conservative UI default).
+`SectionBuildRequest` (in `section_build_request.py`) bundles UI render params and provides `cache_key(hole_ids)` for Streamlit. Note: pipeline defaults `allow_pinch_outs=True`; **`SectionBuildRequest.allow_pinch_outs` defaults `False`** (conservative UI default). `correlation_lines` still builds polygons; fill vs line-only is renderer-side.
 
 ## Export format constants
 
@@ -59,7 +61,7 @@ Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes t
 **Geometry stage:** `compute_section_geometry()` — projection, stratigraphy, overlap/correlation QA, lithology codes. `build_cross_section()` calls it then renders/exports. Prepare today uses one PNG+PDF pass via `cached_build_section_exports()`; reusing the SVG Generate figure for Prepare remains future work.
 
 1. `Transect(points=...)` → `project_boreholes()` → projected DataFrame
-2. `_filter_projected_for_interpolation()` when `max_offset_for_interpolation_m` set — drops **whole holes** whose **max** `offset_distance` exceeds the threshold (unique `hole_id`, not individual lithology rows); requires ≥2 holes remaining
+2. `filter_projected_for_interpolation()` / `_filter_projected_for_interpolation()` when `max_offset_for_interpolation_m` set — drops **whole holes** whose **max** `offset_distance` exceeds the threshold (unique `hole_id`, not individual lithology rows); requires ≥2 holes remaining
 3. If `interpretation_mode == "borehole_only"`: `polygons = []`, **skip overlap detection**
 4. Else: `build_stratigraphy(projected, allow_pinch_outs=..., correlation_overrides=...)` — includes per-pair overlap clipping via `_resolve_overlaps_in_pair()`
 5. When polygons exist (≥2): `detect_polygon_overlaps(polygons)` → `log_polygon_overlaps()` → overlap warnings (residual overlaps after clipping). Optional `warn_on_correlation_gaps=True` appends correlation-gap messages from `preview_correlation_health()` (warn-only).
@@ -70,7 +72,7 @@ Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes t
 
 **Water table (renderer, not stratigraphy):** `_draw_water_table()` draws per-series markers + dashed lines. Default **segment mode** connects only consecutive transect holes with readings; `water_interpolate_across_gaps=True` restores full min→max span. Consulting profile forces interpolation on; section sheet uses profile/sidebar toggles.
 
-**Preflight only (not in pipeline):** `app_services.preflight_correlation_health()` calls `project_boreholes` + `stratigraphy.preview_correlation_health()` before Generate in the UI. Validate step uses `ai_quality.summarize_water_levels()` / `summarize_screen_intervals()` when those sheets are present.
+**Preflight only (not in pipeline):** `app_services.preflight_correlation_health()`, `preflight_polygon_overlap_warnings()`, and `cached_configure_preflight()` call projection + stratigraphy before Generate in the UI. Validate step uses `ai_quality.summarize_water_levels()` / `summarize_screen_intervals()` / `summarize_environmental_readings()` when those sheets are present.
 
 ## Return Value (7-tuple)
 
@@ -107,8 +109,9 @@ UI path: Configure step can optionally **block export on polygon overlaps** (imp
 - `app_services.cached_build_section()` — SVG-only on Generate
 - `app_services.cached_build_section_exports()` — primary Prepare PNG & PDF
 - `app_services.cached_build_section_png()` / `cached_build_section_pdf()` — secondary format-scoped Prepare
+- `app_services.cached_configure_preflight()` — Configure correlation + overlap QA
 - `scripts/smoke_test.py` — end-to-end smoke via `build_cross_section()`
 - `tests/conftest.py` — `run_pipeline()`
-- `scripts/plot_advantage_transects.py`
+- CLI plot scripts — see catalog Entry Points (`plot_advantage_transects.py`, `plot_advantage_p2_chloride_transects.py`, `plot_ecoventure_gwm.py`, …)
 
 When adding new render options, extend `build_cross_section()` parameters (and `SectionBuildRequest`) — do not add parallel render paths in `app.py`.

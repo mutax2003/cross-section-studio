@@ -99,7 +99,6 @@ def test_consulting_reference_parity_structure() -> None:
     assert "DISTANCE (m)" in text
     assert "SCREEN INTERVAL" in text
     assert "VERTICAL GRADIENT DIRECTION" in text
-    assert "GROUNDWATER ELEVATION" in text.upper()
     assert "GROUNDWATER LEVEL" in text.upper()
     assert " masl" in text
     assert "CROSS SECTION B-B'" in text

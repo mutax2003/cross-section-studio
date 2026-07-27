@@ -6,18 +6,20 @@ alwaysApply: false
 
 # Agent Orchestration
 
-Canonical supervisor protocol lives in **`AGENTS.md`** (Scout → Implementer → Verifier → Reviewer → CI triage). Do not duplicate it here.
+Canonical supervisor protocol lives in **`AGENTS.md`**. Default path: Scout → Implement → Verify. Optional Review (`--review`) and on-failure CI triage — do not treat them as required every run. Do not duplicate the full protocol here.
 
 When editing supervisor scripts, prompts, or CI workflows:
 
 ## CI hygiene (release)
 
-PR workflow `.github/workflows/quality.yml` — scoped ruff, engine cov, pip-audit; not a substitute for `VERIFY_COMMANDS`.
+- **E2E gate:** `.github/workflows/e2e.yml` runs the same **three** `VERIFY_COMMANDS` as `AGENTS.md` (pytest → `e2e_smoke_direct` → `smoke_test`). Not the Streamlit UI’s four workflow steps (Upload → Validate → Configure → Generate); Prepare PNG/PDF is a Generate export action.
+- **Quality hygiene:** `.github/workflows/quality.yml` on PR **and** push to `main`/`master` — scoped ruff, engine cov ≥70, pip-audit, figure parity (`--suite all --warn-only`: missing hard-fail, MSE soft). Not a substitute for `VERIFY_COMMANDS`.
 
-- Scoped lint: `python -m ruff check <paths>` (prefer scoped over `ruff check .`)
-- Engine coverage: `pytest --cov=pipeline --cov=projection --cov=stratigraphy --cov=ingestion --cov-fail-under=70`
-- Dependency audit: `pip-audit -r requirements.txt`
-- E2E gate: **three** commands in `AGENTS.md` / `VERIFY_COMMANDS` (not the Streamlit UI’s four Prepare steps)
+```text
+python -m ruff check <paths>   # prefer scoped over ruff check .
+pytest --cov=pipeline --cov=projection --cov=stratigraphy --cov=ingestion --cov-fail-under=70
+pip-audit -r requirements.txt
+```
 
 ## Cross-references
 

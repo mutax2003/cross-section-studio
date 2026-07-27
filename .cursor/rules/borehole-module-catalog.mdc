@@ -10,7 +10,7 @@ Companion to `borehole-platform-architecture.mdc` (always-on boundaries). Load w
 
 ## Tech Stack
 
-- Python 3.12 (pinned in `runtime.txt` and `Dockerfile`; 3.11+ compatible)
+- Python 3.12 (pinned in `runtime.txt`, `Dockerfile`, and `pyproject.toml` `requires-python >=3.12`)
 - **Math/geometry:** Pandas, NumPy, Shapely (polygons/clipping)
 - **UI:** Streamlit (internal/external testing)
 - **Visualization:** Matplotlib (SVG/vector export)
@@ -24,7 +24,7 @@ Companion to `borehole-platform-architecture.mdc` (always-on boundaries). Load w
 | `parsing.py` | `DataParser`, Excel sheet parsers (Collars, Lithology, Water, Screens, Gradients, …) |
 | `parse_ops.py` | `subset_parse_result`, `apply_unit_order_fix`, `geology_sheet_counts`, lithology index helpers |
 | `ingestion.py` | Multi-format ingest: `FormatDetector`, `FieldExportAdapter`, `ingest_workbook()` |
-| `ai_quality.py` | QA heuristics, fuzzy column mapping, lithology alias normalization, `summarize_water_levels()` |
+| `ai_quality.py` | QA heuristics, fuzzy column mapping, lithology aliases, water/screens/environmental summaries (`summarize_*`) |
 | `ai_assistant.py` | Optional LLM + local advisory assist (UI only; never in engine) |
 | `projection.py` | Vector math — 3D collar → 2D profile coordinates; deviation surveys |
 | `stratigraphy.py` | Layer correlation, pinch-outs, overlap clipping, correlation preflight |
@@ -45,7 +45,7 @@ Companion to `borehole-platform-architecture.mdc` (always-on boundaries). Load w
 | `ui_helpers.py` | Streamlit-free UI helpers |
 | `section_build_request.py` | Frozen render config + `cache_key(hole_ids)` |
 | `app_state.py` | Session defaults and domain clear helpers |
-| `app_services.py` | Streamlit cache wrappers for ingest/recommend/build (no widgets, no geometry) |
+| `app_services.py` | Cached ingest/recommend/build + Configure preflight (project / stratigraphy / overlap); no widgets; no *new* geometry algorithms |
 | `app.py` | Streamlit shell: page config, menubar hook, routing, generate trigger |
 | `app_menubar.py` | Windows-style File/Edit/View/Help menus, Ctrl accelerators, `docs/help` dialogs |
 | `app_sidebar.py` | Sidebar style, consulting report sheet, import/AI settings, Advanced water/GW toggles |
@@ -67,7 +67,9 @@ Never-mix rules and allowed exceptions: `borehole-platform-architecture.mdc`.
 | Water | `hole_id`, `depth` **or** `elevation_masl` (not both) | Groundwater markers (depth below collar or RL masl). Optional: `series_id`, `series_label`, `color`, `marker` for multi-date snapshots |
 | Screens | `hole_id`, `from_depth`, `to_depth` | Screen hatch bands (consulting) |
 | Gradients | `hole_id`, `direction` | Vertical gradient arrows (consulting) |
-| Deviations, Correlations, Faults, Unconformities, Environmental | (see models) | Overlays / overrides |
+| Environmental | `hole_id`, `parameter`, `value`, `depth` **or** `from_depth`/`to_depth` | Parameter markers (filtered by Configure `environmental_parameters`) |
+| Data Entry | (auto-detect / template) | Compat single-sheet layout — see `workbook_template.py` / workbook-format |
+| Deviations, Correlations, Faults, Unconformities | (see models) | Overlays / overrides |
 
 See `docs/workbook-format.md`.
 
@@ -83,8 +85,8 @@ See `docs/workbook-format.md`.
 
 - **Streamlit (dev/Docker/Cloud):** `streamlit run app.py`
 - **Windows desktop:** `launcher.py` → PyInstaller (`cross_section_studio.spec`)
-- **CLI:** `scripts/convert_workbook.py`, `scripts/convert_advantage_export.py`, `scripts/convert_bh_log_legend.py`, `scripts/build_input_template.py`, `scripts/build_data2_test_workbook.py`, `scripts/build_test_workbook.py`, `scripts/plot_advantage_transects.py`, `scripts/plot_advantage_p2_chloride_transects.py`, `scripts/plot_ecoventure_gwm.py`, `scripts/compare_figure_parity.py`
+- **CLI:** `scripts/convert_workbook.py`, `scripts/convert_advantage_export.py`, `scripts/convert_bh_log_legend.py`, `scripts/build_input_template.py`, `scripts/build_data2_test_workbook.py`, `scripts/build_test_workbook.py`, `scripts/generate_sample_data.py`, `scripts/plot_advantage_transects.py`, `scripts/plot_advantage_p2_chloride_transects.py`, `scripts/plot_ecoventure_gwm.py`, `scripts/compare_figure_parity.py`, `scripts/agent_supervisor.py`
 - **Smoke:** `python scripts/smoke_test.py` or `python scripts/e2e_smoke_direct.py`
-- **E2E gate (3 commands):** `python scripts/agent_supervisor.py verify` → pytest → `e2e_smoke_direct.py` → `smoke_test.py`. Optional diagnostic (not in `VERIFY_COMMANDS`): `python scripts/run_e2e_tests.py`. Streamlit UI “Prepare” flow is a separate **4-step** operator workflow.
+- **E2E gate (3 commands):** `python scripts/agent_supervisor.py verify` → pytest → `e2e_smoke_direct.py` → `smoke_test.py` (CI: `.github/workflows/e2e.yml`). Optional diagnostic (not in `VERIFY_COMMANDS`): `python scripts/run_e2e_tests.py`. Streamlit UI has **four workflow steps** (Upload → Validate → Configure → Generate); **Prepare** PNG/PDF is a Generate export action.
 - **Dev orchestration:** `AGENTS.md` — hierarchical Cursor agent protocol (scout → implement → verify); CI: `.github/workflows/e2e.yml`, `.github/workflows/quality.yml`
 - **Tests / scripts:** always prefer `pipeline.build_cross_section()` over calling engine modules directly

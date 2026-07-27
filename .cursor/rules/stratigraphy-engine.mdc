@@ -88,7 +88,7 @@ detect_polygon_overlaps(polygons) -> list[PolygonOverlap]
 log_polygon_overlaps(overlaps) -> None
 ```
 
-Returns empty polygon list when fewer than 2 holes on profile. `preview_correlation_health` is used by **`app_services.preflight_correlation_health()`** (UI preflight, not pipeline).
+Returns empty polygon list when fewer than 2 holes on profile. `preview_correlation_health` is used by **`app_services.preflight_correlation_health()`** / **`cached_configure_preflight()`** (UI preflight, not pipeline). Overlap preview uses **`preflight_polygon_overlap_warnings()`**.
 
 ## Overlap detection (post-clip)
 

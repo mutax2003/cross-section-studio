@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from models import Collar, Lithology, ParseResult, ScreenInterval, WaterLevel, subset_parse_result
 from gwm_reference.transects import GWM_TRANSECTS, TransectSpec
+from models import Collar, Lithology, ParseResult, ScreenInterval, WaterLevel
 
 SILT_HOLES = frozenset(
     {
@@ -17,6 +17,8 @@ SILT_HOLES = frozenset(
         "BH18-08",
         "BH18-02",
         "MW18-08D",
+        "MW18-19",
+        "BH18-05",
     }
 )
 
@@ -42,21 +44,21 @@ COLLAR_META: dict[str, tuple[float, float]] = {
 }
 
 GW_MASL: dict[str, dict[str, float]] = {
-    "MW18-18": {"2024-05": 631.618, "2025-06": 631.188},
-    "MW18-06B": {"2024-05": 630.451, "2025-06": 630.142},
-    "MW18-16": {"2024-05": 629.903, "2025-06": 629.870},
-    "BH18-05": {"2024-05": 630.491, "2025-06": 630.971},
+    "MW18-18": {"2024-05": 631.618, "2024-06": 631.188},
+    "MW18-06B": {"2024-05": 630.451, "2024-06": 630.142},
+    "MW18-16": {"2024-05": 629.903, "2024-06": 629.870},
+    "BH18-05": {"2024-05": 630.491, "2024-06": 630.971},
     "MW18-08D": {"2024-05": 629.870},
     "MW18-24": {"2024-05": 632.631},
-    "MW18-17": {"2024-05": 629.311},
+    "MW18-17": {"2024-05": 629.311, "2024-06": 629.870},
     "BH18-03": {"2024-05": 628.817},
-    "MW18-20": {"2024-05": 630.868, "2025-06": 630.971},
+    "MW18-20": {"2024-05": 630.868, "2024-06": 630.971},
     "BH18-08": {"2024-05": 631.293},
     "BH18-02": {"2024-05": 630.200},
     "BH18-07": {"2024-05": 630.400},
-    "BH18-04": {"2024-05": 630.491},
+    "BH18-04": {"2024-05": 630.491, "2024-06": 630.491},
     "MW18-21": {"2024-05": 629.311},
-    "MW18-19": {"2024-05": 629.847},
+    "MW18-19": {"2024-05": 629.847, "2024-06": 630.060},
     "BH18-09": {"2024-05": 629.911},
     "MW18-22": {"2024-05": 630.308},
     "MW18-23": {"2024-05": 631.674},
@@ -64,8 +66,20 @@ GW_MASL: dict[str, dict[str, float]] = {
 
 SERIES_LABELS = {
     "2024-05": "May 2024",
-    "2025-06": "June 2025",
+    "2024-06": "June 2024",
 }
+
+
+def survey_eastings_by_hole() -> dict[str, float]:
+    """Authoritative profile chainage from GWM transect registry (figures 3–6)."""
+    eastings: dict[str, float] = {}
+    for spec in GWM_TRANSECTS.values():
+        for hole_id, easting in zip(spec.hole_ids, spec.profile_eastings, strict=True):
+            eastings.setdefault(hole_id, easting)
+    return eastings
+
+
+SURVEY_EASTINGS = survey_eastings_by_hole()
 
 
 def _lithology_for_hole(hole_id: str, total_depth: float) -> list[Lithology]:
@@ -145,7 +159,7 @@ def build_subset(transect_id: str) -> tuple[TransectSpec, ParseResult]:
 
 
 def write_fixture_workbook(path: Path) -> Path:
-    """Write a master workbook (survey eastings are placeholders — use fixtures for transect geometry)."""
+    """Write master workbook (collar coordinates are synthetic UTM; transect chainage is in GWM_TRANSECTS)."""
     all_hole_ids = tuple(COLLAR_META.keys())
     collars = tuple(
         Collar(

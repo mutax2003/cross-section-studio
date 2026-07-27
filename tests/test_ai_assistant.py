@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
-from ai_assistant import AIAssistant, MockLLMProvider
+import json
+
+from ai_assistant import (
+    AIAssistant,
+    GeminiProvider,
+    GroqProvider,
+    MockLLMProvider,
+    OpenAIProvider,
+    _load_json_content,
+    build_llm_provider,
+    resolve_llm_api_key,
+)
 from ai_quality import ColumnMapping, MappingProposal, QualityIssue
 from models import Collar, Lithology
 from stratigraphy import CorrelationPairSummary
@@ -78,6 +89,205 @@ def test_mock_llm_fix_plan() -> None:
     assert steps[0].action_id == "auto_unit_order"
 
 
+def test_load_json_content_strips_fences() -> None:
+    payload = _load_json_content('```json\n{"summary": "ok"}\n```')
+    assert payload["summary"] == "ok"
+
+
+def test_build_llm_provider_returns_none_without_key() -> None:
+    assert build_llm_provider("groq", "") is None
+
+
+def test_build_llm_provider_groq_and_openai() -> None:
+    groq = build_llm_provider("groq", "gsk-test")
+    openai = build_llm_provider("openai", "sk-test")
+    assert isinstance(groq, GroqProvider)
+    assert isinstance(openai, OpenAIProvider)
+
+
+def test_resolve_llm_api_key_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "env-groq-key")
+    assert resolve_llm_api_key("groq", "") == "env-groq-key"
+    assert resolve_llm_api_key("groq", "inline") == "inline"
+
+
+def test_gemini_provider_complete_json(monkeypatch) -> None:
+    response_body = json.dumps(
+        {
+            "candidates": [
+                {"content": {"parts": [{"text": '{"summary": "Gemini QA text"}'}]}}
+            ]
+        }
+    ).encode("utf-8")
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return response_body
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: _FakeResponse())
+    provider = GeminiProvider("gemini-test-key")
+    payload = provider.complete_json("system", "user")
+    assert payload["summary"] == "Gemini QA text"
+
+
+def test_preferred_free_llm_provider_from_env(monkeypatch) -> None:
+    from ai_assistant import (
+        is_free_llm_provider,
+        preferred_llm_provider_from_env,
+    )
+
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert preferred_llm_provider_from_env() is None
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-paid")
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-free")
+    assert preferred_llm_provider_from_env() == "gemini"
+    assert is_free_llm_provider("gemini")
+
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-free")
+    assert preferred_llm_provider_from_env() == "groq"
+    assert is_free_llm_provider("groq")
+    assert not is_free_llm_provider("openai")
+
+
+def test_seed_free_llm_defaults_enables_groq(monkeypatch) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-free")
+    monkeypatch.delenv("CROSS_SECTION_DISABLE_LLM", raising=False)
+
+    class _FakeSession(dict):
+        def get(self, key, default=None):
+            return super().get(key, default)
+
+        def __getattr__(self, name: str):
+            try:
+                return self[name]
+            except KeyError as exc:
+                raise AttributeError(name) from exc
+
+        def __setattr__(self, name: str, value) -> None:
+            self[name] = value
+
+    from app_sidebar import _seed_free_llm_defaults
+
+    session = _FakeSession()
+    monkeypatch.setattr("app_sidebar.st.session_state", session, raising=False)
+    monkeypatch.setattr("app_sidebar.llm_disabled_by_deployment", lambda: False)
+    _seed_free_llm_defaults()
+    assert session["llm_provider"] == "groq"
+    assert session["enable_ai_suggestions"] is True
+
+
+def test_build_assistant_uses_env_groq_key(monkeypatch) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "env-groq-key")
+    monkeypatch.delenv("CROSS_SECTION_DISABLE_LLM", raising=False)
+
+    class _FakeSession(dict):
+        def get(self, key, default=None):
+            return super().get(key, default)
+
+    from app_common import _build_assistant
+
+    session = _FakeSession({"enable_ai_suggestions": True, "llm_provider": "groq"})
+    monkeypatch.setattr("app_common.st.session_state", session, raising=False)
+    assistant = _build_assistant()
+    assert assistant.enabled
+    assert isinstance(assistant.provider, GroqProvider)
+
+
+def test_build_assistant_respects_disable_llm(monkeypatch) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "env-groq-key")
+    monkeypatch.setenv("CROSS_SECTION_DISABLE_LLM", "1")
+
+    class _FakeSession(dict):
+        def get(self, key, default=None):
+            return super().get(key, default)
+
+    from app_common import _build_assistant, llm_disabled_by_deployment, llm_suggestions_available
+
+    assert llm_disabled_by_deployment() is True
+    session = _FakeSession({"enable_ai_suggestions": True, "llm_provider": "groq"})
+    monkeypatch.setattr("app_common.st.session_state", session, raising=False)
+    assistant = _build_assistant()
+    assert not assistant.enabled
+    assert llm_suggestions_available() is False
+
+
+def test_clear_ai_session_state_resets_keys() -> None:
+    from app_state import SESSION_AI_KEYS, clear_ai_session_state, init_session_defaults
+
+    class _FakeSession(dict):
+        pass
+
+    session = _FakeSession()
+    init_session_defaults(session)
+    session["qa_narrative"] = "stale"
+    session["ai_column_suggestions"] = {"collars": ()}
+    session["ai_figure_caption"] = "caption"
+    clear_ai_session_state(session)
+    for key in SESSION_AI_KEYS:
+        assert session[key] is None
+
+
+def test_apply_report_suggestion_merges_figure_caption(monkeypatch) -> None:
+    from ai_assistant import ReportMetadataSuggestion
+    from app_common import _apply_report_suggestion
+
+    class _FakeSession(dict):
+        def get(self, key, default=None):
+            return super().get(key, default)
+
+        def __getattr__(self, name: str):
+            try:
+                return self[name]
+            except KeyError as exc:
+                raise AttributeError(name) from exc
+
+        def __setattr__(self, name: str, value) -> None:
+            self[name] = value
+
+    session = _FakeSession()
+    monkeypatch.setattr("app_common.st.session_state", session, raising=False)
+    suggestion = ReportMetadataSuggestion(
+        section_label="A-A'",
+        map_scale="1:1000",
+        figure_caption="Cross section A-A' through MW-01.",
+        notes=("NM at MW-03.",),
+        prepared_for="Client",
+        prepared_by="Firm",
+        source="site.xlsx",
+        project_number="P-1",
+        transect_start_label="MW-01",
+        transect_end_label="MW-03",
+    )
+    _apply_report_suggestion(suggestion)
+    pending = session["_pending_project_seed"]
+    notes = pending["consulting_notes"]
+    assert "Cross section A-A' through MW-01." in notes
+    assert "NM at MW-03." in notes
+    assert session["ai_figure_caption"] == suggestion.figure_caption
+
+
+def test_column_rename_checklist_format() -> None:
+    from app_validate import _column_rename_checklist
+
+    text = _column_rename_checklist(
+        {
+            "collars": (ColumnMapping("Unknown", "hole_id", 0.9),),
+            "lithology": (),
+        }
+    )
+    assert "`Unknown` → `hole_id`" in text
+    assert "Column rename checklist" in text
+
+
 def test_local_report_metadata() -> None:
     assistant = AIAssistant(None)
     suggestion = assistant.suggest_report_metadata(
@@ -138,7 +348,7 @@ def test_local_section_qa() -> None:
     assistant = AIAssistant(None)
     facts = {
         "hole_ids": ["MW-01", "MW-02", "MW-03"],
-        "water_levels": {"MW-01": 2.5, "MW-02": 3.0},
+        "water_levels": {"MW-01": {"default": 2.5}, "MW-02": {"default": 3.0}},
         "nm_hole_ids": ["MW-03"],
         "lithology_thicknesses": {"Clay": {"MW-01": 8.0, "MW-02": 7.0}},
         "offsets_m": {"MW-01": 1.2},

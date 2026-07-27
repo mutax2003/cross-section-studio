@@ -1,6 +1,6 @@
 ---
 description: Streamlit UI assembly — upload, transect config, SVG-first Generate + Prepare PNG & PDF
-globs: app.py,app_*.py,app_state.py,app_services.py,ui_helpers.py,ui_output_presets.py
+globs: app.py,app_*.py,ui_helpers.py,ui_output_presets.py
 alwaysApply: false
 ---
 
@@ -23,10 +23,10 @@ Thin shell in **`app.py`**; sidebar/upload/configure live in split modules. Dele
 | `app_generate.py` | Generate, stale banner, SVG/PNG/PDF downloads |
 | `app_menubar.py` | Windows-style File/Edit/View/Help menus, Ctrl accelerators, `docs/help` dialogs |
 | `app_state.py` | `DEFAULT_SESSION` + domain key groups / clear helpers |
-| `app_services.py` | Streamlit `@st.cache_data` wrappers only (no widgets, no geometry); engine stays Streamlit-free |
+| `app_services.py` | Cached ingest/recommend/build + Configure preflight (project / stratigraphy / overlap); no widgets; no *new* geometry algorithms |
 | `ui_helpers.py` | Streamlit-free helpers: `active_transect_selection`, `svg_is_valid`, workflow stage |
 | `ui_output_presets.py` | Named output presets → sidebar / `SectionBuildRequest` field mapping |
-| `section_build_request.py` | Frozen `SectionBuildRequest` + unified `cache_key()` |
+| `section_build_request.py` | Frozen `SectionBuildRequest` + unified `cache_key()` (engine DTO; also covered by `pipeline-orchestration.mdc`) |
 
 ## Integration Pattern
 
@@ -39,28 +39,29 @@ result = cached_build_section(subset.model_dump_json(), request.model_dump_json(
 ```
 
 - **Primary cache key:** `SectionBuildRequest.cache_key(hole_ids)` in `st.session_state.render_cache_key`
-- **Transect selection cache:** `app_common.active_transect_selection_cached()` memoizes `ui_helpers.active_transect_selection()`
+- **Transect selection cache:** `app_common._active_transect_selection()` memoizes `ui_helpers.active_transect_selection()` in session state
 - **Session keys:** `DEFAULT_SESSION` in `app_state.py`; use `clear_section_output_state()` / domain clears
 - **SVG display:** `st.markdown` + base64 `<img>` via `svg_display_meta()` — never `st.image()` on raw SVG
+- **Menubar accelerators:** `app_menubar._inject_shortcut_bridge()` uses **`st.iframe(..., height=1)`** (must be `height > 0`). Do **not** use deprecated `st.components.v1.html`.
 - **Lazy imports** for `ai_assistant` / `render_theme` inside helpers (avoid Streamlit hot-reload ImportErrors)
 
 ## Workflow (four steps)
 
-**Upload → Validate → Configure → Generate**
+**Upload → Validate → Configure → Generate** (Prepare PNG/PDF is a Generate export action)
 
-1. **Upload** — file uploader, profile, CRS, elevation, Parse; import report (optional sheets, geology counts, `unit_order`)
-2. **Validate** — Data Health, fix-path coach, lithology mapping, sheet roles, QA narrative
-3. **Configure** — transect (incl. NL pick), correlation health + AI link suggestions, section Q&A, consulting report sheet fields
+1. **Upload** — file uploader, profile, CRS, elevation, Parse; import report (optional sheets, geology counts, `unit_order` / `unit_order_auto_assigned`)
+2. **Validate** — Data Health, fix-path coach, lithology mapping, sheet roles, QA narrative; water/screens/environmental summaries when sheets present
+3. **Configure** — transect (incl. NL pick), `cached_configure_preflight()` (correlation + overlap), environmental parameter multiselect → `SectionBuildRequest.environmental_parameters`, section Q&A, consulting report sheet fields
 4. **Generate** — warnings gate, `cached_build_section()` (**SVG only**), overlap warnings; primary **Prepare PNG & PDF** via `cached_build_section_exports()`; secondary per-format via `cached_build_section_png` / `cached_build_section_pdf`
 
 ## Layouts
 
 - `section_sheet`, `consulting_section`, `chart` via `render_layout`
 - Lithology fills use BH Log legend colours via `get_lithology_style()` (constants aliased as `USGS_LITHOLOGY_*`); legend in title block
-- Optional workbook sheets: **Screens**, **Gradients** (see `docs/workbook-format.md`)
+- Optional workbook sheets: **Screens**, **Gradients**, **Environmental** (see `docs/workbook-format.md`)
 
 ## Boundaries
 
-- Widgets only in `app*.py`; `app_services.py` = cache wrappers only (may import Streamlit for `@st.cache_data`)
-- Do not import stratigraphy/projection in UI except QA helpers (`off_transect_warnings`, `suggest_offset_threshold_m`)
-- No stratigraphy or projection logic in Streamlit modules
+- Widgets only in `app*.py` (except services); `app_services.py` may call projection/stratigraphy for cache/preflight/build only
+- Widget modules may use thin QA helpers (`suggest_offset_threshold_m`, etc.); do not reimplement geometry
+- No new stratigraphy or projection algorithms in Streamlit modules

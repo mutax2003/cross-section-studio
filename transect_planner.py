@@ -9,6 +9,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from typing import Sequence
+
 from models import Collar, Lithology, Transect
 from projection import TransectGeometry
 
@@ -137,8 +139,8 @@ _COMBINATORICS_MAX_HOLES = 9
 
 
 def recommend_transects(
-    collars: list[Collar],
-    lithologies: list[Lithology],
+    collars: Sequence[Collar],
+    lithologies: Sequence[Lithology],
     *,
     min_holes: int = 2,
     max_holes: int = 6,

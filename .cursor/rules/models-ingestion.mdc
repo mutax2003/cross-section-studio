@@ -27,11 +27,17 @@ Prefer `from models import DataParser, subset_parse_result` (re-exports) or impo
 #   (parser converts elevation_masl → depth via collar RL). Optional: series_id, series_label, color, marker
 # ScreenInterval — hole_id, from_depth, to_depth
 # VerticalGradient — hole_id, direction (up/down)
-# ParseResult — collars, lithologies, errors, water_levels, screen_intervals, vertical_gradients, ...
+# EnvironmentalReading — hole_id, parameter, value; depth XOR from_depth/to_depth; optional unit, value_label
+# ParseResult — collars, lithologies, errors, water_levels, screen_intervals, vertical_gradients,
+#   environmental_readings, ...
 ```
 
-Optional sheets: Water, Screens, Gradients, Deviations, Correlations, Faults, Unconformities, Environmental.
+Optional sheets: Water, Screens, Gradients, Deviations, Correlations, Faults, Unconformities, Environmental, Data Entry (compat).
 See `docs/workbook-format.md`. Template: `python scripts/build_input_template.py`.
+
+`ImportReport.unit_order_auto_assigned` is set when ingest fills missing `unit_order` values — not a `QualityIssue` code.
+
+Field-export CRS helper: `ingestion.suggest_utm_crs(latitudes, longitudes)`.
 
 ### Parse error policy
 

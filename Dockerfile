@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgeos-dev \
+    && apt-get install -y --no-install-recommends libgeos-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -14,9 +14,14 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY *.py ./
+COPY gwm_reference ./gwm_reference
 COPY data ./data
 COPY docs ./docs
 COPY .streamlit ./.streamlit
+
+RUN useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 8501
 

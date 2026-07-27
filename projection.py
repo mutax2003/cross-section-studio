@@ -684,7 +684,10 @@ def project_boreholes(
         )
         _warn_off_transect_holes(
             [hole_id],
-            deviated_frame["offset_distance"].to_numpy(dtype=float),
+            np.asarray(
+                [float(np.max(deviated_frame["offset_distance"].to_numpy(dtype=float)))],
+                dtype=float,
+            ),
             offset_warning_m,
             warned,
         )
@@ -694,6 +697,8 @@ def project_boreholes(
         return pd.DataFrame(columns=_PROJECTED_COLUMNS)
 
     projected = pd.concat(frames, ignore_index=True)
+    if len(frames) == 1 and projected["x_profile"].is_monotonic_increasing:
+        return projected
     return projected.sort_values(["x_profile", "hole_id", "top_elevation"], ascending=[True, True, False])
 
 

@@ -1,0 +1,27 @@
+[project]
+name = "cross-section-studio"
+requires-python = ">=3.12"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["data", "orchestration_reports", "dist", "build"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: full supervisor verify gate (minutes)",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["pipeline", "projection", "stratigraphy", "ingestion"]
+omit = ["tests/*", "scripts/*"]
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+skip_empty = true

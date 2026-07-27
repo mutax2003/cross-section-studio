@@ -76,18 +76,20 @@ def generate_transect(
         water_levels=subset.water_levels,
         show_legend=False,
         show_hatches=True,
-        export_formats=frozenset({"svg", "png"}),
+        export_formats=frozenset({"svg", "png", "pdf"}),
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = spec.output_stem or f"fig_{spec.figure_number}_{transect_id.lower()}"
     svg_path = output_dir / f"{stem}.svg"
     png_path = output_dir / f"{stem}.png"
+    pdf_path = output_dir / f"{stem}.pdf"
     svg_path.write_bytes(result.svg_bytes)
     if result.png_bytes:
         png_path.write_bytes(result.png_bytes)
-        return svg_path, png_path
-    return svg_path, None
+    if result.pdf_bytes:
+        pdf_path.write_bytes(result.pdf_bytes)
+    return svg_path, png_path if result.png_bytes else None
 
 
 def main() -> None:

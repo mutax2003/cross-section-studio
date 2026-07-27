@@ -45,5 +45,5 @@ jobs:
       - name: pip-audit
         run: pip-audit -r requirements.txt
 
-      - name: Figure parity (warn-only)
-        run: python scripts/compare_figure_parity.py --warn-only
+      - name: Figure parity (missing pairs hard-fail; MSE soft via --warn-only)
+        run: python scripts/compare_figure_parity.py --suite all --warn-only

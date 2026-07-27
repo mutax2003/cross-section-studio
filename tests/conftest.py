@@ -110,3 +110,19 @@ def assert_valid_svg(svg_bytes: bytes) -> None:
     assert len(svg_bytes) > 100
     lowered = svg_bytes.lower()
     assert b"<svg" in lowered or b"<?xml" in lowered
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "slow: full E2E gate or other long-running checks (pytest -m slow)",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if config.getoption("-m"):
+        return
+    skip_slow = pytest.mark.skip(reason="slow test; run with pytest -m slow")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip_slow)

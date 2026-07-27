@@ -18,7 +18,7 @@ from paths import help_dir, help_topic_path
 
 def test_help_dir_contains_operator_topics() -> None:
     topics = set(help_topics_on_disk())
-    assert {"getting-started", "keyboard-shortcuts", "workbook-quick", "about", "generate-exports"} <= topics
+    assert {"getting-started", "keyboard-shortcuts", "workbook-quick", "about", "generate-exports", "consulting-ux"} <= topics
     assert "README" not in topics
     assert help_dir().is_dir()
 

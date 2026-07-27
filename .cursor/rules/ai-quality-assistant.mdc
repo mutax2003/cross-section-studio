@@ -1,6 +1,6 @@
 ---
 description: Geology QA heuristics and optional LLM-assisted triage in the Validate step
-globs: ai_quality.py,**/ai_quality.py,ai_assistant.py,**/ai_assistant.py,app_validate.py,**/app_validate.py,tests/test_ai_*.py,tests/test_water_quality.py,tests/test_geology_qc.py,tests/test_unit_order_auto.py
+globs: ai_quality.py,ai_assistant.py,app_validate.py,app_configure.py,app_sidebar.py,app_common.py,tests/test_ai_*.py,tests/test_water_quality.py,tests/test_geology_qc.py,tests/test_unit_order_auto.py
 alwaysApply: false
 ---
 
@@ -10,28 +10,37 @@ alwaysApply: false
 
 Runs after ingest via `analyze_parsed_data()` → `QualityReport` with `issues`, counts, and `unmapped_lithologies`.
 
-### Key issue codes
+### Key issue codes (`QualityIssue.code`)
 
 | Code | Severity | Meaning |
 |------|----------|---------|
+| `no_lithology` | error/warn | Hole has no lithology intervals |
+| `single_interval` | info/warn | Only one interval in hole |
+| `depth_gap` | warning | Gap between consecutive intervals or vs TD |
+| `depth_overlap` | warning | Overlapping interval depths |
 | `duplicate_lithology_no_unit_order` | error | Same `lithology_code` twice in one hole without `unit_order` |
 | `duplicate_unit_order` | error | Conflicting `unit_order` values in one hole |
+| `orphan_lithology` | warning | Lithology `hole_id` missing from collars |
+| `below_td` | warning | Interval extends below collar `total_depth` |
+| `flat_collar_grid` | warning | Collars share identical easting/northing |
 | `placeholder_elevation` | warning | All collars use profile placeholder RL; UI blocks absolute-mode interpreted generate |
-| `unit_order_auto_assigned` | info | `assign_missing_unit_orders` filled gaps from depth sequence |
 | `off_transect` | warning | Collar offset exceeds threshold (also from projection) |
+
+**Not an issue code:** `ImportReport.unit_order_auto_assigned` (ingest flag when `assign_missing_unit_orders` filled gaps) — Validate may show `st.info`, but it is not a `QualityIssue`.
 
 ### Lithology aliases
 
 - Load/save: `data/lithology_aliases.json`
-- `normalize_lithology_code()` applied during ingest
+- `normalize_lithology_code()` applied during ingest (also used from `parsing.py`)
 - UI mapping expander + optional AI suggest in Validate step
 
 ### Helpers
 
-- `collars_use_placeholder_elevation()`, `suggest_utm_crs()` for field-export CRS guidance
+- `collars_use_placeholder_elevation()` in `ai_quality.py`
+- Field-export CRS: `ingestion.suggest_utm_crs()` (not in `ai_quality`)
 - Per-hole checks in `_hole_quality_issues()`
 - Off-transect QA uses **`TransectGeometry.project_many()`** (batch projection, same pattern as `off_transect_warnings`)
-- Validate summaries: `summarize_water_levels()`, `summarize_screen_intervals()`, `summarize_environmental_readings()`
+- Validate summaries: `summarize_water_levels()`, `summarize_screen_intervals()`, `summarize_environmental_readings()` — parameter filtering for markers is UI/render (`environmental_parameters`), not QA
 
 ## ai_assistant.py — Optional LLM (UI only)
 
@@ -72,6 +81,7 @@ Provider helpers: `preferred_llm_provider_from_env()` (Groq → Gemini → OpenA
 
 - Report sheet autofill (accept writes `ConsultingTitleBlock` session keys)
 - Correlation link suggestions (accept → `session_correlation_overrides`)
+- Environmental parameter multiselect → `SectionBuildRequest.environmental_parameters`
 - Section Q&A over active transect facts
 - Natural-language transect pick (sets hole sequence)
 

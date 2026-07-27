@@ -28,6 +28,11 @@ class CrossSectionRenderProfile(BaseModel, frozen=True):
     show_report_grid: bool = False
     legend_in_title_block: bool = False
     interpolate_water_table_default: bool = False
+    water_interpolate_segments: bool = True
+    water_interpolate_across_gaps: bool = False
+    show_water_elevation_labels: bool = False
+    show_water_legend: bool = False
+    show_dry_well_nm: bool = False
     y_axis_mode: YAxisMode = "elevation_rl"
     water_symbol: WaterSymbol = "triangle"
     title_block: bool = True
@@ -37,6 +42,15 @@ class CrossSectionRenderProfile(BaseModel, frozen=True):
     show_overlap_markers: bool = False
     show_overlap_footer: bool = False
     use_consulting_palette: bool = False
+    show_pinch_out_legend: bool = True
+    compact_water_legend: bool = False
+    water_line_solid: bool = False
+    consulting_axis_from_zero: bool = False
+    show_parameter_markers: bool = False
+    show_parameter_labels: bool = True
+    parameter_interpolate_segments: bool = True
+    parameter_interpolate_across_gaps: bool = False
+    parameter_marker: str = "D"
     x_major_grid_m: float = 10.0
     y_axis_label: str = ""
 
@@ -77,6 +91,7 @@ SECTION_SHEET_PROFILE = CrossSectionRenderProfile(
     title_block=True,
     show_ve_annotation=True,
     fence_alpha=0.58,
+    show_parameter_markers=True,
 )
 
 CONSULTING_SECTION_PROFILE = CrossSectionRenderProfile(
@@ -95,16 +110,27 @@ CONSULTING_SECTION_PROFILE = CrossSectionRenderProfile(
     show_report_grid=True,
     legend_in_title_block=True,
     interpolate_water_table_default=True,
+    water_interpolate_segments=True,
+    water_interpolate_across_gaps=False,
+    show_water_elevation_labels=True,
+    show_water_legend=True,
+    show_dry_well_nm=True,
     y_axis_mode="elevation_rl",
     water_symbol="triangle",
     title_block=True,
     show_ve_annotation=False,
     fence_alpha=1.0,
-    show_overlap_markers=False,
-    show_overlap_footer=False,
+    show_overlap_markers=True,
+    show_overlap_footer=True,
     use_consulting_palette=True,
+    show_pinch_out_legend=False,
+    compact_water_legend=True,
+    water_line_solid=True,
+    consulting_axis_from_zero=True,
     x_major_grid_m=10.0,
     y_axis_label="ELEVATION ABOVE SEA LEVEL (MASL)",
+    show_parameter_markers=True,
+    show_parameter_labels=True,
 )
 
 

@@ -41,7 +41,8 @@ PM/Architect prompts (`pm.md`, `architect.md`) are **IDE-only** — the SDK does
 |--------|-------------|-----------------|--------------|
 | Optimize renderer | `renderer*.py`, `render_*.py` | One mixin or `renderer_common.py` | `tests/test_renderer_styles.py` |
 | PDF / report export | `report_export.py`, `pipeline.py` | `report_export.py` | `tests/test_pipeline.py`, `tests/test_renderer_styles.py` |
-| Fix ingest | `ingestion.py`, `parsing.py` | Same boundary | `tests/test_ingestion.py` |
+| Fix ingest | `ingestion.py`, `parsing.py`, `parse_ops.py` | One of ingest / parse / parse_ops per pass | `tests/test_ingestion.py` |
+| Schemas / ParseResult | `models.py` | `models.py` only | `tests/test_ingestion.py`, `tests/test_pipeline.py` |
 | Workbook template | `workbook_template.py` | `workbook_template.py` | `tests/test_workbook_template.py` |
 | Stratigraphy bug | `stratigraphy.py` | `stratigraphy.py` only | `tests/test_stratigraphy.py`, `tests/test_e2e_edge_cases.py` |
 | Projection math | `projection.py` | `projection.py` | `tests/test_projection.py` |
@@ -52,19 +53,19 @@ PM/Architect prompts (`pm.md`, `architect.md`) are **IDE-only** — the SDK does
 | AI assistant (UI) | `ai_assistant.py` | `ai_assistant.py` only | `tests/test_ai_assistant.py` |
 | SVG-first / Generate cache | `app_services.py`, `section_build_request.py`, `pipeline.py` | Serialize preferred — one per pass (`section_build_request` → `pipeline` → `app_services`); kwargs/cache glue may need `app_services` after DTO/pipeline changes | `tests/test_pipeline.py`, `tests/test_section_build_request.py`, `tests/test_import_smoke.py` |
 | Pipeline / export | `pipeline.py`, `section_build_request.py`, `app_services.py` | Serialize preferred — one per pass; SVG-first triad allowlisted for cache/DTO glue (see `module_boundary_warnings`) | `tests/test_pipeline.py`, `tests/test_section_build_request.py` |
-| UI / sidebar / presets | `app_sidebar.py`, `ui_helpers.py`, `ui_output_presets.py` | One UI module per pass | `tests/test_app_helpers.py`, `tests/test_ui_helpers.py`, `tests/test_ui_output_presets.py`, `tests/test_streamlit_app.py` |
-| Menubar / help | `app_menubar.py`, `docs/help/getting-started.md`, `paths.py` | `app_menubar.py` | `tests/test_menubar.py`, `tests/test_paths.py` |
+| UI / sidebar / presets | `app_*.py`, `ui_helpers.py`, `ui_output_presets.py` | One `app_*.py` (or one UI helper) per pass | `tests/test_app_helpers.py`, `tests/test_ui_helpers.py`, `tests/test_ui_output_presets.py`, `tests/test_streamlit_app.py` |
+| Menubar / help | `app_menubar.py`, `docs/help/getting-started.md`, `paths.py` | `app_menubar.py` — accelerators use `st.iframe` with `height>0` (not `st.components.v1.html`) | `tests/test_menubar.py`, `tests/test_paths.py` |
 | Ops / auth / audit | `ops_*.py`, `paths.py` | One `ops_*.py` per pass | `tests/test_ops.py` |
 | Packaging / Docker | `Dockerfile`, `launcher.py`, `paths.py` | One packaging file | `tests/test_paths.py`, `tests/test_launcher_port.py` |
 | Reference parity | `gwm_reference/`, `advantage_p2_reference/` | Same package only | `tests/test_ecoventure_gwm_figures.py`, `tests/test_advantage_p2_reference.py` |
-| Supervisor / prompts | `scripts/agent_supervisor.py` | Same | `tests/test_agent_supervisor.py`, `tests/test_agent_supervisor_edge_cases.py` |
+| Supervisor / prompts | `scripts/agent_supervisor.py`, `scripts/agent_prompts/*` | One boundary per pass | `tests/test_agent_supervisor.py`, `tests/test_agent_supervisor_edge_cases.py` |
 | Full refactor | Parallel scouts | One implementer per boundary, serialized | Full E2E gate |
 
 ## E2E quality gate
 
-**Naming:** the quality gate is **three shell commands** below (`VERIFY_COMMANDS`). That is separate from the Streamlit UI’s **four** Prepare steps (Upload → Validate → Configure → Generate).
+**Naming:** the quality gate is **three shell commands** below (`VERIFY_COMMANDS`). That is separate from the Streamlit UI’s **four workflow steps** (Upload → Validate → Configure → Generate). **Prepare** PNG/PDF is a Generate-step export action, not a fifth workflow step.
 
-Canonical command list is also `VERIFY_COMMANDS` in `scripts/agent_supervisor.py`. Exit non-zero if any step fails.
+Canonical command list is also `VERIFY_COMMANDS` in `scripts/agent_supervisor.py`. Exit non-zero if any step fails. CI mirror: `.github/workflows/e2e.yml`.
 
 **Windows (PowerShell)** — stop on first failure:
 
@@ -90,7 +91,7 @@ Batch wrapper: `powershell -File scripts/run_verify_batch.ps1` (writes under `or
 
 **Deps:** CI and local verify need `pip install -r requirements.txt -r requirements-dev.txt` (pytest + `cursor-sdk` for supervisor unit tests).
 
-**CI hygiene (not E2E):** `.github/workflows/quality.yml` runs scoped ruff, engine coverage, and pip-audit on PRs — not a substitute for `VERIFY_COMMANDS`.
+**CI hygiene (not E2E):** `.github/workflows/quality.yml` (PR and push to `main`/`master`) runs scoped ruff, engine coverage ≥70, pip-audit, and figure parity (`--suite all --warn-only`: missing pairs hard-fail, MSE soft) — not a substitute for `VERIFY_COMMANDS`.
 
 ### IDE iteration verify
 
@@ -119,7 +120,7 @@ Requires `CURSOR_API_KEY` for agent phases. Weekly automation notes: [`docs/curs
 | `--skip-scout` | Implement uses placeholder scout context |
 | `--skip-implement` | Scout (optional) then verify only |
 | `--review` | Diff review agent after verify |
-| `--report [PATH]` | Markdown report (`orchestration_reports/latest_run.md` default) |
+| `--report [PATH]` | Opt-in markdown report; omit PATH → `orchestration_reports/latest_run.md` |
 | `--summary-agent` | Executive summary agent on report |
 | `--runtime cloud` | Needs `git remote origin`; current branch as ref |
 | `--model` | Agent model (default `composer-2.5`) |

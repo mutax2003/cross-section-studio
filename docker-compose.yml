@@ -4,3 +4,28 @@ services:
     ports:
       - "8501:8501"
     restart: unless-stopped
+    environment:
+      CROSS_SECTION_LOG_FORMAT: json
+      # Shared password gate (recommended for any non-localhost exposure).
+      CROSS_SECTION_AUTH_PASSWORD: ${CROSS_SECTION_AUTH_PASSWORD:-}
+      # Set to 1 to refuse startup when CROSS_SECTION_AUTH_PASSWORD is empty.
+      CROSS_SECTION_AUTH_REQUIRED: ${CROSS_SECTION_AUTH_REQUIRED:-}
+      CROSS_SECTION_DISABLE_LLM: ${CROSS_SECTION_DISABLE_LLM:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_TRACES_RATE: ${SENTRY_TRACES_RATE:-0.1}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health')",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s

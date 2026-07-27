@@ -16,6 +16,7 @@ DEFAULT_SOURCE = Path(
     r"\Boreholes_Advantage_2026_Phase_2_ESA_10011_24_110_08_W6M_062426.xlsx"
 )
 DEFAULT_OUTPUT = ROOT / "data" / "advantage_phase2_platform.xlsx"
+DEFAULT_SOURCE = ROOT / "data" / "fixtures" / "advantage_phase2_source.xlsx"
 DEFAULT_ELEVATION_M = 100.0
 
 # Re-export for backward-compatible tests

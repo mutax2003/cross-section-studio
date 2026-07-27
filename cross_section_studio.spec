@@ -11,9 +11,20 @@ root = Path(SPECPATH)
 datas: list[tuple[str, str]] = [
     (str(root / "app.py"), "."),
     (str(root / ".streamlit" / "config.toml"), ".streamlit"),
-    (str(root / "data"), "data"),
     (str(root / "docs" / "help"), "docs/help"),
 ]
+
+# Bundle data files but skip Excel/Office lock temps (~$*) that block packaging when open.
+_data_root = root / "data"
+if _data_root.is_dir():
+    for path in _data_root.rglob("*"):
+        if not path.is_file():
+            continue
+        name = path.name
+        if name.startswith("~$") or name.startswith(".~") or name.endswith(".tmp"):
+            continue
+        rel = path.relative_to(root)
+        datas.append((str(path), str(rel.parent).replace("\\", "/")))
 
 for py_file in sorted(root.glob("*.py")):
     if py_file.name in {"launcher.py"}:
@@ -43,9 +54,6 @@ hiddenimports = [
     "renderer_consulting",
     "renderer_section_sheet",
     "renderer_chart",
-    "gwm_reference",
-    "gwm_reference.fixtures",
-    "gwm_reference.transects",
     "app",
     "ingestion",
     "models",

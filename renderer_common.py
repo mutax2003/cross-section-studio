@@ -10,7 +10,7 @@ from matplotlib.collections import PolyCollection
 
 from constants import get_lithology_style
 from models import ScreenInterval
-from render_theme import TRACK_BORDER_COLOR
+from render_theme import TRACK_BORDER_COLOR, TRACK_FILL_COLOR
 
 
 class RendererGeometryMixin:
@@ -143,14 +143,19 @@ class RendererGeometryMixin:
         *,
         zorder: int = 5,
         alpha: float = 0.96,
+        collar_arr: np.ndarray | None = None,
     ) -> None:
         """Vectorized track lithology rectangles grouped by resolved style."""
         if projected_df.empty:
             return
-        collars = self._collar_values(
-            projected_df["hole_id"],
-            projected_df["collar_elevation"],
-            collar_lookup,
+        collars = (
+            collar_arr
+            if collar_arr is not None
+            else self._collar_values(
+                projected_df["hole_id"],
+                projected_df["collar_elevation"],
+                collar_lookup,
+            )
         )
         x_values = projected_df["x_profile"].to_numpy(dtype=float)
         tops = self._plot_y_values(
@@ -171,16 +176,23 @@ class RendererGeometryMixin:
         y0_masked = y0[mask]
         heights_masked = heights[mask]
         width = 2.0 * track_half_width
-        for code in np.unique(lithology_codes):
-            code_mask = lithology_codes == code
-            style = self._resolve_style(str(code), style_cache)
+        order = np.argsort(lithology_codes, kind="stable")
+        sorted_codes = lithology_codes[order]
+        split_at = np.concatenate(
+            ([0], np.flatnonzero(sorted_codes[1:] != sorted_codes[:-1]) + 1, [len(sorted_codes)])
+        )
+        for start, end in zip(split_at[:-1], split_at[1:], strict=True):
+            code = str(sorted_codes[start])
+            style = self._resolve_style(code, style_cache)
+            slice_idx = order[start:end]
+            count = end - start
             self._add_rect_collection(
                 ax,
                 (
-                    x_masked[code_mask] - track_half_width,
-                    y0_masked[code_mask],
-                    np.full(int(code_mask.sum()), width),
-                    heights_masked[code_mask],
+                    x_masked[slice_idx] - track_half_width,
+                    y0_masked[slice_idx],
+                    np.full(count, width),
+                    heights_masked[slice_idx],
                 ),
                 facecolors=style.color,
                 edgecolors=style.edge_color,
@@ -192,7 +204,7 @@ class RendererGeometryMixin:
 
     def _style_cache_for(self, lithology_codes: Sequence[str]) -> dict:
         consulting_palette = bool(getattr(self.profile, "use_consulting_palette", False))
-        use_hatch = self.show_hatches
+        use_hatch = self.show_hatches and not consulting_palette
         return {
             code: get_lithology_style(
                 code,
@@ -208,7 +220,7 @@ class RendererGeometryMixin:
             consulting = getattr(self.profile, "use_consulting_palette", False)
             style = get_lithology_style(
                 code,
-                use_hatch=self.show_hatches,
+                use_hatch=self.show_hatches and not consulting,
                 consulting_palette=consulting,
             )
             style_cache[code] = style
@@ -261,7 +273,7 @@ class RendererGeometryMixin:
         self._add_rect_collection(
             ax,
             (x_arr, y_arr, np.full(int(mask.sum()), width), h_arr),
-            facecolors="none",
+            facecolors=TRACK_FILL_COLOR,
             edgecolors=TRACK_BORDER_COLOR,
             linewidths=0.6,
             zorder=9,

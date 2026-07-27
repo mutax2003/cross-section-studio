@@ -11,12 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ingestion import export_platform_workbook, parse_depth_interval
+from paths import advantage_platform_workbook, advantage_source_workbook
 
-SOURCE = Path(
-    r"C:\Users\Andrew Liu\Downloads"
-    r"\Boreholes_Advantage_2026_Phase_2_ESA_10011_24_110_08_W6M_062426.xlsx"
-)
-OUTPUT = ROOT / "data" / "advantage_phase2_platform.xlsx"
+OUTPUT = advantage_platform_workbook()
+SOURCE = advantage_source_workbook()
 
 COORDINATE_OFFSETS_M: dict[str, tuple[float, float]] = {
     "BH26-15": (0.5, 0.0),
@@ -38,7 +36,7 @@ def test_parse_depth_interval() -> None:
     assert parse_depth_interval("2.50-4.00m") == (2.5, 4.0)
 
 
-@pytest.mark.skipif(not SOURCE.exists(), reason="Advantage source workbook not in Downloads")
+@pytest.mark.skipif(not SOURCE.exists(), reason="Advantage source workbook not vendored in data/fixtures")
 def test_convert_advantage_export() -> None:
     collars, lithology = convert_advantage_export(SOURCE, OUTPUT)
     assert len(collars) == 23
@@ -61,6 +59,16 @@ def test_convert_advantage_export() -> None:
     result = DataParser().parse_file(OUTPUT)
     assert len(result.collars) == 23
     assert len(result.lithologies) == 70
+
+
+def test_advantage_platform_workbook_ingests() -> None:
+    if not OUTPUT.exists():
+        pytest.skip("Converted Advantage workbook missing — commit data/advantage_phase2_platform.xlsx")
+    from models import DataParser
+
+    result = DataParser().parse_file(OUTPUT)
+    assert len(result.collars) >= 20
+    assert len(result.lithologies) >= 50
 
 
 @pytest.mark.skipif(not OUTPUT.exists(), reason="Converted workbook not built yet")

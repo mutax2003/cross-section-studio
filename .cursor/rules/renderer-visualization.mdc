@@ -14,11 +14,13 @@ alwaysApply: false
 | `renderer_chart.py` | `ChartLayoutMixin` — legacy debug chart |
 | `renderer_consulting.py` | `ConsultingLayoutMixin` — report sheet, title block, screens/gradients |
 
-Input: `GeologicalPolygon` list, projected DataFrame, optional `WaterLevel` / screens / gradients.
+Input: `GeologicalPolygon` list, projected DataFrame, optional `WaterLevel` / screens / gradients / `EnvironmentalReading`.
 Output: Matplotlib figure or SVG/PNG/PDF bytes.
 
 **No projection or pinch-out logic** — consume pre-built polygons and projected intervals only.
 Lithology fills use the **BH Log** legend (Excel → `constants.get_lithology_style()`; namespaced as `USGS_LITHOLOGY_*`).
+
+`CrossSectionRenderer` accepts `environmental_readings` plus `environmental_parameters` (filter names). When profile `show_parameter_markers` is on, `_draw_parameter_readings()` / `parameter_marker` place labels (pipeline forces markers on when `environmental_parameters` is non-empty).
 
 ## Render Profiles (`render_profiles.py`)
 
@@ -66,7 +68,7 @@ Set via `CrossSectionRenderer(interpretation_mode=...)` or `pipeline.build_cross
 10. **Water table** — symbol per hole (circle/triangle/diamond) + optional dashed interpolation
 11. **EOL bars** — horizontal end-of-log marker at TD
 12. **Column headers** — hole ID, RL or depth label, TD above each track
-13. **Faults / unconformities / environmental markers**
+13. **Faults / unconformities / parameter markers** (`_draw_parameter_readings`, filtered by `environmental_parameters`)
 14. **Overlap markers** — when `overlap_pairs` provided
 15. **Scale bar** + **VE annotation** (`V.E. N×`)
 16. **Legend** — lithology codes (when `show_legend=True`)
@@ -91,7 +93,7 @@ Fence-first layout matching consulting cross-section figures (`render_layout="co
 7. **Hole ID labels** — above each stick
 8. **Transect end labels** — optional via `ConsultingTitleBlock`
 9. **Water table** — labeled RL at each ▼; dashed interpolation when ≥2 points
-10. **Faults / unconformities / environmental markers**
+10. **Faults / unconformities / parameter markers** (`_draw_parameter_readings` when `show_parameter_markers`)
 
 **Subtitle band:** section label, `SCALE {map_scale}`, `{VE}× VERTICAL EXAGGERATION`, graphic scale bar.
 

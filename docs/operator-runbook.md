@@ -48,7 +48,7 @@ Help markdown lives in `docs/help/` (bundled for desktop; Docker keeps `docs/hel
 1. Run the full E2E gate (see [README](../README.md)).
 2. Bump version tag if releasing a build artifact.
 3. Regenerate GWM figures: `python scripts/plot_ecoventure_gwm.py --transect all`
-4. Run parity check: `python scripts/compare_figure_parity.py --warn-only`
+4. Run parity check: `python scripts/compare_figure_parity.py --suite all` (missing pairs hard-fail; add `--warn-only` to soften MSE). Optional `--require-same-size` when reference/generated DPI match.
 5. For Windows zip: `powershell -File scripts/build_windows.ps1`
 6. For Docker: `docker build -t cross-section-studio .`
 
@@ -78,7 +78,7 @@ When `CROSS_SECTION_AUDIT_LOG` is set (or the default path is used), upload and 
 GitHub Actions runs on push/PR to `main`/`master`:
 
 - **E2E** (`.github/workflows/e2e.yml`) — pytest (+ `requirements-dev`), smoke scripts, per-module gate
-- **Quality** (`.github/workflows/quality.yml`) — ruff, coverage threshold, pip-audit on `requirements.txt` (dev deps are install-only), figure parity (warn-only)
+- **Quality** (`.github/workflows/quality.yml`) — ruff, coverage threshold, pip-audit on `requirements.txt` (dev deps are install-only), figure parity (`--suite all --warn-only`: missing pairs hard-fail, MSE soft)
 
 ## Dev / agent verify
 

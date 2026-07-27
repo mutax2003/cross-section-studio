@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from typing import Sequence
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 
 from lithology_codes import collect_lithology_codes
@@ -65,15 +67,29 @@ class ChartLayoutMixin:
             if self.profile.show_ground_surface and len(hole_summary) >= 2:
                 self._draw_sky_and_surface(ax, hole_summary, collar_lookup)
 
-            self._draw_fence_polygons(ax, polygons, style_cache, ve, alpha=0.92)
+            self._draw_fence_polygons(
+                ax, polygons, style_cache, ve, alpha=0.92, collar_lookup=collar_lookup
+            )
 
             if self.profile.show_overlap_markers and self.overlap_pairs:
-                self._draw_overlap_markers(ax, collar_lookup)
+                self._draw_overlap_markers(ax, collar_lookup, hole_summary=hole_summary)
+            profile_lookup = ctx.profile_lookup
             if water_levels:
-                self._draw_water_table(ax, hole_summary, water_levels, collar_lookup)
-            self._draw_faults(ax, collar_lookup)
-            self._draw_unconformities(ax, collar_lookup)
-            self._draw_environmental_markers(ax, ctx.x_by_hole, collar_lookup)
+                self._draw_water_table(
+                    ax,
+                    hole_summary,
+                    water_levels,
+                    collar_lookup,
+                    profile_lookup=profile_lookup,
+                )
+            self._draw_faults(ax, collar_lookup, hole_summary=hole_summary)
+            self._draw_unconformities(ax, collar_lookup, hole_summary=hole_summary)
+            self._draw_parameter_readings(
+                ax,
+                hole_summary,
+                collar_lookup,
+                profile_lookup=profile_lookup,
+            )
 
             collar_depths = collar_depths or {}
             labels = self._resolve_label_collisions(
@@ -83,30 +99,14 @@ class ChartLayoutMixin:
                 self._draw_track_lithology(ax, projected_df, style_cache, track_half, collar_lookup)
 
             if self.profile.show_centerline:
-                for row in hole_summary.itertuples(index=False):
-                    x = float(row.x_profile)
-                    top = self._plot_y(float(row.collar_elevation), float(row.collar_elevation))
-                    bottom = self._plot_y(float(row.bottom_elevation), float(row.collar_elevation))
-                    ax.vlines(x, bottom, top, colors=STICK_COLOR, linewidth=4.0, zorder=5)
-                    ax.plot(x, top, linestyle="none", marker="v", markersize=7, color=SURFACE_COLOR, zorder=7)
-                    ax.annotate(
-                        f"{float(row.collar_elevation):.1f} m RL",
-                        xy=(x, top),
-                        xytext=(6, 4),
-                        textcoords="offset points",
-                        fontsize=7,
-                        color=LABEL_COLOR,
-                        zorder=8,
-                    )
+                self._draw_chart_centerlines(ax, hole_summary, collar_depths, collar_lookup)
 
             for label in labels:
+                plot_y = self._plot_y(label.y, label.y)
                 if label.draw_leader:
                     ax.plot(
                         [label.x, label.x + label.dx],
-                        [
-                            self._plot_y(label.y, label.y),
-                            self._plot_y(label.y + label.dy, label.y),
-                        ],
+                        [plot_y, self._plot_y(label.y + label.dy, label.y)],
                         color=STICK_COLOR,
                         linewidth=0.8,
                         linestyle="--",
@@ -114,7 +114,7 @@ class ChartLayoutMixin:
                     )
                 ax.annotate(
                     label.text,
-                    xy=(label.x, self._plot_y(label.y, label.y)),
+                    xy=(label.x, plot_y),
                     xytext=(label.x + label.dx, self._plot_y(label.y + label.dy, label.y)),
                     textcoords="data",
                     ha="center",
@@ -152,6 +152,48 @@ class ChartLayoutMixin:
             return fig
         finally:
             self.profile = original
+
+    def _draw_chart_centerlines(
+        self,
+        ax,
+        hole_summary: pd.DataFrame,
+        collar_depths: dict[str, float],
+        collar_lookup: dict[str, float],
+    ) -> None:
+        extents = self._well_extents(hole_summary, collar_depths, collar_lookup)
+        if extents is None:
+            return
+        x_values, top_y, bottom_y = extents
+        segments = np.stack(
+            [
+                np.column_stack([x_values, top_y]),
+                np.column_stack([x_values, bottom_y]),
+            ],
+            axis=1,
+        )
+        collection = LineCollection(segments, colors=STICK_COLOR, linewidths=4.0, zorder=5)
+        ax.add_collection(collection)
+        ax.scatter(x_values, top_y, marker="v", s=49, c=SURFACE_COLOR, zorder=7)
+        x_to_collar = dict(
+            zip(
+                hole_summary["x_profile"].to_numpy(dtype=float),
+                hole_summary["collar_elevation"].to_numpy(dtype=float),
+                strict=True,
+            )
+        )
+        for x_profile, top in zip(x_values, top_y, strict=True):
+            collar_rl = x_to_collar.get(float(x_profile))
+            if collar_rl is None:
+                continue
+            ax.annotate(
+                f"{float(collar_rl):.1f} m RL",
+                xy=(float(x_profile), float(top)),
+                xytext=(6, 4),
+                textcoords="offset points",
+                fontsize=7,
+                color=LABEL_COLOR,
+                zorder=8,
+            )
 
     def _build_borehole_labels(
         self,

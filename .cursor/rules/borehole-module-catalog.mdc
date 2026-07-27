@@ -83,8 +83,8 @@ See `docs/workbook-format.md`.
 
 - **Streamlit (dev/Docker/Cloud):** `streamlit run app.py`
 - **Windows desktop:** `launcher.py` → PyInstaller (`cross_section_studio.spec`)
-- **CLI:** `scripts/convert_workbook.py`, `scripts/plot_advantage_transects.py`, `scripts/build_input_template.py`, `scripts/plot_ecoventure_gwm.py`, `scripts/plot_advantage_p2_chloride_transects.py`
+- **CLI:** `scripts/convert_workbook.py`, `scripts/convert_advantage_export.py`, `scripts/convert_bh_log_legend.py`, `scripts/build_input_template.py`, `scripts/build_data2_test_workbook.py`, `scripts/build_test_workbook.py`, `scripts/plot_advantage_transects.py`, `scripts/plot_advantage_p2_chloride_transects.py`, `scripts/plot_ecoventure_gwm.py`, `scripts/compare_figure_parity.py`
 - **Smoke:** `python scripts/smoke_test.py` or `python scripts/e2e_smoke_direct.py`
-- **E2E gate:** `python scripts/agent_supervisor.py verify` (pytest → `e2e_smoke_direct.py` → `smoke_test.py`); optional diagnostic: `python scripts/run_e2e_tests.py`
+- **E2E gate (3 commands):** `python scripts/agent_supervisor.py verify` → pytest → `e2e_smoke_direct.py` → `smoke_test.py`. Optional diagnostic (not in `VERIFY_COMMANDS`): `python scripts/run_e2e_tests.py`. Streamlit UI “Prepare” flow is a separate **4-step** operator workflow.
 - **Dev orchestration:** `AGENTS.md` — hierarchical Cursor agent protocol (scout → implement → verify); CI: `.github/workflows/e2e.yml`, `.github/workflows/quality.yml`
 - **Tests / scripts:** always prefer `pipeline.build_cross_section()` over calling engine modules directly

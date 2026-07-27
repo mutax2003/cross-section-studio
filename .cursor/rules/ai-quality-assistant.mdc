@@ -1,6 +1,6 @@
 ---
 description: Geology QA heuristics and optional LLM-assisted triage in the Validate step
-globs: ai_quality.py,**/ai_quality.py,ai_assistant.py,**/ai_assistant.py,tests/test_ai_*.py,tests/test_water_quality.py,tests/test_geology_qc.py,tests/test_unit_order_auto.py
+globs: ai_quality.py,**/ai_quality.py,ai_assistant.py,**/ai_assistant.py,app_validate.py,**/app_validate.py,tests/test_ai_*.py,tests/test_water_quality.py,tests/test_geology_qc.py,tests/test_unit_order_auto.py
 alwaysApply: false
 ---
 

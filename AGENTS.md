@@ -62,6 +62,8 @@ PM/Architect prompts (`pm.md`, `architect.md`) are **IDE-only** — the SDK does
 
 ## E2E quality gate
 
+**Naming:** the quality gate is **three shell commands** below (`VERIFY_COMMANDS`). That is separate from the Streamlit UI’s **four** Prepare steps (Upload → Validate → Configure → Generate).
+
 Canonical command list is also `VERIFY_COMMANDS` in `scripts/agent_supervisor.py`. Exit non-zero if any step fails.
 
 **Windows (PowerShell)** — stop on first failure:

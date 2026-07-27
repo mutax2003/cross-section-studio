@@ -1,5 +1,5 @@
 ---
-description: Docker, PyInstaller, launcher, and frozen-bundle path resolution
+description: Docker, PyInstaller, launcher, paths, and ops_* production hardening
 globs: Dockerfile,docker-compose.yml,cross_section_studio.spec,launcher.py,paths.py,ops_*.py,scripts/build_windows.ps1,scripts/deploy_streamlit_cloud.py,requirements-build.txt
 alwaysApply: false
 ---
@@ -11,7 +11,7 @@ alwaysApply: false
 - **Image:** `python:3.12-slim` + `libgeos-dev` (Shapely)
 - **Entry:** `streamlit run app.py --server.headless=true --server.address=0.0.0.0 --server.port=8501`
 - **Healthcheck:** `/_stcore/health` on port 8501
-- **COPY modules:** `COPY *.py ./` (all root Python modules), `data/`, `docs/`, `.streamlit/`; image may also `COPY gwm_reference ./gwm_reference`
+- **COPY modules:** `COPY *.py ./` (all root Python modules), `data/`, `docs/`, `.streamlit/`; Dockerfile **always** `COPY gwm_reference ./gwm_reference` (image/test fixtures — not required by app runtime)
 - **`.dockerignore`:** keep `!docs/help/**` (and any other allowlisted `*.md`) so Help topics survive `*.md` ignores
 - **`launcher.py` is not used in Docker** — container runs `app.py` directly (CMD often `python -m streamlit run …`)
 
@@ -23,9 +23,19 @@ alwaysApply: false
 
 - **Spec:** `cross_section_studio.spec` — onedir distribution
 - **Entry script:** `launcher.py` (not `app.py`)
-- **Datas:** all root `*.py` except `launcher.py` copied as data; `data/`, `.streamlit/config.toml`, and `docs/help` bundled
-- **hiddenimports:** `paths`, `section_build_request`, `app_state`, `app_services`, engine modules, `app_menubar`, `ops_*`, `workbook_template`, `ui_output_presets`, `pydantic`, etc. Keep the list in sync when those modules land on the branch used for desktop builds (root `*.py` datas may mitigate missing analysis).
+- **Datas:** all root `*.py` except `launcher.py` copied as data; `data/` files (skip Excel lock temps `~$*`), `.streamlit/config.toml`, and `docs/help` bundled
+- **hiddenimports:** `paths`, `section_build_request`, `app_state`, `app_services`, engine modules, `app_menubar`, `ops_*`, `workbook_template`, `ui_output_presets`, `pydantic`, etc. Do **not** add test-only packages (`gwm_reference`, `advantage_p2_reference`) unless the frozen app imports them at runtime.
 - **Build:** `scripts/build_windows.ps1` + `requirements-build.txt`
+
+## Ops modules (production hardening)
+
+`ops_auth.py`, `ops_logging.py`, `ops_audit.py`, `ops_apm.py` — env-gated. May use Streamlit for the auth gate only; **never** import into `pipeline` / `projection` / `stratigraphy` / `renderer*`.
+
+**Auth (`ops_auth`):** `CROSS_SECTION_AUTH_PASSWORD` enables the gate; `CROSS_SECTION_AUTH_REQUIRED=1` refuses to run if password unset; 5 failed attempts → 30s lockout; `render_logout_control()` shows Sign out when authenticated. Timing-safe compare via `hmac.compare_digest`.
+
+**Logging / APM:** secret redaction in `ops_logging`; Sentry `send_default_pii=False` + header scrubbing in `ops_apm`.
+
+**Audit:** `audit_event` best-effort; path confined under `user_data_dir()`; Generate downloads emit `section_exported`.
 
 ## paths.py
 
@@ -50,3 +60,4 @@ When adding a new Python module imported at runtime:
 - `tests/test_launcher_port.py` — launcher port selection
 - `tests/test_import_smoke.py` — `app`, `pipeline`, `models`/`parsing`, renderer mixins, `app_menubar` import cleanly
 - `tests/test_menubar.py` — help loaders + menubar smoke
+- `tests/test_ops.py` — auth / logging / audit / APM hooks

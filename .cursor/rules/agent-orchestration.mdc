@@ -24,6 +24,7 @@ pip-audit -r requirements.txt
 ## Cross-references
 
 - `AGENTS.md` — roles, routing, E2E gate, SDK flags
+- `.cursor/skills/e2e-verify/SKILL.md` — IDE VERIFY_COMMANDS skill
 - `multi-agent-personas.mdc` — PM / Architect / Developer / QA / DevOps personas
 - `borehole-platform-architecture.mdc` — always-on boundaries; `borehole-module-catalog.mdc` — full module table
 - `pipeline-orchestration.mdc` — `build_cross_section()` contract

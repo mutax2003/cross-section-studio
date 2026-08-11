@@ -89,7 +89,8 @@ Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes t
 ## Streamlit export strategy
 
 - **Generate:** `cached_build_section()` builds **SVG only**; geometry is pickled via `cached_compute_section_geometry()`
-- **Prepare:** `cached_build_section_exports()` / `_png` / `_pdf` re-render from pickled geometry (PNG+PDF in one draw when both requested) — no second projection/stratigraphy pass
+- **Prepare (primary):** **Prepare PNG & PDF** via `cached_build_section_exports()` — one matplotlib draw for both; reuses pickled geometry (no second projection/stratigraphy pass)
+- **Prepare (secondary):** format-scoped `cached_build_section_png()` / `cached_build_section_pdf()` under a Prepare-formats expander
 - **One-shot:** `cached_build_section_bundle()` still offers SVG+PNG+PDF for scripts; not used by Generate
 - **API:** `render_cross_section_from_geometry()` renders from precomputed geometry without re-projecting
 
@@ -107,7 +108,8 @@ UI path: Configure step can optionally **block export on polygon overlaps** (imp
 ## Consumers
 
 - `app_services.cached_build_section()` — SVG-only Generate (pickles geometry for Prepare)
-- `app_services.cached_build_section_exports()` / `cached_build_section_png()` / `cached_build_section_pdf()` — Prepare from cached geometry
+- `app_services.cached_build_section_exports()` — primary Prepare PNG & PDF
+- `app_services.cached_build_section_png()` / `cached_build_section_pdf()` — secondary format-scoped Prepare
 - `app_services.cached_build_section_bundle()` — optional one-shot SVG+PNG+PDF
 - `app_services.cached_configure_preflight()` — Configure correlation + overlap QA
 - `scripts/smoke_test.py` — end-to-end smoke via `build_cross_section()`

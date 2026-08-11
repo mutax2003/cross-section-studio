@@ -22,7 +22,7 @@ Edit only these modules unless a test fix in `tests/` is strictly required:
 2. **One module boundary** — do not edit `app.py`, `pipeline.py`, and `stratigraphy.py` in the same pass.
 3. **No UI in engine** — Streamlit stays in `app*.py`; no widgets in `projection.py`, `stratigraphy.py`, `renderer*.py`, `pipeline.py`.
 4. **Canonical pipeline** — validate render changes through `pipeline.build_cross_section()`, not direct renderer calls from tests/scripts (unless the test is renderer-unit scoped).
-5. **SVG-first Generate** — preserve SVG-first Generate (`cached_build_section` / frozenset `svg`) and lazy Prepare PNG/PDF via format-scoped caches (`cached_build_section_png` / `cached_build_section_pdf`); `cached_build_section_exports()` is convenience only — do not force `ALL_EXPORT_FORMATS` on every Generate.
+5. **SVG-first Generate** — preserve SVG-first Generate (`cached_build_section` / frozenset `svg`). Primary Prepare PNG & PDF is `cached_build_section_exports()`; secondary per-format is `cached_build_section_png` / `cached_build_section_pdf`. Do not force `ALL_EXPORT_FORMATS` on every Generate (`cached_build_section_bundle` is scripts/one-shot only).
 6. **Do not edit** `.cursor/plans/*.plan.md` or plan files unless explicitly asked.
 
 ## After editing

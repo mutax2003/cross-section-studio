@@ -65,7 +65,7 @@ PM/Architect prompts (`pm.md`, `architect.md`) are **IDE-only** — the SDK does
 
 **Naming:** the quality gate is **three shell commands** below (`VERIFY_COMMANDS`). That is separate from the Streamlit UI’s **four workflow steps** (Upload → Validate → Configure → Generate). **Prepare** PNG/PDF is a Generate-step export action, not a fifth workflow step.
 
-Canonical command list is also `VERIFY_COMMANDS` in `scripts/agent_supervisor.py`. Exit non-zero if any step fails. CI mirror: `.github/workflows/e2e.yml`.
+Canonical command list is also `VERIFY_COMMANDS` in `scripts/agent_supervisor.py`. Exit non-zero if any step fails. CI mirror: `.github/workflows/e2e.yml`. IDE: use the project skill [`.cursor/skills/e2e-verify/SKILL.md`](.cursor/skills/e2e-verify/SKILL.md) when the user asks to test end to end.
 
 **Windows (PowerShell)** — stop on first failure:
 
@@ -97,7 +97,7 @@ Batch wrapper: `powershell -File scripts/run_verify_batch.ps1` (writes under `or
 
 While iterating: run the routing-table **Verify focus** pytest file(s) for touched modules; optionally one smoke (`e2e_smoke_direct` or `smoke_test`).
 
-Before **COMPLETE** / SDK `verify` / merge: run the full three-step `VERIFY_COMMANDS` gate above.
+Before **COMPLETE** / SDK `verify` / merge: run the full three-step `VERIFY_COMMANDS` gate above (or the `e2e-verify` skill).
 
 ## SDK supervisor
 

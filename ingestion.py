@@ -377,15 +377,25 @@ def suggest_utm_crs(latitudes: Sequence[float], longitudes: Sequence[float]) -> 
     return f"EPSG:{32700 + zone}"
 
 
-def _read_field_data_collar_elevations(workbook: pd.ExcelFile) -> dict[str, float]:
-    """Read collar RL per hole from Field Data sheet when available."""
+def _field_data_maps(workbook: pd.ExcelFile) -> tuple[dict[str, float], dict[str, float]]:
+    """Read Field Data RL and TD from one sheet parse (cached on the ExcelFile instance)."""
+    cached = getattr(workbook, "_xs_field_data_maps", None)
+    if cached is not None:
+        return cached
+
     sheet_lookup = {_normalize_header(name): name for name in workbook.sheet_names}
     field_key = sheet_lookup.get("field_data")
     if field_key is None:
-        return {}
+        cached = ({}, {})
+        workbook._xs_field_data_maps = cached  # type: ignore[attr-defined]
+        return cached
+
     frame = pd.read_excel(workbook, sheet_name=field_key)
     if frame.empty:
-        return {}
+        cached = ({}, {})
+        workbook._xs_field_data_maps = cached  # type: ignore[attr-defined]
+        return cached
+
     columns = {_normalize_header(col): col for col in frame.columns}
     hole_col = None
     for candidate in ("label", "hole_id", "hole", "bh_id"):
@@ -397,66 +407,55 @@ def _read_field_data_collar_elevations(workbook: pd.ExcelFile) -> dict[str, floa
         if candidate in columns:
             elev_col = columns[candidate]
             break
-    if hole_col is None or elev_col is None:
-        return {}
-    frame = frame[[hole_col, elev_col]].dropna(subset=[hole_col, elev_col])
-    if frame.empty:
-        return {}
-    frame = frame.copy()
-    frame["_hole_id"] = frame[hole_col].astype(str).str.strip()
-    frame = frame[frame["_hole_id"].ne("") & frame["_hole_id"].str.lower().ne("nan")]
-    frame["_rl"] = pd.to_numeric(frame[elev_col], errors="coerce")
-    frame = frame.dropna(subset=["_rl"])
-    if frame.empty:
-        return {}
-    return frame.groupby("_hole_id", as_index=True)["_rl"].first().astype(float).to_dict()
-
-
-def _read_field_data_total_depths(workbook: pd.ExcelFile) -> dict[str, float]:
-    """Read measured total depth per hole from Field Data sheet when available."""
-    sheet_lookup = {_normalize_header(name): name for name in workbook.sheet_names}
-    field_key = sheet_lookup.get("field_data")
-    if field_key is None:
-        return {}
-    frame = pd.read_excel(workbook, sheet_name=field_key)
-    if frame.empty:
-        return {}
-    columns = {_normalize_header(col): col for col in frame.columns}
-    hole_col = None
-    for candidate in ("label", "hole_id", "hole", "bh_id"):
-        if candidate in columns:
-            hole_col = columns[candidate]
-            break
     td_col = None
     for candidate in ("total_depth", "td", "max_depth", "depth"):
         if candidate in columns:
             td_col = columns[candidate]
             break
-    if hole_col is None or td_col is None:
-        return {}
-    frame = frame[[hole_col, td_col]].dropna(subset=[hole_col, td_col])
-    if frame.empty:
-        return {}
-    frame = frame.copy()
-    frame["_hole_id"] = frame[hole_col].astype(str).str.strip()
-    frame = frame[frame["_hole_id"].ne("") & frame["_hole_id"].str.lower().ne("nan")]
-    frame["_td"] = pd.to_numeric(frame[td_col], errors="coerce")
-    frame = frame.dropna(subset=["_td"])
-    if frame.empty:
-        return {}
-    return frame.groupby("_hole_id", as_index=True)["_td"].max().astype(float).to_dict()
 
+    elevations: dict[str, float] = {}
+    total_depths: dict[str, float] = {}
+    if hole_col is not None:
+        holes = frame[hole_col].astype(str).str.strip()
+        valid_holes = holes.ne("") & holes.str.lower().ne("nan")
+        if elev_col is not None:
+            elev_frame = frame.loc[valid_holes, [hole_col, elev_col]].copy()
+            elev_frame["_hole_id"] = elev_frame[hole_col].astype(str).str.strip()
+            elev_frame["_rl"] = pd.to_numeric(elev_frame[elev_col], errors="coerce")
+            elev_frame = elev_frame.dropna(subset=["_rl"])
+            if not elev_frame.empty:
+                elevations = (
+                    elev_frame.groupby("_hole_id", as_index=True)["_rl"]
+                    .first()
+                    .astype(float)
+                    .to_dict()
+                )
+        if td_col is not None:
+            td_frame = frame.loc[valid_holes, [hole_col, td_col]].copy()
+            td_frame["_hole_id"] = td_frame[hole_col].astype(str).str.strip()
+            td_frame["_td"] = pd.to_numeric(td_frame[td_col], errors="coerce")
+            td_frame = td_frame.dropna(subset=["_td"])
+            if not td_frame.empty:
+                total_depths = (
+                    td_frame.groupby("_hole_id", as_index=True)["_td"]
+                    .max()
+                    .astype(float)
+                    .to_dict()
+                )
 
-def _field_data_maps(workbook: pd.ExcelFile) -> tuple[dict[str, float], dict[str, float]]:
-    """Read Field Data RL and TD once per workbook (cached on the ExcelFile instance)."""
-    cached = getattr(workbook, "_xs_field_data_maps", None)
-    if cached is None:
-        cached = (
-            _read_field_data_collar_elevations(workbook),
-            _read_field_data_total_depths(workbook),
-        )
-        workbook._xs_field_data_maps = cached  # type: ignore[attr-defined]
+    cached = (elevations, total_depths)
+    workbook._xs_field_data_maps = cached  # type: ignore[attr-defined]
     return cached
+
+
+def _read_field_data_collar_elevations(workbook: pd.ExcelFile) -> dict[str, float]:
+    """Read collar RL per hole from Field Data sheet when available."""
+    return _field_data_maps(workbook)[0]
+
+
+def _read_field_data_total_depths(workbook: pd.ExcelFile) -> dict[str, float]:
+    """Read measured total depth per hole from Field Data sheet when available."""
+    return _field_data_maps(workbook)[1]
 
 
 class FieldExportAdapter:

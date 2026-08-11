@@ -90,20 +90,26 @@ def _correlation_keys(intervals: list[_LayerInterval]) -> dict[Hashable, _LayerI
 def _pinch_out_z_mid(
     pinch_interval: _LayerInterval,
     neighbor_intervals: list[_LayerInterval],
+    *,
+    by_order: dict[int, _LayerInterval] | None = None,
 ) -> float:
     """Average contact elevation from units above/below the pinch-out at the neighbor hole.
 
     When ``unit_order`` is set on the pinch interval, prefer neighbor intervals with
     adjacent ``unit_order`` values before falling back to elevation-position neighbors.
     This stabilizes pinch-outs when duplicate lithology codes appear in one hole.
+
+    Pass ``by_order`` when calling repeatedly for the same neighbor hole to avoid
+    rebuilding the order map on every unmatched key.
     """
     if pinch_interval.unit_order is not None:
         order = pinch_interval.unit_order
-        by_order = {
-            interval.unit_order: interval
-            for interval in neighbor_intervals
-            if interval.unit_order is not None
-        }
+        if by_order is None:
+            by_order = {
+                interval.unit_order: interval
+                for interval in neighbor_intervals
+                if interval.unit_order is not None
+            }
         contacts: list[float] = []
         above = by_order.get(order - 1)
         below = by_order.get(order + 1)
@@ -299,6 +305,16 @@ def _polygons_for_pair(
     )
     x_mid = (x_left + x_right) / 2.0
     hole_pair = (left_hole_id, right_hole_id)
+    left_by_order = {
+        interval.unit_order: interval
+        for interval in left_intervals
+        if interval.unit_order is not None
+    }
+    right_by_order = {
+        interval.unit_order: interval
+        for interval in right_intervals
+        if interval.unit_order is not None
+    }
 
     for key in all_keys:
         left_layer = left_lookup.get(key)
@@ -326,7 +342,9 @@ def _polygons_for_pair(
             continue
 
         if left_layer and not right_layer:
-            z_mid = _pinch_out_z_mid(left_layer, right_intervals)
+            z_mid = _pinch_out_z_mid(
+                left_layer, right_intervals, by_order=right_by_order
+            )
             polygon = _make_polygon(
                 [
                     (x_left, left_layer.top_elevation),
@@ -342,7 +360,9 @@ def _polygons_for_pair(
             continue
 
         if right_layer and not left_layer:
-            z_mid = _pinch_out_z_mid(right_layer, left_intervals)
+            z_mid = _pinch_out_z_mid(
+                right_layer, left_intervals, by_order=left_by_order
+            )
             polygon = _make_polygon(
                 [
                     (x_right, right_layer.top_elevation),
@@ -398,7 +418,9 @@ def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[Geologi
         original_area = float(geo_polygon.polygon.area)
         geom = geo_polygon.polygon
         if occupied_geom is not None and not occupied_geom.is_empty:
-            geom = geom.difference(occupied_geom)
+            # Skip difference when disjoint or boundary-only touch (no area overlap).
+            if geom.intersects(occupied_geom) and not geom.touches(occupied_geom):
+                geom = geom.difference(occupied_geom)
         largest = _largest_polygon(geom)
         if largest is None or largest.is_empty:
             continue

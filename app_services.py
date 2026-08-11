@@ -164,7 +164,7 @@ def cached_build_section_bundle(
     subset_json: str,
     request_json: str,
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
-    """One matplotlib render → SVG+PNG+PDF. Generate and Prepare share this cache."""
+    """One-shot SVG+PNG+PDF (scripts / full export). Prefer SVG-first Generate + Prepare exports."""
     subset = ParseResult.model_validate_json(subset_json)
     request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
     return _run_build_cross_section(
@@ -181,9 +181,15 @@ def cached_build_section(
     subset_json: str,
     request_json: str,
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
-    """SVG-first UI path; reuses ``cached_build_section_bundle`` (no second draw for Prepare)."""
-    svg, _png, _pdf, count, codes, warnings = cached_build_section_bundle(
-        subset_json, request_json
+    """Generate path: SVG only. Geometry is pickled for Prepare reuse."""
+    subset = ParseResult.model_validate_json(subset_json)
+    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+    svg, _png, _pdf, count, codes, warnings = _run_build_cross_section(
+        subset,
+        request,
+        export_formats=frozenset({"svg"}),
+        subset_json=subset_json,
+        request_json=request_json,
     )
     return svg, b"", b"", count, codes, warnings
 
@@ -193,9 +199,15 @@ def cached_build_section_png(
     subset_json: str,
     request_json: str,
 ) -> bytes:
-    """PNG deliverable from the shared Generate/Prepare bundle cache."""
-    _svg, png, _pdf, _count, _codes, _warnings = cached_build_section_bundle(
-        subset_json, request_json
+    """PNG-only Prepare; reuses pickled geometry from Generate."""
+    subset = ParseResult.model_validate_json(subset_json)
+    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+    _svg, png, _pdf, _count, _codes, _warnings = _run_build_cross_section(
+        subset,
+        request,
+        export_formats=frozenset({"png"}),
+        subset_json=subset_json,
+        request_json=request_json,
     )
     return png
 
@@ -205,9 +217,15 @@ def cached_build_section_pdf(
     subset_json: str,
     request_json: str,
 ) -> bytes:
-    """PDF deliverable from the shared Generate/Prepare bundle cache."""
-    _svg, _png, pdf, _count, _codes, _warnings = cached_build_section_bundle(
-        subset_json, request_json
+    """PDF-only Prepare; reuses pickled geometry from Generate."""
+    subset = ParseResult.model_validate_json(subset_json)
+    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+    _svg, _png, pdf, _count, _codes, _warnings = _run_build_cross_section(
+        subset,
+        request,
+        export_formats=frozenset({"pdf"}),
+        subset_json=subset_json,
+        request_json=request_json,
     )
     return pdf
 
@@ -217,9 +235,15 @@ def cached_build_section_exports(
     subset_json: str,
     request_json: str,
 ) -> tuple[bytes, bytes]:
-    """PNG+PDF from the shared bundle (cache hit after Generate)."""
-    _svg, png, pdf, _count, _codes, _warnings = cached_build_section_bundle(
-        subset_json, request_json
+    """Prepare both: one matplotlib draw for PNG+PDF; reuses Generate geometry cache."""
+    subset = ParseResult.model_validate_json(subset_json)
+    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+    _svg, png, pdf, _count, _codes, _warnings = _run_build_cross_section(
+        subset,
+        request,
+        export_formats=frozenset({"png", "pdf"}),
+        subset_json=subset_json,
+        request_json=request_json,
     )
     return png, pdf
 

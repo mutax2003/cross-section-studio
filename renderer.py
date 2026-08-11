@@ -1546,26 +1546,61 @@ class CrossSectionRenderer(
         qa_lines: Sequence[str] = (),
     ) -> tuple[bytes, bytes, bytes]:
         # savefig() draws on demand; an explicit canvas.draw() here doubled render cost.
-        svg_bytes = self.to_svg_bytes(figure) if "svg" in export_formats else b""
-        png_bytes = self.to_png_bytes(figure, dpi=300) if "png" in export_formats else b""
-        if "pdf" not in export_formats:
-            pdf_bytes = b""
-        elif self.profile.layout == "consulting_section":
-            pdf_bytes = self.to_pdf_bytes(figure)
-        else:
-            # Lazy import: PDF backend/font tools are heavy and slow startup for SVG/PNG-only runs.
-            from report_export import export_section_pdf
+        # Prefer cheaper formats first so a later failure still leaves cheaper bytes usable.
+        ordered = [fmt for fmt in ("svg", "png", "pdf") if fmt in export_formats]
+        svg_bytes = b""
+        png_bytes = b""
+        pdf_bytes = b""
+        save_kwargs = self._savefig_kwargs()
+        face = figure.get_facecolor()
+        for fmt in ordered:
+            if fmt == "svg":
+                buffer = io.BytesIO()
+                figure.savefig(
+                    buffer,
+                    format="svg",
+                    facecolor=face,
+                    metadata={"Creator": "Cross Section Studio"},
+                    **save_kwargs,
+                )
+                buffer.seek(0)
+                svg_bytes = buffer.getvalue()
+            elif fmt == "png":
+                buffer = io.BytesIO()
+                figure.savefig(
+                    buffer,
+                    format="png",
+                    dpi=300,
+                    facecolor=face,
+                    **save_kwargs,
+                )
+                buffer.seek(0)
+                png_bytes = buffer.getvalue()
+            elif fmt == "pdf":
+                if self.profile.layout == "consulting_section":
+                    buffer = io.BytesIO()
+                    figure.savefig(
+                        buffer,
+                        format="pdf",
+                        facecolor=face,
+                        **save_kwargs,
+                    )
+                    buffer.seek(0)
+                    pdf_bytes = buffer.getvalue()
+                else:
+                    # Lazy import: PDF backend/font tools are heavy and slow startup for SVG/PNG-only runs.
+                    from report_export import export_section_pdf
 
-            pdf_bytes = export_section_pdf(
-                self,
-                polygons,
-                projected_df,
-                collar_depths=collar_depths,
-                water_levels=water_levels,
-                lithology_codes=lithology_codes,
-                qa_lines=qa_lines,
-                section_figure=figure,
-            )
+                    pdf_bytes = export_section_pdf(
+                        self,
+                        polygons,
+                        projected_df,
+                        collar_depths=collar_depths,
+                        water_levels=water_levels,
+                        lithology_codes=lithology_codes,
+                        qa_lines=qa_lines,
+                        section_figure=figure,
+                    )
         return svg_bytes, png_bytes, pdf_bytes
 
     def _transform_y(self, value: float) -> float:

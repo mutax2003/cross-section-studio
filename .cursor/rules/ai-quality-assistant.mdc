@@ -14,14 +14,14 @@ Runs after ingest via `analyze_parsed_data()` → `QualityReport` with `issues`,
 
 | Code | Severity | Meaning |
 |------|----------|---------|
-| `no_lithology` | error/warn | Hole has no lithology intervals |
-| `single_interval` | info/warn | Only one interval in hole |
+| `no_lithology` | warning | Hole has no lithology intervals |
+| `single_interval` | info | Only one interval in hole |
 | `depth_gap` | warning | Gap between consecutive intervals or vs TD |
-| `depth_overlap` | warning | Overlapping interval depths |
+| `depth_overlap` | error | Overlapping interval depths |
 | `duplicate_lithology_no_unit_order` | error | Same `lithology_code` twice in one hole without `unit_order` |
 | `duplicate_unit_order` | error | Conflicting `unit_order` values in one hole |
-| `orphan_lithology` | warning | Lithology `hole_id` missing from collars |
-| `below_td` | warning | Interval extends below collar `total_depth` |
+| `orphan_lithology` | error | Lithology `hole_id` missing from collars |
+| `below_td` | error | Interval extends below collar `total_depth` |
 | `flat_collar_grid` | warning | Collars share identical easting/northing |
 | `placeholder_elevation` | warning | All collars use profile placeholder RL; UI blocks absolute-mode interpreted generate |
 | `off_transect` | warning | Collar offset exceeds threshold (also from projection) |

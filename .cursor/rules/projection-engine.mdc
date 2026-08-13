@@ -39,7 +39,7 @@ Sorted by `x_profile`. Columns:
 ## Helpers
 
 - `off_transect_warnings(collars, transect, offset_threshold_m)` — per-hole warning messages (uses `project_many`)
-- Also consumed by **`ai_quality.analyze_parsed_data()`** for batch off-transect QA
+- (`ai_quality.analyze_parsed_data()` performs the same off-transect check independently via `TransectGeometry.project_many`, not by calling this helper)
 - `suggest_offset_threshold_m(collars)` — auto threshold from collar spread
 - `select_holes_near_transect`, `order_holes_along_transect`, `select_and_order_holes_near_transect` — transect hole picking
 - `transect_length_m`, `transect_azimuth_deg` — metadata (azimuth used in `SectionFigureMetadata`)

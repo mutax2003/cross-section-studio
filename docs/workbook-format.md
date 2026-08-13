@@ -23,7 +23,7 @@ Optional: `elevation_datum`, `inclination_deg`, `azimuth_deg`.
 | `to_depth` | float | Metres below collar |
 | `lithology_code` | text | Prefer USGS-style codes (Sand, Clay, Topsoil, …) |
 
-Optional: `hatch_pattern`, `unit_order` (1 = shallowest; required when the same code repeats in one hole).
+Optional: `hatch_pattern`, `unit_order` (1 = shallowest; when the same code repeats in one hole, blank values are auto-assigned from depth order by default — required only if auto-assign is disabled).
 
 ## Optional sheets
 
@@ -48,7 +48,7 @@ Single `Lithology` sheet with `Label`, `Depth` (e.g. `0.00-2.00m`), `Lithology`,
 
 Canonical colors come from `data/BH Log Lithology Legend.xlsx` (loaded at runtime by `constants.py`). Hatches live in `USGS_LITHOLOGY_HATCHES`. A JSON cache (`data/bh_log_lithology_legend.json`) is used when the Excel file is absent (e.g. frozen builds); regenerate with `python scripts/convert_bh_log_legend.py`. Overrides can be saved from the app fill-style editor (`data/lithology_styles.json`).
 
-Chloride average concentrations for Advantage Phase 2 transects A–A′ and B–B′ are provided in `data/Cross_Section_Chlorides.xlsx` and loaded via `advantage_p2_reference.chlorides.load_chloride_readings()`.
+Chloride average concentrations for Advantage Phase 2 transects A–A′ and B–B′ are loaded via `advantage_p2_reference.chlorides.load_chloride_readings()`, which reads `data/Cross_Section_Chlorides.xlsx` when present (a client workbook, not tracked in the repo) and otherwise falls back to the packaged fixture `advantage_p2_reference/chloride_readings.json`.
 
 ## Multi-tab input template
 
@@ -67,4 +67,4 @@ For field teams, download the multi-tab template from the app welcome card, or r
 | **Example** | Filled MW-01…03 demo (reference only — not parsed) |
 | **Data Entry** | Compatibility sheet (PROJECT metadata for auto-detect) |
 
-Upload the workbook directly. Named data tabs are preferred; when `Collars` / `Lithology` are absent, the parser can still read geology sections from **Data Entry**.
+Upload the workbook directly. Named `Collars` / `Lithology` tabs are preferred; when they are absent (or empty), the parser can still read geology sections from **Data Entry**. For the optional `Water` / `Environmental` / `Screens` / `Gradients` tabs the precedence is reversed: rows in **Data Entry** take priority, and populated native tabs are ignored with a warning.

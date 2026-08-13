@@ -44,7 +44,8 @@ Field-export CRS helper: `ingestion.suggest_utm_crs(latitudes, longitudes)`.
 | Sheet | Bad / unknown `hole_id` rows |
 |-------|------------------------------|
 | Collars, Lithology, Water, Screens, Gradients, Environmental | Append to `ParseResult.errors` (row kept only if valid) |
-| Deviations, Correlations, Faults, Unconformities | Log-and-skip (not folded into `errors` today) |
+| Deviations, Correlations | Log-and-skip (not folded into `errors` today) |
+| Faults, Unconformities | No per-row handling — a bad numeric value raises and fails the whole parse; names with <2 points are silently dropped (no log) |
 
 Import profile `extends` chains are depth-capped and cycle-checked in `ingestion.py`.
 

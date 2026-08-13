@@ -23,7 +23,7 @@ For each adjacent pair, match intervals using hashable keys (not code-only union
 
 1. **`('order', unit_order, lithology_code)`** when `unit_order` is set on the interval
 2. **`('code', lithology_code)`** when the code appears exactly once in that hole
-3. **`('pos', index, lithology_code)`** for duplicate codes without `unit_order` (does not match across holes)
+3. **`('pos', index, lithology_code)`** for duplicate codes without `unit_order` (index is the hole-local sorted position; matches across holes only when the duplicate code sits at the same sorted index in both holes)
 
 Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) or skipped.
 
@@ -52,7 +52,7 @@ Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) 
 
 After `_polygons_for_pair()` builds polygons for one adjacent hole pair, **`_resolve_overlaps_in_pair()`** clips deeper fence polygons so inter-hole fills do not stack on top of shallower units:
 
-1. Sort polygons by descending top elevation (`bounds[3]`, then `bounds[1]`)
+1. Sort polygons continuous-first (`is_pinch_out` ascending), then by descending top elevation (`bounds[3]`, then `bounds[1]`) — every continuous polygon claims area before any pinch-out wedge
 2. Walk in order; subtract already-occupied area from each polygon via Shapely `difference`
 3. Keep the largest remaining polygon fragment (`_largest_polygon`); drop empty fragments
 4. Union occupied area for subsequent clips

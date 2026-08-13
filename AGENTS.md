@@ -131,7 +131,7 @@ Requires `CURSOR_API_KEY` for agent phases. Weekly automation notes: [`docs/curs
 | Prompt | Runtime |
 |--------|---------|
 | `scout.md`, `implement.md`, `review.md`, `summary.md` | SDK + IDE |
-| `verify.md` | **IDE shell only** (SDK uses `run_verify_local`) |
+| `verify.md` | **IDE shell only** (SDK uses `run_verify_with_log`) |
 | `pm.md`, `architect.md` | **IDE feature path only** |
 | `security.md`, `ci_triage.md` | IDE when using those roles |
 

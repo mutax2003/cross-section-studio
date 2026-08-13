@@ -48,7 +48,7 @@ Companion to `borehole-platform-architecture.mdc` (always-on boundaries). Load w
 | `app_services.py` | Cached ingest/recommend/build + Configure preflight (project / stratigraphy / overlap); no widgets; no *new* geometry algorithms |
 | `app.py` | Streamlit shell: page config, menubar hook, routing, generate trigger |
 | `app_menubar.py` | Windows-style File/Edit/View/Help menus, Ctrl accelerators, `docs/help` dialogs |
-| `app_sidebar.py` | Sidebar style, consulting report sheet, import/AI settings, Advanced water/GW toggles |
+| `app_sidebar.py` | Sidebar style, consulting report sheet, import/AI settings, Section output → Groundwater toggles |
 | `app_upload.py` | Welcome card + workbook parse flow |
 | `app_build.py` | `SectionBuildRequest` assembly, `collect_section_build_request()`, generate |
 | `app_styles.py` / `app_validate.py` / `app_configure.py` / `app_generate.py` | CSS, Validate (incl. groundwater series summary), Configure, Generate steps |

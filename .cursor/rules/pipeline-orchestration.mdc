@@ -67,7 +67,7 @@ Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes t
 5. When polygons exist (≥2): `detect_polygon_overlaps(polygons)` → `log_polygon_overlaps()` → overlap warnings (residual overlaps after clipping). Optional `warn_on_correlation_gaps=True` appends correlation-gap messages from `preview_correlation_health()` (warn-only).
 6. `collect_lithology_codes(projected, polygons)` via `lithology_codes.py`
 7. `auto_scale_bar_m(x_span)` picks nearest scale-bar length from `[1, 2, 5, 10, 20, 50]` m
-8. `profile_for_layout(render_layout)` + `profile_with_elevation_mode()` → merge water/GW flags (`water_interpolate_segments`, `water_interpolate_across_gaps`, `show_water_elevation_labels`, …) → `CrossSectionRenderer(render_profile=...)`
+8. `profile_for_layout(render_layout)` + `profile_with_elevation_mode()` → merge water/GW flags (`water_interpolate_across_gaps`, `show_water_elevation_labels`, `show_dry_well_nm`, …) → `CrossSectionRenderer(render_profile=...)`
 9. `renderer.render(...)` → one figure → `renderer.export_figure_bytes(figure, export_formats, ...)`
 
 **Water table (renderer, not stratigraphy):** `_draw_water_table()` draws per-series markers + dashed lines. Default **segment mode** connects only consecutive transect holes with readings; `water_interpolate_across_gaps=True` restores full min→max span. Consulting profile forces interpolation on; section sheet uses profile/sidebar toggles.

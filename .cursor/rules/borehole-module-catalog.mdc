@@ -76,7 +76,7 @@ See `docs/workbook-format.md`.
 ## Execution Protocol
 
 1. **Data path:** `ingest_workbook()` or `DataParser.parse_file()` → `ParseResult`
-2. **Render path:** `subset_parse_result()` → **`pipeline.build_cross_section()`** → **`CrossSectionResult`** (SVG/PNG/PDF via `export_formats`). Geometry stage: `compute_section_geometry()` → **`SectionGeometry`**. Streamlit Generate uses SVG-first (`cached_build_section`); primary Prepare PNG & PDF via `cached_build_section_exports()`; secondary per-format via `cached_build_section_png` / `cached_build_section_pdf`.
+2. **Render path:** `subset_parse_result()` → **`pipeline.build_cross_section()`** → **`CrossSectionResult`** (SVG/PNG/PDF via `export_formats`). Geometry stage: `compute_section_geometry()` → **`SectionGeometry`**. Streamlit Generate uses SVG-first (`cached_build_section`); primary Prepare PNG & PDF via `cached_build_section_exports()`; secondary per-format via `cached_build_section_png` / `cached_build_section_pdf`; `cached_build_section_bundle` is scripts/one-shot only (not Generate).
 3. Implement engine modules incrementally: `models` → `parsing` → `projection` → `stratigraphy` → `renderer*` → `pipeline` → `app*`
 4. Prioritize **mathematical exactness** in `projection.py` and **structural validation** in `stratigraphy.py` before plotting
 5. Graceful degradation: warn on bad rows, off-transect collars, placeholder elevations; do not crash silently
@@ -87,6 +87,6 @@ See `docs/workbook-format.md`.
 - **Windows desktop:** `launcher.py` → PyInstaller (`cross_section_studio.spec`)
 - **CLI:** `scripts/convert_workbook.py`, `scripts/convert_advantage_export.py`, `scripts/convert_bh_log_legend.py`, `scripts/build_input_template.py`, `scripts/build_data2_test_workbook.py`, `scripts/build_test_workbook.py`, `scripts/generate_sample_data.py`, `scripts/plot_advantage_transects.py`, `scripts/plot_advantage_p2_chloride_transects.py`, `scripts/plot_ecoventure_gwm.py`, `scripts/compare_figure_parity.py`, `scripts/agent_supervisor.py`
 - **Smoke:** `python scripts/smoke_test.py` or `python scripts/e2e_smoke_direct.py`
-- **E2E gate (3 commands):** `python scripts/agent_supervisor.py verify` → pytest → `e2e_smoke_direct.py` → `smoke_test.py` (CI: `.github/workflows/e2e.yml`). Optional diagnostic (not in `VERIFY_COMMANDS`): `python scripts/run_e2e_tests.py`. Streamlit UI has **four workflow steps** (Upload → Validate → Configure → Generate); **Prepare** PNG/PDF is a Generate export action.
+- **E2E gate (3 commands):** `python scripts/agent_supervisor.py verify` → pytest → `e2e_smoke_direct.py` → `smoke_test.py` (CI: `.github/workflows/e2e.yml`). IDE skill: `.cursor/skills/e2e-verify/SKILL.md`. Optional diagnostic (not in `VERIFY_COMMANDS`): `python scripts/run_e2e_tests.py`. Streamlit UI has **four workflow steps** (Upload → Validate → Configure → Generate); **Prepare** PNG/PDF is a Generate export action.
 - **Dev orchestration:** `AGENTS.md` — hierarchical Cursor agent protocol (scout → implement → verify); CI: `.github/workflows/e2e.yml`, `.github/workflows/quality.yml`
 - **Tests / scripts:** always prefer `pipeline.build_cross_section()` over calling engine modules directly

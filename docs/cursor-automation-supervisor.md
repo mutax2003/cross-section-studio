@@ -25,7 +25,7 @@ Repository: Cross Section Studio (borehole cross-section platform).
 
 On each run:
 
-1. Run the E2E quality gate from repo root (see AGENTS.md / VERIFY_COMMANDS):
+1. Run the E2E quality gate from repo root (see AGENTS.md / VERIFY_COMMANDS; IDE skill `.cursor/skills/e2e-verify/SKILL.md`):
    python -m pytest -q
    python scripts/e2e_smoke_direct.py
    python scripts/smoke_test.py
@@ -73,6 +73,7 @@ Reports land in `orchestration_reports/latest_run.md` (gitignored). Cloud runtim
 ## Related files
 
 - [AGENTS.md](../AGENTS.md) — supervisor protocol
+- [.cursor/skills/e2e-verify/SKILL.md](../.cursor/skills/e2e-verify/SKILL.md) — IDE VERIFY_COMMANDS skill
 - [scripts/agent_supervisor.py](../scripts/agent_supervisor.py) — SDK CLI
 - [scripts/run_verify_batch.ps1](../scripts/run_verify_batch.ps1) — local batch verify
 - [.github/workflows/e2e.yml](../.github/workflows/e2e.yml) — PR CI gate

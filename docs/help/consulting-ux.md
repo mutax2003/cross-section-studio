@@ -12,6 +12,8 @@ Cross Section Studio targets **2D fence reporting** — Excel as source of truth
 | 4 | **Generate** — SVG profile (fast preview) | Section preview |
 | 5 | **Prepare PNG & PDF** — raster exports on demand | Report sheet / layout export |
 
+> **Note:** Rows 1–4 map to Streamlit’s four workflow steps (Upload → Validate → Configure → Generate). **Prepare** is a Generate-step export action, not a fifth workflow step.
+
 ## UI patterns
 
 - **Compact hero** — after upload, the header shrinks so the figure gets vertical room (reporting focus).

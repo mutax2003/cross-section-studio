@@ -26,7 +26,7 @@ Map each persona to a Cursor `subagent_type`. Do **not** invent stack choices th
 2. **Architect** — module touch-list, contracts, Mermaid → `scripts/agent_prompts/architect.md`; boundaries in `borehole-platform-architecture.mdc`.
 3. **Lead Developer** — one boundary per pass, `build_cross_section()` validation → `scripts/agent_prompts/implement.md`.
 4. **QA Reviewer** — diff review, module-boundary + geology integrity → `scripts/agent_prompts/review.md` (+ `security.md` when auth/secrets touched).
-5. **DevOps Verifier** — E2E gate, no source edits → `scripts/agent_prompts/verify.md`; `VERIFY_COMMANDS` in `AGENTS.md`.
+5. **DevOps Verifier** — E2E gate, no source edits → `scripts/agent_prompts/verify.md`; `VERIFY_COMMANDS` in `AGENTS.md`; IDE skill `.cursor/skills/e2e-verify/SKILL.md`.
 
 ## Recommended feature pipeline
 
@@ -43,7 +43,7 @@ Map each persona to a Cursor `subagent_type`. Do **not** invent stack choices th
 | QA | `scripts/agent_prompts/review.md` | SDK + IDE |
 | Security review | `scripts/agent_prompts/security.md` | IDE (`security-review` subagent) |
 | CI triage | `scripts/agent_prompts/ci_triage.md` | IDE (`ci-investigator`) |
-| DevOps | `scripts/agent_prompts/verify.md` | IDE shell only |
+| DevOps | `scripts/agent_prompts/verify.md` | IDE shell only; skill `.cursor/skills/e2e-verify/SKILL.md` |
 | Summary | `scripts/agent_prompts/summary.md` | SDK `--summary-agent` |
 
 **SDK** (`agent_supervisor.py`) runs Scout → Implement → Verify → optional Review/Summary only — not PM/Architect.

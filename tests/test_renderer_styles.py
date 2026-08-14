@@ -245,7 +245,74 @@ def test_consulting_depth_mode_well_columns_render() -> None:
     assert_valid_svg(svg_bytes)
     text = svg_bytes.decode("utf-8", errors="ignore")
     assert "NM" in text
-    assert "#ffffff" in text.lower() or 'fill="#FFFFFF"' in text
+    assert "#d0d5dd" in text.lower() or "#ffffff" in text.lower()
+
+
+def test_consulting_relative_mode_water_labels_use_mbgs() -> None:
+    collars = [
+        Collar(hole_id="MW-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=20.0),
+        Collar(hole_id="MW-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=18.0),
+    ]
+    lithologies = [
+        Lithology(hole_id="MW-01", from_depth=0.0, to_depth=20.0, lithology_code="Clay"),
+        Lithology(hole_id="MW-02", from_depth=0.0, to_depth=18.0, lithology_code="Clay"),
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (50.0, 0.0)])
+    depth_profile = CONSULTING_SECTION_PROFILE.model_copy(
+        update={"y_axis_mode": "depth_below_collar"}
+    )
+    renderer = CrossSectionRenderer(
+        show_legend=False,
+        render_profile=depth_profile,
+        interpolate_water_table=True,
+        consulting_title_block=ConsultingTitleBlock(section_label="A-A'"),
+    )
+    figure = renderer.render(
+        polygons,
+        projected,
+        collar_depths={"MW-01": 20.0, "MW-02": 18.0},
+        water_levels=[
+            WaterLevel(hole_id="MW-01", depth=2.5),
+            WaterLevel(hole_id="MW-02", depth=3.0),
+        ],
+    )
+    text = renderer.to_svg_bytes(figure).decode("utf-8", errors="ignore")
+    assert "2.50 mbgs" in text
+    assert "3.00 mbgs" in text
+    assert "97.500 masl" not in text
+    assert "mbgs" in text
+
+
+def test_consulting_omits_gw_legend_when_disabled() -> None:
+    collars = [
+        Collar(hole_id="MW-01", easting=0.0, northing=0.0, elevation=665.0, total_depth=20.0),
+        Collar(hole_id="MW-02", easting=50.0, northing=0.0, elevation=664.0, total_depth=18.0),
+    ]
+    lithologies = [
+        Lithology(hole_id="MW-01", from_depth=0.0, to_depth=20.0, lithology_code="Clay"),
+        Lithology(hole_id="MW-02", from_depth=0.0, to_depth=18.0, lithology_code="Clay"),
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (50.0, 0.0)])
+    profile = CONSULTING_SECTION_PROFILE.model_copy(update={"show_water_legend": False})
+    renderer = CrossSectionRenderer(
+        show_legend=False,
+        render_profile=profile,
+        interpolate_water_table=True,
+        consulting_title_block=ConsultingTitleBlock(section_label="A-A'"),
+    )
+    figure = renderer.render(
+        polygons,
+        projected,
+        collar_depths={"MW-01": 20.0, "MW-02": 18.0},
+        water_levels=[
+            WaterLevel(hole_id="MW-01", depth=2.5),
+            WaterLevel(hole_id="MW-02", depth=3.0),
+        ],
+    )
+    text = renderer.to_svg_bytes(figure).decode("utf-8", errors="ignore")
+    assert "662.500" in text or "662.5" in text
+    assert "GROUNDWATER ELEVATION masl" not in text
+    assert "GROUNDWATER LEVEL (masl)" not in text
 
 
 def test_standard_lithology_colors_and_hatches() -> None:

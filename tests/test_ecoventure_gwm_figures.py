@@ -48,7 +48,7 @@ def test_ecoventure_dual_gw_series_a_a() -> None:
     spec, subset = build_subset("A_A")
     series_ids = {level.series_id for level in subset.water_levels}
     assert "2024-05" in series_ids
-    assert "2024-06" in series_ids
+    assert "2025-06" in series_ids
     transect_points = [(collar.easting, collar.northing) for collar in subset.collars]
     result = build_cross_section(
         subset.collars,
@@ -64,7 +64,7 @@ def test_ecoventure_dual_gw_series_a_a() -> None:
     )
     text = result.svg_bytes.decode("utf-8", errors="ignore").upper()
     assert "GROUNDWATER LEVEL (MAY 2024)" in text or "MAY 2024" in text
-    assert "JUNE 2024" in text
+    assert "JUNE 2025" in text
 
 
 def test_transect_spec_validates_hole_profile_lengths() -> None:

@@ -50,6 +50,7 @@ class CrossSectionRenderProfile(BaseModel, frozen=True):
     show_parameter_labels: bool = True
     parameter_interpolate_segments: bool = True
     parameter_interpolate_across_gaps: bool = False
+    parameter_draw_markers: bool = True
     parameter_marker: str = "D"
     x_major_grid_m: float = 10.0
     y_axis_label: str = ""

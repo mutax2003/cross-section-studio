@@ -80,20 +80,20 @@ Thin center sticks, optional dashed grid, floating bbox labels, no sky/EOL/conta
 
 ## Consulting Section Layout (EcoVenture-style report sheet)
 
-Fence-first layout matching consulting cross-section figures (`render_layout="consulting_section"`). Uses `GridSpec`: plot (~62%), subtitle band (~8%), simplified title block (~22%).
+Fence-first layout matching consulting cross-section figures (`render_layout="consulting_section"`). Uses `GridSpec` height ratios **58 / 12 / 22** (plot / subtitle / title block).
 
 **Plot layers (z-order):**
 
-1. **Report grid** — 1 m elevation / 10 m distance majors; dual **ELEVATION (m)** axes
-2. **Fence polygons** — opaque fills (`fence_alpha=1.0`); no wide track lithology
+1. **Report grid** — 1 m elevation / 10 m distance majors; dual Y axes (MASL or `DEPTH (mbgs)`)
+2. **Fence polygons** — opaque fills (`fence_alpha=1.0`) when `interpretation_mode` is interpolated; empty in `borehole_only`
 3. **Ground surface** — interpolated collar polyline (no sky fill)
-4. **Thin well sticks** — vertical lines collar to TD (white column fill `TRACK_FILL_COLOR`)
-5. **Screen intervals** — opaque `TRACK_FILL_COLOR` + `hatch="///"` (Matplotlib needs a non-transparent face for hatch); legend swatch matches
+4. **Well columns** — grey fill (`CONSULTING_COLUMN_FILL`); `borehole_only` also draws **track lithology** inside the column
+5. **Screen intervals** — opaque `TRACK_FILL_COLOR` + `hatch="///"` (legend swatch only when screens exist)
 6. **Gradients** — vertical arrows when provided
 7. **Hole ID labels** — above each stick
 8. **Transect end labels** — optional via `ConsultingTitleBlock`
-9. **Water table** — labeled RL at each ▼; dashed interpolation when ≥2 points
-10. **Faults / unconformities / parameter markers** (`_draw_parameter_readings` when `show_parameter_markers`)
+9. **Water table** — inverted triangles + compact numeric RL (no `masl` suffix on the plot); solid segments when ≥2 measured holes; **NM** only when dry-well labeling is on and water data exist (P2 borehole-only with no Water sheet turns NM off)
+10. **Faults / unconformities / parameter markers** — consulting `borehole_only` uses red numeric labels (`parameter_draw_markers=False`)
 
 **Subtitle band:** section label, `SCALE {map_scale}`, `{VE}× VERTICAL EXAGGERATION`, graphic scale bar.
 
@@ -111,8 +111,10 @@ Streamlit: layout radio **Consulting section** + **Report sheet (consulting)** e
 
 ## Y-Axis Modes
 
-- `elevation_rl` — absolute reduced level (default)
-- `depth_below_collar` — inverted depth axis; wired from UI `elevation_mode=relative`
+- `elevation_rl` — absolute reduced level (default). Water labels use stored `elevation_masl` when present, else `collar RL − depth`. Consulting plot labels are compact `{rl:.3f}`; `masl` stays in the title-block legend/notes.
+- `depth_below_collar` — inverted depth axis; wired from UI `elevation_mode=relative`. Water labels use **mbgs** (depth below collar), not fake masl.
+
+Water is a **rule-based overlay** (markers + linear segments between measured holes). Do not interpolate across unmeasured holes unless `water_interpolate_across_gaps`. Consulting title-block GW legend is gated on `show_water_legend` and only drawn when a series was plotted.
 
 ## Export
 

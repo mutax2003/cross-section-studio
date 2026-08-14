@@ -16,7 +16,6 @@ from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.patches import FancyArrow, Rectangle
-from matplotlib.collections import LineCollection
 from matplotlib.ticker import FuncFormatter, MultipleLocator
 
 from constants import get_lithology_style
@@ -24,6 +23,7 @@ from lithology_codes import collect_lithology_codes
 from models import ConsultingTitleBlock, VerticalGradient, WaterLevel
 from stratigraphy import GeologicalPolygon
 from render_theme import (
+    CONSULTING_COLUMN_FILL,
     CONSULTING_FIGURE_BG,
     CONSULTING_NM_COLOR,
     CONSULTING_SCALE_BAR_M,
@@ -88,7 +88,7 @@ class ConsultingLayoutMixin:
         with mpl.rc_context({"font.family": "sans-serif", "font.size": 9}):
             if lithology_codes is None:
                 lithology_codes = collect_lithology_codes(projected_df, polygons)
-            else:
+            elif not isinstance(lithology_codes, list):
                 lithology_codes = list(lithology_codes)
             style_cache = self._style_cache_for(lithology_codes)
 
@@ -97,53 +97,72 @@ class ConsultingLayoutMixin:
             track_half = ctx.track_half
             ve = self.vertical_exaggeration
             collar_depths = collar_depths or {}
-            water_levels_list = list(water_levels or [])
+            water_levels_list = water_levels or ()
             profile_lookup = ctx.profile_lookup
+            show_nm = self.profile.show_dry_well_nm
 
-            self._draw_fence_polygons(
-                ax, polygons, style_cache, ve, alpha=self.profile.fence_alpha, collar_lookup=collar_lookup
-            )
+            if polygons:
+                self._draw_fence_polygons(
+                    ax, polygons, style_cache, ve, alpha=self.profile.fence_alpha, collar_lookup=collar_lookup
+                )
+            else:
+                self._has_pinch_out = False
             self._draw_consulting_surface(ax, hole_summary, collar_lookup)
             self._draw_well_columns(ax, hole_summary, collar_depths, collar_lookup, track_half)
-            self._draw_screen_intervals(
-                ax,
-                hole_summary,
-                self.screen_intervals,
-                collar_lookup,
-                track_half,
-                profile_lookup=profile_lookup,
-            )
-            multi_series = water_has_multiple_series(water_levels_list)
-            self._draw_water_table(
-                ax,
-                hole_summary,
-                water_levels_list,
-                collar_lookup,
-                label_elevations=self.profile.show_water_elevation_labels,
-                label_dry_wells=self.profile.show_dry_well_nm and not multi_series,
-                label_series_gaps=self.profile.show_dry_well_nm,
-                water_color=CONSULTING_WATER_COLOR,
-                profile_lookup=profile_lookup,
-            )
-            self._draw_vertical_gradients(
-                ax,
-                hole_summary,
-                self.vertical_gradients,
-                water_levels_list,
-                collar_lookup,
-                profile_lookup=profile_lookup,
-            )
+            if self.profile.show_track_lithology:
+                self._draw_lithology_interval_rects(
+                    ax,
+                    projected_df,
+                    style_cache,
+                    track_half * 0.92,
+                    collar_lookup,
+                    zorder=9,
+                    alpha=1.0,
+                )
+            if self.screen_intervals:
+                self._draw_screen_intervals(
+                    ax,
+                    hole_summary,
+                    self.screen_intervals,
+                    collar_lookup,
+                    track_half,
+                    profile_lookup=profile_lookup,
+                )
+            if water_levels_list or show_nm:
+                multi_series = water_has_multiple_series(water_levels_list)
+                self._draw_water_table(
+                    ax,
+                    hole_summary,
+                    water_levels_list,
+                    collar_lookup,
+                    label_elevations=self.profile.show_water_elevation_labels,
+                    label_dry_wells=show_nm and not multi_series,
+                    label_series_gaps=show_nm,
+                    water_color=CONSULTING_WATER_COLOR,
+                    profile_lookup=profile_lookup,
+                )
+            if self.vertical_gradients:
+                self._draw_vertical_gradients(
+                    ax,
+                    hole_summary,
+                    self.vertical_gradients,
+                    water_levels_list,
+                    collar_lookup,
+                    profile_lookup=profile_lookup,
+                )
             self._draw_well_id_labels(ax, hole_summary)
             self._draw_transect_end_labels(ax, title_block)
             if self.profile.show_overlap_markers and self.overlap_pairs:
                 self._draw_overlap_markers(ax, collar_lookup, hole_summary=hole_summary)
-            self._draw_faults(ax, collar_lookup, hole_summary=hole_summary)
-            self._draw_unconformities(ax, collar_lookup, hole_summary=hole_summary)
+            if self.faults:
+                self._draw_faults(ax, collar_lookup, hole_summary=hole_summary)
+            if self.unconformities:
+                self._draw_unconformities(ax, collar_lookup, hole_summary=hole_summary)
 
-            y_label = (
-                "Depth below collar (m)"
+            y_label = title_block.y_axis_label or self.profile.y_axis_label or (
+                "DEPTH (mbgs)"
                 if self.profile.y_axis_mode == "depth_below_collar"
-                else (title_block.y_axis_label or self.profile.y_axis_label or "ELEVATION (m)")
+                else "ELEVATION (m)"
             )
             ax.set_xlabel("DISTANCE (m)", fontsize=10, labelpad=2, color=LABEL_COLOR)
             ax.set_ylabel(y_label, fontsize=10, labelpad=6, color=LABEL_COLOR)
@@ -156,7 +175,7 @@ class ConsultingLayoutMixin:
                 ax.invert_yaxis()
 
             if (
-                getattr(self.profile, "consulting_axis_from_zero", False)
+                self.profile.consulting_axis_from_zero
                 and self.profile.y_axis_mode != "depth_below_collar"
             ):
                 self._apply_consulting_axis_limits(ax, hole_summary, track_half, water_levels_list)
@@ -179,7 +198,7 @@ class ConsultingLayoutMixin:
                     spine.set_linewidth(1.0)
 
             if self.profile.show_report_grid:
-                x_grid = 20.0 if ctx.x_span > 200.0 else float(getattr(self.profile, "x_major_grid_m", 10.0))
+                x_grid = 20.0 if ctx.x_span > 200.0 else self.profile.x_major_grid_m
                 self._apply_report_grid(ax, ax_right, consulting=True, x_major_step=x_grid)
 
             self._draw_subtitle_band(ax_scale, ax_center, ax_notes, title_block)
@@ -201,7 +220,7 @@ class ConsultingLayoutMixin:
         x_pad = max(track_half, 5.0)
         ax.set_xlim(0.0, x_max + x_pad)
         y_min, y_max = self._uncertainty_y_bounds(hole_summary)
-        y_pad = max(ve * 2.0, ve)
+        y_pad = max(ve * 0.5, 1.0)
         collar_lookup = {
             str(row.hole_id): float(row.collar_elevation)
             for row in hole_summary.itertuples(index=False)
@@ -267,7 +286,7 @@ class ConsultingLayoutMixin:
                 )
         elif ax_right is not None:
             ax_right.yaxis.set_major_locator(y_locator)
-        ax.xaxis.set_major_locator(MultipleLocator(x_major_step if x_major_step is not None else float(getattr(self.profile, "x_major_grid_m", 10.0))))
+        ax.xaxis.set_major_locator(MultipleLocator(x_major_step if x_major_step is not None else self.profile.x_major_grid_m))
         ax.grid(True, which="major", color=REPORT_GRID_COLOR, alpha=REPORT_GRID_ALPHA, linewidth=0.6, zorder=0)
         if consulting:
             minor_y = max(ve * 0.5, 0.25)
@@ -294,7 +313,7 @@ class ConsultingLayoutMixin:
         self._add_rect_collection(
             ax,
             geometry,
-            facecolors=TRACK_FILL_COLOR,
+            facecolors=CONSULTING_COLUMN_FILL,
             edgecolors=TRACK_BORDER_COLOR,
             linewidths=0.8,
             zorder=8,
@@ -318,12 +337,9 @@ class ConsultingLayoutMixin:
                 collar_lookup,
             )
             surface_y = self._plot_y_values(collars, collars)
-        sample_count = max(20, min(100, len(surface_x) * 20))
-        x_dense = np.linspace(surface_x.min(), surface_x.max(), sample_count)
-        y_dense = np.interp(x_dense, surface_x, surface_y)
         ax.plot(
-            x_dense,
-            y_dense,
+            surface_x,
+            surface_y,
             color=CONSULTING_SURFACE_COLOR,
             linewidth=1.0,
             solid_capstyle="round",
@@ -385,27 +401,6 @@ class ConsultingLayoutMixin:
                     zorder=10,
                 )
             ax.add_patch(arrow)
-
-    def _draw_thin_well_sticks(
-        self,
-        ax,
-        hole_summary: pd.DataFrame,
-        collar_depths: dict[str, float],
-        collar_lookup: dict[str, float],
-    ) -> None:
-        extents = self._well_extents(hole_summary, collar_depths, collar_lookup)
-        if extents is None:
-            return
-        x_values, top_y, bottom_y = extents
-        segments = np.stack(
-            [
-                np.column_stack([x_values, top_y]),
-                np.column_stack([x_values, bottom_y]),
-            ],
-            axis=1,
-        )
-        collection = LineCollection(segments, colors=STICK_COLOR, linewidths=1.2, zorder=7)
-        ax.add_collection(collection)
 
     def _draw_well_id_labels(self, ax, hole_summary: pd.DataFrame) -> None:
         header_transform = ax.get_xaxis_transform()
@@ -731,7 +726,7 @@ class ConsultingLayoutMixin:
         swatch_w = 0.03
 
         entries: list[tuple[str, str, dict[str, object]]] = []
-        for code in lithology_codes[:8]:
+        for code in lithology_codes[:12]:
             style = self._resolve_style(code, style_cache)
             entries.append(
                 (
@@ -744,72 +739,76 @@ class ConsultingLayoutMixin:
                     },
                 )
             )
-        entries.append(
-            (
-                "swatch",
-                title_block.screen_legend_label or "SCREENED INTERVAL",
-                {
-                    "facecolor": TRACK_FILL_COLOR,
-                    "edgecolor": TRACK_BORDER_COLOR,
-                    "hatch": "///",
-                },
+        if self.screen_intervals:
+            entries.append(
+                (
+                    "swatch",
+                    title_block.screen_legend_label or "SCREENED INTERVAL",
+                    {
+                        "facecolor": TRACK_FILL_COLOR,
+                        "edgecolor": TRACK_BORDER_COLOR,
+                        "hatch": "///",
+                    },
+                )
             )
-        )
         if title_block.show_gradient_legend and self.vertical_gradients:
             entries.append(("gradient", "VERTICAL GRADIENT DIRECTION", {}))
 
-        gw_legend = self.water_series_legend or [
-            {
-                "color": CONSULTING_WATER_COLOR,
-                "marker": "v",
-                "elevation_label": "GROUNDWATER ELEVATION masl",
-                "level_label": "GROUNDWATER LEVEL (masl)",
-            }
-        ]
-        compact_gw = bool(getattr(self.profile, "compact_water_legend", False))
-        gw_linestyle = "-" if getattr(self.profile, "water_line_solid", False) else "--"
-        for entry in gw_legend:
-            if compact_gw:
-                legend_label = entry.get("level_label") or entry.get(
-                    "elevation_label", "GROUNDWATER LEVEL (masl)"
-                )
-                entries.append(
-                    (
-                        "line_marker",
-                        str(legend_label),
-                        {
-                            "color": entry.get("color", CONSULTING_WATER_COLOR),
-                            "marker": entry.get("marker", "v"),
-                            "linestyle": gw_linestyle,
-                        },
+        gw_legend = self.water_series_legend or []
+        compact_gw = self.profile.compact_water_legend
+        gw_linestyle = "-" if self.profile.water_line_solid else "--"
+        if self.profile.show_water_legend and gw_legend:
+            relative = self.profile.y_axis_mode == "depth_below_collar"
+            default_elev = (
+                "GROUNDWATER DEPTH (mbgs)" if relative else "GROUNDWATER ELEVATION masl"
+            )
+            default_level = (
+                "GROUNDWATER LEVEL (mbgs)" if relative else "GROUNDWATER LEVEL (masl)"
+            )
+            for entry in gw_legend:
+                if compact_gw:
+                    legend_label = entry.get("level_label") or entry.get(
+                        "elevation_label", default_level
                     )
-                )
-            else:
-                entries.append(
-                    (
-                        "marker",
-                        str(entry.get("elevation_label", "GROUNDWATER ELEVATION masl")),
-                        {
-                            "color": entry.get("color", CONSULTING_WATER_COLOR),
-                            "marker": entry.get("marker", "v"),
-                        },
+                    entries.append(
+                        (
+                            "line_marker",
+                            str(legend_label),
+                            {
+                                "color": entry.get("color", CONSULTING_WATER_COLOR),
+                                "marker": entry.get("marker", "v"),
+                                "linestyle": gw_linestyle,
+                            },
+                        )
                     )
-                )
-                entries.append(
-                    (
-                        "line",
-                        str(entry.get("level_label", "GROUNDWATER LEVEL (masl)")),
-                        {
-                            "color": entry.get("color", CONSULTING_WATER_COLOR),
-                            "linestyle": gw_linestyle,
-                        },
+                else:
+                    entries.append(
+                        (
+                            "marker",
+                            str(entry.get("elevation_label", default_elev)),
+                            {
+                                "color": entry.get("color", CONSULTING_WATER_COLOR),
+                                "marker": entry.get("marker", "v"),
+                            },
+                        )
                     )
-                )
+                    entries.append(
+                        (
+                            "line",
+                            str(entry.get("level_label", default_level)),
+                            {
+                                "color": entry.get("color", CONSULTING_WATER_COLOR),
+                                "linestyle": gw_linestyle,
+                            },
+                        )
+                    )
 
-        for entry in getattr(self, "parameter_series_legend", None) or []:
+        draw_param_markers = self.profile.parameter_draw_markers
+        for entry in self.parameter_series_legend or []:
+            kind = "line_marker" if draw_param_markers else "text"
             entries.append(
                 (
-                    "line_marker",
+                    kind,
                     str(entry.get("label", entry.get("parameter", "PARAMETER"))),
                     {
                         "color": entry.get("color", PARAMETER_READING_COLOR),
@@ -818,7 +817,7 @@ class ConsultingLayoutMixin:
                     },
                 )
             )
-        if getattr(self, "_has_pinch_out", False) and getattr(self.profile, "show_pinch_out_legend", True):
+        if getattr(self, "_has_pinch_out", False) and self.profile.show_pinch_out_legend:
             entries.append(
                 (
                     "line",
@@ -911,6 +910,8 @@ class ConsultingLayoutMixin:
                     transform=ax.transAxes,
                     clip_on=True,
                 )
+            elif kind == "text":
+                pass
             else:  # line_marker
                 ax.plot(
                     [content_left, content_left + 0.03],
@@ -924,12 +925,12 @@ class ConsultingLayoutMixin:
                     clip_on=True,
                 )
             ax.text(
-                text_x,
+                content_left if kind == "text" else text_x,
                 y,
                 display,
                 fontsize=font_size,
                 va="center",
-                color=LABEL_COLOR,
+                color=style.get("color", LABEL_COLOR) if kind == "text" else LABEL_COLOR,
                 transform=ax.transAxes,
                 clip_on=True,
             )

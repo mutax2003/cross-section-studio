@@ -102,5 +102,11 @@ def test_advantage_p2_chloride_transect_renders() -> None:
     )
     assert_valid_svg(result.svg_bytes)
     text = result.svg_bytes.decode("utf-8", errors="ignore")
+    lowered = text.lower()
     assert "mg/L" in text
+    assert "DEPTH (mbgs)" in text
+    assert "WHITECAP" in text
+    assert "GROUNDWATER LEVEL" not in text.upper()
+    assert "NM" not in text.split("NOTES")[0]
+    assert USGS_LITHOLOGY_COLORS["Clay"].lower() in lowered
     assert len(ADVANTAGE_P2_TRANSECTS) == 2

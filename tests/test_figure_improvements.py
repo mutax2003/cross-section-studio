@@ -257,11 +257,11 @@ def test_preflight_polygon_overlap_warnings(monkeypatch: pytest.MonkeyPatch) -> 
     assert "Polygon overlap" in warnings[0]
 
 
-def test_gwm_dual_gw_series_uses_june_2024() -> None:
+def test_gwm_dual_gw_series_uses_june_2025() -> None:
     spec, subset = build_subset("A_A")
     series_ids = {level.series_id for level in subset.water_levels}
     assert "2024-05" in series_ids
-    assert "2024-06" in series_ids
+    assert "2025-06" in series_ids
     transect_points = [(collar.easting, collar.northing) for collar in subset.collars]
     result = build_cross_section(
         subset.collars,
@@ -277,4 +277,4 @@ def test_gwm_dual_gw_series_uses_june_2024() -> None:
     assert svg_is_valid(result.svg_bytes)
     text = result.svg_bytes.decode("utf-8", errors="ignore").upper()
     assert "MAY 2024" in text
-    assert "JUNE 2024" in text
+    assert "JUNE 2025" in text

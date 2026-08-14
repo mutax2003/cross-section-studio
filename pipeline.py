@@ -35,12 +35,12 @@ from projection import DEFAULT_OFFSET_WARNING_M, project_boreholes, transect_azi
 from render_profiles import profile_for_layout, profile_with_elevation_mode
 from renderer import CrossSectionRenderer
 from stratigraphy import (
+    CorrelationPairSummary,
     GeologicalPolygon,
     PolygonOverlap,
     build_stratigraphy,
     detect_polygon_overlaps,
     log_polygon_overlaps,
-    preview_correlation_health,
 )
 
 logger = logging.getLogger(__name__)
@@ -198,10 +198,14 @@ def compute_section_geometry(
         polygons: list[GeologicalPolygon] = []
         overlap_pairs: tuple[PolygonOverlap, ...] = ()
     else:
+        correlation_summaries: list[CorrelationPairSummary] | None = (
+            [] if warn_on_correlation_gaps else None
+        )
         polygons = build_stratigraphy(
             interpolation_df,
             allow_pinch_outs=allow_pinch_outs,
             correlation_overrides=correlation_overrides,
+            pair_summaries=correlation_summaries,
         )
         overlap_pairs = (
             tuple(detect_polygon_overlaps(polygons))
@@ -214,16 +218,8 @@ def compute_section_geometry(
         tuple(overlap.message() for overlap in overlap_pairs) if overlap_pairs else ()
     )
     correlation_warnings: list[str] = []
-    if (
-        warn_on_correlation_gaps
-        and interpretation_mode != "borehole_only"
-        and not interpolation_df.empty
-    ):
-        for summary in preview_correlation_health(
-            interpolation_df,
-            allow_pinch_outs=allow_pinch_outs,
-            correlation_overrides=correlation_overrides,
-        ):
+    if warn_on_correlation_gaps and interpretation_mode != "borehole_only":
+        for summary in correlation_summaries or ():
             if summary.unmatched_keys_count > 0 or summary.pinch_out_candidates > 0:
                 correlation_warnings.append(
                     f"Correlation gap {summary.left_hole_id}–{summary.right_hole_id}: "
@@ -449,6 +445,11 @@ def render_cross_section_from_geometry(
         profile_updates["parameter_interpolate_segments"] = parameter_interpolate_segments
     if parameter_interpolate_across_gaps is not None:
         profile_updates["parameter_interpolate_across_gaps"] = parameter_interpolate_across_gaps
+    if render_layout == "consulting_section" and interpretation_mode == "borehole_only":
+        profile_updates["show_track_lithology"] = True
+        profile_updates["parameter_draw_markers"] = False
+        if show_dry_well_nm is None and not water_levels:
+            profile_updates["show_dry_well_nm"] = False
     render_profile = profile_with_elevation_mode(base_profile, elevation_mode).model_copy(
         update=profile_updates
     )

@@ -416,6 +416,12 @@ def test_screens_and_gradients_sheets_parsed() -> None:
     assert result.vertical_gradients[0].direction == "up"
 
 
+def test_parse_file_reuses_open_excel_file() -> None:
+    result = DataParser().parse_file(pd.ExcelFile(SAMPLE_WORKBOOK))
+    assert result.collars
+    assert result.lithologies
+
+
 def test_screens_and_gradients_unknown_hole_surface_errors() -> None:
     from models import DataParser
 

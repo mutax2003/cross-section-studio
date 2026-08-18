@@ -115,7 +115,14 @@ def _render_validate_details(
         from ai_quality import summarize_water_levels
 
         water_summary = summarize_water_levels(
-            parse_result.collars, parse_result.water_levels, scope_hole_ids
+            parse_result.collars,
+            parse_result.water_levels,
+            scope_hole_ids,
+            placeholder_elevation_m=(
+                import_report.profile_default_elevation_m
+                if import_report is not None and import_report.uses_placeholder_elevation
+                else None
+            ),
         )
         with st.expander("Groundwater", expanded=bool(water_summary.warnings)):
             st.caption(scope_caption)

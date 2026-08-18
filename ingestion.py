@@ -662,9 +662,9 @@ def ingest_workbook(
         if hasattr(source, "seek"):
             source.seek(0)
         project_metadata = load_project_metadata(source)
-        if hasattr(source, "seek"):
-            source.seek(0)
-        parse_result = DataParser().parse_file(source, lithology_aliases=aliases)
+        parse_result = DataParser().parse_file(
+            source, lithology_aliases=aliases, workbook=workbook
+        )
         if "Data Entry" not in optional_sheets:
             optional_sheets.append("Data Entry")
         if project_metadata and "Project" not in optional_sheets:
@@ -682,9 +682,9 @@ def ingest_workbook(
         # Avoid pre-supplying collars_df/lithology_df (that path skips overlay sheets).
         profile_label = "Native platform (Collars + Lithology)"
         mapping_proposal = propose_workbook_mapping(workbook)
-        if hasattr(source, "seek"):
-            source.seek(0)
-        parse_result = DataParser().parse_file(source, lithology_aliases=aliases)
+        parse_result = DataParser().parse_file(
+            source, lithology_aliases=aliases, workbook=workbook
+        )
     else:
         profile = load_override(override_id) if override_id else load_profile(resolved_profile_id)
         resolved_profile_id = profile.id
@@ -714,6 +714,7 @@ def ingest_workbook(
             collars_df=collars_df,
             lithology_df=lithology_df,
             lithology_aliases=aliases,
+            workbook=workbook,
         )
 
     placeholder_elevation = (
@@ -800,7 +801,7 @@ def export_platform_workbook(
     resolved_profile_id = profile_id or detection.profile_id
 
     if resolved_profile_id == DATA_ENTRY_PROFILE_ID:
-        parse_result = DataParser().parse_file(source)
+        parse_result = DataParser().parse_file(source, workbook=workbook)
         collars_df = pd.DataFrame(
             [
                 {

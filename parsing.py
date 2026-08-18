@@ -33,6 +33,17 @@ from models import (
 
 logger = logging.getLogger(__name__)
 
+WorkbookSource = str | Path | BinaryIO | BytesIO | pd.ExcelFile
+
+
+def _as_excel(source: WorkbookSource) -> pd.ExcelFile:
+    if isinstance(source, pd.ExcelFile):
+        return source
+    if hasattr(source, "seek"):
+        source.seek(0)
+    return pd.ExcelFile(source)
+
+
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     renamed = {col: str(col).strip().lower().replace(" ", "_") for col in df.columns}
     return df.rename(columns=renamed)
@@ -49,7 +60,7 @@ class DataParser:
 
     def parse_file(
         self,
-        source: str | Path | BinaryIO | BytesIO,
+        source: WorkbookSource,
         *,
         collars_df: pd.DataFrame | None = None,
         lithology_df: pd.DataFrame | None = None,
@@ -57,23 +68,25 @@ class DataParser:
         lithology_sheet: str | None = None,
         lithology_aliases: dict[str, str] | None = None,
         water_df: pd.DataFrame | None = None,
+        workbook: pd.ExcelFile | None = None,
     ) -> ParseResult:
-        workbook: pd.ExcelFile | None = None
         water_frame = None
         environmental_frame = None
         screens_frame = None
         gradients_frame = None
         data_entry_precedence_warnings: list[str] = []
-        if collars_df is not None and lithology_df is not None:
+        supplied_geology = collars_df is not None and lithology_df is not None
+        if workbook is None:
+            try:
+                workbook = _as_excel(source)
+            except Exception:
+                if not supplied_geology:
+                    raise
+                workbook = None
+        if supplied_geology:
             collars_frame = _normalize_columns(collars_df)
             lithology_frame = _normalize_columns(lithology_df)
-            # Still open the workbook so optional Water / Environmental / Screens load.
-            try:
-                workbook = pd.ExcelFile(source)
-            except Exception:
-                workbook = None
         else:
-            workbook = pd.ExcelFile(source)
             data_entry_sheet = self._find_sheet(workbook.sheet_names, "Data Entry")
             collars_name = collars_sheet or self.COLLARS_SHEET
             lithology_name = lithology_sheet or self.LITHOLOGY_SHEET

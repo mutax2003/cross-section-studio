@@ -84,10 +84,27 @@ def _build_section_kwargs(
 
 
 @st.cache_data(show_spinner=False, ttl=3600, max_entries=16)
+def cached_parse_subset(subset_json: str) -> ParseResult:
+    """Parse ``ParseResult`` JSON once; Generate/Prepare/geometry share this cache."""
+    return ParseResult.model_validate_json(subset_json)
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=16)
+def cached_parse_request(request_json: str) -> SectionBuildRequest:
+    """Parse ``SectionBuildRequest`` JSON once; Generate/Prepare/geometry share this cache."""
+    return SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+
+
+def _cached_section_inputs(
+    subset_json: str, request_json: str
+) -> tuple[ParseResult, SectionBuildRequest]:
+    return cached_parse_subset(subset_json), cached_parse_request(request_json)
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=16)
 def cached_compute_section_geometry(subset_json: str, request_json: str) -> bytes:
     """Pickled ``SectionGeometry`` shared by Generate SVG and Prepare PNG/PDF."""
-    subset = ParseResult.model_validate_json(subset_json)
-    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+    subset, request = _cached_section_inputs(subset_json, request_json)
     _figure_metadata, mode, overrides = _build_section_kwargs(subset, request)
     geometry = compute_section_geometry(
         subset.collars,
@@ -165,8 +182,7 @@ def cached_build_section_bundle(
     request_json: str,
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
     """One-shot SVG+PNG+PDF (scripts / full export). Prefer SVG-first Generate + Prepare exports."""
-    subset = ParseResult.model_validate_json(subset_json)
-    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+    subset, request = _cached_section_inputs(subset_json, request_json)
     return _run_build_cross_section(
         subset,
         request,
@@ -182,8 +198,7 @@ def cached_build_section(
     request_json: str,
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
     """Generate path: SVG only. Geometry is pickled for Prepare reuse."""
-    subset = ParseResult.model_validate_json(subset_json)
-    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+    subset, request = _cached_section_inputs(subset_json, request_json)
     svg, _png, _pdf, count, codes, warnings = _run_build_cross_section(
         subset,
         request,
@@ -200,8 +215,7 @@ def cached_build_section_png(
     request_json: str,
 ) -> bytes:
     """PNG-only Prepare; reuses pickled geometry from Generate."""
-    subset = ParseResult.model_validate_json(subset_json)
-    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+    subset, request = _cached_section_inputs(subset_json, request_json)
     _svg, png, _pdf, _count, _codes, _warnings = _run_build_cross_section(
         subset,
         request,
@@ -218,8 +232,7 @@ def cached_build_section_pdf(
     request_json: str,
 ) -> bytes:
     """PDF-only Prepare; reuses pickled geometry from Generate."""
-    subset = ParseResult.model_validate_json(subset_json)
-    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+    subset, request = _cached_section_inputs(subset_json, request_json)
     _svg, _png, pdf, _count, _codes, _warnings = _run_build_cross_section(
         subset,
         request,
@@ -236,8 +249,7 @@ def cached_build_section_exports(
     request_json: str,
 ) -> tuple[bytes, bytes]:
     """Prepare both: one matplotlib draw for PNG+PDF; reuses Generate geometry cache."""
-    subset = ParseResult.model_validate_json(subset_json)
-    request = SectionBuildRequest.model_validate_json(request_json)  # type: ignore[attr-defined]
+    subset, request = _cached_section_inputs(subset_json, request_json)
     _svg, png, pdf, _count, _codes, _warnings = _run_build_cross_section(
         subset,
         request,
@@ -341,7 +353,7 @@ def cached_configure_preflight(
     check_overlaps: bool = True,
 ) -> tuple[tuple[str, ...], tuple[CorrelationPairSummary, ...]]:
     """Cached Configure-step preflight: project once, then correlation + overlap checks."""
-    subset = ParseResult.model_validate_json(subset_json)
+    subset = cached_parse_subset(subset_json)
     transect_points: tuple[tuple[float, float], ...] = tuple(
         tuple(point) for point in json.loads(transect_points_json)
     )
@@ -349,10 +361,11 @@ def cached_configure_preflight(
         CorrelationOverride.model_validate(item)
         for item in json.loads(correlation_overrides_json)
     )
+    transect = Transect(points=list(transect_points))
     warnings = tuple(
         off_transect_warnings(
             subset.collars,
-            Transect(points=list(transect_points)),
+            transect,
             offset_warning_m,
         )
     )
@@ -362,7 +375,7 @@ def cached_configure_preflight(
     projected = project_boreholes(
         subset.collars,
         subset.lithologies,
-        Transect(points=list(transect_points)),
+        transect,
         offset_warning_m=offset_warning_m,
         deviation_readings=subset.deviation_readings or None,
     )
@@ -375,20 +388,16 @@ def cached_configure_preflight(
     except ValueError as exc:
         return warnings + (str(exc),), ()
 
-    summaries = tuple(
-        preview_correlation_health(
-            projected,
-            allow_pinch_outs=allow_pinch_outs,
-            correlation_overrides=overrides,
-        )
-    )
+    summaries_buf: list[CorrelationPairSummary] = []
     overlap_extra: tuple[str, ...] = ()
     if check_overlaps and len(projected["hole_id"].unique()) >= 2:
         polygons = build_stratigraphy(
             projected,
             allow_pinch_outs=allow_pinch_outs,
             correlation_overrides=overrides,
+            pair_summaries=summaries_buf,
         )
+        summaries = tuple(summaries_buf)
         overlaps = detect_polygon_overlaps(polygons)
         if overlaps:
             overlap_extra = (
@@ -397,4 +406,12 @@ def cached_configure_preflight(
                     "review correlation before export."
                 ),
             )
+    else:
+        summaries = tuple(
+            preview_correlation_health(
+                projected,
+                allow_pinch_outs=allow_pinch_outs,
+                correlation_overrides=overrides,
+            )
+        )
     return warnings + overlap_extra, summaries

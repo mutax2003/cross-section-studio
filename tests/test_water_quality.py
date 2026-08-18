@@ -78,3 +78,25 @@ def test_water_has_multiple_series_requires_distinct_ids() -> None:
     )
     assert water_has_multiple_series(multi) is True
     assert water_has_multiple_series(()) is False
+
+
+def test_summarize_water_levels_flags_duplicate_series_and_placeholder_masl() -> None:
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=20.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=20.0),
+    ]
+    levels = (
+        WaterLevel(hole_id="BH-01", depth=2.0, series_id="2024-05", series_label="May 2024"),
+        WaterLevel(
+            hole_id="BH-01",
+            depth=2.5,
+            elevation_masl=97.5,
+            series_id="2024-05",
+            series_label="May 2024",
+        ),
+    )
+    summary = summarize_water_levels(
+        collars, levels, ("BH-01", "BH-02"), placeholder_elevation_m=100.0
+    )
+    assert any("duplicate groundwater reading" in warning for warning in summary.warnings)
+    assert any("placeholder collar RL" in warning for warning in summary.warnings)

@@ -615,6 +615,8 @@ def summarize_water_levels(
     collars: Sequence[Collar],
     water_levels: Sequence[WaterLevel],
     hole_ids_on_transect: Sequence[str],
+    *,
+    placeholder_elevation_m: float | None = None,
 ) -> WaterQualitySummary:
     """Summarize groundwater coverage for Validate UI and QA heuristics."""
     transect_holes = tuple(hole_ids_on_transect)
@@ -622,19 +624,45 @@ def summarize_water_levels(
     collar_by_id = {collar.hole_id: collar for collar in collars}
     warnings: list[str] = []
     by_series: dict[str, list[WaterLevel]] = {}
+    seen_keys: set[tuple[str, str]] = set()
+    holes_with_any: set[str] = set()
+    orphan_ids: set[str] = set()
+    masl_on_placeholder = False
     for level in water_levels:
-        if level.hole_id not in hole_set:
-            continue
         series_id = level.series_id or "default"
+        key = (level.hole_id, series_id)
+        if key in seen_keys:
+            warnings.append(
+                f"{level.hole_id} ({series_id}): duplicate groundwater reading — last value is used on the section"
+            )
+        seen_keys.add(key)
+        if level.hole_id not in hole_set:
+            orphan_ids.add(level.hole_id)
+            continue
+        holes_with_any.add(level.hole_id)
         by_series.setdefault(series_id, []).append(level)
         collar = collar_by_id.get(level.hole_id)
-        if collar is not None and level.depth > collar.total_depth:
+        if collar is None:
+            continue
+        if level.depth > collar.total_depth:
             warnings.append(
                 f"{level.hole_id} ({series_id}): water depth {level.depth:.2f} m exceeds total depth "
                 f"{collar.total_depth:.2f} m"
             )
+        if (
+            not masl_on_placeholder
+            and placeholder_elevation_m is not None
+            and level.elevation_masl is not None
+            and abs(collar.elevation - placeholder_elevation_m) <= 0.01
+        ):
+            masl_on_placeholder = True
 
-    holes_with_any = {level.hole_id for level in water_levels if level.hole_id in hole_set}
+    if masl_on_placeholder:
+        warnings.append(
+            "Water elevation_masl was converted using placeholder collar RL — "
+            "switch to relative (depth) mode or set true collar elevations."
+        )
+
     holes_without_any = tuple(hole_id for hole_id in transect_holes if hole_id not in holes_with_any)
     series_summaries: list[WaterSeriesSummary] = []
     for series_id in sorted(by_series):
@@ -655,10 +683,10 @@ def summarize_water_levels(
         )
     if transect_holes and not by_series:
         warnings.append("No groundwater readings on the selected transect.")
-    orphan_ids = sorted({level.hole_id for level in water_levels if level.hole_id not in hole_set})
     if orphan_ids:
         warnings.append(
-            "Groundwater readings for holes not on the selected transect: " + ", ".join(orphan_ids)
+            "Groundwater readings for holes not on the selected transect: "
+            + ", ".join(sorted(orphan_ids))
         )
     return WaterQualitySummary(
         series=tuple(series_summaries),

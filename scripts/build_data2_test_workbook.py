@@ -1,9 +1,9 @@
-"""Build native test workbooks from ``data/Data2`` chlorides + BH Log lithology names.
+"""Build native test workbooks from ``data/Data2`` chlorides + lithology.
 
 Sources (Advantage Phase 2 / 09-36-055-02 W4M):
-  - ``data/Data2/Cross_Section_Chlorides.xlsx`` — Cl (mg/L) at From–To depth intervals
-  - ``data/Data2/BH Log Lithology Legend.xlsx`` — lithology display names
-  - Reference PDFs Fig 6 A–A' / Fig 7 B–B' (layout only; not parsed)
+  - ``data/Data2/Cross_Section_Chlorides.xlsx`` — Cl (mg/kg) at From–To depth intervals
+  - Optional ``--lithology`` CSV (hole_id, from_depth, to_depth, lithology_code)
+  - Digitized PDF sticks when CSV absent (``advantage_p2_reference.lithology_digitized``)
 
 Writes:
   - ``data/Data2/Cross_Section_Test_AA_Lithology_Chlorides.xlsx``
@@ -25,13 +25,17 @@ from advantage_p2_reference.chlorides import (  # noqa: E402
     normalize_compound_hole_id,
     parse_chloride_value,
 )
+from advantage_p2_reference.fixtures import load_lithology_csv  # noqa: E402
+from advantage_p2_reference.lithology_digitized import (  # noqa: E402
+    digitized_lithology,
+    digitized_total_depth,
+)
 from advantage_p2_reference.transects import ADVANTAGE_P2_TRANSECTS  # noqa: E402
 
 DATA2 = ROOT / "data" / "Data2"
 CHLORIDES = DATA2 / "Cross_Section_Chlorides.xlsx"
-LEGEND = DATA2 / "BH Log Lithology Legend.xlsx"
 
-_UNIT = "mg/L"
+_UNIT = "mg/kg"
 _PARAMETER = "Chloride"
 _ELEVATION_MASL = 635.0
 
@@ -49,28 +53,17 @@ _OUTPUT_BY_TRANSECT: dict[str, Path] = {
 _SECTION_META: dict[str, dict[str, str]] = {
     "A_A": {
         "section_title": "A - A' WITH CHLORIDE INTERVALS",
-        "transect_start": "A / NORTHWEST",
-        "transect_end": "A' / SOUTHEAST",
+        "transect_start": "A / WEST",
+        "transect_end": "A' / EAST",
         "figure": "Fig 6",
     },
     "B_B": {
         "section_title": "B - B' WITH CHLORIDE INTERVALS",
-        "transect_start": "B / NORTHWEST",
-        "transect_end": "B' / SOUTHEAST",
+        "transect_start": "B / SOUTH",
+        "transect_end": "B' / NORTH",
         "figure": "Fig 7",
     },
 }
-
-
-def _legend_lithology_names() -> list[str]:
-    frame = pd.read_excel(LEGEND, header=None)
-    # Row 1 is header Area/Colour/Lithology/RGB; names start at row 2
-    names: list[str] = []
-    for raw in frame.iloc[2:, 2].tolist():
-        text = str(raw).strip()
-        if text and text.lower() != "nan":
-            names.append(text)
-    return names
 
 
 def _chloride_intervals(path: Path, transect_id: str) -> pd.DataFrame:
@@ -107,62 +100,57 @@ def _chloride_intervals(path: Path, transect_id: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _lithology_stack(hole_id: str, total_depth: float, legend: list[str]) -> list[dict[str, object]]:
-    """Synthetic BH Log–style sticks covering 0 → total_depth (not from PDFs)."""
-
-    def pick(*candidates: str) -> str:
-        for name in candidates:
-            if name in legend:
-                return name
-        return candidates[0]
-
-    topsoil = pick("Organics", "Loam")
-    sand = pick("Sand", "Loamy Sand", "Sand and Gravel")
-    transition = pick("Clay Loam", "Silty Clay Loam", "Sandy Clay Loam")
-    clay = pick("Clay", "Silty Clay", "Sandy Clay")
-    silt = pick("Silt", "Silty Loam")
-
-    seed = sum(ord(ch) for ch in hole_id) % 3
-    shallow_sand = 1.5 + 0.5 * seed
-    mid = 4.0 + seed
-    deep = min(total_depth, 9.0 + seed)
-
-    layers = [
-        (0.0, min(0.4, total_depth), topsoil),
-        (min(0.4, total_depth), min(shallow_sand, total_depth), sand),
-        (min(shallow_sand, total_depth), min(mid, total_depth), transition),
-        (min(mid, total_depth), min(deep, total_depth), clay),
-    ]
-    if deep < total_depth:
-        layers.append((deep, total_depth, silt if seed else clay))
-
-    rows: list[dict[str, object]] = []
-    order = 1
-    for from_depth, to_depth, code in layers:
-        if to_depth <= from_depth + 1e-9:
-            continue
-        rows.append(
+def _lithology_rows_for_hole(
+    transect_id: str,
+    hole_id: str,
+    total_depth: float,
+    csv_by_hole: dict | None,
+) -> list[dict[str, object]]:
+    if csv_by_hole and hole_id in csv_by_hole:
+        return [
             {
-                "hole_id": hole_id,
-                "from_depth": round(from_depth, 2),
-                "to_depth": round(to_depth, 2),
-                "lithology_code": code,
-                "unit_order": order,
+                "hole_id": interval.hole_id,
+                "from_depth": interval.from_depth,
+                "to_depth": interval.to_depth,
+                "lithology_code": interval.lithology_code,
+                "unit_order": interval.unit_order,
             }
-        )
-        order += 1
-    return rows
+            for interval in csv_by_hole[hole_id]
+        ]
+    digitized = digitized_lithology(transect_id, hole_id)
+    if digitized:
+        return [
+            {
+                "hole_id": interval.hole_id,
+                "from_depth": interval.from_depth,
+                "to_depth": interval.to_depth,
+                "lithology_code": interval.lithology_code,
+                "unit_order": interval.unit_order,
+            }
+            for interval in digitized
+        ]
+    return [
+        {
+            "hole_id": hole_id,
+            "from_depth": 0.0,
+            "to_depth": total_depth,
+            "lithology_code": "Clay",
+            "unit_order": 1,
+        }
+    ]
 
 
-def build(transect_id: str = "A_A") -> Path:
+def build(
+    transect_id: str = "A_A",
+    *,
+    lithology_csv: Path | None = None,
+) -> Path:
     if transect_id not in ADVANTAGE_P2_TRANSECTS:
         raise ValueError(f"unknown transect_id: {transect_id}")
     if not CHLORIDES.is_file():
         raise FileNotFoundError(CHLORIDES)
-    if not LEGEND.is_file():
-        raise FileNotFoundError(LEGEND)
 
-    legend = _legend_lithology_names()
+    csv_by_hole = load_lithology_csv(lithology_csv) if lithology_csv else None
     environmental = _chloride_intervals(CHLORIDES, transect_id)
     if environmental.empty:
         raise RuntimeError(f"No {transect_id} chloride intervals parsed from Data2 workbook")
@@ -181,10 +169,15 @@ def build(transect_id: str = "A_A") -> Path:
     lithology: list[dict[str, object]] = []
     eastings = list(spec.profile_eastings)
     while len(eastings) < len(hole_ids):
-        eastings.append(eastings[-1] + 45.0)
+        eastings.append(eastings[-1] + 5.0)
 
     for hole_id, easting in zip(hole_ids, eastings, strict=True):
-        total_depth = float(max(15.0, max_by_hole.get(hole_id, 15.0) + 1.0))
+        total_depth = float(
+            max(
+                digitized_total_depth(transect_id, hole_id, fallback=15.0),
+                max_by_hole.get(hole_id, 15.0) + 0.5,
+            )
+        )
         collars.append(
             {
                 "hole_id": hole_id,
@@ -194,32 +187,37 @@ def build(transect_id: str = "A_A") -> Path:
                 "total_depth": total_depth,
             }
         )
-        lithology.extend(_lithology_stack(hole_id, total_depth, legend))
+        lithology.extend(
+            _lithology_rows_for_hole(transect_id, hole_id, total_depth, csv_by_hole)
+        )
 
     hole_set = {row["hole_id"] for row in collars}
     environmental = environmental[environmental["hole_id"].isin(hole_set)].reset_index(drop=True)
+    lithology_source = (
+        f"CSV {lithology_csv.name}" if lithology_csv else "digitized pdf_extract_p2 sticks"
+    )
 
     project = pd.DataFrame(
         [
-            {"field": "client_name", "value": "C-GROUP ENERGY INC."},
+            {"field": "client_name", "value": "WHITECAP RESOURCES INC."},
             {"field": "prepared_by", "value": "ECOVENTURE"},
             {"field": "project_number", "value": "100/09-36-055-02 W4M"},
             {"field": "section_title", "value": meta["section_title"]},
             {"field": "report_date", "value": "06/24/26"},
-            {"field": "drawn_by", "value": "SL/JG"},
+            {"field": "drawn_by", "value": "SL"},
             {
                 "field": "data_source",
-                "value": "data/Data2 chlorides + BH Log lithology (synthetic sticks)",
+                "value": f"data/Data2 chlorides + {lithology_source}",
             },
             {"field": "transect_start", "value": meta["transect_start"]},
             {"field": "transect_end", "value": meta["transect_end"]},
-            {"field": "vertical_exaggeration", "value": "5"},
+            {"field": "vertical_exaggeration", "value": "1"},
+            {"field": "figure_preset", "value": "p2_chemistry_sticks"},
             {
                 "field": "notes",
                 "value": (
                     f"Test workbook from Data2 ({meta['figure']}). Chloride From–To "
-                    "intervals from Cross_Section_Chlorides.xlsx. Lithology sticks are "
-                    "synthetic using BH Log legend names (PDFs not digitized)."
+                    f"intervals (mg/kg). Lithology: {lithology_source}."
                 ),
             },
         ]
@@ -235,12 +233,11 @@ def build(transect_id: str = "A_A") -> Path:
             {
                 "note": [
                     "Upload this workbook in Cross Section Studio (native Collars + Lithology).",
-                    "Environmental sheet: Chloride (mg/L) with from_depth/to_depth intervals.",
-                    f"Select holes in {transect_id.replace('_', '–')} order on Configure; "
-                    "enable Chloride parameter plotting.",
+                    "Output style Project.figure_preset = p2_chemistry_sticks.",
+                    "Environmental sheet: Chloride (mg/kg) with from_depth/to_depth intervals.",
+                    f"Select holes in {transect_id.replace('_', '–')} order on Configure.",
                     f"Source chlorides: {CHLORIDES.name}",
-                    f"Lithology names from: {LEGEND.name}",
-                    "Reference figures: Fig 6 A–A' / Fig 7 B–B' PDFs in data/Data2 (not parsed).",
+                    f"Lithology: {lithology_source}",
                 ]
             }
         ).to_excel(writer, sheet_name="Instructions", index=False)
@@ -248,8 +245,8 @@ def build(transect_id: str = "A_A") -> Path:
     return output
 
 
-def build_all() -> list[Path]:
-    return [build(transect_id) for transect_id in ("A_A", "B_B")]
+def build_all(*, lithology_csv: Path | None = None) -> list[Path]:
+    return [build(transect_id, lithology_csv=lithology_csv) for transect_id in ("A_A", "B_B")]
 
 
 def _smoke_ingest(path: Path) -> None:
@@ -276,9 +273,19 @@ def main(argv: list[str] | None = None) -> int:
         default="all",
         help="Which transect workbook(s) to build (default: all)",
     )
+    parser.add_argument(
+        "--lithology",
+        type=Path,
+        default=None,
+        help="Optional lithology CSV (hole_id, from_depth, to_depth, lithology_code[, unit_order])",
+    )
     args = parser.parse_args(argv)
 
-    paths = build_all() if args.transect == "all" else [build(args.transect)]
+    paths = (
+        build_all(lithology_csv=args.lithology)
+        if args.transect == "all"
+        else [build(args.transect, lithology_csv=args.lithology)]
+    )
     for path in paths:
         _smoke_ingest(path)
     return 0

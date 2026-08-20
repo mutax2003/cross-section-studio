@@ -98,15 +98,16 @@ def test_ops_audit_writes_json_line(tmp_path, monkeypatch) -> None:
 
 def test_gwm_c_c_transect_hole_membership_matches_reference() -> None:
     spec = GWM_TRANSECTS["C_C"]
+    # Digitized from data/pdf_extract Fig 5 (C north → C' south).
     assert spec.hole_ids == (
         "BH18-07",
-        "MW18-19",
+        "MW18-16",
         "BH18-04",
-        "BH18-05",
+        "BH18-03",
         "MW18-20",
-        "MW18-17",
+        "MW18-21",
     )
-    assert spec.profile_eastings == (0.0, 245.0, 260.0, 360.0, 410.0, 570.0)
+    assert spec.profile_eastings == (0.0, 180.0, 260.0, 320.0, 390.0, 570.0)
 
 
 def test_consulting_pinch_out_legend_when_pinch_present() -> None:

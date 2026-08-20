@@ -221,6 +221,15 @@ def _seed_consulting_fields_from_project_metadata(project: dict[str, str]) -> No
     ve = str(project.get("vertical_exaggeration", "")).strip()
     if ve:
         pending["_pending_vertical_exaggeration"] = ve
+    figure_raw = str(
+        project.get("figure_preset") or project.get("section_style") or ""
+    ).strip()
+    if figure_raw:
+        from ui_output_presets import normalize_figure_preset
+
+        resolved = normalize_figure_preset(figure_raw)
+        if resolved:
+            pending["output_preset"] = resolved
     if pending:
         st.session_state[_PENDING_PROJECT_SEED_KEY] = pending
 
@@ -231,6 +240,8 @@ def apply_pending_project_seed() -> None:
     if not isinstance(pending, dict):
         return
     ve_raw = pending.pop("_pending_vertical_exaggeration", None)
+    if "output_preset" in pending:
+        st.session_state.pop("_synced_output_preset", None)
     for key, value in pending.items():
         st.session_state[key] = value
     if ve_raw is not None:

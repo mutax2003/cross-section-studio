@@ -1341,19 +1341,36 @@ class CrossSectionRenderer(
                                 zorder=7,
                             )
                     if label_values:
-                        marker_labels.append((x_profile, y, reading.display_label))
+                        # Text-only consulting (P2 sticks): interval mid-depth label,
+                        # compact numeric text (unit lives in the legend).
+                        label_text = reading.display_label
+                        if not draw_markers:
+                            label_text = reading.value_label or f"{reading.value:g}"
+                        marker_labels.append((x_profile, y, label_text))
 
             if draw_markers:
                 if not marker_xs:
                     continue
                 ax.scatter(marker_xs, marker_ys, marker=marker, c=color, s=49, zorder=8)
             elif not marker_labels:
+                units = sorted(
+                    {
+                        (reading.unit or "").strip()
+                        for reading in readings
+                        if (reading.unit or "").strip()
+                    }
+                )
+                empty_label = (
+                    f"{parameter.upper()} CONCENTRATION ({units[0]})"
+                    if len(units) == 1
+                    else f"{parameter.upper()} CONCENTRATION"
+                )
                 self.parameter_series_legend.append(
                     {
                         "parameter": parameter,
                         "color": color,
                         "marker": marker,
-                        "label": parameter.upper(),
+                        "label": empty_label,
                     }
                 )
                 continue
@@ -1402,12 +1419,25 @@ class CrossSectionRenderer(
                     use_segments=use_segments,
                     across_gaps=across_gaps,
                 )
+            legend_label = parameter.upper()
+            if not draw_markers:
+                units = sorted(
+                    {
+                        (reading.unit or "").strip()
+                        for reading in readings
+                        if (reading.unit or "").strip()
+                    }
+                )
+                if len(units) == 1:
+                    legend_label = f"{parameter.upper()} CONCENTRATION ({units[0]})"
+                else:
+                    legend_label = f"{parameter.upper()} CONCENTRATION"
             self.parameter_series_legend.append(
                 {
                     "parameter": parameter,
                     "color": color,
                     "marker": marker,
-                    "label": parameter.upper(),
+                    "label": legend_label,
                 }
             )
 

@@ -54,13 +54,16 @@ def test_normalize_compound_hole_id() -> None:
 def test_parse_chloride_value_handles_nd() -> None:
     value, label = parse_chloride_value("<5.0")
     assert value == 5.0
-    assert label == "<5 mg/L"
+    assert label == "<5"
     value, label = parse_chloride_value("<10 (ND)")
     assert value == 10.0
-    assert label == "<10 mg/L"
+    assert label == "<10"
     value, label = parse_chloride_value("<5 mg/L")
     assert value == 5.0
-    assert label == "<5 mg/L"
+    assert label == "<5"
+    value, label = parse_chloride_value("<5 mg/kg")
+    assert value == 5.0
+    assert label == "<5"
 
 
 def test_load_chloride_readings_for_transects() -> None:
@@ -68,17 +71,23 @@ def test_load_chloride_readings_for_transects() -> None:
     assert len(aa_readings) >= 10
     assert aa_readings[0].parameter == "Chloride"
     assert aa_readings[0].value_label
+    assert aa_readings[0].unit == "mg/kg"
+    # Prefer From–To intervals when the chloride workbook is present.
+    if any(reading.from_depth is not None for reading in aa_readings):
+        assert all(
+            reading.from_depth is not None and reading.to_depth is not None
+            for reading in aa_readings
+        )
     hole_ids = {reading.hole_id for reading in aa_readings}
     assert "BH23-10" in hole_ids
     assert "2017-BH11 / BH24-11" in hole_ids
 
 
-def test_build_parse_result_uses_bh_log_lithology_names() -> None:
+def test_build_parse_result_uses_digitized_or_workbook_lithology() -> None:
     _, parse_result = build_parse_result("A_A")
     codes = {interval.lithology_code for interval in parse_result.lithologies}
-    assert "Organics" in codes or "Loam" in codes
-    assert "Sand" in codes or "Loamy Sand" in codes
-    assert "Clay" in codes or "Clay Loam" in codes
+    assert "Fill" in codes or "Clay" in codes
+    assert "Sand" in codes or "Clay Loam" in codes
     assert all(interval.unit_order is not None for interval in parse_result.lithologies)
 
 
@@ -102,11 +111,44 @@ def test_advantage_p2_chloride_transect_renders() -> None:
     )
     assert_valid_svg(result.svg_bytes)
     text = result.svg_bytes.decode("utf-8", errors="ignore")
-    lowered = text.lower()
-    assert "mg/L" in text
+    assert "mg/kg" in text
     assert "DEPTH (mbgs)" in text
     assert "WHITECAP" in text
     assert "GROUNDWATER LEVEL" not in text.upper()
     assert "NM" not in text.split("NOTES")[0]
-    assert USGS_LITHOLOGY_COLORS["Clay"].lower() in lowered
     assert len(ADVANTAGE_P2_TRANSECTS) == 2
+    # Text-only chlorides: compact numeric labels, no diamond scatter markers required.
+    assert "<5" in text or "1110" in text or "12.2" in text
+    # Borehole-only: no interpolated fence fill between sticks.
+    assert "May 2024" not in text
+
+
+def test_advantage_p2_hole_order_and_chainage() -> None:
+    for transect_id, expected in ADVANTAGE_P2_TRANSECTS.items():
+        spec, parse_result = build_parse_result(transect_id)
+        assert tuple(c.hole_id for c in parse_result.collars) == expected.hole_ids
+        assert tuple(c.easting for c in parse_result.collars) == expected.profile_eastings
+
+
+def test_advantage_p2_no_water_series_in_legend() -> None:
+    spec, parse_result = build_parse_result("B_B")
+    assert parse_result.water_levels == ()
+    transect_points = [(collar.easting, collar.northing) for collar in parse_result.collars]
+    result = build_cross_section(
+        parse_result.collars,
+        parse_result.lithologies,
+        transect_points,
+        vertical_exaggeration=spec.vertical_exaggeration,
+        render_layout="consulting_section",
+        consulting_title_block=spec.title_block,
+        environmental_readings=parse_result.environmental_readings,
+        environmental_parameters=("Chloride",),
+        show_parameter_labels=True,
+        parameter_interpolate_segments=False,
+        interpretation_mode="borehole_only",
+        elevation_mode="relative",
+    )
+    text = result.svg_bytes.decode("utf-8", errors="ignore").upper()
+    assert "GROUNDWATER LEVEL" not in text
+    assert "CHLORIDE" in text
+

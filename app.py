@@ -125,6 +125,12 @@ else:
                     import_report=st.session_state.import_report,
                     is_consulting_layout=sidebar.is_consulting_layout,
                     max_offset_for_interpolation_m=sidebar.max_offset_for_interpolation_m,
+                    prefer_chemistry=sidebar.prefer_chemistry,
+                    show_parameter_labels_default=sidebar.show_parameter_labels_default,
+                    parameter_interpolate_segments_default=(
+                        sidebar.parameter_interpolate_segments_default
+                    ),
+                    elevation_mode_default=sidebar.elevation_mode_default,
                 )
 
             is_stale = True
@@ -174,6 +180,7 @@ else:
                         consulting_title_block=sidebar.consulting_title_block,
                         selection=configure_state.transect_selection,
                         fail_on_overlaps=configure_state.fail_on_overlaps,
+                        output_preset=sidebar.output_preset,
                     )
                     is_stale = (
                         st.session_state.render_cache_key is None
@@ -212,6 +219,12 @@ else:
                 import_report=st.session_state.import_report,
                 is_consulting_layout=sidebar.is_consulting_layout,
                 max_offset_for_interpolation_m=sidebar.max_offset_for_interpolation_m,
+                prefer_chemistry=sidebar.prefer_chemistry,
+                show_parameter_labels_default=sidebar.show_parameter_labels_default,
+                parameter_interpolate_segments_default=(
+                    sidebar.parameter_interpolate_segments_default
+                ),
+                elevation_mode_default=sidebar.elevation_mode_default,
             )
 
         generate_clicked = False
@@ -322,6 +335,7 @@ else:
                     consulting_title_block=sidebar.consulting_title_block,
                     selection=selection,
                     fail_on_overlaps=configure_state.fail_on_overlaps,
+                    output_preset=sidebar.output_preset,
                 )
                 if build_request is None or cache_key is None:
                     raise ValueError("Select at least two holes for the transect")

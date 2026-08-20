@@ -596,3 +596,35 @@ def render_validate_step() -> None:
             f"**{quality_report.info_count} info**"
         )
         _render_validate_details(**detail_kwargs, show_blocking_fix_coach=True)
+
+    with st.expander("Export cleaned workbook", expanded=False):
+        st.caption(
+            "Download a native .xlsx with aliased lithology codes, preserved unit_order, "
+            "and deduplicated Water rows — useful before Configure / Generate."
+        )
+        if st.button("Prepare cleaned workbook", key="prepare_cleaned_workbook"):
+            from ai_quality import load_lithology_aliases
+            from workbook_template import export_cleaned_workbook_bytes
+
+            project_meta = {}
+            if import_report is not None and getattr(import_report, "project_metadata", None):
+                project_meta = dict(import_report.project_metadata)
+            try:
+                payload = export_cleaned_workbook_bytes(
+                    parse_result,
+                    project_metadata=project_meta,
+                    lithology_aliases=load_lithology_aliases(),
+                )
+                st.session_state.cleaned_workbook_bytes = payload
+                st.success("Cleaned workbook ready.")
+            except Exception as exc:
+                st.error(f"Could not build cleaned workbook: {exc}")
+        cleaned = st.session_state.get("cleaned_workbook_bytes")
+        if cleaned:
+            st.download_button(
+                "Download cleaned workbook (.xlsx)",
+                data=cleaned,
+                file_name="cross_section_cleaned.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_cleaned_workbook",
+            )

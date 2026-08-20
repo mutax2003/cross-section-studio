@@ -32,7 +32,7 @@ from constants import USGS_LITHOLOGY_HATCHES, get_lithology_style, save_litholog
 from ingestion import DATA_ENTRY_PROFILE_ID, NATIVE_PROFILE_ID, list_profiles
 from models import ConsultingTitleBlock
 from pipeline import DEFAULT_UNCERTAINTY_SPACING_M
-from ui_output_presets import OUTPUT_PRESET_LABELS, resolve_output_preset
+from ui_output_presets import OUTPUT_PRESET_LABELS, FIGURE_PRESET_IDS, resolve_output_preset
 
 
 @dataclass(frozen=True)
@@ -66,6 +66,13 @@ class SidebarState:
     override_id: str | None
     default_elevation_m: float
     target_crs: str | None
+    output_preset: str
+    sample_figure_profile: bool
+    prefer_chemistry: bool
+    show_parameter_labels_default: bool | None
+    parameter_interpolate_segments_default: bool | None
+    parameter_draw_markers_default: bool | None
+    elevation_mode_default: str | None
 
 
 def render_sidebar() -> SidebarState:
@@ -118,22 +125,60 @@ def render_sidebar() -> SidebarState:
             options=tuple(OUTPUT_PRESET_LABELS.keys()),
             format_func=lambda key: OUTPUT_PRESET_LABELS[key],
             key="output_preset",
-            help="Consulting report includes footer title block and groundwater legend.",
+            help=(
+                "GWM fence: interpolated MASL section with groundwater. "
+                "P2 sticks: borehole-only mbgs columns with chloride labels. "
+                "Consulting report: generic title-block layout."
+            ),
         )
         preset_config = resolve_output_preset(output_preset)
         render_layout = preset_config.render_layout
         report_preset = preset_config.report_preset
         is_consulting_layout = render_layout == "consulting_section"
+        sample_figure = preset_config.sample_figure_profile
+        lock_interp = preset_config.interpretation_mode is not None
+        # Generic consulting forces GW chrome; sample presets use preset flags.
+        force_gw_chrome = is_consulting_layout and not sample_figure
         interpolate_water_table = preset_config.interpolate_water_table
-        show_water_elevation_labels = is_consulting_layout
-        show_water_legend = is_consulting_layout
-        show_dry_well_nm = is_consulting_layout
-        water_interpolate_across_gaps = False
+        show_water_elevation_labels = (
+            preset_config.show_water_elevation_labels
+            if preset_config.show_water_elevation_labels is not None
+            else force_gw_chrome
+        )
+        show_water_legend = (
+            preset_config.show_water_legend
+            if preset_config.show_water_legend is not None
+            else force_gw_chrome
+        )
+        show_dry_well_nm = (
+            preset_config.show_dry_well_nm
+            if preset_config.show_dry_well_nm is not None
+            else force_gw_chrome
+        )
+        water_interpolate_across_gaps = bool(
+            preset_config.water_interpolate_across_gaps
+            if preset_config.water_interpolate_across_gaps is not None
+            else False
+        )
         if st.session_state.get("_synced_output_preset") != output_preset:
             st.session_state.allow_pinch_outs = preset_config.allow_pinch_outs
             st.session_state.show_ground_surface = preset_config.show_ground_surface
             st.session_state.show_legend = preset_config.show_legend
+            if preset_config.interpretation_mode is not None:
+                st.session_state.interpretation_mode = preset_config.interpretation_mode
+            if preset_config.elevation_mode is not None:
+                st.session_state.elevation_mode = preset_config.elevation_mode
+            if preset_config.vertical_exaggeration is not None:
+                st.session_state.vertical_exaggeration = float(
+                    preset_config.vertical_exaggeration
+                )
             st.session_state._synced_output_preset = output_preset
+
+        if output_preset in FIGURE_PRESET_IDS:
+            st.caption(
+                "Sample-figure preset locks interpretation, elevation mode, VE, "
+                "and groundwater defaults to match client PDF style."
+            )
 
         interpretation_mode = st.radio(
             "Interpretation",
@@ -143,54 +188,77 @@ def render_sidebar() -> SidebarState:
                 "correlation_lines": "Contact lines only (no shading)",
                 "borehole_only": "Observed logs only (no inter-hole fill)",
             }[value],
+            key="interpretation_mode",
+            disabled=lock_interp,
             help=(
                 "Interpolated: correlate lithology between boreholes. "
                 "Contact lines: fence contacts without fill. "
                 "Observed only: stick logs without correlation."
             ),
         )
+        if lock_interp and preset_config.interpretation_mode is not None:
+            interpretation_mode = preset_config.interpretation_mode
         allow_pinch_outs = st.toggle(
             "Show layers that thin out between holes",
             key="allow_pinch_outs",
-            disabled=interpretation_mode == "borehole_only",
+            disabled=interpretation_mode == "borehole_only" or sample_figure,
             help="When off, units logged in only one hole are not inferred across the section (pinch-outs).",
         )
         show_ground_surface = st.toggle(
             "Show ground surface (collar RL)",
             key="show_ground_surface",
-            disabled=report_preset,
+            disabled=report_preset or sample_figure,
             help="Linear interpolation between collar elevations — not a DEM.",
         )
         with st.expander("Groundwater", expanded=False):
-            if is_consulting_layout:
+            if force_gw_chrome:
                 st.caption("Consulting layout forces groundwater labels, legend, and interpolation on.")
+            elif sample_figure:
+                st.caption(
+                    "Sample-figure preset sets groundwater options "
+                    f"({'on' if interpolate_water_table else 'off'} for this style)."
+                )
+            gw_locked = force_gw_chrome or sample_figure
             interpolate_water_table = st.toggle(
                 "Interpolate water table between holes",
                 value=interpolate_water_table,
-                disabled=is_consulting_layout,
+                disabled=gw_locked,
                 help="When off, only measured water levels are shown as points.",
             )
             show_water_elevation_labels = st.toggle(
                 "Show water elevation labels",
                 value=show_water_elevation_labels,
-                disabled=is_consulting_layout,
+                disabled=gw_locked,
             )
             show_water_legend = st.toggle(
                 "Show groundwater legend",
                 value=show_water_legend,
-                disabled=is_consulting_layout,
+                disabled=gw_locked,
             )
             show_dry_well_nm = st.toggle(
                 "Show dry-well NM markers",
                 value=show_dry_well_nm,
-                disabled=is_consulting_layout,
+                disabled=gw_locked,
             )
             water_interpolate_across_gaps = st.toggle(
                 "Interpolate water across gaps",
                 value=water_interpolate_across_gaps,
-                disabled=is_consulting_layout,
+                disabled=gw_locked,
                 help="When off, dashed lines connect only consecutive measured holes.",
             )
+            if sample_figure:
+                interpolate_water_table = preset_config.interpolate_water_table
+                show_water_elevation_labels = bool(show_water_elevation_labels)
+                if preset_config.show_water_elevation_labels is not None:
+                    show_water_elevation_labels = preset_config.show_water_elevation_labels
+                if preset_config.show_water_legend is not None:
+                    show_water_legend = preset_config.show_water_legend
+                if preset_config.show_dry_well_nm is not None:
+                    show_dry_well_nm = preset_config.show_dry_well_nm
+                if preset_config.water_interpolate_across_gaps is not None:
+                    water_interpolate_across_gaps = (
+                        preset_config.water_interpolate_across_gaps
+                    )
         show_hatches = st.toggle(
             "Hatch patterns",
             key="show_hatches",
@@ -199,14 +267,19 @@ def render_sidebar() -> SidebarState:
         if "section_title" not in st.session_state:
             st.session_state.section_title = "Borehole Cross-Section"
         section_title = st.text_input("Section title", key="section_title")
+        ve_default = float(preset_config.vertical_exaggeration or 5.0)
+        if "vertical_exaggeration" not in st.session_state:
+            st.session_state.vertical_exaggeration = ve_default
         vertical_exaggeration = st.slider(
             "Vertical exaggeration",
             min_value=1.0,
             max_value=20.0,
-            value=5.0,
             step=0.5,
             key="vertical_exaggeration",
+            disabled=sample_figure and preset_config.vertical_exaggeration is not None,
         )
+        if sample_figure and preset_config.vertical_exaggeration is not None:
+            vertical_exaggeration = float(preset_config.vertical_exaggeration)
 
         st.markdown("**Transect thresholds**")
         if st.session_state.pop("pending_transect_mode", None):
@@ -330,6 +403,13 @@ def render_sidebar() -> SidebarState:
         override_id=override_id,
         default_elevation_m=default_elevation_m,
         target_crs=target_crs,
+        output_preset=output_preset,
+        sample_figure_profile=sample_figure,
+        prefer_chemistry=preset_config.prefer_chemistry,
+        show_parameter_labels_default=preset_config.show_parameter_labels,
+        parameter_interpolate_segments_default=preset_config.parameter_interpolate_segments,
+        parameter_draw_markers_default=preset_config.parameter_draw_markers,
+        elevation_mode_default=preset_config.elevation_mode,
     )
 
 

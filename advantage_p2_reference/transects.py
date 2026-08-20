@@ -88,8 +88,8 @@ ADVANTAGE_P2_TRANSECTS: dict[str, TransectSpec] = {
             "2017-BH10",
             "BH23-07",
         ),
-        # Approximate client Fig 6 chainage (distance axis ~0–32 m).
-        profile_eastings=(1.0, 8.0, 11.0, 15.0, 25.0, 28.0, 32.0),
+        # Approximate client Fig 6 chainage from pdf_extract_p2 tick marks (~0–32.5 m).
+        profile_eastings=(0.0, 8.0, 11.0, 17.0, 27.0, 29.5, 32.5),
         title_block=_title_block(
             section_label="A-A'",
             figure_number="6",
@@ -114,7 +114,7 @@ ADVANTAGE_P2_TRANSECTS: dict[str, TransectSpec] = {
             "BH24-08",
             "BH23-01",
         ),
-        # Compact ~30 m span matching client Fig 7 distance ticks.
+        # Client Fig 7 distance ticks ~0–32 m (B south → B' north).
         profile_eastings=(0.0, 5.0, 10.0, 15.0, 20.0, 26.0, 32.0),
         title_block=_title_block(
             section_label="B-B'",

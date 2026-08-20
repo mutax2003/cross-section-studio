@@ -37,6 +37,8 @@ def test_ecoventure_gwm_figure_structure(transect_id: str) -> None:
     for hole_id in spec.hole_ids:
         assert hole_id in text
     assert "hatch" in text.lower() or "pattern" in text.lower()
+    # Fence polygons present (path fills) — not borehole-only sticks.
+    assert text.count("<path") >= 4
     if transect_id == "A_A":
         assert "WITH GROUNDWATER LEVELS" in text
         assert "May 2024" in text or "2024-05" in text or "GROUNDWATER LEVEL (MAY 2024)" in text.upper()
@@ -44,11 +46,22 @@ def test_ecoventure_gwm_figure_structure(transect_id: str) -> None:
         assert "1:1 500" in text or "1:1 5000" in text.replace(" ", "")
 
 
+def test_ecoventure_gwm_hole_order_matches_transect_spec() -> None:
+    for transect_id, spec in GWM_TRANSECTS.items():
+        _spec, subset = build_subset(transect_id)
+        rendered_order = tuple(collar.hole_id for collar in subset.collars)
+        assert rendered_order == spec.hole_ids
+        assert tuple(subset.collars[i].easting for i in range(len(subset.collars))) == spec.profile_eastings
+
+
 def test_ecoventure_dual_gw_series_a_a() -> None:
     spec, subset = build_subset("A_A")
     series_ids = {level.series_id for level in subset.water_levels}
     assert "2024-05" in series_ids
     assert "2025-06" in series_ids
+    series_labels = {level.series_label for level in subset.water_levels}
+    assert "May 2024" in series_labels
+    assert "June 2025" in series_labels
     transect_points = [(collar.easting, collar.northing) for collar in subset.collars]
     result = build_cross_section(
         subset.collars,
@@ -67,8 +80,15 @@ def test_ecoventure_dual_gw_series_a_a() -> None:
     assert "JUNE 2025" in text
 
 
+def test_ecoventure_screens_are_per_hole_not_uniform() -> None:
+    _spec, subset = build_subset("A_A")
+    screens = {item.hole_id: (item.from_depth, item.to_depth) for item in subset.screen_intervals}
+    assert "MW18-18" in screens
+    assert screens["MW18-18"] != (12.0, 18.0)
+    assert screens["MW18-06B"][0] < screens["MW18-06B"][1]
+
+
 def test_transect_spec_validates_hole_profile_lengths() -> None:
-    import pytest
     from gwm_reference.transects import TransectSpec
     from models import ConsultingTitleBlock
 

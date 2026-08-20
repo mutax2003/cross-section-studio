@@ -18,6 +18,7 @@ from models import (
 from projection import off_transect_warnings
 from section_build_request import SectionBuildRequest
 from ui_helpers import dedupe_messages, holes_missing_lithology, screen_interval_warnings
+from ui_output_presets import resolve_output_preset
 
 
 @dataclass(frozen=True)
@@ -41,16 +42,22 @@ def effective_render_options(
     interpolate_water_table: bool,
     allow_pinch_outs: bool,
     consulting_title_block: ConsultingTitleBlock | None,
+    sample_figure_profile: bool = False,
 ) -> EffectiveRenderOptions:
     layout = "section_sheet" if report_preset else render_layout
     is_consulting = layout == "consulting_section"
+    # Generic consulting forces fence defaults; sample presets (GWM / P2) keep
+    # explicit water / pinch-out choices from the output preset.
+    force_consulting_defaults = is_consulting and not sample_figure_profile
     return EffectiveRenderOptions(
         layout=layout,
         show_ground_surface=True if report_preset or is_consulting else show_ground_surface,
         track_width_m=3.0 if report_preset else track_width_m,
         show_legend=False if is_consulting else show_legend,
-        interpolate_water_table=True if is_consulting else interpolate_water_table,
-        allow_pinch_outs=False if is_consulting else allow_pinch_outs,
+        interpolate_water_table=(
+            True if force_consulting_defaults else interpolate_water_table
+        ),
+        allow_pinch_outs=False if force_consulting_defaults else allow_pinch_outs,
         consulting_title_block=consulting_title_block if is_consulting else None,
     )
 
@@ -157,6 +164,7 @@ def collect_section_build_request(
     consulting_title_block: ConsultingTitleBlock | None = None,
     selection: tuple[tuple[str, ...], tuple[tuple[float, float], ...]] | None = None,
     fail_on_overlaps: bool = False,
+    output_preset: str | None = None,
 ) -> tuple[SectionBuildRequest | None, str | None]:
     """Single collector for generate click and staleness checks."""
     if selection is None:
@@ -170,6 +178,7 @@ def collect_section_build_request(
     if selection is None:
         return None, None
     active_hole_ids, transect_points = selection
+    preset = resolve_output_preset(output_preset or "")
     effective = effective_render_options(
         report_preset=report_preset,
         render_layout=render_layout,
@@ -179,6 +188,7 @@ def collect_section_build_request(
         interpolate_water_table=interpolate_water_table,
         allow_pinch_outs=allow_pinch_outs,
         consulting_title_block=consulting_title_block,
+        sample_figure_profile=preset.sample_figure_profile,
     )
     request = build_section_request(
         transect_points=transect_points,

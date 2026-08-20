@@ -55,6 +55,10 @@ PROJECT_FIELDS: tuple[tuple[str, str], ...] = (
     ("transect_start", "Transect start label (e.g. A / NORTHWEST)"),
     ("transect_end", "Transect end label (e.g. A' / SOUTHEAST)"),
     ("vertical_exaggeration", "Suggested vertical exaggeration (e.g. 5)"),
+    (
+        "figure_preset",
+        "Output style preset: gwm_fence | p2_chemistry_sticks | consulting_report | section_sheet",
+    ),
     ("notes", "Figure notes (one line; use sidebar for long text)"),
 )
 
@@ -133,6 +137,7 @@ def _sample_project() -> dict[str, str]:
         "transect_start": "A / NORTHWEST",
         "transect_end": "A' / SOUTHEAST",
         "vertical_exaggeration": "5",
+        "figure_preset": "gwm_fence",
         "notes": "NOTE: masl DENOTES METRES ABOVE SEA LEVEL.",
     }
 
@@ -791,7 +796,7 @@ def _load_project_sheet_metadata(source: str | Path | BinaryIO | BytesIO) -> dic
     value_col = normalized.get("value")
     if field_col is None or value_col is None:
         return {}
-    project_fields = {field for field, _label in PROJECT_FIELDS}
+    project_fields = {field for field, _label in PROJECT_FIELDS} | {"section_style"}
     result: dict[str, str] = {}
     for _, row in frame.iterrows():
         key = _normalize_key(row[field_col])
@@ -799,6 +804,8 @@ def _load_project_sheet_metadata(source: str | Path | BinaryIO | BytesIO) -> dic
             value = str(row[value_col]).strip()
             if value and value.lower() != "nan":
                 result[key] = value
+    if "figure_preset" not in result and "section_style" in result:
+        result["figure_preset"] = result["section_style"]
     return result
 
 
@@ -821,3 +828,119 @@ def load_project_metadata(source: str | Path | BinaryIO | BytesIO) -> dict[str, 
     merged = dict(from_data_entry)
     merged.update(from_project)
     return merged
+
+
+def export_cleaned_workbook_bytes(
+    parse_result: object,
+    *,
+    project_metadata: dict[str, str] | None = None,
+    lithology_aliases: dict[str, str] | None = None,
+) -> bytes:
+    """Export a cleaned native workbook from an in-memory ParseResult.
+
+    Applies optional lithology aliases, keeps unit_order, and dedupes Water rows
+    by (hole_id, series_id, depth/elevation).
+    """
+    from ai_quality import normalize_lithology_code
+    from models import ParseResult
+
+    if not isinstance(parse_result, ParseResult):
+        raise TypeError("parse_result must be a ParseResult")
+
+    aliases = lithology_aliases or {}
+    project = dict(project_metadata or {})
+    project.setdefault("notes", "Cleaned export from Cross Section Studio Validate.")
+
+    collars = [
+        {
+            "hole_id": collar.hole_id,
+            "easting": collar.easting,
+            "northing": collar.northing,
+            "elevation": collar.elevation,
+            "total_depth": collar.total_depth,
+        }
+        for collar in parse_result.collars
+    ]
+    lithology = []
+    for interval in parse_result.lithologies:
+        code = normalize_lithology_code(interval.lithology_code, aliases) if aliases else interval.lithology_code
+        lithology.append(
+            {
+                "hole_id": interval.hole_id,
+                "from_depth": interval.from_depth,
+                "to_depth": interval.to_depth,
+                "lithology_code": code,
+                "unit_order": interval.unit_order if interval.unit_order is not None else "",
+            }
+        )
+
+    seen_water: set[tuple[object, ...]] = set()
+    water_rows: list[dict[str, object]] = []
+    for level in parse_result.water_levels:
+        key = (
+            level.hole_id,
+            level.series_id or "",
+            level.depth,
+            level.elevation_masl,
+        )
+        if key in seen_water:
+            continue
+        seen_water.add(key)
+        water_rows.append(
+            {
+                "hole_id": level.hole_id,
+                "depth": level.depth,
+                "elevation_masl": "",
+                "series_id": level.series_id or "",
+                "series_label": level.series_label or "",
+            }
+        )
+
+    environmental = [
+        {
+            "hole_id": reading.hole_id,
+            "parameter": reading.parameter,
+            "value": reading.value,
+            "depth": reading.depth if reading.depth is not None else "",
+            "from_depth": reading.from_depth if reading.from_depth is not None else "",
+            "to_depth": reading.to_depth if reading.to_depth is not None else "",
+            "unit": reading.unit or "",
+            "value_label": reading.value_label or "",
+        }
+        for reading in parse_result.environmental_readings
+    ]
+    screens = [
+        {
+            "hole_id": item.hole_id,
+            "from_depth": item.from_depth,
+            "to_depth": item.to_depth,
+        }
+        for item in parse_result.screen_intervals
+    ]
+    correlations = [
+        {
+            "left_hole_id": item.left_hole_id,
+            "right_hole_id": item.right_hole_id,
+            "left_unit_order": item.left_unit_order,
+            "right_unit_order": item.right_unit_order,
+        }
+        for item in parse_result.correlation_overrides
+    ]
+
+    project_rows = [{"field": key, "value": value} for key, value in project.items() if value]
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        pd.DataFrame(project_rows or [{"field": "notes", "value": "cleaned export"}]).to_excel(
+            writer, sheet_name=PROJECT_SHEET, index=False
+        )
+        pd.DataFrame(collars).to_excel(writer, sheet_name=COLLARS_SHEET, index=False)
+        pd.DataFrame(lithology).to_excel(writer, sheet_name=LITHOLOGY_SHEET, index=False)
+        if water_rows:
+            pd.DataFrame(water_rows).to_excel(writer, sheet_name=WATER_SHEET, index=False)
+        if environmental:
+            pd.DataFrame(environmental).to_excel(writer, sheet_name=ENVIRONMENTAL_SHEET, index=False)
+        if screens:
+            pd.DataFrame(screens).to_excel(writer, sheet_name=SCREENS_SHEET, index=False)
+        if correlations:
+            pd.DataFrame(correlations).to_excel(writer, sheet_name="Correlations", index=False)
+    return buffer.getvalue()

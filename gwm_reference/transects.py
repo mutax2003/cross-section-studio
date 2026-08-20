@@ -105,7 +105,8 @@ GWM_TRANSECTS: dict[str, TransectSpec] = {
             "MW18-20",
             "BH18-08",
         ),
-        profile_eastings=(0.0, 116.0, 232.0, 348.0, 464.0, 580.0),
+        # Digitized from pdf_extract Fig 4 distance ticks (not evenly spaced).
+        profile_eastings=(0.0, 220.0, 320.0, 340.0, 390.0, 580.0),
         title_block=_title_block(
             section_label="B - B'",
             figure_number="4",
@@ -121,15 +122,16 @@ GWM_TRANSECTS: dict[str, TransectSpec] = {
     "C_C": TransectSpec(
         transect_id="C_C",
         figure_number="5",
+        # Hole order matches pdf_extract Fig 5 (C north → C' south).
         hole_ids=(
             "BH18-07",
-            "MW18-19",
+            "MW18-16",
             "BH18-04",
-            "BH18-05",
+            "BH18-03",
             "MW18-20",
-            "MW18-17",
+            "MW18-21",
         ),
-        profile_eastings=(0.0, 245.0, 260.0, 360.0, 410.0, 570.0),
+        profile_eastings=(0.0, 180.0, 260.0, 320.0, 390.0, 570.0),
         title_block=_title_block(
             section_label="C - C'",
             figure_number="5",
@@ -151,7 +153,8 @@ GWM_TRANSECTS: dict[str, TransectSpec] = {
             "MW18-22",
             "MW18-23",
         ),
-        profile_eastings=(0.0, 180.0, 360.0, 540.0),
+        # Digitized from pdf_extract Fig 6 (~0–540 m).
+        profile_eastings=(0.0, 190.0, 280.0, 525.0),
         title_block=_title_block(
             section_label="D - D'",
             figure_number="6",

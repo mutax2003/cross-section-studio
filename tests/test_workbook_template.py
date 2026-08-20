@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from io import BytesIO
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,7 @@ from ingestion import DATA_ENTRY_PROFILE_ID, FormatDetector, ingest_workbook
 from workbook_template import (
     build_input_template,
     build_input_template_bytes,
+    export_cleaned_workbook_bytes,
     load_data_entry_sheets,
     load_project_metadata,
 )
@@ -159,3 +161,21 @@ def test_load_project_metadata_merges_partial_project(tmp_path: Path) -> None:
     project = load_project_metadata(path)
     assert project["notes"] == "Only notes on Project tab"
     assert project["client_name"] == "C-GROUP ENERGY INC."
+
+
+def test_export_cleaned_workbook_bytes_roundtrip() -> None:
+    path = build_input_template()
+    result, _report = ingest_workbook(path)
+    payload = export_cleaned_workbook_bytes(
+        result,
+        project_metadata={"client_name": "TEST CLIENT", "figure_preset": "gwm_fence"},
+    )
+    assert isinstance(payload, (bytes, bytearray))
+    assert len(payload) > 500
+    cleaned, _report2 = ingest_workbook(BytesIO(payload))
+    assert len(cleaned.collars) == len(result.collars)
+    assert len(cleaned.lithologies) >= 1
+    assert len(cleaned.water_levels) >= 1
+    project = load_project_metadata(BytesIO(payload))
+    assert project.get("client_name") == "TEST CLIENT"
+    assert project.get("figure_preset") == "gwm_fence"

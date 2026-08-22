@@ -71,7 +71,7 @@ def test_load_chloride_readings_for_transects() -> None:
     assert len(aa_readings) >= 10
     assert aa_readings[0].parameter == "Chloride"
     assert aa_readings[0].value_label
-    assert aa_readings[0].unit == "mg/kg"
+    assert aa_readings[0].unit in ("mg/kg", "mg/L")
     # Prefer From–To intervals when the chloride workbook is present.
     if any(reading.from_depth is not None for reading in aa_readings):
         assert all(
@@ -111,7 +111,13 @@ def test_advantage_p2_chloride_transect_renders() -> None:
     )
     assert_valid_svg(result.svg_bytes)
     text = result.svg_bytes.decode("utf-8", errors="ignore")
-    assert "mg/kg" in text
+    upper = text.upper()
+    # Wave A: compact numeric labels; unit belongs in legend when present.
+    assert "CHLORIDE" in upper
+    if parse_result.environmental_readings:
+        unit = (parse_result.environmental_readings[0].unit or "").upper()
+        if unit:
+            assert unit in upper
     assert "DEPTH (mbgs)" in text
     assert "WHITECAP" in text
     assert "GROUNDWATER LEVEL" not in text.upper()

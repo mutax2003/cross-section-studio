@@ -60,6 +60,7 @@ from render_theme import (
     FIGURE_BG,
     GRID_COLOR,
     LABEL_COLOR,
+    OVERLAP_MARKER_COLOR,
     PARAMETER_PALETTE,
     PARAMETER_TEXT_COLOR,
     PINCH_OUT_ALPHA,

@@ -47,6 +47,10 @@ from render_theme import (
 
 logger = logging.getLogger(__name__)
 
+# Minimum legend column width (axes fraction) before wrapping to two columns.
+_LEGEND_MIN_COL_WIDTH = 0.14
+_LEGEND_CHAR_WIDTH = 0.0065  # approx. axes fraction per character at 7.5 pt
+
 
 class ConsultingLayoutMixin:
     """Consulting report-sheet layout methods. Expects CrossSectionRenderer attributes."""
@@ -717,6 +721,31 @@ class ConsultingLayoutMixin:
             )
             self._draw_logo_image(ax, title_block.logo_prepared_by_bytes, (0.78, 0.22))
 
+    @staticmethod
+    def _legend_label_char_budget(
+        col_width_axes: float,
+        font_size: float,
+        *,
+        swatch_w: float,
+    ) -> int:
+        """Estimate how many characters fit in a legend column without bleeding sideways."""
+        usable = max(col_width_axes - swatch_w - 0.018, 0.02)
+        char_w = _LEGEND_CHAR_WIDTH * (font_size / 7.5)
+        return max(8, int(usable / char_w))
+
+    @staticmethod
+    def _legend_panel_clip(ax, panel: tuple[float, float, float, float]) -> Rectangle:
+        left, bottom, width, height = panel
+        clip_rect = Rectangle(
+            (left, bottom),
+            width,
+            height,
+            transform=ax.transAxes,
+            visible=False,
+        )
+        ax.add_patch(clip_rect)
+        return clip_rect
+
     def _draw_legend_panel(
         self,
         ax,
@@ -732,7 +761,6 @@ class ConsultingLayoutMixin:
         content_left = left + pad_x
         content_top = bottom + height - pad_y
         content_bottom = bottom + pad_y
-        text_x = content_left + 0.05
         swatch_w = 0.03
 
         entries: list[tuple[str, str, dict[str, object]]] = []
@@ -836,9 +864,16 @@ class ConsultingLayoutMixin:
                 )
             )
 
-        # Header + entries must stay inside the legend box.
+        # Header + entries must stay inside the legend box (never bleed into title block).
         ncol = max(1, self.profile.legend_ncol)
-        use_two_cols = ncol >= 2 and len(entries) > 6
+        usable_width = width - 2 * pad_x
+        col_width_single = usable_width
+        col_width_two = (usable_width - 0.02) / 2
+        use_two_cols = (
+            ncol >= 2
+            and len(entries) > 6
+            and col_width_two >= _LEGEND_MIN_COL_WIDTH
+        )
         if use_two_cols:
             mid = (len(entries) + 1) // 2
             column_groups: list[list[tuple[str, str, dict[str, object]]]] = [
@@ -846,20 +881,26 @@ class ConsultingLayoutMixin:
                 entries[mid:],
             ]
             col_gap = 0.02
-            col_width = (width - 2 * pad_x - col_gap) / 2
+            col_width = col_width_two
             column_layouts = [
-                (content_left, content_left + 0.05),
-                (content_left + col_width + col_gap, content_left + col_width + col_gap + 0.05),
+                (content_left, content_left + swatch_w + 0.012),
+                (
+                    content_left + col_width + col_gap,
+                    content_left + col_width + col_gap + swatch_w + 0.012,
+                ),
             ]
         else:
             column_groups = [entries]
-            column_layouts = [(content_left, text_x)]
+            col_width = col_width_single
+            column_layouts = [(content_left, content_left + swatch_w + 0.012)]
+
+        clip_rect = self._legend_panel_clip(ax, panel)
 
         n_rows = 1 + max(len(group) for group in column_groups)
         step = min(0.10, max(0.055, (content_top - content_bottom) / max(n_rows, 1)))
         font_size = 7.5 if step >= 0.08 else 6.5
         y_header = content_top
-        ax.text(
+        header = ax.text(
             content_left,
             y_header,
             "LEGEND",
@@ -870,11 +911,14 @@ class ConsultingLayoutMixin:
             va="top",
             clip_on=True,
         )
+        header.set_clip_path(clip_rect)
         entry_top = y_header - step
 
-        max_label_chars = 28 if use_two_cols else (36 if width < 0.34 else 42)
         for group, (col_left, col_text_x) in zip(column_groups, column_layouts, strict=True):
             y = entry_top
+            max_label_chars = self._legend_label_char_budget(
+                col_width, font_size, swatch_w=swatch_w
+            )
             for kind, label, style in group:
                 if y < content_bottom + 0.02:
                     break
@@ -902,6 +946,7 @@ class ConsultingLayoutMixin:
                         clip_on=True,
                     )
                     ax.add_patch(rect)
+                    rect.set_clip_path(clip_rect)
                 elif kind == "gradient":
                     arrow = FancyArrow(
                         col_left + 0.012,
@@ -918,8 +963,9 @@ class ConsultingLayoutMixin:
                         clip_on=True,
                     )
                     ax.add_patch(arrow)
+                    arrow.set_clip_path(clip_rect)
                 elif kind == "marker":
-                    ax.plot(
+                    (marker_line,) = ax.plot(
                         [col_left, col_left + 0.03],
                         [y, y - 0.02],
                         marker=style.get("marker", "v"),
@@ -929,8 +975,9 @@ class ConsultingLayoutMixin:
                         transform=ax.transAxes,
                         clip_on=True,
                     )
+                    marker_line.set_clip_path(clip_rect)
                 elif kind == "line":
-                    ax.plot(
+                    (line,) = ax.plot(
                         [col_left, col_left + 0.03],
                         [y, y],
                         color=style.get("color", LABEL_COLOR),
@@ -939,10 +986,11 @@ class ConsultingLayoutMixin:
                         transform=ax.transAxes,
                         clip_on=True,
                     )
+                    line.set_clip_path(clip_rect)
                 elif kind == "text":
                     pass
                 else:  # line_marker
-                    ax.plot(
+                    (lm_line,) = ax.plot(
                         [col_left, col_left + 0.03],
                         [y, y],
                         marker=style.get("marker", "D"),
@@ -953,7 +1001,8 @@ class ConsultingLayoutMixin:
                         transform=ax.transAxes,
                         clip_on=True,
                     )
-                ax.text(
+                    lm_line.set_clip_path(clip_rect)
+                label_artist = ax.text(
                     col_left if kind == "text" else col_text_x,
                     y,
                     display,
@@ -963,6 +1012,7 @@ class ConsultingLayoutMixin:
                     transform=ax.transAxes,
                     clip_on=True,
                 )
+                label_artist.set_clip_path(clip_rect)
                 y -= step
 
     def _draw_logo_image(self, ax, logo_bytes: bytes | None, position: tuple[float, float]) -> None:

@@ -16,6 +16,7 @@ from constants import CONSULTING_LITHOLOGY_COLORS, USGS_LITHOLOGY_COLORS, USGS_L
 from models import Collar, ConsultingTitleBlock, EnvironmentalReading, Lithology, ScreenInterval, VerticalGradient, WaterLevel
 from render_profiles import CHART_PROFILE, CONSULTING_SECTION_PROFILE, SECTION_SHEET_PROFILE
 from render_theme import PARAMETER_READING_COLOR
+from pipeline import build_cross_section
 from renderer import CrossSectionRenderer, _resolve_parameter_label_offsets
 from stratigraphy import build_stratigraphy
 from tests.conftest import assert_valid_svg, run_pipeline
@@ -400,6 +401,60 @@ def test_consulting_section_parity_elements() -> None:
     assert "SCREEN INTERVAL" in text
     assert "VERTICAL GRADIENT DIRECTION" in text
     assert " masl" in text
+
+
+def test_consulting_legend_stays_in_panel_with_many_entries() -> None:
+    """Legend labels must clip inside the left panel, not bleed into the title block."""
+    codes = [f"Lith-{index}" for index in range(10)]
+    collars = [
+        Collar(hole_id=f"MW-{index:02d}", easting=float(index * 40), northing=0.0, elevation=100.0, total_depth=20.0)
+        for index in range(4)
+    ]
+    lithologies = [
+        Lithology(
+            hole_id=collar.hole_id,
+            from_depth=0.0,
+            to_depth=20.0,
+            lithology_code=codes[index],
+        )
+        for index, collar in enumerate(collars)
+    ]
+    water = [
+        WaterLevel(hole_id="MW-00", depth=2.0, series_id="2024-05", series_label="May 2024"),
+        WaterLevel(hole_id="MW-01", depth=2.5, series_id="2024-06", series_label="June 2024"),
+        WaterLevel(hole_id="MW-02", depth=3.0, series_id="2025-06", series_label="June 2025"),
+    ]
+    readings = [
+        EnvironmentalReading(
+            hole_id="MW-00",
+            parameter="Chloride",
+            value=120.0,
+            depth=4.0,
+            unit="mg/L",
+        ),
+    ]
+    result = build_cross_section(
+        collars,
+        lithologies,
+        [(0.0, 0.0), (120.0, 0.0)],
+        water_levels=water,
+        environmental_readings=readings,
+        environmental_parameters=("Chloride",),
+        render_layout="consulting_section",
+        consulting_title_block=ConsultingTitleBlock(
+            section_label="A-A'",
+            project_number="TEST-001",
+            prepared_for="CLIENT",
+            prepared_by="ECOVENTURE",
+        ),
+        show_parameter_labels=True,
+        legend_ncol=2,
+    )
+    assert_valid_svg(result.svg_bytes)
+    text = result.svg_bytes.decode("utf-8", errors="ignore")
+    assert "clip-path" in text.lower()
+    assert "PROJECT" in text
+    assert "LEGEND" in text
 
 
 def test_correlation_lines_renders_pinch_out_wedges() -> None:

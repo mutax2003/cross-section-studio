@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator, Sequence
 
 import pandas as pd
@@ -15,6 +15,7 @@ from constants import (
 )
 from lithology_codes import collect_lithology_codes
 from models import (
+    MAX_WATER_SERIES,
     Collar,
     ConsultingTitleBlock,
     CorrelationOverride,
@@ -33,6 +34,7 @@ from models import (
 )
 from projection import DEFAULT_OFFSET_WARNING_M, project_boreholes, transect_azimuth_deg
 from render_profiles import profile_for_layout, profile_with_elevation_mode
+from render_theme import filter_water_levels_for_plot
 from renderer import CrossSectionRenderer
 from stratigraphy import (
     CorrelationPairSummary,
@@ -59,6 +61,7 @@ class SectionGeometry:
     x_span: float
     max_offset: float
     projected_hole_ids: frozenset[str]
+    stick_up_by_hole: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -244,6 +247,11 @@ def compute_section_geometry(
         for collar in collars
         if collar.hole_id in projected_hole_ids
     }
+    stick_up_by_hole = {
+        collar.hole_id: float(collar.stick_up_m)
+        for collar in collars
+        if collar.hole_id in projected_hole_ids and collar.stick_up_m
+    }
     x_span = float(projected["x_profile"].max() - projected["x_profile"].min()) if not projected.empty else 1.0
     max_offset = float(projected["offset_distance"].max()) if not projected.empty else 0.0
     return SectionGeometry(
@@ -256,6 +264,7 @@ def compute_section_geometry(
         x_span=x_span,
         max_offset=max_offset,
         projected_hole_ids=projected_hole_ids,
+        stick_up_by_hole=stick_up_by_hole,
     )
 
 
@@ -294,6 +303,22 @@ def build_cross_section(
     show_parameter_labels: bool | None = None,
     parameter_interpolate_segments: bool | None = None,
     parameter_interpolate_across_gaps: bool | None = None,
+    parameter_draw_markers: bool | None = None,
+    parameter_marker_size: float | None = None,
+    parameter_draw_leaders: bool | None = None,
+    parameter_label_include_units: bool | None = None,
+    column_header_detail: str | None = None,
+    show_scale_bar: bool | None = None,
+    show_ve_annotation: bool | None = None,
+    show_parameter_legend_text: bool | None = None,
+    export_font_family: str | None = None,
+    export_font_size: float | None = None,
+    selected_water_series_ids: Sequence[str] | None = None,
+    water_line_solid: bool | None = None,
+    legend_ncol: int | None = None,
+    chemistry_color_mode: str | None = None,
+    chemistry_threshold_green_max: float | None = None,
+    chemistry_threshold_yellow_max: float | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
     elevation_mode: str = "absolute",
@@ -351,6 +376,22 @@ def build_cross_section(
         show_parameter_labels=show_parameter_labels,
         parameter_interpolate_segments=parameter_interpolate_segments,
         parameter_interpolate_across_gaps=parameter_interpolate_across_gaps,
+        parameter_draw_markers=parameter_draw_markers,
+        parameter_marker_size=parameter_marker_size,
+        parameter_draw_leaders=parameter_draw_leaders,
+        parameter_label_include_units=parameter_label_include_units,
+        column_header_detail=column_header_detail,
+        show_scale_bar=show_scale_bar,
+        show_ve_annotation=show_ve_annotation,
+        show_parameter_legend_text=show_parameter_legend_text,
+        export_font_family=export_font_family,
+        export_font_size=export_font_size,
+        selected_water_series_ids=selected_water_series_ids,
+        water_line_solid=water_line_solid,
+        legend_ncol=legend_ncol,
+        chemistry_color_mode=chemistry_color_mode,
+        chemistry_threshold_green_max=chemistry_threshold_green_max,
+        chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
         render_layout=render_layout,
         track_width_m=track_width_m,
         elevation_mode=elevation_mode,
@@ -388,6 +429,22 @@ def render_cross_section_from_geometry(
     show_parameter_labels: bool | None = None,
     parameter_interpolate_segments: bool | None = None,
     parameter_interpolate_across_gaps: bool | None = None,
+    parameter_draw_markers: bool | None = None,
+    parameter_marker_size: float | None = None,
+    parameter_draw_leaders: bool | None = None,
+    parameter_label_include_units: bool | None = None,
+    column_header_detail: str | None = None,
+    show_scale_bar: bool | None = None,
+    show_ve_annotation: bool | None = None,
+    show_parameter_legend_text: bool | None = None,
+    export_font_family: str | None = None,
+    export_font_size: float | None = None,
+    selected_water_series_ids: Sequence[str] | None = None,
+    water_line_solid: bool | None = None,
+    legend_ncol: int | None = None,
+    chemistry_color_mode: str | None = None,
+    chemistry_threshold_green_max: float | None = None,
+    chemistry_threshold_yellow_max: float | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
     elevation_mode: str = "absolute",
@@ -416,7 +473,14 @@ def render_cross_section_from_geometry(
     x_span = geometry.x_span
     max_offset = geometry.max_offset
     projected_hole_ids = geometry.projected_hole_ids
+    stick_up_by_hole = geometry.stick_up_by_hole
     disclaimer = _DISCLAIMER_BY_MODE[interpretation_mode]
+
+    plotted_water = filter_water_levels_for_plot(
+        water_levels or (),
+        tuple(selected_water_series_ids) if selected_water_series_ids else None,
+        max_series=MAX_WATER_SERIES,
+    )
 
     metadata = figure_metadata or SectionFigureMetadata(
         vertical_exaggeration=vertical_exaggeration,
@@ -445,10 +509,41 @@ def render_cross_section_from_geometry(
         profile_updates["parameter_interpolate_segments"] = parameter_interpolate_segments
     if parameter_interpolate_across_gaps is not None:
         profile_updates["parameter_interpolate_across_gaps"] = parameter_interpolate_across_gaps
+    if parameter_draw_markers is not None:
+        profile_updates["parameter_draw_markers"] = parameter_draw_markers
+    if parameter_marker_size is not None:
+        profile_updates["parameter_marker_size"] = parameter_marker_size
+    if parameter_draw_leaders is not None:
+        profile_updates["parameter_draw_leaders"] = parameter_draw_leaders
+    if parameter_label_include_units is not None:
+        profile_updates["parameter_label_include_units"] = parameter_label_include_units
+    if column_header_detail is not None:
+        profile_updates["column_header_detail"] = column_header_detail
+    if show_scale_bar is not None:
+        profile_updates["show_scale_bar"] = show_scale_bar
+    if show_ve_annotation is not None:
+        profile_updates["show_ve_annotation"] = show_ve_annotation
+    if show_parameter_legend_text is not None:
+        profile_updates["show_parameter_legend_text"] = show_parameter_legend_text
+    if export_font_family is not None:
+        profile_updates["export_font_family"] = export_font_family
+    if export_font_size is not None:
+        profile_updates["export_font_size"] = export_font_size
+    if water_line_solid is not None:
+        profile_updates["water_line_solid"] = water_line_solid
+    if legend_ncol is not None:
+        profile_updates["legend_ncol"] = legend_ncol
+    if chemistry_color_mode is not None:
+        profile_updates["chemistry_color_mode"] = chemistry_color_mode
+    if chemistry_threshold_green_max is not None:
+        profile_updates["chemistry_threshold_green_max"] = chemistry_threshold_green_max
+    if chemistry_threshold_yellow_max is not None:
+        profile_updates["chemistry_threshold_yellow_max"] = chemistry_threshold_yellow_max
     if render_layout == "consulting_section" and interpretation_mode == "borehole_only":
         profile_updates["show_track_lithology"] = True
-        profile_updates["parameter_draw_markers"] = False
-        if show_dry_well_nm is None and not water_levels:
+        if parameter_draw_markers is None:
+            profile_updates["parameter_draw_markers"] = False
+        if show_dry_well_nm is None and not plotted_water:
             profile_updates["show_dry_well_nm"] = False
     render_profile = profile_with_elevation_mode(base_profile, elevation_mode).model_copy(
         update=profile_updates
@@ -483,12 +578,13 @@ def render_cross_section_from_geometry(
         consulting_title_block=consulting_title_block,
         screen_intervals=screen_intervals or (),
         vertical_gradients=vertical_gradients or (),
+        stick_up_by_hole=stick_up_by_hole,
     )
     figure = renderer.render(
         polygons,
         projected,
         collar_depths=collar_depths,
-        water_levels=water_levels,
+        water_levels=plotted_water,
         lithology_codes=lithology_codes,
     )
     try:

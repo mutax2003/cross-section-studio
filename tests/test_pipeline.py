@@ -201,8 +201,10 @@ def test_environmental_readings_render_labels_in_svg() -> None:
     )
     assert_valid_svg(svg_bytes)
     text = svg_bytes.decode("utf-8", errors="ignore")
-    assert "120 mg/L" in text
-    assert "85 mg/L" in text
+    assert "120" in text
+    assert "85" in text
+    assert "120 mg/L" not in text
+    assert "85 mg/L" not in text
 
 
 def test_validate_interpretation_mode_accepts_correlation_lines() -> None:

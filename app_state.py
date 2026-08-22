@@ -100,11 +100,19 @@ DEFAULT_SESSION: dict[str, object] = {
     "output_preset": "section_sheet",
     "allow_pinch_outs": False,
     "show_ground_surface": True,
-    "show_hatches": True,
+    "show_hatches": False,
     "show_legend": True,
     "enable_ai_suggestions": False,
     "fail_on_overlaps": False,
     "llm_provider": "groq",
+    "column_header_detail": "id_only",
+    "show_scale_bar": False,
+    "show_ve_annotation": False,
+    "show_parameter_legend_text": False,
+    "export_font_family": "Arial",
+    "export_font_size": 8.0,
+    "parameter_marker_size": 16.0,
+    "connect_chemistry_values": False,
 }
 
 

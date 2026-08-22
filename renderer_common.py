@@ -49,7 +49,11 @@ class RendererGeometryMixin:
         collar_depths: dict[str, float],
         collar_lookup: dict[str, float],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-        """Return (x_profile, top_y, bottom_y) for well sticks/columns, or None if empty."""
+        """Return (x_profile, top_y, bottom_y) for well sticks/columns, or None if empty.
+
+        When ``stick_up_by_hole`` is set on the renderer, column tops extend above
+        the collar by that stick-up height (Wave B MW construction).
+        """
         if hole_summary.empty:
             return None
         hole_ids = hole_summary["hole_id"].astype(str).to_numpy()
@@ -66,7 +70,15 @@ class RendererGeometryMixin:
             count=len(hole_ids),
         )
         bottom_elev = np.where(np.isfinite(td_values), collars - td_values, row_bottoms)
-        top_y = self._plot_y_values(collars, collars)
+        stick_ups = getattr(self, "stick_up_by_hole", None) or {}
+        top_elev = np.asarray(
+            [
+                float(collars[i]) + float(stick_ups.get(str(hole_ids[i]), 0.0) or 0.0)
+                for i in range(len(hole_ids))
+            ],
+            dtype=float,
+        )
+        top_y = self._plot_y_values(top_elev, collars)
         bottom_y = self._plot_y_values(bottom_elev, collars)
         return x_values, top_y, bottom_y
 

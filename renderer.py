@@ -50,10 +50,13 @@ from render_theme import (
     CONSULTING_WATER_COLOR,
     consulting_gw_series_style,
     consulting_section_title,
+    chemistry_label_color,
+    CHEMISTRY_LABEL_BLACK,
     CONTACT_TICK_COLOR,
     CONTACT_TICK_WIDTH,
     DEFAULT_CONSULTING_NOTES,
     EOL_BAR_COLOR,
+    export_font_rc,
     FIGURE_BG,
     GRID_COLOR,
     LABEL_COLOR,
@@ -113,6 +116,17 @@ def _group_water_levels(
         series_id = level.series_id or "default"
         groups.setdefault(series_id, []).append(level)
     return groups
+
+
+def _connect_subgroups(
+    levels: Sequence[WaterLevel],
+) -> dict[str, list[WaterLevel]]:
+    """Split a series into connect_group nests (blank = one shared polyline)."""
+    subgroups: dict[str, list[WaterLevel]] = {}
+    for level in levels:
+        group_id = (level.connect_group or "").strip()
+        subgroups.setdefault(group_id, []).append(level)
+    return subgroups
 
 
 _PARAMETER_LABEL_MIN_GAP_PTS = 26.0
@@ -285,6 +299,7 @@ class CrossSectionRenderer(
         consulting_title_block: ConsultingTitleBlock | None = None,
         screen_intervals: Sequence[ScreenInterval] = (),
         vertical_gradients: Sequence[VerticalGradient] = (),
+        stick_up_by_hole: dict[str, float] | None = None,
     ) -> None:
         self.vertical_exaggeration = vertical_exaggeration
         self.scale_bar_length_m = scale_bar_length_m
@@ -308,6 +323,7 @@ class CrossSectionRenderer(
         self.consulting_title_block = consulting_title_block
         self.screen_intervals = tuple(screen_intervals)
         self.vertical_gradients = tuple(vertical_gradients)
+        self.stick_up_by_hole = dict(stick_up_by_hole or {})
         self.water_series_legend: list[WaterSeriesLegendEntry] = []
         self.parameter_series_legend: list[ParameterLegendEntry] = []
         self._has_pinch_out = False
@@ -323,7 +339,14 @@ class CrossSectionRenderer(
         *,
         lithology_codes: Sequence[str] | None = None,
     ) -> Figure:
-        hatch_context = {"hatch.color": HATCH_LINE_COLOR, "hatch.linewidth": 0.65}
+        hatch_context = {
+            "hatch.color": HATCH_LINE_COLOR,
+            "hatch.linewidth": 0.65,
+            **export_font_rc(
+                self.profile.export_font_family,
+                self.profile.export_font_size,
+            ),
+        }
         with mpl.rc_context(hatch_context):
             return self._render_figure(
                 polygons,
@@ -758,16 +781,21 @@ class CrossSectionRenderer(
         collar_lookup: dict[str, float],
     ) -> None:
         header_transform = ax.get_xaxis_transform()
+        detail = self.profile.column_header_detail
         for row in hole_summary.itertuples(index=False):
             hole_id = str(row.hole_id)
-            collar = float(collar_lookup.get(hole_id, row.collar_elevation))
-            td = collar_depths.get(hole_id)
-            td_text = f"TD {td:.1f} m" if td is not None else ""
-            rl_text = (
-                f"RL {collar:.1f}"
-                if self.profile.y_axis_mode == "elevation_rl"
-                else "Depth section"
-            )
+            if detail == "id_only":
+                header_text = hole_id
+            else:
+                collar = float(collar_lookup.get(hole_id, row.collar_elevation))
+                td = collar_depths.get(hole_id)
+                td_text = f"TD {td:.1f} m" if td is not None else ""
+                rl_text = (
+                    f"RL {collar:.1f}"
+                    if self.profile.y_axis_mode == "elevation_rl"
+                    else "Depth section"
+                )
+                header_text = f"{hole_id}\n{rl_text}\n{td_text}".strip()
             if self.profile.y_axis_mode == "elevation_rl":
                 y_pos = -0.05
                 va = "top"
@@ -777,7 +805,7 @@ class CrossSectionRenderer(
             ax.text(
                 float(row.x_profile),
                 y_pos,
-                f"{hole_id}\n{rl_text}\n{td_text}".strip(),
+                header_text,
                 transform=header_transform,
                 ha="center",
                 va=va,
@@ -949,13 +977,14 @@ class CrossSectionRenderer(
             str(row.hole_id): float(row.x_profile)
             for row in hole_summary.itertuples(index=False)
         }
-        for series_id, levels in sorted(series_groups.items()):
+        for series_index, (series_id, levels) in enumerate(sorted(series_groups.items())):
             first = levels[0]
             default_color, default_marker, default_label = consulting_gw_series_style(
                 series_id,
                 first.series_label,
+                series_index=series_index,
             )
-            color = first.color or water_color or default_water_color or default_color
+            color = first.color or water_color or default_color or default_water_color
             marker_key = (first.marker or default_marker or profile_marker).lower()
             marker = _GW_MARKER_MAP.get(marker_key, marker_key)
             label = first.series_label or default_label or series_id
@@ -984,72 +1013,87 @@ class CrossSectionRenderer(
                         color=CONSULTING_NM_COLOR,
                         zorder=8,
                     )
-            xs: list[float] = []
-            water_rls: list[float] = []
-            collars: list[float] = []
-            measured_levels: list[WaterLevel] = []
-            for hole_id in transect_hole_ids:
-                level = level_by_hole.get(hole_id)
-                if level is None:
-                    continue
-                profile = profile_lookup.get(hole_id)
-                if profile is None:
-                    continue
-                x_profile, collar_rl = profile
-                xs.append(x_profile)
-                water_rls.append(collar_rl - level.depth)
-                collars.append(collar_rl)
-                measured_levels.append(level)
-            if not xs:
-                continue
-            xs_arr = np.asarray(xs, dtype=float)
-            water_arr = np.asarray(water_rls, dtype=float)
-            collar_arr = np.asarray(collars, dtype=float)
-            ys = self._plot_y_values(water_arr, collar_arr)
-            ax.scatter(xs_arr, ys, marker=marker, c=color, s=49, zorder=7)
-            if label_elevations:
-                for x_profile, water_rl, y, level, collar_rl in zip(
-                    xs_arr, water_arr, ys, measured_levels, collars, strict=True
-                ):
-                    ax.annotate(
-                        self._water_elevation_label(level, collar_rl),
-                        xy=(float(x_profile), float(y)),
-                        xytext=(4, -8),
-                        textcoords="offset points",
-                        fontsize=7,
-                        color=color,
-                        zorder=8,
+            # Draw each connect_group nest separately so shallow/deep do not join.
+            for _group_id, group_levels in _connect_subgroups(levels).items():
+                xs: list[float] = []
+                water_rls: list[float] = []
+                collars: list[float] = []
+                measured_levels: list[WaterLevel] = []
+                for hole_id in transect_hole_ids:
+                    level = next(
+                        (item for item in group_levels if item.hole_id == hole_id),
+                        None,
                     )
-            if len(xs_arr) >= 2 and interpolate:
-                gw_linestyle = "-" if self.profile.water_line_solid else "--"
-                if across_gaps:
-                    # Dense interp only when explicitly allowed across dry/missing holes.
-                    x_dense = np.linspace(float(xs_arr.min()), float(xs_arr.max()), 100)
-                    y_dense = np.interp(x_dense, xs_arr, ys)
-                    ax.plot(
-                        x_dense, y_dense, color=color, linewidth=2.0, linestyle=gw_linestyle, zorder=6
-                    )
-                elif use_segments:
-                    y_by_hole = {
-                        level.hole_id: float(y)
-                        for level, y in zip(measured_levels, ys, strict=True)
-                    }
-                    for left_id, right_id in zip(transect_hole_ids, transect_hole_ids[1:], strict=False):
-                        if left_id not in y_by_hole or right_id not in y_by_hole:
-                            continue
+                    if level is None:
+                        continue
+                    profile = profile_lookup.get(hole_id)
+                    if profile is None:
+                        continue
+                    x_profile, collar_rl = profile
+                    xs.append(x_profile)
+                    water_rls.append(collar_rl - level.depth)
+                    collars.append(collar_rl)
+                    measured_levels.append(level)
+                if not xs:
+                    continue
+                xs_arr = np.asarray(xs, dtype=float)
+                water_arr = np.asarray(water_rls, dtype=float)
+                collar_arr = np.asarray(collars, dtype=float)
+                ys = self._plot_y_values(water_arr, collar_arr)
+                ax.scatter(xs_arr, ys, marker=marker, c=color, s=49, zorder=7)
+                if label_elevations:
+                    for x_profile, water_rl, y, level, collar_rl in zip(
+                        xs_arr, water_arr, ys, measured_levels, collars, strict=True
+                    ):
+                        ax.annotate(
+                            self._water_elevation_label(level, collar_rl),
+                            xy=(float(x_profile), float(y)),
+                            xytext=(4, -8),
+                            textcoords="offset points",
+                            fontsize=7,
+                            color=color,
+                            zorder=8,
+                        )
+                if len(xs_arr) >= 2 and interpolate:
+                    gw_linestyle = "-" if self.profile.water_line_solid else "--"
+                    if across_gaps:
+                        x_dense = np.linspace(float(xs_arr.min()), float(xs_arr.max()), 100)
+                        y_dense = np.interp(x_dense, xs_arr, ys)
                         ax.plot(
-                            [transect_x[left_id], transect_x[right_id]],
-                            [y_by_hole[left_id], y_by_hole[right_id]],
+                            x_dense,
+                            y_dense,
                             color=color,
                             linewidth=2.0,
                             linestyle=gw_linestyle,
                             zorder=6,
                         )
-                else:
-                    # Measured holes only — do not invent water across dry gaps.
-                    ax.plot(
-                        xs_arr, ys, color=color, linewidth=2.0, linestyle=gw_linestyle, zorder=6
-                    )
+                    elif use_segments:
+                        y_by_hole = {
+                            level.hole_id: float(y)
+                            for level, y in zip(measured_levels, ys, strict=True)
+                        }
+                        for left_id, right_id in zip(
+                            transect_hole_ids, transect_hole_ids[1:], strict=False
+                        ):
+                            if left_id not in y_by_hole or right_id not in y_by_hole:
+                                continue
+                            ax.plot(
+                                [transect_x[left_id], transect_x[right_id]],
+                                [y_by_hole[left_id], y_by_hole[right_id]],
+                                color=color,
+                                linewidth=2.0,
+                                linestyle=gw_linestyle,
+                                zorder=6,
+                            )
+                    else:
+                        ax.plot(
+                            xs_arr,
+                            ys,
+                            color=color,
+                            linewidth=2.0,
+                            linestyle=gw_linestyle,
+                            zorder=6,
+                        )
             level_label_text, elevation_label_text = self._water_legend_captions(
                 series_id, label, default_label
             )
@@ -1288,7 +1332,10 @@ class CrossSectionRenderer(
         )
         self.parameter_series_legend = []
         for index, (parameter, readings) in enumerate(sorted(by_parameter.items())):
-            color = PARAMETER_TEXT_COLOR if not draw_markers else PARAMETER_PALETTE[index % len(PARAMETER_PALETTE)]
+            if draw_markers:
+                color = PARAMETER_PALETTE[index % len(PARAMETER_PALETTE)]
+            else:
+                color = CHEMISTRY_LABEL_BLACK
             readings_by_hole: dict[str, list[EnvironmentalReading]] = {}
             for reading in readings:
                 readings_by_hole.setdefault(reading.hole_id, []).append(reading)
@@ -1297,7 +1344,7 @@ class CrossSectionRenderer(
 
             marker_xs: list[float] = []
             marker_ys: list[float] = []
-            marker_labels: list[tuple[float, float, str]] = []
+            marker_labels: list[tuple[float, float, str, str]] = []
             y_cache: dict[tuple[str, float], float] = {}
             for hole_id, hole_readings in readings_by_hole.items():
                 depths: list[float] = [reading.sample_depth for reading in hole_readings]
@@ -1341,17 +1388,33 @@ class CrossSectionRenderer(
                                 zorder=7,
                             )
                     if label_values:
-                        # Text-only consulting (P2 sticks): interval mid-depth label,
-                        # compact numeric text (unit lives in the legend).
-                        label_text = reading.display_label
-                        if not draw_markers:
-                            label_text = reading.value_label or f"{reading.value:g}"
-                        marker_labels.append((x_profile, y, label_text))
+                        # Prefer compact numeric text; unit belongs in the legend
+                        # unless parameter_label_include_units is enabled.
+                        if reading.value_label:
+                            label_text = reading.value_label
+                        elif self.profile.parameter_label_include_units:
+                            label_text = reading.display_label
+                        else:
+                            label_text = f"{reading.value:g}"
+                        label_color = chemistry_label_color(
+                            reading.value,
+                            self.profile.chemistry_color_mode,
+                            green_max=self.profile.chemistry_threshold_green_max,
+                            yellow_max=self.profile.chemistry_threshold_yellow_max,
+                        )
+                        marker_labels.append((x_profile, y, label_text, label_color))
 
             if draw_markers:
                 if not marker_xs:
                     continue
-                ax.scatter(marker_xs, marker_ys, marker=marker, c=color, s=49, zorder=8)
+                ax.scatter(
+                    marker_xs,
+                    marker_ys,
+                    marker=marker,
+                    c=color,
+                    s=float(self.profile.parameter_marker_size),
+                    zorder=8,
+                )
             elif not marker_labels:
                 units = sorted(
                     {
@@ -1374,7 +1437,9 @@ class CrossSectionRenderer(
                     }
                 )
                 continue
-            label_offsets = _resolve_parameter_label_offsets(ax, marker_labels)
+            label_offsets = _resolve_parameter_label_offsets(
+                ax, [(x, y, text) for x, y, text, _ in marker_labels]
+            )
             label_base_kwargs: dict[str, object] = {
                 "textcoords": "offset points",
                 "fontsize": font_size,
@@ -1386,28 +1451,32 @@ class CrossSectionRenderer(
             }
             if draw_markers:
                 label_base_kwargs["bbox"] = _PARAMETER_LABEL_BBOX
-            leader_props = {
-                "arrowstyle": "-",
-                "color": color,
-                "lw": 0.55,
-                "linestyle": "--",
-                "shrinkA": 2,
-                "shrinkB": 1,
-                "alpha": 0.7,
-            }
-            for (x_profile, y, label_text), (dx, dy, draw_leader) in zip(
+            draw_leaders = self.profile.parameter_draw_leaders
+            for (x_profile, y, label_text, label_color), (dx, dy, draw_leader) in zip(
                 marker_labels, label_offsets, strict=True
             ):
                 annotate_kwargs = {
                     **label_base_kwargs,
                     "xy": (x_profile, y),
                     "xytext": (dx, dy),
+                    "color": label_color,
                 }
-                if draw_leader:
+                if draw_leaders and draw_leader:
+                    leader_props = {
+                        "arrowstyle": "-",
+                        "color": label_color,
+                        "lw": 0.55,
+                        "linestyle": "--",
+                        "shrinkA": 2,
+                        "shrinkB": 1,
+                        "alpha": 0.7,
+                    }
                     annotate_kwargs["arrowprops"] = leader_props
                 ax.annotate(label_text, **annotate_kwargs)
 
-            if draw_markers:
+            if draw_markers and (
+                use_segments or across_gaps
+            ):
                 self._draw_parameter_fence(
                     ax,
                     transect_hole_ids,
@@ -1420,18 +1489,21 @@ class CrossSectionRenderer(
                     across_gaps=across_gaps,
                 )
             legend_label = parameter.upper()
-            if not draw_markers:
-                units = sorted(
-                    {
-                        (reading.unit or "").strip()
-                        for reading in readings
-                        if (reading.unit or "").strip()
-                    }
+            units = sorted(
+                {
+                    (reading.unit or "").strip()
+                    for reading in readings
+                    if (reading.unit or "").strip()
+                }
+            )
+            if not self.profile.parameter_label_include_units and len(units) == 1:
+                legend_label = f"{parameter.upper()} CONCENTRATION ({units[0]})"
+            elif not draw_markers:
+                legend_label = (
+                    f"{parameter.upper()} CONCENTRATION ({units[0]})"
+                    if len(units) == 1
+                    else f"{parameter.upper()} CONCENTRATION"
                 )
-                if len(units) == 1:
-                    legend_label = f"{parameter.upper()} CONCENTRATION ({units[0]})"
-                else:
-                    legend_label = f"{parameter.upper()} CONCENTRATION"
             self.parameter_series_legend.append(
                 {
                     "parameter": parameter,
@@ -1505,7 +1577,7 @@ class CrossSectionRenderer(
                 ax.plot(xs_arr, ys_arr, color=color, linewidth=1.5, linestyle="--", zorder=7)
 
     def _draw_compact_parameter_legend(self, ax) -> None:
-        if not self.parameter_series_legend:
+        if not self.profile.show_parameter_legend_text or not self.parameter_series_legend:
             return
         lines = []
         for entry in self.parameter_series_legend:
@@ -1559,6 +1631,7 @@ class CrossSectionRenderer(
             edgecolor="#CBD5E1",
             fontsize=8,
             title_fontsize=9,
+            ncol=max(1, self.profile.legend_ncol) if len(legend_handles) > 1 else 1,
         )
 
     def _draw_ve_annotation(self, ax) -> None:
@@ -1731,6 +1804,8 @@ class CrossSectionRenderer(
         return np.asarray(values, dtype=float) * self.vertical_exaggeration
 
     def _draw_scale_bar(self, ax) -> None:
+        if not self.profile.show_scale_bar:
+            return
         x_min, x_max = ax.get_xlim()
         y_min, y_max = ax.get_ylim()
         bar_length = self.scale_bar_length_m

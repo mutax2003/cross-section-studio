@@ -73,6 +73,16 @@ class SidebarState:
     parameter_interpolate_segments_default: bool | None
     parameter_draw_markers_default: bool | None
     elevation_mode_default: str | None
+    column_header_detail: str
+    show_scale_bar: bool
+    show_ve_annotation: bool
+    show_parameter_legend_text: bool
+    export_font_family: str
+    export_font_size: float
+    parameter_marker_size: float
+    connect_chemistry_values: bool
+    water_line_solid_default: bool | None
+    legend_ncol: int
 
 
 def render_sidebar() -> SidebarState:
@@ -128,6 +138,7 @@ def render_sidebar() -> SidebarState:
             help=(
                 "GWM fence: interpolated MASL section with groundwater. "
                 "P2 sticks: borehole-only mbgs columns with chloride labels. "
+                "Chemistry + groundwater: chlorides and water levels together. "
                 "Consulting report: generic title-block layout."
             ),
         )
@@ -164,6 +175,14 @@ def render_sidebar() -> SidebarState:
             st.session_state.allow_pinch_outs = preset_config.allow_pinch_outs
             st.session_state.show_ground_surface = preset_config.show_ground_surface
             st.session_state.show_legend = preset_config.show_legend
+            if preset_config.show_scale_bar is not None:
+                st.session_state.show_scale_bar = preset_config.show_scale_bar
+            if preset_config.show_ve_annotation is not None:
+                st.session_state.show_ve_annotation = preset_config.show_ve_annotation
+            if preset_config.show_parameter_legend_text is not None:
+                st.session_state.show_parameter_legend_text = (
+                    preset_config.show_parameter_legend_text
+                )
             if preset_config.interpretation_mode is not None:
                 st.session_state.interpretation_mode = preset_config.interpretation_mode
             if preset_config.elevation_mode is not None:
@@ -262,7 +281,7 @@ def render_sidebar() -> SidebarState:
         show_hatches = st.toggle(
             "Hatch patterns",
             key="show_hatches",
-            help="USGS-style hatch patterns on lithology fills.",
+            help="USGS-style hatch patterns on lithology fills. Off = solid BH-log colours.",
         )
         if "section_title" not in st.session_state:
             st.session_state.section_title = "Borehole Cross-Section"
@@ -321,6 +340,56 @@ def render_sidebar() -> SidebarState:
             disabled=report_preset or is_consulting_layout,
             help="Width of each borehole column on the section profile.",
         )
+        column_header_detail = st.selectbox(
+            "Borehole label detail",
+            options=["id_only", "id_rl_td"],
+            format_func=lambda value: (
+                "Hole ID only" if value == "id_only" else "Hole ID + RL + TD"
+            ),
+            key="column_header_detail",
+            help="Section-sheet column headers. Consulting layout always uses hole ID only.",
+        )
+        export_font_family = st.selectbox(
+            "Export font",
+            options=["Arial", "Calibri", "DejaVu Sans"],
+            key="export_font_family",
+            help="Prefer Arial so PDF edits match drafting templates.",
+        )
+        export_font_size = st.number_input(
+            "Export font size",
+            min_value=6.0,
+            max_value=14.0,
+            step=0.5,
+            key="export_font_size",
+        )
+        parameter_marker_size = st.number_input(
+            "Chemistry marker size",
+            min_value=4.0,
+            max_value=64.0,
+            step=2.0,
+            key="parameter_marker_size",
+            help="Matplotlib scatter size for chemistry sample dots.",
+        )
+        show_scale_bar = st.toggle(
+            "Show scale bar",
+            key="show_scale_bar",
+            help="In-plot scale (section sheet) or subtitle scale band (consulting).",
+        )
+        show_ve_annotation = st.toggle(
+            "Show V.E. annotation",
+            key="show_ve_annotation",
+            help="In-plot V.E. text on section sheet; also keeps consulting subtitle VE with scale.",
+        )
+        show_parameter_legend_text = st.toggle(
+            "Show Parameters text block",
+            key="show_parameter_legend_text",
+            help="Bottom-left 'Parameters: Chloride…' overlay on section sheet.",
+        )
+        connect_chemistry_values = st.toggle(
+            "Connect chemistry values",
+            key="connect_chemistry_values",
+            help="Draw dashed lines between chemistry samples on adjacent holes.",
+        )
         parameter_interpolate_across_gaps = st.toggle(
             "Interpolate parameters across gaps",
             value=parameter_interpolate_across_gaps,
@@ -337,6 +406,12 @@ def render_sidebar() -> SidebarState:
             key="show_legend",
             disabled=is_consulting_layout,
             help="Consulting layout places the legend in the footer title block.",
+        )
+        legend_two_columns = st.toggle(
+            "Two-column lithology legend",
+            key="legend_two_columns",
+            value=True,
+            help="Wrap long lithology code lists in two columns outside the plot.",
         )
         max_offset_for_interpolation_m = st.number_input(
             "Max offset for interpolation (m)",
@@ -410,11 +485,25 @@ def render_sidebar() -> SidebarState:
         parameter_interpolate_segments_default=preset_config.parameter_interpolate_segments,
         parameter_draw_markers_default=preset_config.parameter_draw_markers,
         elevation_mode_default=preset_config.elevation_mode,
+        column_header_detail=str(st.session_state.get("column_header_detail", "id_only")),
+        show_scale_bar=bool(st.session_state.get("show_scale_bar", False)),
+        show_ve_annotation=bool(st.session_state.get("show_ve_annotation", False)),
+        show_parameter_legend_text=bool(
+            st.session_state.get("show_parameter_legend_text", False)
+        ),
+        export_font_family=str(st.session_state.get("export_font_family", "Arial")),
+        export_font_size=float(st.session_state.get("export_font_size", 8.0)),
+        parameter_marker_size=float(st.session_state.get("parameter_marker_size", 16.0)),
+        connect_chemistry_values=bool(
+            st.session_state.get("connect_chemistry_values", False)
+        ),
+        water_line_solid_default=preset_config.water_line_solid,
+        legend_ncol=2 if bool(st.session_state.get("legend_two_columns", True)) else 1,
     )
 
 
 def _render_fill_style_editor() -> None:
-    st.caption("Override USGS fill color and hatch for a lithology code (saved locally).")
+    st.caption("Override BH-log fill color and hatch for a lithology code (saved locally).")
     style_codes = sorted(st.session_state.get("unique_lithology_codes") or [])
     if not style_codes:
         st.info("Parse data to edit lithology fill styles.")

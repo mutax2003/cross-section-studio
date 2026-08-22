@@ -10,6 +10,8 @@ LayoutMode = Literal["chart", "section_sheet", "consulting_section"]
 YAxisMode = Literal["elevation_rl", "depth_below_collar"]
 WaterSymbol = Literal["circle", "triangle", "diamond"]
 ScaleBarPosition = Literal["bottom_left", "bottom_right"]
+ColumnHeaderDetail = Literal["id_only", "id_rl_td"]
+ChemistryColorMode = Literal["black", "threshold"]
 
 
 class CrossSectionRenderProfile(BaseModel, frozen=True):
@@ -23,6 +25,7 @@ class CrossSectionRenderProfile(BaseModel, frozen=True):
     show_track_border: bool = True
     show_centerline: bool = False
     show_column_headers: bool = True
+    column_header_detail: ColumnHeaderDetail = "id_only"
     show_track_lithology: bool = True
     show_dual_y_axes: bool = False
     show_report_grid: bool = False
@@ -36,7 +39,9 @@ class CrossSectionRenderProfile(BaseModel, frozen=True):
     y_axis_mode: YAxisMode = "elevation_rl"
     water_symbol: WaterSymbol = "triangle"
     title_block: bool = True
-    show_ve_annotation: bool = True
+    show_ve_annotation: bool = False
+    show_scale_bar: bool = False
+    show_parameter_legend_text: bool = False
     scale_bar_position: ScaleBarPosition = "bottom_left"
     fence_alpha: float = Field(default=0.58, ge=0.0, le=1.0)
     show_overlap_markers: bool = False
@@ -48,10 +53,19 @@ class CrossSectionRenderProfile(BaseModel, frozen=True):
     consulting_axis_from_zero: bool = False
     show_parameter_markers: bool = False
     show_parameter_labels: bool = True
-    parameter_interpolate_segments: bool = True
+    parameter_interpolate_segments: bool = False
     parameter_interpolate_across_gaps: bool = False
     parameter_draw_markers: bool = True
-    parameter_marker: str = "D"
+    parameter_marker: str = "o"
+    parameter_marker_size: float = Field(default=16.0, gt=0.0)
+    parameter_draw_leaders: bool = False
+    parameter_label_include_units: bool = False
+    export_font_family: str = "Arial"
+    export_font_size: float = Field(default=8.0, gt=0.0)
+    legend_ncol: int = Field(default=1, ge=1, le=3)
+    chemistry_color_mode: ChemistryColorMode = "black"
+    chemistry_threshold_green_max: float | None = None
+    chemistry_threshold_yellow_max: float | None = None
     x_major_grid_m: float = 10.0
     y_axis_label: str = ""
 
@@ -71,6 +85,7 @@ CHART_PROFILE = CrossSectionRenderProfile(
     water_symbol="circle",
     title_block=False,
     show_ve_annotation=False,
+    show_scale_bar=True,
     fence_alpha=0.92,
     show_overlap_markers=True,
     show_overlap_footer=True,
@@ -87,12 +102,21 @@ SECTION_SHEET_PROFILE = CrossSectionRenderProfile(
     show_track_border=True,
     show_centerline=False,
     show_column_headers=True,
+    column_header_detail="id_only",
     y_axis_mode="elevation_rl",
     water_symbol="triangle",
     title_block=True,
-    show_ve_annotation=True,
+    show_ve_annotation=False,
+    show_scale_bar=False,
+    show_parameter_legend_text=False,
     fence_alpha=0.58,
     show_parameter_markers=True,
+    parameter_interpolate_segments=False,
+    parameter_marker="o",
+    parameter_draw_leaders=False,
+    parameter_label_include_units=False,
+    legend_ncol=2,
+    chemistry_color_mode="black",
 )
 
 CONSULTING_SECTION_PROFILE = CrossSectionRenderProfile(
@@ -120,6 +144,9 @@ CONSULTING_SECTION_PROFILE = CrossSectionRenderProfile(
     water_symbol="triangle",
     title_block=True,
     show_ve_annotation=False,
+    # Consulting subtitle band includes scale / VE (report chrome).
+    show_scale_bar=True,
+    show_parameter_legend_text=False,
     fence_alpha=1.0,
     show_overlap_markers=True,
     show_overlap_footer=True,
@@ -132,6 +159,12 @@ CONSULTING_SECTION_PROFILE = CrossSectionRenderProfile(
     y_axis_label="ELEVATION ABOVE SEA LEVEL (MASL)",
     show_parameter_markers=True,
     show_parameter_labels=True,
+    parameter_interpolate_segments=False,
+    parameter_marker="o",
+    parameter_draw_leaders=False,
+    parameter_label_include_units=False,
+    legend_ncol=2,
+    chemistry_color_mode="black",
 )
 
 

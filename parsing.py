@@ -293,7 +293,12 @@ class DataParser:
         missing_cols = COLLAR_COLUMNS - set(df.columns)
         if missing_cols:
             raise ValueError(f"Collars sheet missing columns: {', '.join(sorted(missing_cols))}")
-        optional_cols = {"elevation_datum", "inclination_deg", "azimuth_deg"} & set(df.columns)
+        optional_cols = {
+            "elevation_datum",
+            "inclination_deg",
+            "azimuth_deg",
+            "stick_up_m",
+        } & set(df.columns)
 
         for index, row in enumerate(df.itertuples(index=True)):
             row_num = int(row.Index) + 2
@@ -313,6 +318,8 @@ class DataParser:
                     payload["inclination_deg"] = row.inclination_deg
                 if "azimuth_deg" in optional_cols:
                     payload["azimuth_deg"] = row.azimuth_deg
+                if "stick_up_m" in optional_cols:
+                    payload["stick_up_m"] = row.stick_up_m
                 collar = Collar.model_validate(payload)
             except Exception as exc:
                 errors.append(f"Collars row {row_num}: {exc}")
@@ -419,7 +426,7 @@ class DataParser:
                     "depth": depth,
                     "elevation_masl": elevation_masl,
                 }
-                for col in ("series_id", "series_label", "color", "marker"):
+                for col in ("series_id", "series_label", "color", "marker", "connect_group"):
                     if hasattr(row, col):
                         payload[col] = getattr(row, col)
                 level = WaterLevel.model_validate(payload)

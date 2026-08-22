@@ -62,9 +62,16 @@ PROJECT_FIELDS: tuple[tuple[str, str], ...] = (
     ("notes", "Figure notes (one line; use sidebar for long text)"),
 )
 
-COLLAR_COLUMNS = ("hole_id", "easting", "northing", "elevation", "total_depth")
+COLLAR_COLUMNS = ("hole_id", "easting", "northing", "elevation", "total_depth", "stick_up_m")
 LITHOLOGY_COLUMNS = ("hole_id", "from_depth", "to_depth", "lithology_code", "unit_order")
-WATER_COLUMNS = ("hole_id", "depth", "elevation_masl", "series_id", "series_label")
+WATER_COLUMNS = (
+    "hole_id",
+    "depth",
+    "elevation_masl",
+    "series_id",
+    "series_label",
+    "connect_group",
+)
 ENVIRONMENTAL_COLUMNS = (
     "hole_id",
     "parameter",
@@ -144,9 +151,30 @@ def _sample_project() -> dict[str, str]:
 
 def _sample_collars() -> list[dict[str, object]]:
     return [
-        {"hole_id": "MW-01", "easting": 0.0, "northing": 0.0, "elevation": 635.0, "total_depth": 12.0},
-        {"hole_id": "MW-02", "easting": 45.0, "northing": 0.0, "elevation": 634.5, "total_depth": 12.0},
-        {"hole_id": "MW-03", "easting": 90.0, "northing": 0.0, "elevation": 634.0, "total_depth": 11.5},
+        {
+            "hole_id": "MW-01",
+            "easting": 0.0,
+            "northing": 0.0,
+            "elevation": 635.0,
+            "total_depth": 12.0,
+            "stick_up_m": 0.9,
+        },
+        {
+            "hole_id": "MW-02",
+            "easting": 45.0,
+            "northing": 0.0,
+            "elevation": 634.5,
+            "total_depth": 12.0,
+            "stick_up_m": 0.9,
+        },
+        {
+            "hole_id": "MW-03",
+            "easting": 90.0,
+            "northing": 0.0,
+            "elevation": 634.0,
+            "total_depth": 11.5,
+            "stick_up_m": 0.75,
+        },
     ]
 
 
@@ -201,6 +229,7 @@ def _sample_water() -> list[dict[str, object]]:
             "elevation_masl": "",
             "series_id": "2025-06",
             "series_label": "June 2025",
+            "connect_group": "shallow",
         },
         {
             "hole_id": "MW-02",
@@ -208,6 +237,7 @@ def _sample_water() -> list[dict[str, object]]:
             "elevation_masl": 631.0,
             "series_id": "2025-06",
             "series_label": "June 2025",
+            "connect_group": "shallow",
         },
         {
             "hole_id": "MW-03",
@@ -215,6 +245,23 @@ def _sample_water() -> list[dict[str, object]]:
             "elevation_masl": "",
             "series_id": "2025-06",
             "series_label": "June 2025",
+            "connect_group": "shallow",
+        },
+        {
+            "hole_id": "MW-01",
+            "depth": 8.0,
+            "elevation_masl": "",
+            "series_id": "2025-06-deep",
+            "series_label": "June 2025 deep",
+            "connect_group": "deep",
+        },
+        {
+            "hole_id": "MW-03",
+            "depth": 7.5,
+            "elevation_masl": "",
+            "series_id": "2025-06-deep",
+            "series_label": "June 2025 deep",
+            "connect_group": "deep",
         },
     ]
 
@@ -296,6 +343,7 @@ def _column_hints() -> dict[str, dict[str, str]]:
             "northing": "Northing / Y (metres)",
             "elevation": "Collar RL (masl)",
             "total_depth": "Total drilled depth (m below collar)",
+            "stick_up_m": "Optional stick-up height above collar (m)",
         },
         LITHOLOGY_SHEET: {
             "hole_id": "Must match Collars.hole_id",
@@ -308,8 +356,9 @@ def _column_hints() -> dict[str, dict[str, str]]:
             "hole_id": "Must match Collars.hole_id",
             "depth": "Water depth below collar (m) — OR use elevation_masl",
             "elevation_masl": "Water RL (masl) — do not fill both depth and this",
-            "series_id": "Optional snapshot id (e.g. 2025-06)",
+            "series_id": "Optional snapshot id (e.g. 2025-06); max 4 series plotted",
             "series_label": "Optional legend label (e.g. June 2025)",
+            "connect_group": "Optional nest id (e.g. shallow/deep) — only same group connects",
         },
         ENVIRONMENTAL_SHEET: {
             "hole_id": "Must match Collars.hole_id",
@@ -352,15 +401,16 @@ def _instructions_lines() -> list[str]:
         "3. Enter lithology intervals on Lithology (from_depth / to_depth below collar).",
         "4. Optionally fill Water, Environmental, Screens, and Gradients.",
         "5. Upload this file in Cross Section Studio (Upload step).",
-        "6. On Configure, pick the transect holes and which lab parameters to plot.",
+        "6. On Configure, pick the transect holes, groundwater series (max 4), and lab parameters to plot.",
+        "7. Optional: set chemistry label colour to green/yellow/red thresholds on Configure.",
         "",
         "TAB GUIDE",
         "• Instructions — this guide.",
         "• Project — client name, project number, section title, transect labels (seeds consulting layout).",
         "• Collars — required. Coordinates and collar elevation (RL).",
         "• Lithology — required. Stick-log intervals; hole_id must match Collars.",
-        "• Water — optional. Groundwater as depth below collar OR elevation_masl (not both on one row).",
-        "• Environmental — optional. Lab/field parameters at a point depth or depth interval.",
+        "• Water — optional. Groundwater as depth below collar OR elevation_masl (not both on one row). Use series_id for snapshots; connect_group for shallow/deep nests.",
+        "• Environmental — optional. Lab/field parameters at a point depth or depth interval. Units belong in the legend; threshold colours are set in the app Configure step.",
         "• Screens — optional. Screened intervals (consulting hatch bands).",
         "• Gradients — optional. Vertical gradient arrows (direction = up or down).",
         "• Example — filled MW-01 / MW-02 / MW-03 demo. Copy rows into the data tabs, or replace samples.",
@@ -373,6 +423,11 @@ def _instructions_lines() -> list[str]:
         "ENVIRONMENTAL RULES",
         "• Use depth for a point sample, OR from_depth + to_depth for an interval — not both.",
         "• value_label is optional display text on the figure (e.g. <5 mg/L for non-detects).",
+        "• Select parameters and optional G/Y/R thresholds on Configure after upload.",
+        "",
+        "WATER RULES",
+        "• Up to four series_id values can be plotted; pick them on Configure.",
+        "• connect_group links shallow/deep nest readings — only the same group connects.",
         "",
         f"COMMON LITHOLOGY CODES: {lithology_list}",
         "",
@@ -858,6 +913,7 @@ def export_cleaned_workbook_bytes(
             "northing": collar.northing,
             "elevation": collar.elevation,
             "total_depth": collar.total_depth,
+            "stick_up_m": collar.stick_up_m if collar.stick_up_m is not None else "",
         }
         for collar in parse_result.collars
     ]
@@ -880,6 +936,7 @@ def export_cleaned_workbook_bytes(
         key = (
             level.hole_id,
             level.series_id or "",
+            level.connect_group or "",
             level.depth,
             level.elevation_masl,
         )
@@ -893,6 +950,7 @@ def export_cleaned_workbook_bytes(
                 "elevation_masl": "",
                 "series_id": level.series_id or "",
                 "series_label": level.series_label or "",
+                "connect_group": level.connect_group or "",
             }
         )
 

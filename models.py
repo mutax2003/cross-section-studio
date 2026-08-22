@@ -12,9 +12,12 @@ LITHOLOGY_COLUMNS = {"hole_id", "from_depth", "to_depth", "lithology_code"}
 LITHOLOGY_OPTIONAL_COLUMNS = {"hatch_pattern", "unit_order"}
 WATER_COLUMNS = {"hole_id"}
 WATER_VALUE_COLUMNS = frozenset({"depth", "elevation_masl"})
-WATER_OPTIONAL_COLUMNS = frozenset({"series_id", "series_label", "color", "marker", "depth", "elevation_masl"})
+WATER_OPTIONAL_COLUMNS = frozenset(
+    {"series_id", "series_label", "color", "marker", "depth", "elevation_masl", "connect_group"}
+)
 SCREEN_COLUMNS = {"hole_id", "from_depth", "to_depth"}
 GRADIENT_COLUMNS = {"hole_id", "direction"}
+MAX_WATER_SERIES = 4
 
 InterpretationMode = Literal["borehole_only", "interpolated", "correlation_lines"]
 
@@ -28,6 +31,7 @@ class Collar(BaseModel, frozen=True):
     elevation_datum: str | None = None
     inclination_deg: float | None = None
     azimuth_deg: float | None = None
+    stick_up_m: float | None = None
 
     @field_validator("hole_id", mode="before")
     @classmethod
@@ -41,6 +45,15 @@ class Collar(BaseModel, frozen=True):
     def validate_total_depth(cls, value: float) -> float:
         if value < 0:
             raise ValueError("total_depth must be non-negative")
+        return value
+
+    @field_validator("stick_up_m")
+    @classmethod
+    def validate_stick_up(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if value < 0:
+            raise ValueError("stick_up_m must be non-negative")
         return value
 
 
@@ -108,6 +121,7 @@ class WaterLevel(BaseModel, frozen=True):
     series_label: str = ""
     color: str | None = None
     marker: str | None = None
+    connect_group: str = ""
 
     @field_validator("hole_id", mode="before")
     @classmethod
@@ -124,7 +138,7 @@ class WaterLevel(BaseModel, frozen=True):
         text = str(value).strip()
         return text or "default"
 
-    @field_validator("series_label", mode="before")
+    @field_validator("series_label", "connect_group", mode="before")
     @classmethod
     def strip_series_label(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):

@@ -21,7 +21,7 @@ from models import (
     VerticalGradient,
     WaterLevel,
 )
-from render_profiles import LayoutMode
+from render_profiles import ChemistryColorMode, ColumnHeaderDetail, LayoutMode
 
 ElevationMode = Literal["absolute", "relative"]
 
@@ -29,7 +29,7 @@ ElevationMode = Literal["absolute", "relative"]
 class SectionBuildRequest(BaseModel, frozen=True):
     transect_points: tuple[tuple[float, float], ...] = Field(min_length=2)
     vertical_exaggeration: float = 5.0
-    show_hatches: bool = True
+    show_hatches: bool = False
     show_legend: bool = True
     section_title: str = "Borehole Cross-Section"
     interpretation_mode: InterpretationMode = "interpolated"
@@ -50,6 +50,22 @@ class SectionBuildRequest(BaseModel, frozen=True):
     show_parameter_labels: bool | None = None
     parameter_interpolate_segments: bool | None = None
     parameter_interpolate_across_gaps: bool | None = None
+    parameter_draw_markers: bool | None = None
+    parameter_marker_size: float | None = None
+    parameter_draw_leaders: bool | None = None
+    parameter_label_include_units: bool | None = None
+    column_header_detail: ColumnHeaderDetail | None = None
+    show_scale_bar: bool | None = None
+    show_ve_annotation: bool | None = None
+    show_parameter_legend_text: bool | None = None
+    export_font_family: str | None = None
+    export_font_size: float | None = None
+    selected_water_series_ids: tuple[str, ...] = ()
+    water_line_solid: bool | None = None
+    legend_ncol: int | None = None
+    chemistry_color_mode: ChemistryColorMode | None = None
+    chemistry_threshold_green_max: float | None = None
+    chemistry_threshold_yellow_max: float | None = None
     render_layout: LayoutMode = "section_sheet"
     track_width_m: float = 3.0
     raster_log_strips: tuple[RasterLogStrip, ...] = ()

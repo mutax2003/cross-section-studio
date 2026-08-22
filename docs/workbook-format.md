@@ -12,7 +12,7 @@
 | `elevation` | float | Collar RL |
 | `total_depth` | float | Metres below collar |
 
-Optional: `elevation_datum`, `inclination_deg`, `azimuth_deg`.
+Optional: `elevation_datum`, `inclination_deg`, `azimuth_deg`, `stick_up_m` (metres above collar for MW stick-up).
 
 ### Lithology
 
@@ -29,14 +29,14 @@ Optional: `hatch_pattern`, `unit_order` (1 = shallowest; required when the same 
 
 | Sheet | Columns | Purpose |
 |-------|---------|---------|
-| **Water** | `hole_id`, `depth` **or** `elevation_masl` (not both) | Groundwater markers. Use `depth` (below collar) or `elevation_masl` (RL). Optional: `series_id`, `series_label`, `color`, `marker` for multi-date snapshots |
+| **Water** | `hole_id`, `depth` **or** `elevation_masl` (not both) | Groundwater markers. Use `depth` (below collar) or `elevation_masl` (RL). Optional: `series_id`, `series_label`, `connect_group` (nest id — only rows with the same group connect), `color`, `marker`. Up to **4** series can be plotted; choose them on **Configure**. |
 | **Screens** | `hole_id`, `from_depth`, `to_depth` | Screen interval hatch bands (consulting layout) |
 | **Gradients** | `hole_id`, `direction` (`up` / `down`) | Vertical gradient arrows (consulting layout) |
 | **Deviations** | `hole_id`, `depth`, `inclination_deg`, `azimuth_deg` | Deviated stick paths |
 | **Correlations** | `left_hole_id`, `right_hole_id`, `left_unit_order`, `right_unit_order` | Manual unit pairing |
 | **Faults** | `name`, `x_profile`, `elevation` | Profile-plane fault traces |
 | **Unconformities** | `name`, `x_profile`, `elevation` | Profile-plane surfaces |
-| **Environmental** | `hole_id`, `parameter`, `value`, `depth` **or** `from_depth`+`to_depth` | Lab/screening samples (e.g. chloride at 3.5 m). Optional: `unit` (e.g. `mg/L`) |
+| **Environmental** | `hole_id`, `parameter`, `value`, `depth` **or** `from_depth`+`to_depth` | Lab/screening samples (e.g. chloride at 3.5 m). Optional: `unit` (e.g. `mg/L`), `value_label` (figure text). Select parameters on **Configure**; optional green/yellow/red threshold colouring is set there (not in the workbook). |
 
 Sheet names are matched case-insensitively.
 

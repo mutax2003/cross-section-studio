@@ -32,6 +32,12 @@ class OutputPresetConfig:
     show_parameter_labels: bool | None = None
     parameter_interpolate_segments: bool | None = None
     parameter_draw_markers: bool | None = None
+    # Wave A drafting chrome (None = layout profile default).
+    show_scale_bar: bool | None = None
+    show_ve_annotation: bool | None = None
+    show_parameter_legend_text: bool | None = None
+    # Wave B: dashed CAD-style water connectors when False.
+    water_line_solid: bool | None = None
 
 
 OUTPUT_PRESET_LABELS: dict[str, str] = {
@@ -39,6 +45,7 @@ OUTPUT_PRESET_LABELS: dict[str, str] = {
     "consulting_report": "Consulting report (title block)",
     "gwm_fence": "GWM fence (MASL + groundwater)",
     "p2_chemistry_sticks": "P2 chemistry sticks (mbgs + chlorides)",
+    "chemistry_gw": "Chemistry + groundwater (combined)",
     "quick_preview": "Quick preview (chart)",
 }
 
@@ -50,6 +57,9 @@ OUTPUT_PRESETS: dict[str, OutputPresetConfig] = {
         show_ground_surface=True,
         interpolate_water_table=False,
         show_legend=True,
+        show_scale_bar=False,
+        show_ve_annotation=False,
+        show_parameter_legend_text=False,
     ),
     "consulting_report": OutputPresetConfig(
         render_layout="consulting_section",
@@ -58,6 +68,7 @@ OUTPUT_PRESETS: dict[str, OutputPresetConfig] = {
         show_ground_surface=True,
         interpolate_water_table=True,
         show_legend=False,
+        show_scale_bar=True,
     ),
     "gwm_fence": OutputPresetConfig(
         render_layout="consulting_section",
@@ -75,6 +86,8 @@ OUTPUT_PRESETS: dict[str, OutputPresetConfig] = {
         water_interpolate_across_gaps=False,
         sample_figure_profile=True,
         prefer_chemistry=False,
+        show_scale_bar=True,
+        water_line_solid=True,
     ),
     "p2_chemistry_sticks": OutputPresetConfig(
         render_layout="consulting_section",
@@ -95,6 +108,29 @@ OUTPUT_PRESETS: dict[str, OutputPresetConfig] = {
         show_parameter_labels=True,
         parameter_interpolate_segments=False,
         parameter_draw_markers=False,
+        show_scale_bar=True,
+    ),
+    "chemistry_gw": OutputPresetConfig(
+        render_layout="consulting_section",
+        report_preset=False,
+        allow_pinch_outs=False,
+        show_ground_surface=True,
+        interpolate_water_table=True,
+        show_legend=False,
+        interpretation_mode="borehole_only",
+        elevation_mode="absolute",
+        vertical_exaggeration=5.0,
+        show_water_elevation_labels=True,
+        show_water_legend=True,
+        show_dry_well_nm=True,
+        water_interpolate_across_gaps=False,
+        sample_figure_profile=True,
+        prefer_chemistry=True,
+        show_parameter_labels=True,
+        parameter_interpolate_segments=False,
+        parameter_draw_markers=False,
+        show_scale_bar=True,
+        water_line_solid=False,
     ),
     "quick_preview": OutputPresetConfig(
         render_layout="chart",
@@ -103,10 +139,13 @@ OUTPUT_PRESETS: dict[str, OutputPresetConfig] = {
         show_ground_surface=True,
         interpolate_water_table=False,
         show_legend=True,
+        show_scale_bar=True,
     ),
 }
 
-FIGURE_PRESET_IDS: frozenset[str] = frozenset({"gwm_fence", "p2_chemistry_sticks"})
+FIGURE_PRESET_IDS: frozenset[str] = frozenset(
+    {"gwm_fence", "p2_chemistry_sticks", "chemistry_gw"}
+)
 
 
 def resolve_output_preset(preset: str) -> OutputPresetConfig:
@@ -127,6 +166,9 @@ def normalize_figure_preset(raw: str | None) -> str | None:
         "p2_sticks": "p2_chemistry_sticks",
         "advantage_p2": "p2_chemistry_sticks",
         "chemistry_sticks": "p2_chemistry_sticks",
+        "chemistry_gw": "chemistry_gw",
+        "p2_gw": "chemistry_gw",
+        "chemistry_and_groundwater": "chemistry_gw",
     }
     resolved = aliases.get(key, key)
     return resolved if resolved in OUTPUT_PRESETS else None

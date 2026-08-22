@@ -81,7 +81,7 @@ def test_data_entry_template_parses_in_dataparser(tmp_path: Path) -> None:
     result = DataParser().parse_file(path)
     assert len(result.collars) == 3
     assert len(result.lithologies) >= 8
-    assert len(result.water_levels) == 3
+    assert len(result.water_levels) == 5
     assert len(result.environmental_readings) == 5
     assert len(result.screen_intervals) == 2
     assert len(result.vertical_gradients) == 2
@@ -122,7 +122,7 @@ def test_hybrid_native_plus_data_entry_keeps_environmental(tmp_path: Path) -> No
     hybrid = DataParser().parse_file(path)
     assert len(hybrid.collars) == 3
     assert len(hybrid.environmental_readings) == 5
-    assert len(hybrid.water_levels) == 3
+    assert len(hybrid.water_levels) == 5
     # Ensure Data Entry still carries PROJECT for metadata path
     sheets = load_data_entry_sheets(path)
     assert sheets.project["client_name"] == "C-GROUP ENERGY INC."
@@ -143,7 +143,7 @@ def test_ingest_native_multi_tab_keeps_overlays(tmp_path: Path) -> None:
     assert detection.profile_id == "native_platform"
     result, _report = ingest_workbook(path)
     assert len(result.collars) == 3
-    assert len(result.water_levels) == 3
+    assert len(result.water_levels) == 5
     assert len(result.environmental_readings) == 5
     assert len(result.screen_intervals) == 2
 

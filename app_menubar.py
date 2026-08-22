@@ -143,7 +143,7 @@ def render_menubar() -> None:
             st.caption("Display toggles")
             if _menu_item("Toggle hatch patterns", key="menu_view_hatches", shortcut="Ctrl+H"):
                 st.session_state["show_hatches"] = not bool(
-                    st.session_state.get("show_hatches", True)
+                    st.session_state.get("show_hatches", False)
                 )
                 st.rerun()
             if _menu_item("Toggle legend on chart", key="menu_view_legend"):
@@ -224,7 +224,7 @@ def _render_accelerator_buttons() -> None:
     with b4:
         if st.button(ACCEL_HATCHES, key="menu_accel_hatches"):
             st.session_state["show_hatches"] = not bool(
-                st.session_state.get("show_hatches", True)
+                st.session_state.get("show_hatches", False)
             )
             st.rerun()
     with b5:

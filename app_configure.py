@@ -38,6 +38,10 @@ class ConfigureState:
     environmental_parameters: tuple[str, ...] = ()
     show_parameter_labels: bool = True
     parameter_interpolate_segments: bool = True
+    selected_water_series_ids: tuple[str, ...] = ()
+    chemistry_color_mode: str = "black"
+    chemistry_threshold_green_max: float | None = None
+    chemistry_threshold_yellow_max: float | None = None
 
 
 def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], transect_mode: str) -> tuple[list[str], str]:
@@ -187,6 +191,10 @@ def render_configure_step(
     environmental_parameters: tuple[str, ...] = ()
     show_parameter_labels = True
     parameter_interpolate_segments = True
+    selected_water_series_ids: tuple[str, ...] = ()
+    chemistry_color_mode: str = "black"
+    chemistry_threshold_green_max: float | None = None
+    chemistry_threshold_yellow_max: float | None = None
     subset_ready = False
     has_overlap_warnings = False
 
@@ -310,10 +318,98 @@ def render_configure_step(
                         parameter_interpolate_segments = (
                             parameter_interpolate_segments_default
                         )
+                st.markdown("**Parameter label colour**")
+                color_mode_choice = st.radio(
+                    "Chemistry value labels",
+                    options=["All black (default)", "Green / yellow / red thresholds"],
+                    index=0,
+                    key="chemistry_color_mode_radio",
+                    help=(
+                        "Black labels for data presentation. Threshold mode colours each "
+                        "value green, yellow, or red using site-specific limits set below."
+                    ),
+                )
+                chemistry_color_mode = (
+                    "threshold"
+                    if color_mode_choice == "Green / yellow / red thresholds"
+                    else "black"
+                )
+                chemistry_threshold_green_max = None
+                chemistry_threshold_yellow_max = None
+                if chemistry_color_mode == "threshold":
+                    threshold_cols = st.columns(2)
+                    with threshold_cols[0]:
+                        chemistry_threshold_green_max = float(
+                            st.number_input(
+                                "Green ≤",
+                                min_value=0.0,
+                                value=100.0,
+                                step=1.0,
+                                key="chemistry_threshold_green_max",
+                            )
+                        )
+                    with threshold_cols[1]:
+                        chemistry_threshold_yellow_max = float(
+                            st.number_input(
+                                "Yellow ≤",
+                                min_value=0.0,
+                                value=250.0,
+                                step=1.0,
+                                key="chemistry_threshold_yellow_max",
+                            )
+                        )
+                    if chemistry_threshold_yellow_max < chemistry_threshold_green_max:
+                        st.warning("Yellow threshold should be ≥ green threshold.")
             elif parse_result.environmental_readings:
                 st.caption(
                     "Environmental readings exist but none fall on the current transect holes."
                 )
+
+            water_levels = subset_preflight.water_levels
+            if water_levels:
+                from models import MAX_WATER_SERIES
+
+                series_options: list[str] = []
+                series_labels: dict[str, str] = {}
+                for level in water_levels:
+                    sid = level.series_id or "default"
+                    if sid not in series_labels:
+                        series_options.append(sid)
+                        series_labels[sid] = level.series_label or sid
+                if series_options:
+                    st.markdown("**Groundwater series**")
+                    options_sig = tuple(series_options)
+                    if st.session_state.get("_water_series_options_sig") != options_sig:
+                        previous = list(
+                            st.session_state.get("water_series_multiselect") or []
+                        )
+                        kept = [s for s in previous if s in series_options]
+                        st.session_state.water_series_multiselect = (
+                            kept or series_options[:MAX_WATER_SERIES]
+                        )
+                        st.session_state._water_series_options_sig = options_sig
+                    selected_water_series_ids = tuple(
+                        st.multiselect(
+                            "Water-level series to plot (max 4)",
+                            options=series_options,
+                            format_func=lambda sid: (
+                                f"{series_labels.get(sid, sid)} ({sid})"
+                                if series_labels.get(sid, sid) != sid
+                                else sid
+                            ),
+                            help=(
+                                "Each series uses a blue inverted triangle. "
+                                "Use Water.connect_group so shallow and deep nests "
+                                "are not joined by the same dashed line."
+                            ),
+                            key="water_series_multiselect",
+                            max_selections=MAX_WATER_SERIES,
+                        )
+                    )
+                    if not selected_water_series_ids:
+                        st.caption(
+                            "No water series selected — groundwater markers will not be plotted."
+                        )
             else:
                 st.caption(
                     "Add an **Environmental** sheet (`hole_id`, `parameter`, `value`, `depth` or "
@@ -431,6 +527,10 @@ def render_configure_step(
         environmental_parameters=environmental_parameters,
         show_parameter_labels=show_parameter_labels,
         parameter_interpolate_segments=parameter_interpolate_segments,
+        selected_water_series_ids=selected_water_series_ids,
+        chemistry_color_mode=chemistry_color_mode,
+        chemistry_threshold_green_max=chemistry_threshold_green_max,
+        chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
     )
 
 

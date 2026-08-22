@@ -121,12 +121,13 @@ class SectionSheetLayoutMixin:
             collar_lookup,
             profile_lookup=profile_lookup,
         )
-        if self.parameter_series_legend:
+        if self.parameter_series_legend and self.profile.show_parameter_legend_text:
             self._draw_compact_parameter_legend(ax)
         if self.profile.show_eol_bar:
             self._draw_eol_bars(ax, hole_summary, collar_depths, collar_lookup, track_half)
 
-        self._draw_scale_bar(ax)
+        if self.profile.show_scale_bar:
+            self._draw_scale_bar(ax)
         if self.profile.show_ve_annotation:
             self._draw_ve_annotation(ax)
 

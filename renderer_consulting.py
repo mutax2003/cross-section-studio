@@ -40,6 +40,7 @@ from render_theme import (
     TRACK_BORDER_COLOR,
     TRACK_FILL_COLOR,
     consulting_section_title,
+    export_font_rc,
     primary_water_depth_by_hole,
     water_has_multiple_series,
 )
@@ -85,7 +86,12 @@ class ConsultingLayoutMixin:
         ax_block = fig.add_subplot(grid[2, 0])
         ax.set_facecolor(CONSULTING_FIGURE_BG)
 
-        with mpl.rc_context({"font.family": "sans-serif", "font.size": 9}):
+        with mpl.rc_context(
+            export_font_rc(
+                self.profile.export_font_family,
+                max(self.profile.export_font_size, 9.0),
+            )
+        ):
             if lithology_codes is None:
                 lithology_codes = collect_lithology_codes(projected_df, polygons)
             elif not isinstance(lithology_codes, list):
@@ -480,61 +486,62 @@ class ConsultingLayoutMixin:
 
         map_scale = title_block.map_scale or "1:1000"
         scale_bar_m = title_block.scale_bar_m or CONSULTING_SCALE_BAR_M
-        bar_x = 0.02
-        bar_y = 0.55
-        bar_w = 0.72
-        tick_step = 10.0
-        tick_marks = tuple(np.arange(0.0, scale_bar_m + tick_step * 0.5, tick_step))
-        for tick_m in tick_marks:
-            tick_x = bar_x + (tick_m / scale_bar_m) * bar_w
+        if self.profile.show_scale_bar:
+            bar_x = 0.02
+            bar_y = 0.55
+            bar_w = 0.72
+            tick_step = 10.0
+            tick_marks = tuple(np.arange(0.0, scale_bar_m + tick_step * 0.5, tick_step))
+            for tick_m in tick_marks:
+                tick_x = bar_x + (tick_m / scale_bar_m) * bar_w
+                ax_scale.plot(
+                    [tick_x, tick_x],
+                    [bar_y - 0.05, bar_y + 0.05],
+                    color=STICK_COLOR,
+                    linewidth=1.0,
+                    transform=ax_scale.transAxes,
+                    clip_on=False,
+                )
+                ax_scale.text(
+                    tick_x,
+                    bar_y - 0.10,
+                    f"{int(tick_m)}",
+                    ha="center",
+                    va="top",
+                    fontsize=7,
+                    color=LABEL_COLOR,
+                    transform=ax_scale.transAxes,
+                )
             ax_scale.plot(
-                [tick_x, tick_x],
-                [bar_y - 0.05, bar_y + 0.05],
+                [bar_x, bar_x + bar_w],
+                [bar_y, bar_y],
                 color=STICK_COLOR,
-                linewidth=1.0,
+                linewidth=2.5,
+                solid_capstyle="butt",
                 transform=ax_scale.transAxes,
                 clip_on=False,
             )
             ax_scale.text(
-                tick_x,
-                bar_y - 0.10,
-                f"{int(tick_m)}",
-                ha="center",
-                va="top",
+                bar_x + bar_w + 0.03,
+                bar_y,
+                "Metres",
+                ha="left",
+                va="center",
                 fontsize=7,
                 color=LABEL_COLOR,
                 transform=ax_scale.transAxes,
             )
-        ax_scale.plot(
-            [bar_x, bar_x + bar_w],
-            [bar_y, bar_y],
-            color=STICK_COLOR,
-            linewidth=2.5,
-            solid_capstyle="butt",
-            transform=ax_scale.transAxes,
-            clip_on=False,
-        )
-        ax_scale.text(
-            bar_x + bar_w + 0.03,
-            bar_y,
-            "Metres",
-            ha="left",
-            va="center",
-            fontsize=7,
-            color=LABEL_COLOR,
-            transform=ax_scale.transAxes,
-        )
-        ax_scale.text(
-            bar_x + bar_w / 2.0,
-            0.12,
-            f"SCALE {map_scale}",
-            ha="center",
-            va="center",
-            fontsize=7,
-            fontweight="bold",
-            color=LABEL_COLOR,
-            transform=ax_scale.transAxes,
-        )
+            ax_scale.text(
+                bar_x + bar_w / 2.0,
+                0.12,
+                f"SCALE {map_scale}",
+                ha="center",
+                va="center",
+                fontsize=7,
+                fontweight="bold",
+                color=LABEL_COLOR,
+                transform=ax_scale.transAxes,
+            )
 
         section_title = consulting_section_title(title_block.section_label or self.title)
         ax_center.text(
@@ -557,21 +564,24 @@ class ConsultingLayoutMixin:
             transform=ax_center.transAxes,
             clip_on=False,
         )
-        ve_text = (
-            "NO VERTICAL EXAGGERATION"
-            if abs(float(self.vertical_exaggeration) - 1.0) < 1e-9
-            else f"{self.vertical_exaggeration:.0f}× VERTICAL EXAGGERATION"
-        )
-        ax_center.text(
-            0.5,
-            0.18,
-            ve_text,
-            ha="center",
-            va="center",
-            fontsize=8,
-            color=LABEL_COLOR,
-            transform=ax_center.transAxes,
-        )
+        # Subtitle VE follows report chrome: on with the scale band, or when
+        # show_ve_annotation is explicitly enabled. Both off = GIS paste mode.
+        if self.profile.show_scale_bar or self.profile.show_ve_annotation:
+            ve_text = (
+                "NO VERTICAL EXAGGERATION"
+                if abs(float(self.vertical_exaggeration) - 1.0) < 1e-9
+                else f"{self.vertical_exaggeration:.0f}× VERTICAL EXAGGERATION"
+            )
+            ax_center.text(
+                0.5,
+                0.18,
+                ve_text,
+                ha="center",
+                va="center",
+                fontsize=8,
+                color=LABEL_COLOR,
+                transform=ax_center.transAxes,
+            )
 
         notes = title_block.notes or DEFAULT_CONSULTING_NOTES
         ax_notes.text(
@@ -827,13 +837,31 @@ class ConsultingLayoutMixin:
             )
 
         # Header + entries must stay inside the legend box.
-        n_rows = 1 + len(entries)
+        ncol = max(1, self.profile.legend_ncol)
+        use_two_cols = ncol >= 2 and len(entries) > 6
+        if use_two_cols:
+            mid = (len(entries) + 1) // 2
+            column_groups: list[list[tuple[str, str, dict[str, object]]]] = [
+                entries[:mid],
+                entries[mid:],
+            ]
+            col_gap = 0.02
+            col_width = (width - 2 * pad_x - col_gap) / 2
+            column_layouts = [
+                (content_left, content_left + 0.05),
+                (content_left + col_width + col_gap, content_left + col_width + col_gap + 0.05),
+            ]
+        else:
+            column_groups = [entries]
+            column_layouts = [(content_left, text_x)]
+
+        n_rows = 1 + max(len(group) for group in column_groups)
         step = min(0.10, max(0.055, (content_top - content_bottom) / max(n_rows, 1)))
         font_size = 7.5 if step >= 0.08 else 6.5
-        y = content_top
+        y_header = content_top
         ax.text(
             content_left,
-            y,
+            y_header,
             "LEGEND",
             fontsize=8.5,
             fontweight="bold",
@@ -842,99 +870,100 @@ class ConsultingLayoutMixin:
             va="top",
             clip_on=True,
         )
-        y -= step
+        entry_top = y_header - step
 
-        max_label_chars = 36 if width < 0.34 else 42
-        for kind, label, style in entries:
-            if y < content_bottom + 0.02:
-                break
-            display = label
-            if len(label) > max_label_chars:
-                # Prefer keeping a trailing "(MAY 2024)" / "(JUNE 2024)" date tag.
-                paren = label.rfind("(")
-                if paren > 0 and label.endswith(")") and len(label) - paren <= 14:
-                    prefix_budget = max_label_chars - (len(label) - paren) - 1
-                    if prefix_budget >= 8:
-                        display = label[:prefix_budget].rstrip(" -:") + "…" + label[paren:]
+        max_label_chars = 28 if use_two_cols else (36 if width < 0.34 else 42)
+        for group, (col_left, col_text_x) in zip(column_groups, column_layouts, strict=True):
+            y = entry_top
+            for kind, label, style in group:
+                if y < content_bottom + 0.02:
+                    break
+                display = label
+                if len(label) > max_label_chars:
+                    paren = label.rfind("(")
+                    if paren > 0 and label.endswith(")") and len(label) - paren <= 14:
+                        prefix_budget = max_label_chars - (len(label) - paren) - 1
+                        if prefix_budget >= 8:
+                            display = label[:prefix_budget].rstrip(" -:") + "…" + label[paren:]
+                        else:
+                            display = label[: max_label_chars - 1] + "…"
                     else:
                         display = label[: max_label_chars - 1] + "…"
-                else:
-                    display = label[: max_label_chars - 1] + "…"
-            if kind == "swatch":
-                rect = Rectangle(
-                    (content_left, y - 0.022),
-                    swatch_w,
-                    0.04,
-                    facecolor=style["facecolor"],
-                    edgecolor=style["edgecolor"],
-                    linewidth=0.6,
-                    hatch=style.get("hatch"),
+                if kind == "swatch":
+                    rect = Rectangle(
+                        (col_left, y - 0.022),
+                        swatch_w,
+                        0.04,
+                        facecolor=style["facecolor"],
+                        edgecolor=style["edgecolor"],
+                        linewidth=0.6,
+                        hatch=style.get("hatch"),
+                        transform=ax.transAxes,
+                        clip_on=True,
+                    )
+                    ax.add_patch(rect)
+                elif kind == "gradient":
+                    arrow = FancyArrow(
+                        col_left + 0.012,
+                        y - 0.01,
+                        0.0,
+                        0.03,
+                        width=0.006,
+                        head_width=0.016,
+                        head_length=0.01,
+                        length_includes_head=True,
+                        transform=ax.transAxes,
+                        facecolor=CONSULTING_WATER_COLOR,
+                        edgecolor=CONSULTING_WATER_COLOR,
+                        clip_on=True,
+                    )
+                    ax.add_patch(arrow)
+                elif kind == "marker":
+                    ax.plot(
+                        [col_left, col_left + 0.03],
+                        [y, y - 0.02],
+                        marker=style.get("marker", "v"),
+                        color=style.get("color", CONSULTING_WATER_COLOR),
+                        linewidth=0,
+                        markersize=5,
+                        transform=ax.transAxes,
+                        clip_on=True,
+                    )
+                elif kind == "line":
+                    ax.plot(
+                        [col_left, col_left + 0.03],
+                        [y, y],
+                        color=style.get("color", LABEL_COLOR),
+                        linewidth=1.4,
+                        linestyle=style.get("linestyle", "--"),
+                        transform=ax.transAxes,
+                        clip_on=True,
+                    )
+                elif kind == "text":
+                    pass
+                else:  # line_marker
+                    ax.plot(
+                        [col_left, col_left + 0.03],
+                        [y, y],
+                        marker=style.get("marker", "D"),
+                        color=style.get("color", PARAMETER_READING_COLOR),
+                        linewidth=1.4,
+                        linestyle=style.get("linestyle", "--"),
+                        markersize=5,
+                        transform=ax.transAxes,
+                        clip_on=True,
+                    )
+                ax.text(
+                    col_left if kind == "text" else col_text_x,
+                    y,
+                    display,
+                    fontsize=font_size,
+                    va="center",
+                    color=style.get("color", LABEL_COLOR) if kind == "text" else LABEL_COLOR,
                     transform=ax.transAxes,
                     clip_on=True,
                 )
-                ax.add_patch(rect)
-            elif kind == "gradient":
-                arrow = FancyArrow(
-                    content_left + 0.012,
-                    y - 0.01,
-                    0.0,
-                    0.03,
-                    width=0.006,
-                    head_width=0.016,
-                    head_length=0.01,
-                    length_includes_head=True,
-                    transform=ax.transAxes,
-                    facecolor=CONSULTING_WATER_COLOR,
-                    edgecolor=CONSULTING_WATER_COLOR,
-                    clip_on=True,
-                )
-                ax.add_patch(arrow)
-            elif kind == "marker":
-                ax.plot(
-                    [content_left, content_left + 0.03],
-                    [y, y - 0.02],
-                    marker=style.get("marker", "v"),
-                    color=style.get("color", CONSULTING_WATER_COLOR),
-                    linewidth=0,
-                    markersize=5,
-                    transform=ax.transAxes,
-                    clip_on=True,
-                )
-            elif kind == "line":
-                ax.plot(
-                    [content_left, content_left + 0.03],
-                    [y, y],
-                    color=style.get("color", LABEL_COLOR),
-                    linewidth=1.4,
-                    linestyle=style.get("linestyle", "--"),
-                    transform=ax.transAxes,
-                    clip_on=True,
-                )
-            elif kind == "text":
-                pass
-            else:  # line_marker
-                ax.plot(
-                    [content_left, content_left + 0.03],
-                    [y, y],
-                    marker=style.get("marker", "D"),
-                    color=style.get("color", PARAMETER_READING_COLOR),
-                    linewidth=1.4,
-                    linestyle=style.get("linestyle", "--"),
-                    markersize=5,
-                    transform=ax.transAxes,
-                    clip_on=True,
-                )
-            ax.text(
-                content_left if kind == "text" else text_x,
-                y,
-                display,
-                fontsize=font_size,
-                va="center",
-                color=style.get("color", LABEL_COLOR) if kind == "text" else LABEL_COLOR,
-                transform=ax.transAxes,
-                clip_on=True,
-            )
-            y -= step
+                y -= step
 
     def _draw_logo_image(self, ax, logo_bytes: bytes | None, position: tuple[float, float]) -> None:
         if not logo_bytes:

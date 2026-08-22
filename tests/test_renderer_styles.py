@@ -560,7 +560,45 @@ def test_parameter_interval_draws_vertical_bar() -> None:
     )
     svg_bytes = renderer.to_svg_bytes(figure)
     assert_valid_svg(svg_bytes)
-    assert "120 mg/L" in svg_bytes.decode("utf-8", errors="ignore")
+    assert "120" in svg_bytes.decode("utf-8", errors="ignore")
+    assert "120 mg/L" not in svg_bytes.decode("utf-8", errors="ignore")
+
+
+def test_wave_a_section_sheet_drafting_defaults() -> None:
+    """GIS drafting defaults: ID-only headers, no scale/VE/Parameters, compact units."""
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=10.0),
+    ]
+    lithologies = [
+        Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+        Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+    ]
+    readings = [
+        EnvironmentalReading(hole_id="BH-01", parameter="Chloride", value=120.0, depth=3.0, unit="mg/L"),
+        EnvironmentalReading(hole_id="BH-02", parameter="Chloride", value=85.0, depth=4.0, unit="mg/L"),
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (50.0, 0.0)])
+    renderer = CrossSectionRenderer(
+        show_legend=False,
+        environmental_readings=readings,
+        environmental_parameters=("Chloride",),
+        render_profile=SECTION_SHEET_PROFILE,
+    )
+    figure = renderer.render(
+        polygons,
+        projected,
+        collar_depths={"BH-01": 10.0, "BH-02": 10.0},
+    )
+    svg = renderer.to_svg_bytes(figure).decode("utf-8", errors="ignore")
+    assert_valid_svg(svg.encode("utf-8"))
+    assert "BH-01" in svg
+    assert "RL 100" not in svg
+    assert "TD 10" not in svg
+    assert "Parameters:" not in svg
+    assert "V.E." not in svg
+    assert "120 mg/L" not in svg
+    assert "120" in svg
 
 
 def test_lithology_style_override_is_case_insensitive(tmp_path, monkeypatch) -> None:

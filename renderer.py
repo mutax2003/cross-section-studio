@@ -1016,15 +1016,13 @@ class CrossSectionRenderer(
                     )
             # Draw each connect_group nest separately so shallow/deep do not join.
             for _group_id, group_levels in _connect_subgroups(levels).items():
+                level_by_id = {item.hole_id: item for item in group_levels}
                 xs: list[float] = []
                 water_rls: list[float] = []
                 collars: list[float] = []
                 measured_levels: list[WaterLevel] = []
                 for hole_id in transect_hole_ids:
-                    level = next(
-                        (item for item in group_levels if item.hole_id == hole_id),
-                        None,
-                    )
+                    level = level_by_id.get(hole_id)
                     if level is None:
                         continue
                     profile = profile_lookup.get(hole_id)
@@ -1073,19 +1071,30 @@ class CrossSectionRenderer(
                             level.hole_id: float(y)
                             for level, y in zip(measured_levels, ys, strict=True)
                         }
+                        segments: list[np.ndarray] = []
                         for left_id, right_id in zip(
                             transect_hole_ids, transect_hole_ids[1:], strict=False
                         ):
                             if left_id not in y_by_hole or right_id not in y_by_hole:
                                 continue
-                            ax.plot(
-                                [transect_x[left_id], transect_x[right_id]],
-                                [y_by_hole[left_id], y_by_hole[right_id]],
-                                color=color,
-                                linewidth=2.0,
-                                linestyle=gw_linestyle,
+                            segments.append(
+                                np.asarray(
+                                    [
+                                        [transect_x[left_id], y_by_hole[left_id]],
+                                        [transect_x[right_id], y_by_hole[right_id]],
+                                    ],
+                                    dtype=float,
+                                )
+                            )
+                        if segments:
+                            collection = LineCollection(
+                                segments,
+                                colors=color,
+                                linewidths=2.0,
+                                linestyles=gw_linestyle,
                                 zorder=6,
                             )
+                            ax.add_collection(collection)
                     else:
                         ax.plot(
                             xs_arr,
@@ -1346,6 +1355,7 @@ class CrossSectionRenderer(
             marker_xs: list[float] = []
             marker_ys: list[float] = []
             marker_labels: list[tuple[float, float, str, str]] = []
+            interval_sticks: list[np.ndarray] = []
             y_cache: dict[tuple[str, float], float] = {}
             for hole_id, hole_readings in readings_by_hole.items():
                 depths: list[float] = [reading.sample_depth for reading in hole_readings]
@@ -1380,13 +1390,11 @@ class CrossSectionRenderer(
                         ):
                             y_top = y_cache[(hole_id, float(reading.from_depth))]
                             y_bottom = y_cache[(hole_id, float(reading.to_depth))]
-                            ax.plot(
-                                [x_profile, x_profile],
-                                [y_top, y_bottom],
-                                color=color,
-                                linewidth=2.0,
-                                solid_capstyle="round",
-                                zorder=7,
+                            interval_sticks.append(
+                                np.asarray(
+                                    [[x_profile, y_top], [x_profile, y_bottom]],
+                                    dtype=float,
+                                )
                             )
                     if label_values:
                         # Prefer compact numeric text; unit belongs in the legend
@@ -1408,6 +1416,16 @@ class CrossSectionRenderer(
             if draw_markers:
                 if not marker_xs:
                     continue
+                if interval_sticks:
+                    stick_collection = LineCollection(
+                        interval_sticks,
+                        colors=color,
+                        linewidths=2.0,
+                        linestyles="-",
+                        zorder=7,
+                        capstyle="round",
+                    )
+                    ax.add_collection(stick_collection)
                 ax.scatter(
                     marker_xs,
                     marker_ys,
@@ -1528,6 +1546,7 @@ class CrossSectionRenderer(
         across_gaps: bool,
     ) -> None:
         measured_holes = [hole_id for hole_id in transect_hole_ids if readings_by_hole.get(hole_id)]
+        fence_segments: list[np.ndarray] = []
         if use_segments and not across_gaps:
             for left_id, right_id in zip(transect_hole_ids, transect_hole_ids[1:], strict=False):
                 left_items = readings_by_hole.get(left_id, [])
@@ -1548,7 +1567,18 @@ class CrossSectionRenderer(
                     right_reading = right_items[best_idx]
                     y0 = y_cache[(left_id, float(left_reading.sample_depth))]
                     y1 = y_cache[(right_id, float(right_reading.sample_depth))]
-                    ax.plot([x0, x1], [y0, y1], color=color, linewidth=1.5, linestyle="--", zorder=7)
+                    fence_segments.append(
+                        np.asarray([[x0, y0], [x1, y1]], dtype=float)
+                    )
+            if fence_segments:
+                collection = LineCollection(
+                    fence_segments,
+                    colors=color,
+                    linewidths=1.5,
+                    linestyles="--",
+                    zorder=7,
+                )
+                ax.add_collection(collection)
             return
         if len(measured_holes) < 2:
             return
@@ -1573,9 +1603,18 @@ class CrossSectionRenderer(
             if across_gaps and len(xs_arr) >= 2:
                 x_dense = np.linspace(float(xs_arr.min()), float(xs_arr.max()), 100)
                 y_dense = np.interp(x_dense, xs_arr, ys_arr)
-                ax.plot(x_dense, y_dense, color=color, linewidth=1.5, linestyle="--", zorder=7)
+                fence_segments.append(np.column_stack([x_dense, y_dense]))
             else:
-                ax.plot(xs_arr, ys_arr, color=color, linewidth=1.5, linestyle="--", zorder=7)
+                fence_segments.append(np.column_stack([xs_arr, ys_arr]))
+        if fence_segments:
+            collection = LineCollection(
+                fence_segments,
+                colors=color,
+                linewidths=1.5,
+                linestyles="--",
+                zorder=7,
+            )
+            ax.add_collection(collection)
 
     def _draw_compact_parameter_legend(self, ax) -> None:
         if not self.profile.show_parameter_legend_text or not self.parameter_series_legend:

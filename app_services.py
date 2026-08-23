@@ -102,9 +102,14 @@ def _cached_section_inputs(
 
 
 @st.cache_data(show_spinner=False, ttl=3600, max_entries=16)
-def cached_compute_section_geometry(subset_json: str, request_json: str) -> bytes:
-    """Pickled ``SectionGeometry`` shared by Generate SVG and Prepare PNG/PDF."""
-    subset, request = _cached_section_inputs(subset_json, request_json)
+def cached_compute_section_geometry(subset_json: str, geometry_request_json: str) -> bytes:
+    """Pickled ``SectionGeometry`` shared by Generate SVG and Prepare PNG/PDF.
+
+    Cache key is geometry-scoped JSON from ``SectionBuildRequest.geometry_cache_payload()``
+    (not the full request), so cosmetic / render-only fields do not bust this cache.
+    """
+    subset = cached_parse_subset(subset_json)
+    request = SectionBuildRequest.model_validate(json.loads(geometry_request_json))
     _figure_metadata, mode, overrides = _build_section_kwargs(subset, request)
     geometry = compute_section_geometry(
         subset.collars,
@@ -128,10 +133,10 @@ def _run_build_cross_section(
     *,
     export_formats: frozenset[str],
     subset_json: str,
-    request_json: str,
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
     figure_metadata, mode, _overrides = _build_section_kwargs(subset, request)
-    geometry = pickle.loads(cached_compute_section_geometry(subset_json, request_json))
+    geometry_json = json.dumps(request.geometry_cache_payload(), sort_keys=True)
+    geometry = pickle.loads(cached_compute_section_geometry(subset_json, geometry_json))
     result = render_cross_section_from_geometry(
         geometry,
         request.transect_points,
@@ -204,7 +209,6 @@ def cached_build_section_bundle(
         request,
         export_formats=ALL_EXPORT_FORMATS,
         subset_json=subset_json,
-        request_json=request_json,
     )
 
 
@@ -220,42 +224,25 @@ def cached_build_section(
         request,
         export_formats=frozenset({"svg"}),
         subset_json=subset_json,
-        request_json=request_json,
     )
     return svg, b"", b"", count, codes, warnings
 
 
-@st.cache_data(show_spinner="Preparing PNG export...", ttl=3600, max_entries=8)
 def cached_build_section_png(
     subset_json: str,
     request_json: str,
 ) -> bytes:
-    """PNG-only Prepare; reuses pickled geometry from Generate."""
-    subset, request = _cached_section_inputs(subset_json, request_json)
-    _svg, png, _pdf, _count, _codes, _warnings = _run_build_cross_section(
-        subset,
-        request,
-        export_formats=frozenset({"png"}),
-        subset_json=subset_json,
-        request_json=request_json,
-    )
+    """PNG-only Prepare; delegates to ``cached_build_section_exports`` (shared draw cache)."""
+    png, _pdf = cached_build_section_exports(subset_json, request_json)
     return png
 
 
-@st.cache_data(show_spinner="Preparing PDF export...", ttl=3600, max_entries=8)
 def cached_build_section_pdf(
     subset_json: str,
     request_json: str,
 ) -> bytes:
-    """PDF-only Prepare; reuses pickled geometry from Generate."""
-    subset, request = _cached_section_inputs(subset_json, request_json)
-    _svg, _png, pdf, _count, _codes, _warnings = _run_build_cross_section(
-        subset,
-        request,
-        export_formats=frozenset({"pdf"}),
-        subset_json=subset_json,
-        request_json=request_json,
-    )
+    """PDF-only Prepare; delegates to ``cached_build_section_exports`` (shared draw cache)."""
+    _png, pdf = cached_build_section_exports(subset_json, request_json)
     return pdf
 
 
@@ -271,7 +258,6 @@ def cached_build_section_exports(
         request,
         export_formats=frozenset({"png", "pdf"}),
         subset_json=subset_json,
-        request_json=request_json,
     )
     return png, pdf
 

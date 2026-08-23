@@ -83,6 +83,37 @@ class SectionBuildRequest(BaseModel, frozen=True):
     screen_intervals: tuple[ScreenInterval, ...] = ()
     vertical_gradients: tuple[VerticalGradient, ...] = ()
 
+    def geometry_cache_payload(self) -> dict:
+        """Fields that affect ``compute_section_geometry`` (projection + stratigraphy).
+
+        Excludes render-only cosmetics (title, VE, hatches, fonts, water style, etc.)
+        and uncertainty_* thresholds (renderer banding only).
+        """
+        return {
+            "transect_points": list(self.transect_points),
+            "offset_warning_m": self.offset_warning_m,
+            "interpretation_mode": self.interpretation_mode,
+            "allow_pinch_outs": self.allow_pinch_outs,
+            "max_offset_for_interpolation_m": self.max_offset_for_interpolation_m,
+            "correlation_overrides": [
+                o.model_dump(mode="json") for o in self.correlation_overrides
+            ],
+            "deviation_readings": [
+                d.model_dump(mode="json") for d in self.deviation_readings
+            ],
+            "warn_on_correlation_gaps": self.warn_on_correlation_gaps,
+            "fail_on_overlaps": self.fail_on_overlaps,
+        }
+
+    def geometry_cache_key(self, hole_ids: tuple[str, ...]) -> str:
+        return json.dumps(
+            {
+                "holes": hole_ids,
+                "geometry": self.geometry_cache_payload(),
+            },
+            sort_keys=True,
+        )
+
     def cache_key(self, hole_ids: tuple[str, ...]) -> str:
         return json.dumps(
             {

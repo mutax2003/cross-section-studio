@@ -5,11 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from app_common import _display_svg, _render_overlap_warnings, _render_profile_chips
-from app_services import (
-    cached_build_section_exports,
-    cached_build_section_pdf,
-    cached_build_section_png,
-)
+from app_services import cached_build_section_exports
 from ui_helpers import sanitize_filename
 
 try:
@@ -20,35 +16,21 @@ except ImportError:  # pragma: no cover - ops optional until landed
 
 
 def _ensure_png_export() -> bool:
-    """Build PNG on demand from the last Generate cache keys.
+    """Build PNG (and PDF) on demand from the last Generate cache keys.
 
-    Returns True when session PNG bytes were updated.
+    Routes through the dual export cache so PNG-only Prepare never pays a
+    second matplotlib draw for PDF later.
     """
-    subset_json = st.session_state.get("section_build_subset_json")
-    request_json = st.session_state.get("section_build_request_json")
-    if not subset_json or not request_json:
-        st.error("Generate the section first, then Prepare.")
-        return False
-    if st.session_state.get("png_bytes"):
-        return False
-    st.session_state.png_bytes = cached_build_section_png(subset_json, request_json)
-    return True
+    return _ensure_both_exports()
 
 
 def _ensure_pdf_export() -> bool:
-    """Build PDF on demand from the last Generate cache keys.
+    """Build PDF (and PNG) on demand from the last Generate cache keys.
 
-    Returns True when session PDF bytes were updated.
+    Routes through the dual export cache so PDF-only Prepare never pays a
+    second matplotlib draw for PNG later.
     """
-    subset_json = st.session_state.get("section_build_subset_json")
-    request_json = st.session_state.get("section_build_request_json")
-    if not subset_json or not request_json:
-        st.error("Generate the section first, then Prepare.")
-        return False
-    if st.session_state.get("pdf_bytes"):
-        return False
-    st.session_state.pdf_bytes = cached_build_section_pdf(subset_json, request_json)
-    return True
+    return _ensure_both_exports()
 
 
 def _ensure_both_exports() -> bool:

@@ -26,7 +26,7 @@ Thin shell in **`app.py`**; sidebar/upload/configure live in split modules. Dele
 | `app_services.py` | Cached ingest/recommend/build + Configure preflight (project / stratigraphy / overlap); no widgets; no *new* geometry algorithms |
 | `ui_helpers.py` | Streamlit-free helpers: `active_transect_selection`, `svg_is_valid`, workflow stage |
 | `ui_output_presets.py` | Named output presets → sidebar / `SectionBuildRequest` field mapping |
-| `section_build_request.py` | Frozen `SectionBuildRequest` + unified `cache_key()` (engine DTO; also covered by `pipeline-orchestration.mdc`) |
+| `section_build_request.py` | Frozen `SectionBuildRequest` + `cache_key()` (UI staleness) + `geometry_cache_payload()` / `geometry_cache_key()` (engine DTO; also covered by `pipeline-orchestration.mdc`) |
 
 ## Integration Pattern
 
@@ -35,10 +35,12 @@ parse_result, import_report = cached_ingest_workbook(uploaded_bytes, ...)
 request = SectionBuildRequest(...)
 subset = subset_parse_result(parse_result, active_hole_ids, lithology_index=...)
 result = cached_build_section(subset.model_dump_json(), request.model_dump_json())
-# → SVG-first CrossSectionResult; primary Prepare PNG & PDF via cached_build_section_exports(); secondary per-format via cached_build_section_png / cached_build_section_pdf
+# → SVG-first; Prepare via cached_build_section_exports() (png/pdf wrappers share that draw)
+# Geometry cache keys on request.geometry_cache_payload() — cosmetics do not bust geometry
 ```
 
-- **Primary cache key:** `SectionBuildRequest.cache_key(hole_ids)` in `st.session_state.render_cache_key`
+- **UI staleness key:** `SectionBuildRequest.cache_key(hole_ids)` in `st.session_state.render_cache_key`
+- **Geometry cache key:** `geometry_cache_payload()` JSON passed to `cached_compute_section_geometry` (not full request JSON)
 - **Transect selection cache:** `app_common._active_transect_selection()` memoizes `ui_helpers.active_transect_selection()` in session state
 - **Session keys:** `DEFAULT_SESSION` in `app_state.py`; use `clear_section_output_state()` / domain clears
 - **SVG display:** `st.markdown` + base64 `<img>` via `svg_display_meta()` — never `st.image()` on raw SVG
@@ -52,7 +54,7 @@ result = cached_build_section(subset.model_dump_json(), request.model_dump_json(
 1. **Upload** — file uploader, profile, CRS, elevation, Parse; import report (optional sheets, geology counts, `unit_order` / `unit_order_auto_assigned`)
 2. **Validate** — Data Health, fix-path coach, lithology mapping, sheet roles, QA narrative; water/screens/environmental summaries when sheets present
 3. **Configure** — transect (incl. NL pick), `cached_configure_preflight()` (correlation + overlap), environmental parameter multiselect → `SectionBuildRequest.environmental_parameters`, section Q&A, consulting report sheet fields
-4. **Generate** — warnings gate, `cached_build_section()` (**SVG only**), overlap warnings; primary **Prepare PNG & PDF** via `cached_build_section_exports()`; secondary per-format via `cached_build_section_png` / `cached_build_section_pdf`
+4. **Generate** — warnings gate, `cached_build_section()` (**SVG only**), overlap warnings; **Prepare PNG & PDF** (and expander PNG/PDF buttons) all call `cached_build_section_exports()` so one matplotlib draw fills both formats
 
 ## Layouts
 

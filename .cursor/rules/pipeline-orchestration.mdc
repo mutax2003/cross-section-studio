@@ -43,7 +43,16 @@ result = build_cross_section(
 ```
 
 
-`SectionBuildRequest` (in `section_build_request.py`) bundles UI render params and provides `cache_key(hole_ids)` for Streamlit. Note: pipeline defaults `allow_pinch_outs=True`; **`SectionBuildRequest.allow_pinch_outs` defaults `False`** (conservative UI default). `correlation_lines` still builds polygons; fill vs line-only is renderer-side.
+`SectionBuildRequest` (in `section_build_request.py`) bundles UI render params and provides:
+
+| Key | Purpose |
+|-----|---------|
+| `cache_key(hole_ids)` | Full request + holes — UI staleness (`render_cache_key`) |
+| `geometry_cache_payload()` / `geometry_cache_key(hole_ids)` | Projection/stratigraphy inputs only — Streamlit `cached_compute_section_geometry` |
+
+Geometry payload includes transect, offsets, interpretation mode, pinch-outs, correlation overrides, deviations, overlap/gap flags. **Excludes** cosmetics (title, VE, hatches, fonts, water/chemistry display, layout) and uncertainty banding thresholds (renderer-only).
+
+Note: pipeline defaults `allow_pinch_outs=True`; **`SectionBuildRequest.allow_pinch_outs` defaults `False`** (conservative UI default). `correlation_lines` still builds polygons; fill vs line-only is renderer-side.
 
 ## Export format constants
 
@@ -58,7 +67,7 @@ Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes t
 
 ## Flow
 
-**Geometry stage:** `compute_section_geometry()` — projection, stratigraphy, overlap/correlation QA, lithology codes. `build_cross_section()` calls it then renders/exports. Streamlit Generate is SVG-first; Prepare reuses pickled `SectionGeometry` and draws only the requested raster/PDF formats.
+**Geometry stage:** `compute_section_geometry()` — projection, stratigraphy, overlap/correlation QA, lithology codes. `build_cross_section()` calls it then renders/exports. Streamlit Generate is SVG-first; Prepare reuses pickled `SectionGeometry` keyed by geometry-scoped JSON (not full request) and draws PNG+PDF together.
 
 1. `Transect(points=...)` → `project_boreholes()` → projected DataFrame
 2. `filter_projected_for_interpolation()` / `_filter_projected_for_interpolation()` when `max_offset_for_interpolation_m` set — drops **whole holes** whose **max** `offset_distance` exceeds the threshold (unique `hole_id`, not individual lithology rows); requires ≥2 holes remaining
@@ -88,9 +97,9 @@ Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes t
 
 ## Streamlit export strategy
 
-- **Generate:** `cached_build_section()` builds **SVG only**; geometry is pickled via `cached_compute_section_geometry()`
-- **Prepare (primary):** **Prepare PNG & PDF** via `cached_build_section_exports()` — one matplotlib draw for both; reuses pickled geometry (no second projection/stratigraphy pass)
-- **Prepare (secondary):** format-scoped `cached_build_section_png()` / `cached_build_section_pdf()` under a Prepare-formats expander
+- **Generate:** `cached_build_section()` builds **SVG only**; geometry is pickled via `cached_compute_section_geometry(subset_json, geometry_request_json)`
+- **Prepare:** all UI paths (`Prepare PNG & PDF`, PNG-only, PDF-only) use `cached_build_section_exports()` — **one** matplotlib draw for both formats; reuses pickled geometry (no second projection/stratigraphy pass)
+- **Wrappers:** `cached_build_section_png()` / `cached_build_section_pdf()` delegate to exports (shared draw cache); UI `_ensure_png_export` / `_ensure_pdf_export` call `_ensure_both_exports()`
 - **One-shot:** `cached_build_section_bundle()` still offers SVG+PNG+PDF for scripts; not used by Generate
 - **API:** `render_cross_section_from_geometry()` renders from precomputed geometry without re-projecting
 
@@ -108,8 +117,8 @@ UI path: Configure step can optionally **block export on polygon overlaps** (imp
 ## Consumers
 
 - `app_services.cached_build_section()` — SVG-only Generate (pickles geometry for Prepare)
-- `app_services.cached_build_section_exports()` — primary Prepare PNG & PDF
-- `app_services.cached_build_section_png()` / `cached_build_section_pdf()` — secondary format-scoped Prepare
+- `app_services.cached_build_section_exports()` — Prepare PNG & PDF (one draw)
+- `app_services.cached_build_section_png()` / `cached_build_section_pdf()` — thin wrappers → exports
 - `app_services.cached_build_section_bundle()` — optional one-shot SVG+PNG+PDF
 - `app_services.cached_configure_preflight()` — Configure correlation + overlap QA
 - `scripts/smoke_test.py` — end-to-end smoke via `build_cross_section()`

@@ -8,9 +8,9 @@ alwaysApply: false
 
 | Module | Role |
 |--------|------|
-| `renderer.py` | `CrossSectionRenderer` facade; dispatches to layout mixins |
-| `renderer_common.py` | `RendererGeometryMixin` — wells, profile lookup, style resolution |
-| `renderer_section_sheet.py` | `SectionSheetLayoutMixin` — Strater-like section sheet |
+| `renderer.py` | `CrossSectionRenderer` facade; dispatches to layout mixins; water/chemistry/overlays/export live here |
+| `renderer_common.py` | `RendererGeometryMixin` — wells, screens, style resolution, shared collections |
+| `renderer_section_sheet.py` | `SectionSheetLayoutMixin` — Strater-like section sheet (fixed `subplots_adjust`, no `tight_layout`) |
 | `renderer_chart.py` | `ChartLayoutMixin` — legacy debug chart |
 | `renderer_consulting.py` | `ConsultingLayoutMixin` — report sheet, title block, screens/gradients |
 
@@ -114,13 +114,14 @@ Streamlit: layout radio **Consulting section** + **Report sheet (consulting)** e
 - `elevation_rl` — absolute reduced level (default). Water labels use stored `elevation_masl` when present, else `collar RL − depth`. Consulting plot labels are compact `{rl:.3f}`; `masl` stays in the title-block legend/notes.
 - `depth_below_collar` — inverted depth axis; wired from UI `elevation_mode=relative`. Water labels use **mbgs** (depth below collar), not fake masl.
 
-Water is a **rule-based overlay** (markers + linear segments between measured holes). Do not interpolate across unmeasured holes unless `water_interpolate_across_gaps`. Consulting title-block GW legend is gated on `show_water_legend` and only drawn when a series was plotted.
+Water is a **rule-based overlay** (markers + linear segments between measured holes). Segment polylines and chemistry sticks/fence bands are batched via `matplotlib.collections.LineCollection` (same geometry/style as prior per-call `ax.plot`). Do not interpolate across unmeasured holes unless `water_interpolate_across_gaps`. Consulting title-block GW legend is gated on `show_water_legend` and only drawn when a series was plotted.
 
 ## Export
 
 - `to_svg_bytes()` / `to_png_bytes(dpi=300)` on rendered figure
-- `export_figure_bytes(figure, export_formats, ...)` — single figure, selective encoding via `export_formats`
+- `export_figure_bytes(figure, export_formats, ...)` — single figure, selective encoding via `export_formats` (ordered svg → png → pdf; avoid extra `canvas.draw()`)
 - `pipeline.build_cross_section(export_formats=...)` returns SVG/PNG/PDF bytes per format set (default `{"svg"}` for tests)
-- Streamlit Generate: `cached_build_section()` is **SVG-only**; primary Prepare PNG & PDF via `cached_build_section_exports()`; secondary per-format via `cached_build_section_png` / `cached_build_section_pdf`
+- Streamlit Generate: `cached_build_section()` is **SVG-only**; Prepare (button or expander) always uses `cached_build_section_exports()` — one draw for PNG+PDF; `cached_build_section_png` / `_pdf` are thin wrappers
+- Geometry Streamlit cache: `cached_compute_section_geometry(subset_json, geometry_request_json)` from `geometry_cache_payload()` — title/VE/hatches/fonts do not invalidate geometry
 - `report_export.export_section_pdf()` — page 1 section, page 2 legend/metadata/QA summary; reuses `section_figure` when provided
 - Allowed: import stratigraphy **types** (`GeologicalPolygon`, `PolygonOverlap`) — not correlation/pinch-out logic

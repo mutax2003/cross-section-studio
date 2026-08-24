@@ -29,8 +29,8 @@ Companion to `borehole-platform-architecture.mdc` (always-on boundaries). Load w
 | `projection.py` | Vector math — 3D collar → 2D profile coordinates; deviation surveys |
 | `stratigraphy.py` | Layer correlation, pinch-outs, overlap clipping, correlation preflight |
 | `renderer.py` | Facade: `CrossSectionRenderer.render()` dispatches by layout |
-| `renderer_common.py` | Shared geometry/style helpers (wells, water, fence, styles) |
-| `renderer_section_sheet.py` | Section-sheet layout mixin |
+| `renderer_common.py` | Shared geometry/style helpers (wells, screens, fence collections, styles) |
+| `renderer_section_sheet.py` | Section-sheet layout mixin (fixed `subplots_adjust`; no `tight_layout`) |
 | `renderer_chart.py` | Chart (legacy debug) layout mixin |
 | `renderer_consulting.py` | Consulting layout: title block, subtitle, well columns, screens/gradients |
 | `render_profiles.py` | Section-sheet / consulting / chart profiles |
@@ -43,7 +43,7 @@ Companion to `borehole-platform-architecture.mdc` (always-on boundaries). Load w
 | `ui_output_presets.py` | Named UI output presets → render config |
 | `transect_planner.py` | Non-LLM transect recommender |
 | `ui_helpers.py` | Streamlit-free UI helpers |
-| `section_build_request.py` | Frozen render config + `cache_key(hole_ids)` |
+| `section_build_request.py` | Frozen render config + `cache_key` (UI) + `geometry_cache_payload` / `geometry_cache_key` (geometry Streamlit cache) |
 | `app_state.py` | Session defaults and domain clear helpers |
 | `app_services.py` | Cached ingest/recommend/build + Configure preflight (project / stratigraphy / overlap); no widgets; no *new* geometry algorithms |
 | `app.py` | Streamlit shell: page config, menubar hook, routing, generate trigger |
@@ -76,7 +76,7 @@ See `docs/workbook-format.md`.
 ## Execution Protocol
 
 1. **Data path:** `ingest_workbook()` or `DataParser.parse_file()` → `ParseResult`
-2. **Render path:** `subset_parse_result()` → **`pipeline.build_cross_section()`** → **`CrossSectionResult`** (SVG/PNG/PDF via `export_formats`). Geometry stage: `compute_section_geometry()` → **`SectionGeometry`**. Streamlit Generate uses SVG-first (`cached_build_section`); primary Prepare PNG & PDF via `cached_build_section_exports()`; secondary per-format via `cached_build_section_png` / `cached_build_section_pdf`; `cached_build_section_bundle` is scripts/one-shot only (not Generate).
+2. **Render path:** `subset_parse_result()` → **`pipeline.build_cross_section()`** → **`CrossSectionResult`** (SVG/PNG/PDF via `export_formats`). Geometry stage: `compute_section_geometry()` → **`SectionGeometry`**. Streamlit Generate uses SVG-first (`cached_build_section`); Prepare PNG & PDF via `cached_build_section_exports()` (png/pdf wrappers share that draw); geometry Streamlit cache keys on `geometry_cache_payload()`; `cached_build_section_bundle` is scripts/one-shot only (not Generate).
 3. Implement engine modules incrementally: `models` → `parsing` → `projection` → `stratigraphy` → `renderer*` → `pipeline` → `app*`
 4. Prioritize **mathematical exactness** in `projection.py` and **structural validation** in `stratigraphy.py` before plotting
 5. Graceful degradation: warn on bad rows, off-transect collars, placeholder elevations; do not crash silently

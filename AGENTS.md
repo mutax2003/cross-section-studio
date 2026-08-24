@@ -39,7 +39,7 @@ PM/Architect prompts (`pm.md`, `architect.md`) are **IDE-only** — the SDK does
 
 | Intent | Scout scope | Implement scope | Verify focus |
 |--------|-------------|-----------------|--------------|
-| Optimize renderer | `renderer*.py`, `render_*.py` | One mixin or `renderer_common.py` | `tests/test_renderer_styles.py` |
+| Optimize renderer | `renderer*.py`, `render_*.py` | One mixin or `renderer_common.py` (or facade `renderer.py` for water/chemistry batching) | `tests/test_renderer_styles.py` |
 | PDF / report export | `report_export.py`, `pipeline.py` | `report_export.py` | `tests/test_pipeline.py`, `tests/test_renderer_styles.py` |
 | Fix ingest | `ingestion.py`, `parsing.py`, `parse_ops.py` | One of ingest / parse / parse_ops per pass | `tests/test_ingestion.py` |
 | Schemas / ParseResult | `models.py` | `models.py` only | `tests/test_ingestion.py`, `tests/test_pipeline.py` |
@@ -51,7 +51,7 @@ PM/Architect prompts (`pm.md`, `architect.md`) are **IDE-only** — the SDK does
 | Lithology codes helper | `lithology_codes.py` | `lithology_codes.py` | `tests/test_pipeline.py` |
 | Water / GW QA & UI | `ai_quality.py`, `app_validate.py` (scout may read both) | One of `ai_quality.py` or one `app_*.py` per pass — do not mix in `--modules` | `tests/test_water_quality.py`, `tests/test_streamlit_app.py` |
 | AI assistant (UI) | `ai_assistant.py` | `ai_assistant.py` only | `tests/test_ai_assistant.py` |
-| SVG-first / Generate cache | `app_services.py`, `section_build_request.py`, `pipeline.py` | Serialize preferred — one per pass (`section_build_request` → `pipeline` → `app_services`); kwargs/cache glue may need `app_services` after DTO/pipeline changes | `tests/test_pipeline.py`, `tests/test_section_build_request.py`, `tests/test_import_smoke.py` |
+| SVG-first / Generate cache | `app_services.py`, `section_build_request.py`, `pipeline.py` | Serialize preferred — one per pass (`section_build_request` → `pipeline` → `app_services`); keep `geometry_cache_payload()` in sync with `compute_section_geometry` inputs; kwargs/cache glue may need `app_services` after DTO/pipeline changes | `tests/test_pipeline.py`, `tests/test_section_build_request.py`, `tests/test_import_smoke.py` |
 | Pipeline / export | Same triad as SVG-first row (prefer that row for cache/DTO glue) | Serialize preferred — one per pass; SVG-first triad allowlisted (see `module_boundary_warnings`) | `tests/test_pipeline.py`, `tests/test_section_build_request.py` (import-smoke only on SVG-first row) |
 | UI / sidebar / presets | `app_*.py`, `ui_helpers.py`, `ui_output_presets.py` | One `app_*.py` (or one UI helper) per pass | `tests/test_app_helpers.py`, `tests/test_ui_helpers.py`, `tests/test_ui_output_presets.py`, `tests/test_streamlit_app.py` |
 | Menubar / help | `app_menubar.py`, `docs/help/getting-started.md`, `paths.py` | `app_menubar.py` — accelerators use `st.iframe` with `height>0` (not `st.components.v1.html`) | `tests/test_menubar.py`, `tests/test_paths.py` |

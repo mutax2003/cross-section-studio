@@ -39,7 +39,7 @@ PM/Architect prompts (`pm.md`, `architect.md`) are **IDE-only** — the SDK does
 
 | Intent | Scout scope | Implement scope | Verify focus |
 |--------|-------------|-----------------|--------------|
-| Optimize renderer | `renderer*.py`, `render_*.py` | One mixin or `renderer_common.py` (or facade `renderer.py` for water/chemistry batching) | `tests/test_renderer_styles.py` |
+| Optimize renderer | `renderer*.py`, `render_*.py` | One mixin or `renderer_common.py` / `renderer_water.py` / `renderer_chemistry.py` (or facade overlays in `renderer.py`) | `tests/test_renderer_styles.py` |
 | PDF / report export | `report_export.py`, `pipeline.py` | `report_export.py` | `tests/test_pipeline.py`, `tests/test_renderer_styles.py` |
 | Fix ingest | `ingestion.py`, `parsing.py`, `parse_ops.py` | One of ingest / parse / parse_ops per pass | `tests/test_ingestion.py` |
 | Schemas / ParseResult | `models.py` | `models.py` only | `tests/test_ingestion.py`, `tests/test_pipeline.py` |

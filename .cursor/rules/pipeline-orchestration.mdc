@@ -97,7 +97,7 @@ Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes t
 
 ## Streamlit export strategy
 
-- **Generate:** `cached_build_section()` builds **SVG only**; geometry is pickled via `cached_compute_section_geometry(subset_json, geometry_request_json)`
+- **Generate:** `cached_build_section()` builds **SVG only**; geometry via `cached_compute_section_geometry(subset_json, geometry_request_json)` → `SectionGeometry` (Streamlit serializes; no manual pickle)
 - **Prepare:** all UI paths (`Prepare PNG & PDF`, PNG-only, PDF-only) use `cached_build_section_exports()` — **one** matplotlib draw for both formats; reuses pickled geometry (no second projection/stratigraphy pass)
 - **Wrappers:** `cached_build_section_png()` / `cached_build_section_pdf()` delegate to exports (shared draw cache); UI `_ensure_png_export` / `_ensure_pdf_export` call `_ensure_both_exports()`
 - **One-shot:** `cached_build_section_bundle()` still offers SVG+PNG+PDF for scripts; not used by Generate

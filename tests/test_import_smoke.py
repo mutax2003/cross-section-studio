@@ -31,13 +31,17 @@ def test_import_models_parsing_reexports() -> None:
 def test_import_renderer_mixins() -> None:
     from renderer import CrossSectionRenderer
     from renderer_chart import ChartLayoutMixin
+    from renderer_chemistry import RendererChemistryMixin
     from renderer_common import RendererGeometryMixin
     from renderer_consulting import ConsultingLayoutMixin
     from renderer_section_sheet import SectionSheetLayoutMixin
+    from renderer_water import RendererWaterMixin
 
     assert issubclass(CrossSectionRenderer, ConsultingLayoutMixin)
     assert issubclass(CrossSectionRenderer, SectionSheetLayoutMixin)
     assert issubclass(CrossSectionRenderer, ChartLayoutMixin)
+    assert issubclass(CrossSectionRenderer, RendererWaterMixin)
+    assert issubclass(CrossSectionRenderer, RendererChemistryMixin)
     assert issubclass(CrossSectionRenderer, RendererGeometryMixin)
 
 

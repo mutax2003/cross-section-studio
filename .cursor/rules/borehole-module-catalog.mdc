@@ -28,8 +28,10 @@ Companion to `borehole-platform-architecture.mdc` (always-on boundaries). Load w
 | `ai_assistant.py` | Optional LLM + local advisory assist (UI only; never in engine) |
 | `projection.py` | Vector math — 3D collar → 2D profile coordinates; deviation surveys |
 | `stratigraphy.py` | Layer correlation, pinch-outs, overlap clipping, correlation preflight |
-| `renderer.py` | Facade: `CrossSectionRenderer.render()` dispatches by layout |
+| `renderer.py` | Facade: `CrossSectionRenderer.render()` dispatches by layout; structural overlays/export |
 | `renderer_common.py` | Shared geometry/style helpers (wells, screens, fence collections, styles) |
+| `renderer_water.py` | Water-table overlay mixin |
+| `renderer_chemistry.py` | Environmental parameter overlay mixin (`_resolve_parameter_label_offsets` re-exported from `renderer`) |
 | `renderer_section_sheet.py` | Section-sheet layout mixin (fixed `subplots_adjust`; no `tight_layout`) |
 | `renderer_chart.py` | Chart (legacy debug) layout mixin |
 | `renderer_consulting.py` | Consulting layout: title block, subtitle, well columns, screens/gradients |

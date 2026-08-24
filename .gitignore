@@ -38,3 +38,14 @@ Thumbs.db
 # Synthetic Advantage CI fixtures (built by tests/fixtures/advantage_synthetic.py)
 !data/fixtures/advantage_phase2_source.xlsx
 !data/advantage_phase2_platform.xlsx
+
+# Local stakeholder dumps (keep tracked CI fixtures / reference exports)
+data/*.docx
+data/*.eml
+data/*.zip
+data/_inspect_output.txt
+data/260624G_*.pdf
+data/ecoventure_gwm/*.pdf
+data/Data2/*.pdf
+data/Data2/test_output/*debug*
+data/pdf_extract_p2/

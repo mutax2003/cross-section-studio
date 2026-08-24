@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import pickle
 from io import BytesIO
 from typing import Any
 
@@ -13,6 +12,7 @@ from ingestion import ingest_workbook
 from models import CorrelationOverride, ParseResult, SectionFigureMetadata, Transect
 from pipeline import (
     ALL_EXPORT_FORMATS,
+    SectionGeometry,
     compute_section_geometry,
     render_cross_section_from_geometry,
     filter_projected_for_interpolation,
@@ -102,16 +102,20 @@ def _cached_section_inputs(
 
 
 @st.cache_data(show_spinner=False, ttl=3600, max_entries=16)
-def cached_compute_section_geometry(subset_json: str, geometry_request_json: str) -> bytes:
-    """Pickled ``SectionGeometry`` shared by Generate SVG and Prepare PNG/PDF.
+def cached_compute_section_geometry(
+    subset_json: str, geometry_request_json: str
+) -> SectionGeometry:
+    """``SectionGeometry`` shared by Generate SVG and Prepare PNG/PDF.
 
-    Cache key is geometry-scoped JSON from ``SectionBuildRequest.geometry_cache_payload()``
-    (not the full request), so cosmetic / render-only fields do not bust this cache.
+    Streamlit ``@st.cache_data`` serializes the returned object. Cache key is
+    geometry-scoped JSON from ``SectionBuildRequest.geometry_cache_payload()``
+    (``geometry_request_json``), so cosmetic / render-only fields do not bust
+    this cache.
     """
     subset = cached_parse_subset(subset_json)
     request = SectionBuildRequest.model_validate(json.loads(geometry_request_json))
     _figure_metadata, mode, overrides = _build_section_kwargs(subset, request)
-    geometry = compute_section_geometry(
+    return compute_section_geometry(
         subset.collars,
         subset.lithologies,
         request.transect_points,
@@ -124,7 +128,6 @@ def cached_compute_section_geometry(subset_json: str, geometry_request_json: str
         warn_on_correlation_gaps=request.warn_on_correlation_gaps,
         fail_on_overlaps=request.fail_on_overlaps,
     )
-    return pickle.dumps(geometry, protocol=pickle.HIGHEST_PROTOCOL)
 
 
 def _run_build_cross_section(
@@ -136,7 +139,7 @@ def _run_build_cross_section(
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
     figure_metadata, mode, _overrides = _build_section_kwargs(subset, request)
     geometry_json = json.dumps(request.geometry_cache_payload(), sort_keys=True)
-    geometry = pickle.loads(cached_compute_section_geometry(subset_json, geometry_json))
+    geometry = cached_compute_section_geometry(subset_json, geometry_json)
     result = render_cross_section_from_geometry(
         geometry,
         request.transect_points,
@@ -217,7 +220,7 @@ def cached_build_section(
     subset_json: str,
     request_json: str,
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
-    """Generate path: SVG only. Geometry is pickled for Prepare reuse."""
+    """Generate path: SVG only. Geometry is cached for Prepare reuse."""
     subset, request = _cached_section_inputs(subset_json, request_json)
     svg, _png, _pdf, count, codes, warnings = _run_build_cross_section(
         subset,

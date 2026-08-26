@@ -37,6 +37,8 @@ Optional: `hatch_pattern`, `unit_order` (needed when the same code repeats in on
 | **Correlations** | Manual unit pairing between holes |
 | **Faults** / **Unconformities** | Profile-plane overlays |
 
+Field-export workbooks may also include **Field Data** with `OVA` / `EC` columns — those become environmental readings (`OVA` / `EC`); pick them on **Configure** to plot. Field Data is not used for stratigraphy.
+
 The multi-tab input template also includes **Project** (title-block metadata), **Instructions**, and an **Example** tab (reference only — not parsed).
 
 Full column lists, field-export profiles, and advanced sheets: [workbook format](../workbook-format.md).

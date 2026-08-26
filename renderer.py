@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import logging
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from typing import Sequence
 
 import matplotlib as mpl
 
@@ -15,14 +15,9 @@ import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.figure import Figure
-from matplotlib.gridspec import GridSpec
 from matplotlib.patches import Patch
-from matplotlib.ticker import FuncFormatter, MultipleLocator
-from matplotlib.offsetbox import AnnotationBbox, OffsetImage
-import matplotlib.image as mpimg
 
-from constants import HATCH_LINE_COLOR, POLYGON_EDGE_COLOR, get_lithology_style
-from lithology_codes import collect_lithology_codes
+from constants import HATCH_LINE_COLOR, POLYGON_EDGE_COLOR
 from models import (
     ConsultingTitleBlock,
     EnvironmentalReading,
@@ -36,33 +31,21 @@ from models import (
     WaterLevel,
 )
 from render_profiles import (
-    CHART_PROFILE,
     CrossSectionRenderProfile,
     SECTION_SHEET_PROFILE,
 )
 from render_theme import (
-    AXES_BG,
-    CONSULTING_FIGURE_BG,
-    CONSULTING_SCALE_BAR_M,
-    CONSULTING_SURFACE_COLOR,
-    consulting_section_title,
     CONTACT_TICK_COLOR,
     CONTACT_TICK_WIDTH,
-    DEFAULT_CONSULTING_NOTES,
     EOL_BAR_COLOR,
     export_font_rc,
-    FIGURE_BG,
-    GRID_COLOR,
     LABEL_COLOR,
     OVERLAP_MARKER_COLOR,
     PINCH_OUT_ALPHA,
-    REPORT_GRID_ALPHA,
-    REPORT_GRID_COLOR,
     SKY_FILL_COLOR,
     STICK_COLOR,
     SURFACE_COLOR,
     TRACK_BORDER_COLOR,
-    TRACK_FILL_COLOR,
     UNCERTAINTY_COLOR,
 )
 from stratigraphy import GeologicalPolygon, PolygonOverlap
@@ -327,12 +310,6 @@ class CrossSectionRenderer(
         if self.profile.layout in {"section_sheet", "consulting_section"}:
             return self.profile.track_width_m / 2.0
         return max(x_span * 0.015, 0.8)
-
-    def _transform_coords(self, coords: list[tuple[float, float]], ve: float | None = None) -> np.ndarray:
-        multiplier = self.vertical_exaggeration if ve is None else ve
-        array = np.asarray(coords, dtype=float)
-        array[:, 1] *= multiplier
-        return array
 
     def _fence_plot_coords(
         self,
@@ -1102,12 +1079,6 @@ class CrossSectionRenderer(
                         section_figure=figure,
                     )
         return svg_bytes, png_bytes, pdf_bytes
-
-    def _transform_y(self, value: float) -> float:
-        return value * self.vertical_exaggeration
-
-    def _transform_ys(self, values: list[float] | np.ndarray) -> np.ndarray:
-        return np.asarray(values, dtype=float) * self.vertical_exaggeration
 
     def _draw_scale_bar(self, ax) -> None:
         if not self.profile.show_scale_bar:

@@ -411,6 +411,7 @@ def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[Geologi
         return polygons
 
     from shapely.ops import unary_union
+    from shapely.prepared import prep
 
     ordered = sorted(
         polygons,
@@ -422,6 +423,7 @@ def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[Geologi
     )
     resolved: list[GeologicalPolygon] = []
     occupied_geom: Polygon | None = None
+    occupied_prep = None
     batch: list[Polygon] = []
     batch_limit = 4
     last_index = len(ordered) - 1
@@ -429,8 +431,9 @@ def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[Geologi
         original_area = float(geo_polygon.polygon.area)
         geom = geo_polygon.polygon
         if occupied_geom is not None and not occupied_geom.is_empty:
-            # Skip difference when disjoint or boundary-only touch (no area overlap).
-            if geom.intersects(occupied_geom) and not geom.touches(occupied_geom):
+            # Prepared predicates for skip checks; difference still uses raw geom.
+            probe = occupied_prep if occupied_prep is not None else occupied_geom
+            if probe.intersects(geom) and not probe.touches(geom):
                 geom = geom.difference(occupied_geom)
         largest = _largest_polygon(geom)
         if largest is None or largest.is_empty:
@@ -457,6 +460,11 @@ def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[Geologi
         if len(batch) >= batch_limit or index == last_index:
             chunk = unary_union(batch) if len(batch) > 1 else batch[0]
             occupied_geom = chunk if occupied_geom is None else occupied_geom.union(chunk)
+            occupied_prep = (
+                prep(occupied_geom)
+                if occupied_geom is not None and not occupied_geom.is_empty
+                else None
+            )
             batch.clear()
     return resolved
 

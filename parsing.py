@@ -178,6 +178,11 @@ class DataParser:
                 environmental_readings, environmental_errors = self._parse_environmental_sheet(
                     workbook, collars
                 )
+            field_readings, field_errors = self._parse_field_data_environmental_sheet(
+                workbook, collars
+            )
+            environmental_readings.extend(field_readings)
+            environmental_errors.extend(field_errors)
             if screens_frame is not None and not screens_frame.empty:
                 screen_intervals, screen_errors = self._parse_screens_dataframe(screens_frame, collars)
             else:
@@ -621,6 +626,114 @@ class DataParser:
             return [], []
         frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
         return self._parse_environmental_dataframe(frame, collars)
+
+    def _parse_field_data_environmental_dataframe(
+        self,
+        frame: pd.DataFrame,
+        collars: list[Collar],
+    ) -> tuple[list[EnvironmentalReading], list[str]]:
+        """Map Field Data OVA/EC columns into EnvironmentalReading rows (append path)."""
+        # Lazy import avoids circular load: ingestion → models → parsing.
+        from ingestion import parse_depth_interval
+
+        columns = set(frame.columns)
+        hole_col = next(
+            (name for name in ("label", "hole_id", "hole", "bh_id") if name in columns),
+            None,
+        )
+        if hole_col is None:
+            return [], []
+        has_ova = "ova" in columns
+        has_ec = "ec" in columns
+        if not has_ova and not has_ec:
+            return [], []
+        depth_col = next(
+            (name for name in ("depth", "depth_interval") if name in columns),
+            None,
+        )
+        valid_hole_ids = {collar.hole_id for collar in collars}
+        readings: list[EnvironmentalReading] = []
+        errors: list[str] = []
+        for row_num, row in enumerate(frame.itertuples(index=False), start=2):
+            payload = row._asdict()
+            hole_raw = payload.get(hole_col)
+            if self._blank_hole_id(hole_raw):
+                continue
+            hole_id = str(hole_raw).strip()
+
+            ova_value: float | None = None
+            ec_value: float | None = None
+            if has_ova:
+                parsed_ova = pd.to_numeric(payload.get("ova"), errors="coerce")
+                if not pd.isna(parsed_ova):
+                    ova_value = float(parsed_ova)
+            if has_ec:
+                parsed_ec = pd.to_numeric(payload.get("ec"), errors="coerce")
+                if not pd.isna(parsed_ec):
+                    ec_value = float(parsed_ec)
+            if ova_value is None and ec_value is None:
+                continue
+
+            if depth_col is None:
+                errors.append(
+                    f"Field Data row {row_num}: missing depth interval for hole_id '{hole_id}'"
+                )
+                continue
+            try:
+                from_depth, to_depth = parse_depth_interval(payload.get(depth_col))
+            except Exception as exc:
+                errors.append(f"Field Data row {row_num}: {exc}")
+                continue
+
+            if valid_hole_ids and hole_id not in valid_hole_ids:
+                errors.append(f"Field Data row {row_num}: unknown hole_id '{hole_id}'")
+                continue
+
+            if ova_value is not None:
+                try:
+                    readings.append(
+                        EnvironmentalReading.model_validate(
+                            {
+                                "hole_id": hole_id,
+                                "parameter": "OVA",
+                                "value": ova_value,
+                                "from_depth": from_depth,
+                                "to_depth": to_depth,
+                                "unit": "ppm",
+                            }
+                        )
+                    )
+                except Exception as exc:
+                    errors.append(f"Field Data row {row_num}: {exc}")
+            if ec_value is not None:
+                try:
+                    readings.append(
+                        EnvironmentalReading.model_validate(
+                            {
+                                "hole_id": hole_id,
+                                "parameter": "EC",
+                                "value": ec_value,
+                                "from_depth": from_depth,
+                                "to_depth": to_depth,
+                                "unit": "",
+                            }
+                        )
+                    )
+                except Exception as exc:
+                    errors.append(f"Field Data row {row_num}: {exc}")
+        return readings, errors
+
+    def _parse_field_data_environmental_sheet(
+        self,
+        workbook: pd.ExcelFile,
+        collars: list[Collar],
+    ) -> tuple[list[EnvironmentalReading], list[str]]:
+        from ingestion import get_cached_field_data_frame
+
+        frame = get_cached_field_data_frame(workbook)
+        if frame is None:
+            return [], []
+        return self._parse_field_data_environmental_dataframe(_normalize_columns(frame), collars)
 
     def _parse_fault_sheet(self, workbook: pd.ExcelFile) -> list[Fault]:
         sheet = self._find_sheet(workbook.sheet_names, "Faults")

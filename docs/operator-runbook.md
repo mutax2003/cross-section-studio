@@ -51,7 +51,7 @@ Help markdown lives in `docs/help/` (bundled for desktop; Docker keeps `docs/hel
 3. Regenerate GWM figures: `python scripts/plot_ecoventure_gwm.py --transect all`
 4. Refresh PDF reference extracts at 300 dpi (needs PyMuPDF): `python scripts/extract_pdf_figures.py --suite all`
 5. Ensure P2 generated PNGs exist under `data/Data2/test_output/` (`fig6_aa_lithology_chlorides.png`, `fig7_bb_lithology_chlorides.png`)
-6. Run parity check: `python scripts/compare_figure_parity.py --suite all` (missing pairs hard-fail; `--warn-only` softens MSE). Optional `--require-same-size` only when crops/DPI truly match.
+6. Run parity check: `python scripts/compare_figure_parity.py --suite all` (suite MSE ceilings hard-fail in quality CI; `--warn-only` softens MSE for local soft runs; aspirational visual target remains lower but is not the CI gate). Optional `--require-same-size` only when crops/DPI truly match.
 7. Rebuild Windows desktop: `powershell -File scripts/build_windows.ps1`
 8. For Docker: `docker build -t cross-section-studio .`
 9. Streamlit Cloud: push `main`, or `STREAMLIT_API_TOKEN=… python scripts/deploy_streamlit_cloud.py`
@@ -82,7 +82,7 @@ When `CROSS_SECTION_AUDIT_LOG` is set (or the default path is used), upload and 
 GitHub Actions runs on push/PR to `main`/`master`:
 
 - **E2E** (`.github/workflows/e2e.yml`) — pytest (+ `requirements-dev`), smoke scripts, per-module gate
-- **Quality** (`.github/workflows/quality.yml`) — ruff, coverage threshold, pip-audit on `requirements.txt` (dev deps are install-only), figure parity (`--suite all --warn-only`: missing pairs hard-fail, MSE soft)
+- **Quality** (`.github/workflows/quality.yml`) — ruff, coverage threshold, pip-audit on `requirements.txt` (dev deps are install-only), figure parity (`--suite all`: suite MSE ceilings hard-fail; `--warn-only` for local soft runs)
 
 ## Dev / agent verify
 

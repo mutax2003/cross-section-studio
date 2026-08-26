@@ -127,14 +127,15 @@ def sample_boreholes_workbook() -> Path:
 
 
 def audit_log_path() -> Path:
-    """Writable audit log path; absolute overrides must stay under user_data_dir()."""
+    """Writable audit log path; overrides must stay under user_data_dir()."""
     override = os.environ.get("CROSS_SECTION_AUDIT_LOG")
     allowed_root = user_data_dir().resolve()
     if override:
         candidate = Path(override).expanduser()
-        if not candidate.is_absolute():
-            return (user_data_dir() / candidate).resolve()
-        resolved = candidate.resolve()
+        if candidate.is_absolute():
+            resolved = candidate.resolve()
+        else:
+            resolved = (user_data_dir() / candidate).resolve()
         try:
             resolved.relative_to(allowed_root)
         except ValueError as exc:

@@ -216,7 +216,7 @@ class RendererGeometryMixin:
 
     def _style_cache_for(self, lithology_codes: Sequence[str]) -> dict:
         consulting_palette = bool(getattr(self.profile, "use_consulting_palette", False))
-        use_hatch = self.show_hatches and not consulting_palette
+        use_hatch = self.show_hatches
         return {
             code: get_lithology_style(
                 code,
@@ -232,7 +232,7 @@ class RendererGeometryMixin:
             consulting = getattr(self.profile, "use_consulting_palette", False)
             style = get_lithology_style(
                 code,
-                use_hatch=self.show_hatches and not consulting,
+                use_hatch=self.show_hatches,
                 consulting_palette=consulting,
             )
             style_cache[code] = style

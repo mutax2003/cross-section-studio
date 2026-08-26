@@ -240,6 +240,57 @@ def test_field_data_sheet_warning(simple_field_export: bytes) -> None:
     _, report = ingest_workbook(BytesIO(data), profile_id="field_export_v1")
     assert "Field Data" in report.optional_sheets_detected
     assert any("Field Data" in warning for warning in report.warnings)
+    assert not any("future work" in warning.lower() for warning in report.warnings)
+
+
+def test_field_data_ova_ec_readings_advantage_shape() -> None:
+    """Advantage-style Field Data (Label, Depth interval, OVA, EC) → environmental readings."""
+    data = _field_export_bytes(
+        [
+            {
+                "hole_id": "BH-01",
+                "depth": "0.00-2.00m",
+                "lithology": "clay",
+                "lat": 58.57,
+                "long": -119.19,
+            },
+        ],
+        extra_sheets={
+            "Field Data": pd.DataFrame(
+                [
+                    {
+                        "Label": "BH-01",
+                        "Depth": "0.00-0.15m",
+                        "OVA": 125.0,
+                        "EC": 0.42,
+                    },
+                    {
+                        "Label": "BH-01",
+                        "Depth": "0.15-0.30m",
+                        "OVA": 80.0,
+                        "EC": None,
+                    },
+                ]
+            )
+        },
+    )
+    result, report = ingest_workbook(BytesIO(data), profile_id="field_export_v1")
+    assert "Field Data" in report.optional_sheets_detected
+    assert any("parsed 3 OVA/EC reading(s)" in warning for warning in report.warnings)
+    assert not any("future work" in warning.lower() for warning in report.warnings)
+
+    ova = [r for r in result.environmental_readings if r.parameter == "OVA"]
+    ec = [r for r in result.environmental_readings if r.parameter == "EC"]
+    assert len(ova) == 2
+    assert len(ec) == 1
+    assert ova[0].from_depth == pytest.approx(0.0)
+    assert ova[0].to_depth == pytest.approx(0.15)
+    assert ova[0].value == pytest.approx(125.0)
+    assert ova[0].unit == "ppm"
+    assert ec[0].value == pytest.approx(0.42)
+    assert ec[0].unit == ""
+    # Interval Depth must not become collar total_depth (lithology max remains).
+    assert result.collars[0].total_depth == pytest.approx(2.0)
 
 
 def test_field_export_ingest_keeps_water_overlay() -> None:

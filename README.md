@@ -66,7 +66,7 @@ Optional per-file diagnostic: `python scripts/run_e2e_tests.py` (writes `e2e_tes
 
 ```bash
 python scripts/plot_ecoventure_gwm.py --transect all
-python scripts/compare_figure_parity.py --warn-only
+python scripts/compare_figure_parity.py --suite all
 ```
 
 ## Documentation

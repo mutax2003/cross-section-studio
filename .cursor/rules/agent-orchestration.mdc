@@ -13,7 +13,7 @@ When editing supervisor scripts, prompts, or CI workflows:
 ## CI hygiene (release)
 
 - **E2E gate:** `.github/workflows/e2e.yml` runs the same **three** `VERIFY_COMMANDS` as `AGENTS.md` (pytest → `e2e_smoke_direct` → `smoke_test`). IDE: `.cursor/skills/e2e-verify/SKILL.md`. Not the Streamlit UI’s four workflow steps (Upload → Validate → Configure → Generate); Prepare PNG/PDF is a Generate export action.
-- **Quality hygiene:** `.github/workflows/quality.yml` on PR **and** push to `main`/`master` — scoped ruff, engine cov ≥70, pip-audit, figure parity (`--suite all --warn-only`: missing hard-fail, MSE soft). Not a substitute for `VERIFY_COMMANDS`.
+- **Quality hygiene:** `.github/workflows/quality.yml` on PR **and** push to `main`/`master` — scoped ruff, engine cov ≥70, pip-audit, figure parity (`--suite all`: suite MSE ceilings hard-fail; `--warn-only` for local soft runs). Not a substitute for `VERIFY_COMMANDS`.
 
 ```text
 python -m ruff check <paths>   # prefer scoped over ruff check .

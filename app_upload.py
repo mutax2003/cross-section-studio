@@ -305,8 +305,8 @@ def handle_workbook_upload(
         )
         if detection.profile_id != NATIVE_PROFILE_ID:
             st.info(
-                "Field Data sheet (if present) is not used for stratigraphy — "
-                "OVA overlay is planned for a future release."
+                "Field Data sheet (if present) is not used for stratigraphy. "
+                "OVA/EC columns map to environmental readings — select them on Configure."
             )
 
     profile_id = None if selected_profile_key == "auto" else selected_profile_key

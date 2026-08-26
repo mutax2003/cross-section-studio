@@ -72,7 +72,9 @@ def test_geometry_cache_key_changes_with_geometry_inputs() -> None:
     assert base != _base_request(
         max_offset_for_interpolation_m=10.0
     ).geometry_cache_key(holes)
-    assert base != _base_request(fail_on_overlaps=True).geometry_cache_key(holes)
+    assert base == _base_request(fail_on_overlaps=True).geometry_cache_key(holes)
+    assert base == _base_request(warn_on_correlation_gaps=True).geometry_cache_key(holes)
+    assert base != _base_request(fail_on_overlaps=True).cache_key(holes)
     assert base != _base_request(
         correlation_overrides=(
             CorrelationOverride(

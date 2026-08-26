@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from io import BytesIO
 from typing import Any
 
@@ -26,6 +27,27 @@ from stratigraphy import (
     detect_polygon_overlaps,
     preview_correlation_health,
 )
+
+
+def _apply_section_geometry_qa(
+    geometry: SectionGeometry,
+    request: SectionBuildRequest,
+) -> SectionGeometry:
+    """Apply request QA flags after geometry cache hit (polygons unchanged)."""
+    if request.fail_on_overlaps and geometry.overlap_pairs:
+        raise ValueError(
+            f"Polygon overlap detected ({len(geometry.overlap_pairs)} pair(s)); "
+            "resolve correlation or set fail_on_overlaps=False to export."
+        )
+    if not request.warn_on_correlation_gaps:
+        filtered_warnings = tuple(
+            message
+            for message in geometry.overlap_warnings
+            if not message.startswith("Correlation gap ")
+        )
+        if filtered_warnings != geometry.overlap_warnings:
+            geometry = replace(geometry, overlap_warnings=filtered_warnings)
+    return geometry
 from transect_planner import recommend_transects
 
 
@@ -125,8 +147,8 @@ def cached_compute_section_geometry(
         max_offset_for_interpolation_m=request.max_offset_for_interpolation_m,
         correlation_overrides=overrides,
         deviation_readings=request.deviation_readings or subset.deviation_readings,
-        warn_on_correlation_gaps=request.warn_on_correlation_gaps,
-        fail_on_overlaps=request.fail_on_overlaps,
+        warn_on_correlation_gaps=True,
+        fail_on_overlaps=False,
     )
 
 
@@ -139,7 +161,10 @@ def _run_build_cross_section(
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
     figure_metadata, mode, _overrides = _build_section_kwargs(subset, request)
     geometry_json = json.dumps(request.geometry_cache_payload(), sort_keys=True)
-    geometry = cached_compute_section_geometry(subset_json, geometry_json)
+    geometry = _apply_section_geometry_qa(
+        cached_compute_section_geometry(subset_json, geometry_json),
+        request,
+    )
     result = render_cross_section_from_geometry(
         geometry,
         request.transect_points,
@@ -357,7 +382,7 @@ def cached_configure_preflight(
     max_offset_for_interpolation_m: float = 50.0,
     check_overlaps: bool = True,
 ) -> tuple[tuple[str, ...], tuple[CorrelationPairSummary, ...]]:
-    """Cached Configure-step preflight: project once, then correlation + overlap checks."""
+    """Cached Configure-step preflight; warms Generate geometry cache when possible."""
     subset = cached_parse_subset(subset_json)
     transect_points: tuple[tuple[float, float], ...] = tuple(
         tuple(point) for point in json.loads(transect_points_json)
@@ -377,46 +402,48 @@ def cached_configure_preflight(
     if interpretation_mode == "borehole_only":
         return warnings, ()
 
-    projected = project_boreholes(
-        subset.collars,
-        subset.lithologies,
-        transect,
+    preflight_request = SectionBuildRequest(
+        transect_points=transect_points,
+        interpretation_mode=interpretation_mode,  # type: ignore[arg-type]
+        allow_pinch_outs=allow_pinch_outs,
+        correlation_overrides=overrides,
         offset_warning_m=offset_warning_m,
-        deviation_readings=subset.deviation_readings or None,
+        max_offset_for_interpolation_m=max_offset_for_interpolation_m,
     )
-    if projected.empty:
-        return warnings, ()
+    geometry_json = json.dumps(
+        preflight_request.geometry_cache_payload(),
+        sort_keys=True,
+    )
     try:
-        projected = filter_projected_for_interpolation(
-            projected, max_offset_for_interpolation_m
-        )
+        geometry = cached_compute_section_geometry(subset_json, geometry_json)
     except ValueError as exc:
-        return warnings + (str(exc),), ()
+        message = str(exc)
+        if message.startswith("No lithology intervals were projected"):
+            return warnings, ()
+        return warnings + (message,), ()
 
-    summaries_buf: list[CorrelationPairSummary] = []
     overlap_extra: tuple[str, ...] = ()
-    if check_overlaps and len(projected["hole_id"].unique()) >= 2:
-        polygons = build_stratigraphy(
-            projected,
+    if check_overlaps and geometry.overlap_pairs:
+        overlap_extra = (
+            (
+                f"Polygon overlap: {len(geometry.overlap_pairs)} inter-hole contact conflict(s) detected — "
+                "review correlation before export."
+            ),
+        )
+
+    try:
+        filtered = filter_projected_for_interpolation(
+            geometry.projected,
+            max_offset_for_interpolation_m,
+        )
+    except ValueError:
+        return warnings + overlap_extra, ()
+
+    summaries = tuple(
+        preview_correlation_health(
+            filtered,
             allow_pinch_outs=allow_pinch_outs,
             correlation_overrides=overrides,
-            pair_summaries=summaries_buf,
         )
-        summaries = tuple(summaries_buf)
-        overlaps = detect_polygon_overlaps(polygons)
-        if overlaps:
-            overlap_extra = (
-                (
-                    f"Polygon overlap: {len(overlaps)} inter-hole contact conflict(s) detected — "
-                    "review correlation before export."
-                ),
-            )
-    else:
-        summaries = tuple(
-            preview_correlation_health(
-                projected,
-                allow_pinch_outs=allow_pinch_outs,
-                correlation_overrides=overrides,
-            )
-        )
+    )
     return warnings + overlap_extra, summaries

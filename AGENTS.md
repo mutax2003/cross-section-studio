@@ -91,7 +91,7 @@ Batch wrapper: `powershell -File scripts/run_verify_batch.ps1` (writes under `or
 
 **Deps:** CI and local verify need `pip install -r requirements.txt -r requirements-dev.txt` (pytest + `cursor-sdk` for supervisor unit tests).
 
-**CI hygiene (not E2E):** `.github/workflows/quality.yml` (PR and push to `main`/`master`) runs scoped ruff, engine coverage ≥70, pip-audit, and figure parity (`--suite all --warn-only`: missing pairs hard-fail, MSE soft) — not a substitute for `VERIFY_COMMANDS`.
+**CI hygiene (not E2E):** `.github/workflows/quality.yml` (PR and push to `main`/`master`) runs scoped ruff, engine coverage ≥70, pip-audit, and figure parity (`--suite all`: suite MSE ceilings hard-fail; `--warn-only` still available for local soft runs; aspirational visual target remains lower but is not the CI gate) — not a substitute for `VERIFY_COMMANDS`.
 
 ### IDE iteration verify
 

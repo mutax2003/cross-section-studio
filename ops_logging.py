@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 
 _SECRET_PATTERNS = (
     (re.compile(r"(?i)\b(api[_-]?key|password|secret|token)\s*[=:]\s*\S+"), r"\1=[redacted]"),
+    (re.compile(r"(?i)([?&])(api[_-]?key|key|password|token)=([^&\s]+)"), r"\1\2=[redacted]"),
     (re.compile(r"(?i)\bauthorization\s*[=:]\s*\S+"), "authorization=[redacted]"),
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]+"), "Bearer [redacted]"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"), "sk-[redacted]"),
@@ -37,6 +38,11 @@ class _RedactingFilter(logging.Filter):
         if redacted != message:
             record.msg = redacted
             record.args = ()
+        exc_text = getattr(record, "exc_text", None)
+        if isinstance(exc_text, str) and exc_text:
+            scrubbed = redact_secrets(exc_text)
+            if scrubbed != exc_text:
+                record.exc_text = scrubbed
         return True
 
 

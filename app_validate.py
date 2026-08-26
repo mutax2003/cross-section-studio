@@ -175,6 +175,10 @@ def _render_validate_details(
         )
         with st.expander("Environmental / Lab", expanded=bool(env_summary.warnings) or bool(orphan_env_ids)):
             st.caption(scope_caption)
+            st.caption(
+                "Includes Environmental sheet rows and Field Data OVA/EC "
+                "(parameters `OVA` / `EC`). Select on Configure to plot."
+            )
             if orphan_env_ids:
                 st.warning(
                     "Environmental readings with no matching collar: "

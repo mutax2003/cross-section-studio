@@ -20,7 +20,9 @@ def _traces_sample_rate() -> float:
 
 
 def _before_send(event: dict[str, Any], _hint: dict[str, Any]) -> dict[str, Any] | None:
-    """Drop default PII-ish request bodies; keep stack frames for ops."""
+    """Drop default PII-ish request bodies; scrub query/message secrets."""
+    from ops_logging import redact_secrets
+
     request = event.get("request")
     if isinstance(request, dict):
         request.pop("data", None)
@@ -31,6 +33,12 @@ def _before_send(event: dict[str, Any], _hint: dict[str, Any]) -> dict[str, Any]
                 lowered = str(key).lower()
                 if lowered in {"authorization", "cookie", "x-api-key", "x-goog-api-key"}:
                     headers[key] = "[redacted]"
+        query_string = request.get("query_string")
+        if isinstance(query_string, str):
+            request["query_string"] = redact_secrets(query_string)
+    message = event.get("message")
+    if isinstance(message, str):
+        event["message"] = redact_secrets(message)
     return event
 
 

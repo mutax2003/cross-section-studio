@@ -44,6 +44,8 @@ Sheet names are matched case-insensitively.
 
 Single `Lithology` sheet with `Label`, `Depth` (e.g. `0.00-2.00m`), `Lithology`, `Lat`, `Long`. Converted to UTM on import; elevation may use a profile placeholder until surveyed RL is provided.
 
+Optional **Field Data** sheet (same workbook): `Label` (or `hole_id`), `Depth` interval, plus `OVA` and/or `EC`. Those columns become environmental readings with parameters `OVA` / `EC` (not stratigraphy). Select them on **Configure** like other Environmental parameters.
+
 ## Lithology styles
 
 Canonical colors come from `data/BH Log Lithology Legend.xlsx` (loaded at runtime by `constants.py`). Hatches live in `USGS_LITHOLOGY_HATCHES`. A JSON cache (`data/bh_log_lithology_legend.json`) is used when the Excel file is absent (e.g. frozen builds); regenerate with `python scripts/convert_bh_log_legend.py`. Overrides can be saved from the app fill-style editor (`data/lithology_styles.json`).

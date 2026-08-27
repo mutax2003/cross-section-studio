@@ -109,7 +109,7 @@ Streamlit: layout radio **Consulting section** + **Report sheet (consulting)** e
 - Fill polygons via `matplotlib.patches.Polygon` using `constants.get_lithology_style()` (BH Log palette)
 - User overrides via `paths.lithology_styles_path()` (user data dir, not repo `data/`)
 - Expose **`vertical_exaggeration`** (Y-axis multiplier) and **`scale_bar_length_m`**
-- Hatch patterns toggled via `show_hatches`
+- Hatch patterns toggled via `show_hatches` (applies under consulting palette too; parity scripts use hatches on)
 
 ## Y-Axis Modes
 
@@ -124,6 +124,6 @@ Water is a **rule-based overlay** (markers + linear segments between measured ho
 - `export_figure_bytes(figure, export_formats, ...)` — single figure, selective encoding via `export_formats` (ordered svg → png → pdf; avoid extra `canvas.draw()`)
 - `pipeline.build_cross_section(export_formats=...)` returns SVG/PNG/PDF bytes per format set (default `{"svg"}` for tests)
 - Streamlit Generate: `cached_build_section()` is **SVG-only**; Prepare (button or expander) always uses `cached_build_section_exports()` — one draw for PNG+PDF; `cached_build_section_png` / `_pdf` are thin wrappers
-- Geometry Streamlit cache: `cached_compute_section_geometry(subset_json, geometry_request_json)` returns `SectionGeometry` (Streamlit serializes once); keyed from `geometry_cache_payload()` — title/VE/hatches/fonts do not invalidate geometry
+- Geometry Streamlit cache: `cached_compute_section_geometry(subset_json, geometry_request_json)` returns `SectionGeometry` (Streamlit serializes once); keyed from `geometry_cache_payload()` — title/VE/hatches/fonts and QA flags do not invalidate geometry (post-cache QA in `app_services`)
 - `report_export.export_section_pdf()` — page 1 section, page 2 legend/metadata/QA summary; reuses `section_figure` when provided
 - Allowed: import stratigraphy **types** (`GeologicalPolygon`, `PolygonOverlap`) — not correlation/pinch-out logic

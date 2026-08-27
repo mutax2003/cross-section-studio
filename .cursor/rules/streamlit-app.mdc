@@ -23,7 +23,7 @@ Thin shell in **`app.py`**; sidebar/upload/configure live in split modules. Dele
 | `app_generate.py` | Generate, stale banner, SVG/PNG/PDF downloads |
 | `app_menubar.py` | Windows-style File/Edit/View/Help menus, Ctrl accelerators, `docs/help` dialogs |
 | `app_state.py` | `DEFAULT_SESSION` + domain key groups / clear helpers |
-| `app_services.py` | Cached ingest/recommend/build + Configure preflight (project / stratigraphy / overlap); no widgets; no *new* geometry algorithms |
+| `app_services.py` | Cached ingest/recommend/build; Configure preflight warms geometry cache + post-cache QA (`_apply_section_geometry_qa`); no widgets; no *new* geometry algorithms |
 | `ui_helpers.py` | Streamlit-free helpers: `active_transect_selection`, `svg_is_valid`, workflow stage |
 | `ui_output_presets.py` | Named output presets → sidebar / `SectionBuildRequest` field mapping |
 | `section_build_request.py` | Frozen `SectionBuildRequest` + `cache_key()` (UI staleness) + `geometry_cache_payload()` / `geometry_cache_key()` (engine DTO; also covered by `pipeline-orchestration.mdc`) |
@@ -36,11 +36,12 @@ request = SectionBuildRequest(...)
 subset = subset_parse_result(parse_result, active_hole_ids, lithology_index=...)
 result = cached_build_section(subset.model_dump_json(), request.model_dump_json())
 # → SVG-first; Prepare via cached_build_section_exports() (png/pdf wrappers share that draw)
-# Geometry cache keys on request.geometry_cache_payload() — cosmetics do not bust geometry
+# Geometry cache keys on request.geometry_cache_payload() — cosmetics and QA flags do not bust geometry
+# Post-cache: _apply_section_geometry_qa(fail_on_overlaps / warn_on_correlation_gaps)
 ```
 
 - **UI staleness key:** `SectionBuildRequest.cache_key(hole_ids)` in `st.session_state.render_cache_key`
-- **Geometry cache key:** `geometry_cache_payload()` JSON passed to `cached_compute_section_geometry` (not full request JSON)
+- **Geometry cache key:** `geometry_cache_payload()` JSON passed to `cached_compute_section_geometry` (not full request JSON; excludes `fail_on_overlaps` / `warn_on_correlation_gaps`)
 - **Transect selection cache:** `app_common._active_transect_selection()` memoizes `ui_helpers.active_transect_selection()` in session state
 - **Session keys:** `DEFAULT_SESSION` in `app_state.py`; use `clear_section_output_state()` / domain clears
 - **SVG display:** `st.markdown` + base64 `<img>` via `svg_display_meta()` — never `st.image()` on raw SVG
@@ -51,16 +52,16 @@ result = cached_build_section(subset.model_dump_json(), request.model_dump_json(
 
 **Upload → Validate → Configure → Generate** (Prepare PNG/PDF is a Generate export action)
 
-1. **Upload** — file uploader, profile, CRS, elevation, Parse; import report (optional sheets, geology counts, `unit_order` / `unit_order_auto_assigned`)
-2. **Validate** — Data Health, fix-path coach, lithology mapping, sheet roles, QA narrative; water/screens/environmental summaries when sheets present
-3. **Configure** — transect (incl. NL pick), `cached_configure_preflight()` (correlation + overlap), environmental parameter multiselect → `SectionBuildRequest.environmental_parameters`, section Q&A, consulting report sheet fields
+1. **Upload** — file uploader, profile, CRS, elevation, Parse; import report (optional sheets incl. Field Data OVA/EC → environmental readings, geology counts, `unit_order` / `unit_order_auto_assigned`)
+2. **Validate** — Data Health, fix-path coach, lithology mapping, sheet roles, QA narrative; water/screens/environmental summaries when sheets (or Field Data–sourced readings) are present
+3. **Configure** — transect (incl. NL pick), `cached_configure_preflight()` (correlation + overlap **and** warms `cached_compute_section_geometry`), environmental parameter multiselect → `SectionBuildRequest.environmental_parameters`, section Q&A, consulting report sheet fields
 4. **Generate** — warnings gate, `cached_build_section()` (**SVG only**), overlap warnings; **Prepare PNG & PDF** (and expander PNG/PDF buttons) all call `cached_build_section_exports()` so one matplotlib draw fills both formats
 
 ## Layouts
 
 - `section_sheet`, `consulting_section`, `chart` via `render_layout`
 - Lithology fills use BH Log legend colours via `get_lithology_style()` (constants aliased as `USGS_LITHOLOGY_*`); legend in title block
-- Optional workbook sheets: **Screens**, **Gradients**, **Environmental** (see `docs/workbook-format.md`)
+- Optional workbook sheets: **Screens**, **Gradients**, **Environmental**, **Field Data** (OVA/EC → environmental readings; see `docs/workbook-format.md`)
 
 ## Boundaries
 

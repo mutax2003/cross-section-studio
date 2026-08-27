@@ -52,10 +52,11 @@ Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) 
 
 After `_polygons_for_pair()` builds polygons for one adjacent hole pair, **`_resolve_overlaps_in_pair()`** clips deeper fence polygons so inter-hole fills do not stack on top of shallower units:
 
-1. Sort polygons by descending top elevation (`bounds[3]`, then `bounds[1]`)
-2. Walk in order; subtract already-occupied area from each polygon via Shapely `difference`
-3. Keep the largest remaining polygon fragment (`_largest_polygon`); drop empty fragments
-4. Union occupied area for subsequent clips
+1. Sort polygons by `(is_pinch_out, -bounds[3], bounds[1])` — continuous fills before pinch-outs, then descending top elevation
+2. Walk in order; skip probes that do not intersect occupied area (`shapely.prepared.prep` when available for faster `intersects` / `touches`)
+3. Subtract already-occupied area from each polygon via Shapely `difference`
+4. Keep the largest remaining polygon fragment (`_largest_polygon`); drop empty fragments
+5. Batch-union occupied area every `batch_limit` (4) polygons (or at end) and refresh the prepared geometry
 
 Called inside `build_stratigraphy()` for every adjacent pair **before** polygons are returned to the pipeline. This reduces false overlap markers on section-sheet figures; residual overlaps may still be detected and surfaced.
 
@@ -88,7 +89,7 @@ detect_polygon_overlaps(polygons) -> list[PolygonOverlap]
 log_polygon_overlaps(overlaps) -> None
 ```
 
-Returns empty polygon list when fewer than 2 holes on profile. `preview_correlation_health` is used by **`app_services.preflight_correlation_health()`** / **`cached_configure_preflight()`** (UI preflight, not pipeline). Overlap preview uses **`preflight_polygon_overlap_warnings()`**.
+Returns empty polygon list when fewer than 2 holes on profile. `preview_correlation_health` is used by **`app_services.cached_configure_preflight()`** (UI Configure; also warms geometry cache) and uncached **`preflight_correlation_health()`** (tests/helpers). Overlap preview in UI comes from cached preflight / `SectionGeometry.overlap_pairs`; uncached **`preflight_polygon_overlap_warnings()`** remains for helpers/tests.
 
 ## Overlap detection (post-clip)
 

@@ -16,7 +16,7 @@ Engineering-grade **Borehole Cross-Section Generation Platform** (Python 3.12, S
 ## Canonical paths
 
 1. **Data:** `ingest_workbook()` or `DataParser.parse_file()` → `ParseResult`
-2. **Render:** `subset_parse_result()` → **`pipeline.build_cross_section()`** → **`CrossSectionResult`**. Streamlit Generate is SVG-first (`cached_build_section`); Prepare PNG & PDF via `cached_build_section_exports()` (one matplotlib draw). `cached_build_section_png` / `_pdf` are thin wrappers over exports. Geometry reuse keys on `SectionBuildRequest.geometry_cache_payload()` (cosmetics do not bust `cached_compute_section_geometry`).
+2. **Render:** `subset_parse_result()` → **`pipeline.build_cross_section()`** → **`CrossSectionResult`**. Streamlit Generate is SVG-first (`cached_build_section`); Prepare PNG & PDF via `cached_build_section_exports()` (one matplotlib draw). `cached_build_section_png` / `_pdf` are thin wrappers over exports. Geometry reuse keys on `SectionBuildRequest.geometry_cache_payload()` (cosmetics and QA flags `fail_on_overlaps` / `warn_on_correlation_gaps` do not bust `cached_compute_section_geometry`; Streamlit applies those flags after cache via `app_services._apply_section_geometry_qa`). Configure `cached_configure_preflight` warms the geometry cache.
 3. **Validation:** Prefer `pipeline.build_cross_section()` over calling engine modules directly.
 
 Prioritize **mathematical exactness** in `projection.py` and **structural validation** in `stratigraphy.py` before plotting. Graceful degradation: warn on bad rows, off-transect collars, placeholder elevations; do not crash silently.

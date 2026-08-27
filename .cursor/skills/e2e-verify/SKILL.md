@@ -47,7 +47,7 @@ Canonical list: `VERIFY_COMMANDS` in `scripts/agent_supervisor.py`. Mirror CI: `
 ## Not part of the gate
 
 - `scripts/run_e2e_tests.py` — optional diagnostic (curated file list → `e2e_test_results.txt`)
-- `scripts/compare_figure_parity.py --suite all` — Quality CI hygiene (suite MSE ceilings); not VERIFY. Use `--warn-only` for local soft MSE runs.
+- `scripts/compare_figure_parity.py --suite all` — Quality CI hygiene (suite MSE ceilings GWM 12000 / P2 4500; default letterbox); not VERIFY. Use `--warn-only` for local soft MSE runs.
 - Streamlit UI steps (Upload → Validate → Configure → Generate) — unrelated naming
 
 ## Overlap warnings

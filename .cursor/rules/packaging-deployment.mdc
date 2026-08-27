@@ -31,11 +31,11 @@ alwaysApply: false
 
 `ops_auth.py`, `ops_logging.py`, `ops_audit.py`, `ops_apm.py` — env-gated. May use Streamlit for the auth gate only; **never** import into `pipeline` / `projection` / `stratigraphy` / `renderer*`.
 
-**Auth (`ops_auth`):** `CROSS_SECTION_AUTH_PASSWORD` enables the gate; `CROSS_SECTION_AUTH_REQUIRED=1` refuses to run if password unset; 5 failed attempts → 30s lockout; `render_logout_control()` shows Sign out when authenticated. Timing-safe compare via `hmac.compare_digest`.
+**Auth (`ops_auth`):** `CROSS_SECTION_AUTH_PASSWORD` enables the gate; `CROSS_SECTION_AUTH_REQUIRED=1` refuses to run if password unset; 5 failed attempts → 30s lockout; `render_logout_control()` shows Sign out when authenticated. Timing-safe compare via fixed-length `hmac.digest` digests + `hmac.compare_digest`. On logout, `_clear_sensitive_session_on_logout()` wipes workbook/parse/export/AI session keys (`_LOGOUT_CLEAR_KEYS`).
 
-**Logging / APM:** secret redaction in `ops_logging`; Sentry `send_default_pii=False` + header scrubbing in `ops_apm`.
+**Logging / APM:** secret redaction in `ops_logging` (incl. query-string API key/password patterns); Sentry `send_default_pii=False` + header / query / message scrubbing in `ops_apm`.
 
-**Audit:** `audit_event` best-effort; path confined under `user_data_dir()`; Generate downloads emit `section_exported`.
+**Audit:** `audit_event` best-effort; `_resolved_audit_path` confines `CROSS_SECTION_AUDIT_LOG` under `user_data_dir()` (raises `PermissionError` on escape); field values redacted via `redact_secrets` before JSONL write; Generate downloads emit `section_exported`.
 
 ## paths.py
 

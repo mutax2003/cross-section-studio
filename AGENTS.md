@@ -51,7 +51,7 @@ PM/Architect prompts (`pm.md`, `architect.md`) are **IDE-only** — the SDK does
 | Lithology codes helper | `lithology_codes.py` | `lithology_codes.py` | `tests/test_pipeline.py` |
 | Water / GW QA & UI | `ai_quality.py`, `app_validate.py` (scout may read both) | One of `ai_quality.py` or one `app_*.py` per pass — do not mix in `--modules` | `tests/test_water_quality.py`, `tests/test_streamlit_app.py` |
 | AI assistant (UI) | `ai_assistant.py` | `ai_assistant.py` only | `tests/test_ai_assistant.py` |
-| SVG-first / Generate cache | `app_services.py`, `section_build_request.py`, `pipeline.py` | Serialize preferred — one per pass (`section_build_request` → `pipeline` → `app_services`); keep `geometry_cache_payload()` in sync with `compute_section_geometry` inputs; kwargs/cache glue may need `app_services` after DTO/pipeline changes | `tests/test_pipeline.py`, `tests/test_section_build_request.py`, `tests/test_import_smoke.py` |
+| SVG-first / Generate cache | `app_services.py`, `section_build_request.py`, `pipeline.py` | Serialize preferred — one per pass (`section_build_request` → `pipeline` → `app_services`); keep `geometry_cache_payload()` in sync with `compute_section_geometry` inputs (**exclude** cosmetics and QA flags; post-cache QA via `_apply_section_geometry_qa`; Configure preflight should warm geometry cache); kwargs/cache glue may need `app_services` after DTO/pipeline changes | `tests/test_pipeline.py`, `tests/test_section_build_request.py`, `tests/test_import_smoke.py` |
 | Pipeline / export | Same triad as SVG-first row (prefer that row for cache/DTO glue) | Serialize preferred — one per pass; SVG-first triad allowlisted (see `module_boundary_warnings`) | `tests/test_pipeline.py`, `tests/test_section_build_request.py` (import-smoke only on SVG-first row) |
 | UI / sidebar / presets | `app_*.py`, `ui_helpers.py`, `ui_output_presets.py` | One `app_*.py` (or one UI helper) per pass | `tests/test_app_helpers.py`, `tests/test_ui_helpers.py`, `tests/test_ui_output_presets.py`, `tests/test_streamlit_app.py` |
 | Menubar / help | `app_menubar.py`, `docs/help/getting-started.md`, `paths.py` | `app_menubar.py` — accelerators use `st.iframe` with `height>0` (not `st.components.v1.html`) | `tests/test_menubar.py`, `tests/test_paths.py` |
@@ -91,7 +91,7 @@ Batch wrapper: `powershell -File scripts/run_verify_batch.ps1` (writes under `or
 
 **Deps:** CI and local verify need `pip install -r requirements.txt -r requirements-dev.txt` (pytest + `cursor-sdk` for supervisor unit tests).
 
-**CI hygiene (not E2E):** `.github/workflows/quality.yml` (PR and push to `main`/`master`) runs scoped ruff, engine coverage ≥70, pip-audit, and figure parity (`--suite all`: suite MSE ceilings hard-fail; `--warn-only` still available for local soft runs; aspirational visual target remains lower but is not the CI gate) — not a substitute for `VERIFY_COMMANDS`.
+**CI hygiene (not E2E):** `.github/workflows/quality.yml` (PR and push to `main`/`master`) runs scoped ruff, engine coverage ≥70, pip-audit, and figure parity (`--suite all`: suite MSE ceilings hard-fail — GWM 12000 / P2 4500 in `scripts/compare_figure_parity.py`; default letterbox resize, `--stretch` for legacy; `--warn-only` still available for local soft runs; aspirational visual target remains lower but is not the CI gate) — not a substitute for `VERIFY_COMMANDS`.
 
 ### IDE iteration verify
 

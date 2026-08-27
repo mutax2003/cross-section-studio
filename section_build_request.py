@@ -21,6 +21,7 @@ from models import (
     VerticalGradient,
     WaterLevel,
 )
+from export_framing import ExportFramingConfig
 from render_profiles import ChemistryColorMode, ColumnHeaderDetail, LayoutMode
 
 ElevationMode = Literal["absolute", "relative"]
@@ -82,6 +83,7 @@ class SectionBuildRequest(BaseModel, frozen=True):
     consulting_title_block: ConsultingTitleBlock | None = None
     screen_intervals: tuple[ScreenInterval, ...] = ()
     vertical_gradients: tuple[VerticalGradient, ...] = ()
+    export_framing: ExportFramingConfig | None = None
 
     def geometry_cache_payload(self) -> dict:
         """Fields that affect ``compute_section_geometry`` (projection + stratigraphy).

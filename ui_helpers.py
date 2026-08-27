@@ -222,3 +222,63 @@ def screen_interval_warnings(
     if not missing:
         return []
     return [f"No screen interval for transect hole(s): {', '.join(missing)}"]
+
+
+def build_export_framing_from_mapping(values: dict[str, object]) -> "ExportFramingConfig":
+    """Construct export framing from sidebar/session values."""
+    from export_framing import ExportFramingConfig
+
+    return ExportFramingConfig(
+        page_preset=values.get("export_page_preset", "auto"),  # type: ignore[arg-type]
+        margin_top_in=float(values.get("export_margin_top_in", 0.0)),
+        margin_bottom_in=float(values.get("export_margin_bottom_in", 0.0)),
+        margin_left_in=float(values.get("export_margin_left_in", 0.0)),
+        margin_right_in=float(values.get("export_margin_right_in", 0.0)),
+        export_dpi=int(values.get("export_dpi", 300)),
+        show_draft_watermark=bool(values.get("export_show_draft_watermark", False)),
+        include_title_block=bool(values.get("export_include_title_block", True)),
+        include_legend=bool(values.get("export_include_legend", True)),
+        include_water_table=bool(values.get("export_include_water_table", True)),
+        include_qa_footer=bool(values.get("export_include_qa_footer", True)),
+        fence_only=bool(values.get("export_fence_only", False)),
+        filename_pattern=values.get("export_filename_pattern", "section_title"),  # type: ignore[arg-type]
+        export_revision=str(values.get("export_revision", "")),
+        viewport_xmin=_optional_float(values.get("export_viewport_xmin")),
+        viewport_xmax=_optional_float(values.get("export_viewport_xmax")),
+        viewport_ymin=_optional_float(values.get("export_viewport_ymin")),
+        viewport_ymax=_optional_float(values.get("export_viewport_ymax")),
+        cad_svg_layers=bool(values.get("export_cad_svg_layers", False)),
+    )
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def export_metadata_payload(
+    *,
+    section_title: str,
+    preset_label: str | None,
+    vertical_exaggeration: float,
+    hole_count: int | None,
+    transect_label: str | None,
+    overlap_warnings: Sequence[str],
+    consulting_fields: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """JSON-serializable metadata for report packages."""
+    payload: dict[str, object] = {
+        "section_title": section_title,
+        "preset": preset_label,
+        "vertical_exaggeration": vertical_exaggeration,
+        "hole_count": hole_count,
+        "transect_label": transect_label,
+        "qa_notes": list(overlap_warnings[:20]),
+    }
+    if consulting_fields:
+        payload.update(consulting_fields)
+    return payload

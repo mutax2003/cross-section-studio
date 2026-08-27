@@ -214,6 +214,7 @@ def _run_build_cross_section(
         consulting_title_block=request.consulting_title_block,
         screen_intervals=request.screen_intervals or subset.screen_intervals,
         vertical_gradients=request.vertical_gradients or subset.vertical_gradients,
+        export_framing=request.export_framing,
     )
     return (
         result.svg_bytes,

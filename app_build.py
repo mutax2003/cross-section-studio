@@ -8,6 +8,7 @@ import streamlit as st
 
 from app_common import _active_transect_selection, _session_correlation_overrides
 from app_services import cached_build_section
+from export_framing import ExportFramingConfig
 from models import (
     ConsultingTitleBlock,
     Lithology,
@@ -109,6 +110,7 @@ def build_section_request(
     elevation_mode: str,
     consulting_title_block: ConsultingTitleBlock | None = None,
     fail_on_overlaps: bool = False,
+    export_framing: ExportFramingConfig | None = None,
 ) -> SectionBuildRequest:
     return SectionBuildRequest(
         transect_points=transect_points,
@@ -157,6 +159,7 @@ def build_section_request(
         correlation_overrides=_session_correlation_overrides(),
         consulting_title_block=consulting_title_block,
         fail_on_overlaps=fail_on_overlaps,
+        export_framing=export_framing,
     )
 
 
@@ -213,6 +216,7 @@ def collect_section_build_request(
     selection: tuple[tuple[str, ...], tuple[tuple[float, float], ...]] | None = None,
     fail_on_overlaps: bool = False,
     output_preset: str | None = None,
+    export_framing: ExportFramingConfig | None = None,
 ) -> tuple[SectionBuildRequest | None, str | None]:
     """Single collector for generate click and staleness checks."""
     if selection is None:
@@ -284,6 +288,7 @@ def collect_section_build_request(
         elevation_mode=elevation_mode,
         consulting_title_block=effective.consulting_title_block,
         fail_on_overlaps=fail_on_overlaps,
+        export_framing=export_framing,
     )
     return request, request.cache_key(active_hole_ids)
 

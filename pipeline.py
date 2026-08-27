@@ -13,6 +13,7 @@ from constants import (
     CORRELATION_LINES_DISCLAIMER,
     INTERPOLATED_DISCLAIMER,
 )
+from export_framing import ExportFramingConfig, merge_framing_into_profile_updates
 from lithology_codes import collect_lithology_codes
 from models import (
     MAX_WATER_SERIES,
@@ -327,6 +328,7 @@ def build_cross_section(
     consulting_title_block: ConsultingTitleBlock | None = None,
     screen_intervals: Sequence[ScreenInterval] | None = None,
     vertical_gradients: Sequence[VerticalGradient] | None = None,
+    export_framing: ExportFramingConfig | None = None,
 ) -> CrossSectionResult:
     """Project, build stratigraphy, render. Returns ``CrossSectionResult`` (also unpackable as a 7-tuple)."""
     export_formats = _normalize_export_formats(export_formats)
@@ -400,6 +402,7 @@ def build_cross_section(
         consulting_title_block=consulting_title_block,
         screen_intervals=screen_intervals,
         vertical_gradients=vertical_gradients,
+        export_framing=export_framing,
     )
 
 
@@ -453,6 +456,7 @@ def render_cross_section_from_geometry(
     consulting_title_block: ConsultingTitleBlock | None = None,
     screen_intervals: Sequence[ScreenInterval] | None = None,
     vertical_gradients: Sequence[VerticalGradient] | None = None,
+    export_framing: ExportFramingConfig | None = None,
 ) -> CrossSectionResult:
     """Render/export from precomputed ``SectionGeometry`` (Prepare can reuse Generate geometry)."""
     export_formats = _normalize_export_formats(export_formats)
@@ -545,6 +549,7 @@ def render_cross_section_from_geometry(
             profile_updates["parameter_draw_markers"] = False
         if show_dry_well_nm is None and not plotted_water:
             profile_updates["show_dry_well_nm"] = False
+    profile_updates = merge_framing_into_profile_updates(export_framing, profile_updates)
     render_profile = profile_with_elevation_mode(base_profile, elevation_mode).model_copy(
         update=profile_updates
     )
@@ -553,8 +558,20 @@ def render_cross_section_from_geometry(
     effective_interpolate_wt = interpolate_water_table
     if render_profile.legend_in_title_block:
         effective_show_legend = False
+    if export_framing is not None and not export_framing.include_legend:
+        effective_show_legend = False
     if render_profile.interpolate_water_table_default:
         effective_interpolate_wt = True
+    if export_framing is not None and not export_framing.include_water_table:
+        effective_interpolate_wt = False
+    effective_consulting_block = consulting_title_block
+    if export_framing is not None and (
+        export_framing.fence_only or not export_framing.include_title_block
+    ):
+        effective_consulting_block = None
+    qa_lines = overlap_warnings
+    if export_framing is not None and not export_framing.include_qa_footer:
+        qa_lines = ()
     renderer = CrossSectionRenderer(
         vertical_exaggeration=vertical_exaggeration,
         scale_bar_length_m=auto_scale_bar_m(x_span),
@@ -575,10 +592,11 @@ def render_cross_section_from_geometry(
         environmental_parameters=tuple(environmental_parameters or ()),
         render_profile=render_profile,
         raster_log_strips=raster_log_strips,
-        consulting_title_block=consulting_title_block,
+        consulting_title_block=effective_consulting_block,
         screen_intervals=screen_intervals or (),
         vertical_gradients=vertical_gradients or (),
         stick_up_by_hole=stick_up_by_hole,
+        export_framing=export_framing,
     )
     figure = renderer.render(
         polygons,
@@ -596,7 +614,7 @@ def render_cross_section_from_geometry(
             collar_depths=collar_depths,
             water_levels=water_levels,
             lithology_codes=lithology_codes,
-            qa_lines=overlap_warnings,
+            qa_lines=qa_lines,
         )
     finally:
         from matplotlib import pyplot as plt

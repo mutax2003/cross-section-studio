@@ -201,6 +201,7 @@ else:
                         selection=configure_state.transect_selection,
                         fail_on_overlaps=configure_state.fail_on_overlaps,
                         output_preset=sidebar.output_preset,
+                        export_framing=sidebar.export_framing,
                     )
                     is_stale = (
                         st.session_state.render_cache_key is None
@@ -224,6 +225,8 @@ else:
                 preset_label=OUTPUT_PRESET_LABELS.get(preset_key),
                 render_layout=sidebar.render_layout,
                 transect_label=transect_label,
+                export_framing=sidebar.export_framing,
+                consulting_title_block=sidebar.consulting_title_block,
             )
         else:
             render_validate_step()
@@ -376,6 +379,7 @@ else:
                     selection=selection,
                     fail_on_overlaps=configure_state.fail_on_overlaps,
                     output_preset=sidebar.output_preset,
+                    export_framing=sidebar.export_framing,
                 )
                 if build_request is None or cache_key is None:
                     raise ValueError("Select at least two holes for the transect")

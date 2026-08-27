@@ -29,6 +29,7 @@ from app_upload import (
     render_input_template_download,
 )
 from constants import USGS_LITHOLOGY_HATCHES, get_lithology_style, save_lithology_style_override
+from export_framing import ExportFramingConfig
 from ingestion import DATA_ENTRY_PROFILE_ID, NATIVE_PROFILE_ID, list_profiles
 from models import ConsultingTitleBlock
 from pipeline import DEFAULT_UNCERTAINTY_SPACING_M
@@ -83,6 +84,59 @@ class SidebarState:
     connect_chemistry_values: bool
     water_line_solid_default: bool | None
     legend_ncol: int
+    export_framing: ExportFramingConfig
+
+
+def _render_export_framing_panel() -> ExportFramingConfig:
+    from ui_helpers import build_export_framing_from_mapping
+
+    st.markdown("**Export framing**")
+    st.selectbox(
+        "Page preset",
+        options=["auto", "tight_fence", "title_block", "letter_portrait", "letter_landscape", "tabloid_landscape"],
+        key="export_page_preset",
+        help="Controls PNG/PDF crop and page size for report deliverables.",
+    )
+    st.selectbox(
+        "Filename pattern",
+        options=["section_title", "project_figure_transect_rev"],
+        key="export_filename_pattern",
+    )
+    st.text_input("Revision / draft tag", key="export_revision", placeholder="Rev A or DRAFT")
+    st.number_input("Export DPI", min_value=150, max_value=600, step=50, key="export_dpi")
+    margin_cols = st.columns(4)
+    with margin_cols[0]:
+        st.number_input("Margin top (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_top_in")
+    with margin_cols[1]:
+        st.number_input("Margin bottom (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_bottom_in")
+    with margin_cols[2]:
+        st.number_input("Margin left (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_left_in")
+    with margin_cols[3]:
+        st.number_input("Margin right (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_right_in")
+    st.toggle("Fence only (hide title block / legend)", key="export_fence_only")
+    st.toggle("DRAFT watermark on PNG/PDF", key="export_show_draft_watermark")
+    st.toggle("CAD-friendly SVG layers", key="export_cad_svg_layers")
+    layer_cols = st.columns(2)
+    with layer_cols[0]:
+        st.toggle("Include title block", key="export_include_title_block")
+        st.toggle("Include lithology legend", key="export_include_legend")
+    with layer_cols[1]:
+        st.toggle("Include water table", key="export_include_water_table")
+        st.toggle("Include QA footer (PDF)", key="export_include_qa_footer")
+    with st.expander("Viewport crop (data coordinates)", expanded=False):
+        crop_cols = st.columns(2)
+        with crop_cols[0]:
+            st.text_input("X min", key="export_viewport_xmin", placeholder="optional")
+            st.text_input("Y min", key="export_viewport_ymin", placeholder="optional")
+        with crop_cols[1]:
+            st.text_input("X max", key="export_viewport_xmax", placeholder="optional")
+            st.text_input("Y max", key="export_viewport_ymax", placeholder="optional")
+    st.text_input(
+        "Save exports to folder (optional)",
+        key="export_output_dir",
+        placeholder=r"P:\Projects\Job\Figures",
+    )
+    return build_export_framing_from_mapping(dict(st.session_state))
 
 
 def render_sidebar() -> SidebarState:
@@ -448,6 +502,9 @@ def render_sidebar() -> SidebarState:
     else:
         consulting_title_block = None
 
+    with st.expander("Export framing & deliverables", expanded=False):
+        export_framing = _render_export_framing_panel()
+
     return SidebarState(
         uploaded=uploaded,
         interpretation_mode=interpretation_mode,
@@ -499,6 +556,7 @@ def render_sidebar() -> SidebarState:
         ),
         water_line_solid_default=preset_config.water_line_solid,
         legend_ncol=2 if bool(st.session_state.get("legend_two_columns", True)) else 1,
+        export_framing=export_framing,
     )
 
 

@@ -18,6 +18,13 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 
 from constants import HATCH_LINE_COLOR, POLYGON_EDGE_COLOR
+from export_framing import (
+    ExportFramingConfig,
+    annotate_svg_layers,
+    apply_draft_watermark,
+    apply_viewport_crop,
+    savefig_kwargs,
+)
 from models import (
     ConsultingTitleBlock,
     EnvironmentalReading,
@@ -107,6 +114,7 @@ class CrossSectionRenderer(
         screen_intervals: Sequence[ScreenInterval] = (),
         vertical_gradients: Sequence[VerticalGradient] = (),
         stick_up_by_hole: dict[str, float] | None = None,
+        export_framing: ExportFramingConfig | None = None,
     ) -> None:
         self.vertical_exaggeration = vertical_exaggeration
         self.scale_bar_length_m = scale_bar_length_m
@@ -131,6 +139,7 @@ class CrossSectionRenderer(
         self.screen_intervals = tuple(screen_intervals)
         self.vertical_gradients = tuple(vertical_gradients)
         self.stick_up_by_hole = dict(stick_up_by_hole or {})
+        self.export_framing = export_framing
         self.water_series_legend: list[WaterSeriesLegendEntry] = []
         self.parameter_series_legend: list[ParameterLegendEntry] = []
         self._has_pinch_out = False
@@ -671,6 +680,20 @@ class CrossSectionRenderer(
             bottom = self._plot_y(collar - strip.depth_bottom, collar)
             y0, height = (top, bottom - top) if top <= bottom else (bottom, top - bottom)
             x_f = float(x)
+            if strip.image_bytes:
+                try:
+                    import matplotlib.image as mpimg
+
+                    arr = mpimg.imread(io.BytesIO(strip.image_bytes), format="png")
+                    ax.imshow(
+                        arr,
+                        extent=(x_f - track_half_width, x_f + track_half_width, y0, y0 + height),
+                        aspect="auto",
+                        zorder=2,
+                    )
+                    continue
+                except Exception:
+                    logger.debug("Raster log image render failed for %s", strip.hole_id, exc_info=True)
             x_lefts.append(x_f - track_half_width)
             y0s.append(y0)
             heights.append(height)
@@ -969,10 +992,16 @@ class CrossSectionRenderer(
         return lines
 
     def _savefig_kwargs(self) -> dict[str, object]:
-        """Consulting uses fixed letter page; other layouts keep tight crop."""
-        if getattr(self.profile, "layout", "") == "consulting_section":
-            return {"bbox_inches": None, "pad_inches": 0.05}
-        return {"bbox_inches": "tight"}
+        """Export framing controls page crop; consulting default is fixed letter page."""
+        return savefig_kwargs(
+            self.export_framing,
+            layout=str(getattr(self.profile, "layout", "")),
+        )
+
+    def _prepare_export_figure(self, figure: Figure) -> Figure:
+        apply_viewport_crop(figure, self.export_framing)
+        apply_draft_watermark(figure, self.export_framing)
+        return figure
 
     def to_svg_bytes(self, fig: Figure) -> bytes:
         buffer = io.BytesIO()
@@ -1030,10 +1059,16 @@ class CrossSectionRenderer(
         pdf_bytes = b""
         save_kwargs = self._savefig_kwargs()
         face = figure.get_facecolor()
+        export_figure = self._prepare_export_figure(figure)
+        export_dpi = (
+            self.export_framing.export_dpi
+            if self.export_framing is not None
+            else 300
+        )
         for fmt in ordered:
             if fmt == "svg":
                 buffer = io.BytesIO()
-                figure.savefig(
+                export_figure.savefig(
                     buffer,
                     format="svg",
                     facecolor=face,
@@ -1042,12 +1077,14 @@ class CrossSectionRenderer(
                 )
                 buffer.seek(0)
                 svg_bytes = buffer.getvalue()
+                if self.export_framing and self.export_framing.cad_svg_layers:
+                    svg_bytes = annotate_svg_layers(svg_bytes)
             elif fmt == "png":
                 buffer = io.BytesIO()
-                figure.savefig(
+                export_figure.savefig(
                     buffer,
                     format="png",
-                    dpi=300,
+                    dpi=export_dpi,
                     facecolor=face,
                     **save_kwargs,
                 )
@@ -1056,7 +1093,7 @@ class CrossSectionRenderer(
             elif fmt == "pdf":
                 if self.profile.layout == "consulting_section":
                     buffer = io.BytesIO()
-                    figure.savefig(
+                    export_figure.savefig(
                         buffer,
                         format="pdf",
                         facecolor=face,

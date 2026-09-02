@@ -15,7 +15,7 @@ def export_binder_pdf(section_pdfs: Sequence[bytes], *, cover_title: str = "Cros
     valid = [payload for payload in section_pdfs if payload]
     if not valid:
         return b""
-    if len(valid) == 1:
+    if len(valid) == 1 or len({payload for payload in valid}) == 1:
         return valid[0]
     buffer = BytesIO()
     with PdfPages(buffer) as pdf:

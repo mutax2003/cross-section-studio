@@ -22,7 +22,7 @@ from export_framing import (
     ExportFramingConfig,
     annotate_svg_layers,
     apply_draft_watermark,
-    apply_viewport_crop,
+    prepare_export_figure,
     savefig_kwargs,
 )
 from models import (
@@ -65,6 +65,40 @@ from renderer_section_sheet import SectionSheetLayoutMixin
 from renderer_water import RendererWaterMixin, WaterSeriesLegendEntry
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_track_half_width(
+    track_width_m: float,
+    *,
+    auto_fit: bool = True,
+    x_profiles: np.ndarray | None = None,
+    x_sorted: bool = False,
+    min_half_m: float = 0.25,
+    spacing_fraction: float = 0.4,
+) -> float:
+    """Resolve borehole column half-width in profile metres.
+
+    ``track_width_m`` is schematic fence width on the X axis (not well diameter).
+    When ``auto_fit`` is on, columns shrink so full width stays within
+    ``spacing_fraction`` of the closest hole spacing (avoids overlapping tracks).
+    Pass ``x_sorted=True`` when ``x_profiles`` is already ascending.
+    """
+    half = max(float(track_width_m) * 0.5, 1e-6)
+    if not auto_fit or x_profiles is None:
+        return half
+    xs = np.asarray(x_profiles, dtype=float).ravel()
+    if xs.size < 2:
+        return half
+    if not x_sorted:
+        xs = np.sort(xs)
+    gaps = np.diff(xs)
+    positive = gaps[gaps > 1e-6]
+    if positive.size == 0:
+        return half
+    max_half = float(positive.min()) * float(spacing_fraction) * 0.5
+    if max_half >= min_half_m:
+        return min(half, max_half)
+    return min(half, max(max_half, 1e-6))
 
 
 @dataclass(frozen=True)
@@ -250,35 +284,36 @@ class CrossSectionRenderer(
         )
 
     def _hole_context(self, projected_df: pd.DataFrame) -> _HoleContext:
-        summary = projected_df.groupby("hole_id", as_index=False, sort=False).agg(
-            x_profile=("x_profile", "first"),
-            collar_elevation=("collar_elevation", "first"),
-            bottom_elevation=("bottom_elevation", "min"),
-            offset_distance=("offset_distance", "first"),
+        summary = (
+            projected_df.groupby("hole_id", as_index=False, sort=False)
+            .agg(
+                x_profile=("x_profile", "first"),
+                collar_elevation=("collar_elevation", "first"),
+                bottom_elevation=("bottom_elevation", "min"),
+                offset_distance=("offset_distance", "first"),
+            )
+            .sort_values("x_profile", kind="mergesort")
         )
-        if not projected_df["x_profile"].is_monotonic_increasing:
-            summary = summary.sort_values("x_profile")
         hole_ids = summary["hole_id"].astype(str).to_numpy()
-        collar_values = summary["collar_elevation"].to_numpy(dtype=float)
         x_values = summary["x_profile"].to_numpy(dtype=float)
-        profile_lookup = {
-            str(hole_id): (float(x_profile), float(collar))
-            for hole_id, x_profile, collar in zip(hole_ids, x_values, collar_values, strict=True)
-        }
-        collar_lookup = {hole_id: collar for hole_id, (_, collar) in profile_lookup.items()}
-        x_by_hole = {hole_id: x_profile for hole_id, (x_profile, _) in profile_lookup.items()}
-        x_span = (
-            float(summary["x_profile"].max() - summary["x_profile"].min())
-            if len(summary) >= 2
-            else 10.0
-        )
+        collar_values = summary["collar_elevation"].to_numpy(dtype=float)
+        profile_lookup: dict[str, tuple[float, float]] = {}
+        collar_lookup: dict[str, float] = {}
+        x_by_hole: dict[str, float] = {}
+        for hole_id, x_profile, collar in zip(hole_ids, x_values, collar_values, strict=True):
+            xf = float(x_profile)
+            cf = float(collar)
+            profile_lookup[hole_id] = (xf, cf)
+            collar_lookup[hole_id] = cf
+            x_by_hole[hole_id] = xf
+        x_span = float(x_values[-1] - x_values[0]) if x_values.size >= 2 else 10.0
         return _HoleContext(
             summary=summary,
             collar_lookup=collar_lookup,
             x_by_hole=x_by_hole,
             profile_lookup=profile_lookup,
             x_span=x_span,
-            track_half=self._track_half_width(x_span),
+            track_half=self._track_half_width(x_values, x_sorted=True),
         )
 
     def _uncertainty_y_bounds(self, hole_summary: pd.DataFrame) -> tuple[float, float]:
@@ -315,10 +350,19 @@ class CrossSectionRenderer(
             return (collar_rls - elevations) * ve
         return elevations * ve
 
-    def _track_half_width(self, x_span: float) -> float:
-        if self.profile.layout in {"section_sheet", "consulting_section"}:
-            return self.profile.track_width_m / 2.0
-        return max(x_span * 0.015, 0.8)
+    def _track_half_width(
+        self,
+        x_profiles: np.ndarray | None = None,
+        *,
+        x_sorted: bool = False,
+    ) -> float:
+        """Half-width of each borehole column in profile metres."""
+        return resolve_track_half_width(
+            float(self.profile.track_width_m),
+            auto_fit=bool(self.profile.auto_fit_track_width),
+            x_profiles=x_profiles,
+            x_sorted=x_sorted,
+        )
 
     def _fence_plot_coords(
         self,
@@ -999,45 +1043,64 @@ class CrossSectionRenderer(
         )
 
     def _prepare_export_figure(self, figure: Figure) -> Figure:
-        apply_viewport_crop(figure, self.export_framing)
-        apply_draft_watermark(figure, self.export_framing)
+        prepare_export_figure(
+            figure,
+            self.export_framing,
+            layout=str(getattr(self.profile, "layout", "")),
+        )
         return figure
 
-    def to_svg_bytes(self, fig: Figure) -> bytes:
-        buffer = io.BytesIO()
-        fig.savefig(
-            buffer,
-            format="svg",
-            facecolor=fig.get_facecolor(),
-            metadata={"Creator": "Cross Section Studio"},
-            **self._savefig_kwargs(),
-        )
-        buffer.seek(0)
-        return buffer.getvalue()
+    def _export_dpi(self, default: int = 300) -> int:
+        if self.export_framing is not None:
+            return int(self.export_framing.export_dpi)
+        return default
 
-    def to_png_bytes(self, fig: Figure, *, dpi: int = 300) -> bytes:
+    def _savefig_format(
+        self,
+        fig: Figure,
+        *,
+        fmt: str,
+        dpi: int | None = None,
+    ) -> bytes:
         buffer = io.BytesIO()
-        fig.savefig(
-            buffer,
-            format="png",
-            dpi=dpi,
-            facecolor=fig.get_facecolor(),
+        kwargs: dict[str, object] = {
+            "format": fmt,
+            "facecolor": fig.get_facecolor(),
             **self._savefig_kwargs(),
-        )
+        }
+        if fmt == "svg":
+            kwargs["metadata"] = {"Creator": "Cross Section Studio"}
+        if fmt == "png":
+            kwargs["dpi"] = dpi if dpi is not None else self._export_dpi()
+        fig.savefig(buffer, **kwargs)
         buffer.seek(0)
-        return buffer.getvalue()
+        payload = buffer.getvalue()
+        if (
+            fmt == "svg"
+            and self.export_framing is not None
+            and self.export_framing.cad_svg_layers
+        ):
+            return annotate_svg_layers(payload)
+        return payload
+
+    def to_svg_bytes(self, fig: Figure) -> bytes:
+        self._prepare_export_figure(fig)
+        return self._savefig_format(fig, fmt="svg")
+
+    def to_png_bytes(self, fig: Figure, *, dpi: int | None = None) -> bytes:
+        self._prepare_export_figure(fig)
+        apply_draft_watermark(fig, self.export_framing)
+        return self._savefig_format(
+            fig,
+            fmt="png",
+            dpi=dpi if dpi is not None else self._export_dpi(),
+        )
 
     def to_pdf_bytes(self, fig: Figure) -> bytes:
         """Single-page vector PDF of the rendered figure."""
-        buffer = io.BytesIO()
-        fig.savefig(
-            buffer,
-            format="pdf",
-            facecolor=fig.get_facecolor(),
-            **self._savefig_kwargs(),
-        )
-        buffer.seek(0)
-        return buffer.getvalue()
+        self._prepare_export_figure(fig)
+        apply_draft_watermark(fig, self.export_framing)
+        return self._savefig_format(fig, fmt="pdf")
 
     def export_figure_bytes(
         self,
@@ -1057,50 +1120,20 @@ class CrossSectionRenderer(
         svg_bytes = b""
         png_bytes = b""
         pdf_bytes = b""
-        save_kwargs = self._savefig_kwargs()
-        face = figure.get_facecolor()
-        export_figure = self._prepare_export_figure(figure)
-        export_dpi = (
-            self.export_framing.export_dpi
-            if self.export_framing is not None
-            else 300
-        )
+        self._prepare_export_figure(figure)
+        export_dpi = self._export_dpi()
+        watermark_applied = False
         for fmt in ordered:
+            if fmt in ("png", "pdf") and not watermark_applied:
+                apply_draft_watermark(figure, self.export_framing)
+                watermark_applied = True
             if fmt == "svg":
-                buffer = io.BytesIO()
-                export_figure.savefig(
-                    buffer,
-                    format="svg",
-                    facecolor=face,
-                    metadata={"Creator": "Cross Section Studio"},
-                    **save_kwargs,
-                )
-                buffer.seek(0)
-                svg_bytes = buffer.getvalue()
-                if self.export_framing and self.export_framing.cad_svg_layers:
-                    svg_bytes = annotate_svg_layers(svg_bytes)
+                svg_bytes = self._savefig_format(figure, fmt="svg")
             elif fmt == "png":
-                buffer = io.BytesIO()
-                export_figure.savefig(
-                    buffer,
-                    format="png",
-                    dpi=export_dpi,
-                    facecolor=face,
-                    **save_kwargs,
-                )
-                buffer.seek(0)
-                png_bytes = buffer.getvalue()
+                png_bytes = self._savefig_format(figure, fmt="png", dpi=export_dpi)
             elif fmt == "pdf":
                 if self.profile.layout == "consulting_section":
-                    buffer = io.BytesIO()
-                    export_figure.savefig(
-                        buffer,
-                        format="pdf",
-                        facecolor=face,
-                        **save_kwargs,
-                    )
-                    buffer.seek(0)
-                    pdf_bytes = buffer.getvalue()
+                    pdf_bytes = self._savefig_format(figure, fmt="pdf")
                 else:
                     # Lazy import: PDF backend/font tools are heavy and slow startup for SVG/PNG-only runs.
                     from report_export import export_section_pdf

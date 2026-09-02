@@ -46,6 +46,7 @@ class SidebarState:
     allow_pinch_outs: bool
     show_ground_surface: bool
     track_width_m: float
+    auto_fit_track_width: bool
     interpolate_water_table: bool
     show_water_elevation_labels: bool
     show_water_legend: bool
@@ -85,6 +86,32 @@ class SidebarState:
     water_line_solid_default: bool | None
     legend_ncol: int
     export_framing: ExportFramingConfig
+
+
+def _render_borehole_column_controls() -> tuple[float, bool]:
+    """Schematic column width + optional auto-fit to hole spacing (always editable)."""
+    track_width_m = st.slider(
+        "Borehole column width (m)",
+        min_value=0.5,
+        max_value=8.0,
+        step=0.25,
+        key="track_width_m",
+        disabled=False,
+        help=(
+            "Schematic width of each borehole track on the section "
+            "(not casing diameter). Typical: section sheet ~3 m, consulting ~1.2 m."
+        ),
+    )
+    auto_fit_track_width = st.toggle(
+        "Auto-fit column width to hole spacing",
+        key="auto_fit_track_width",
+        disabled=False,
+        help=(
+            "When on, columns shrink so full width stays within 40% of the "
+            "closest hole spacing (avoids overlapping tracks)."
+        ),
+    )
+    return float(track_width_m), bool(auto_fit_track_width)
 
 
 def _render_export_framing_panel() -> ExportFramingConfig:
@@ -283,6 +310,8 @@ def render_sidebar() -> SidebarState:
             disabled=report_preset or sample_figure,
             help="Linear interpolation between collar elevations — not a DEM.",
         )
+        st.markdown("**Borehole columns**")
+        track_width_m, auto_fit_track_width = _render_borehole_column_controls()
         with st.expander("Groundwater", expanded=False):
             if force_gw_chrome:
                 st.caption("Consulting layout forces groundwater labels, legend, and interpolation on.")
@@ -371,7 +400,6 @@ def render_sidebar() -> SidebarState:
             help="Warn when a selected borehole is farther than this from the transect line",
         )
 
-    track_width_m = 3.0
     parameter_interpolate_across_gaps = False
     warn_on_correlation_gaps = False
     show_legend = preset_config.show_legend
@@ -385,15 +413,6 @@ def render_sidebar() -> SidebarState:
     consulting_title_block: ConsultingTitleBlock | None = None
 
     with st.expander("Advanced", expanded=False):
-        track_width_m = st.slider(
-            "Track width (m)",
-            min_value=1.5,
-            max_value=6.0,
-            value=3.0,
-            step=0.5,
-            disabled=report_preset or is_consulting_layout,
-            help="Width of each borehole column on the section profile.",
-        )
         column_header_detail = st.selectbox(
             "Borehole label detail",
             options=["id_only", "id_rl_td"],
@@ -514,6 +533,7 @@ def render_sidebar() -> SidebarState:
         allow_pinch_outs=allow_pinch_outs,
         show_ground_surface=show_ground_surface,
         track_width_m=track_width_m,
+        auto_fit_track_width=auto_fit_track_width,
         interpolate_water_table=interpolate_water_table,
         show_water_elevation_labels=show_water_elevation_labels,
         show_water_legend=show_water_legend,

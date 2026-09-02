@@ -27,6 +27,7 @@ class EffectiveRenderOptions:
     layout: str
     show_ground_surface: bool
     track_width_m: float
+    auto_fit_track_width: bool
     show_legend: bool
     interpolate_water_table: bool
     allow_pinch_outs: bool
@@ -39,6 +40,7 @@ def effective_render_options(
     render_layout: str,
     show_ground_surface: bool,
     track_width_m: float,
+    auto_fit_track_width: bool = True,
     show_legend: bool,
     interpolate_water_table: bool,
     allow_pinch_outs: bool,
@@ -53,7 +55,8 @@ def effective_render_options(
     return EffectiveRenderOptions(
         layout=layout,
         show_ground_surface=True if report_preset or is_consulting else show_ground_surface,
-        track_width_m=3.0 if report_preset else track_width_m,
+        track_width_m=track_width_m,
+        auto_fit_track_width=auto_fit_track_width,
         show_legend=False if is_consulting else show_legend,
         interpolate_water_table=(
             True if force_consulting_defaults else interpolate_water_table
@@ -105,6 +108,7 @@ def build_section_request(
     chemistry_threshold_yellow_max: float | None = None,
     render_layout: str,
     track_width_m: float,
+    auto_fit_track_width: bool = True,
     coordinate_reference: str,
     uses_placeholder_elevation: bool,
     elevation_mode: str,
@@ -153,6 +157,7 @@ def build_section_request(
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
         render_layout=render_layout,  # type: ignore[arg-type]
         track_width_m=track_width_m,
+        auto_fit_track_width=auto_fit_track_width,
         coordinate_reference=coordinate_reference,
         uses_placeholder_elevation=uses_placeholder_elevation,
         elevation_mode=elevation_mode,  # type: ignore[arg-type]
@@ -208,6 +213,7 @@ def collect_section_build_request(
     chemistry_threshold_yellow_max: float | None = None,
     render_layout: str,
     track_width_m: float,
+    auto_fit_track_width: bool = True,
     coordinate_reference: str,
     uses_placeholder_elevation: bool,
     elevation_mode: str,
@@ -236,6 +242,7 @@ def collect_section_build_request(
         render_layout=render_layout,
         show_ground_surface=show_ground_surface,
         track_width_m=track_width_m,
+        auto_fit_track_width=auto_fit_track_width,
         show_legend=show_legend,
         interpolate_water_table=interpolate_water_table,
         allow_pinch_outs=allow_pinch_outs,
@@ -283,6 +290,7 @@ def collect_section_build_request(
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
         render_layout=effective.layout,
         track_width_m=effective.track_width_m,
+        auto_fit_track_width=effective.auto_fit_track_width,
         coordinate_reference=coordinate_reference,
         uses_placeholder_elevation=uses_placeholder_elevation,
         elevation_mode=elevation_mode,

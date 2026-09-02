@@ -16,7 +16,15 @@ ChemistryColorMode = Literal["black", "threshold"]
 
 class CrossSectionRenderProfile(BaseModel, frozen=True):
     layout: LayoutMode = "section_sheet"
-    track_width_m: float = Field(default=3.0, gt=0.0)
+    track_width_m: float = Field(
+        default=3.0,
+        gt=0.0,
+        description="Schematic borehole column width on the profile X axis (metres), not casing diameter.",
+    )
+    auto_fit_track_width: bool = Field(
+        default=True,
+        description="Narrow columns when adjacent holes are closer than track_width_m to avoid overlap.",
+    )
     show_grid: bool = False
     show_ground_surface: bool = True
     show_sky_fill: bool = True

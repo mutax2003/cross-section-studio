@@ -87,6 +87,24 @@ def test_generic_consulting_still_forces_water_on() -> None:
     assert effective.show_legend is False
 
 
+def test_report_preset_preserves_track_width() -> None:
+    effective = effective_render_options(
+        report_preset=True,
+        render_layout="section_sheet",
+        show_ground_surface=False,
+        track_width_m=5.5,
+        auto_fit_track_width=False,
+        show_legend=True,
+        interpolate_water_table=False,
+        allow_pinch_outs=False,
+        consulting_title_block=None,
+    )
+    assert effective.layout == "section_sheet"
+    assert effective.track_width_m == 5.5
+    assert effective.auto_fit_track_width is False
+    assert effective.show_ground_surface is True
+
+
 def test_normalize_figure_preset_aliases() -> None:
     assert normalize_figure_preset("gwm_fence") == "gwm_fence"
     assert normalize_figure_preset("P2") == "p2_chemistry_sticks"

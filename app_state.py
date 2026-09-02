@@ -38,6 +38,9 @@ SESSION_SECTION_KEYS = (
     "pdf_bytes",
     "section_build_subset_json",
     "section_build_request_json",
+    "report_package_bytes",
+    "figure_docx_bytes",
+    "batch_package_bytes",
 )
 
 SESSION_AI_KEYS = (
@@ -79,6 +82,9 @@ DEFAULT_SESSION: dict[str, object] = {
     "svg_bytes": None,
     "png_bytes": None,
     "pdf_bytes": None,
+    "report_package_bytes": None,
+    "figure_docx_bytes": None,
+    "batch_package_bytes": None,
     "section_build_subset_json": None,
     "section_build_request_json": None,
     "qa_narrative": None,
@@ -98,6 +104,8 @@ DEFAULT_SESSION: dict[str, object] = {
     "uploaded_name": None,
     "workbook_uploader_key": 0,
     "output_preset": "section_sheet",
+    "track_width_m": 3.0,
+    "auto_fit_track_width": True,
     "allow_pinch_outs": False,
     "show_ground_surface": True,
     "show_hatches": False,

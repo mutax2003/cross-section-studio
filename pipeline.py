@@ -49,6 +49,16 @@ from stratigraphy import (
 logger = logging.getLogger(__name__)
 
 
+def _merge_optional_profile_updates(
+    updates: dict[str, object],
+    *pairs: tuple[str, object | None],
+) -> None:
+    """Apply ``(profile_field, value)`` pairs when value is not None."""
+    for key, value in pairs:
+        if value is not None:
+            updates[key] = value
+
+
 @dataclass(frozen=True)
 class SectionGeometry:
     """Projection + stratigraphy outputs shared by render and future Prepare reuse."""
@@ -322,6 +332,7 @@ def build_cross_section(
     chemistry_threshold_yellow_max: float | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
+    auto_fit_track_width: bool = True,
     elevation_mode: str = "absolute",
     raster_log_strips: Sequence[RasterLogStrip] = (),
     export_formats: frozenset[str] | None = None,
@@ -396,6 +407,7 @@ def build_cross_section(
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
         render_layout=render_layout,
         track_width_m=track_width_m,
+        auto_fit_track_width=auto_fit_track_width,
         elevation_mode=elevation_mode,
         raster_log_strips=raster_log_strips,
         export_formats=export_formats,
@@ -450,6 +462,7 @@ def render_cross_section_from_geometry(
     chemistry_threshold_yellow_max: float | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
+    auto_fit_track_width: bool = True,
     elevation_mode: str = "absolute",
     raster_log_strips: Sequence[RasterLogStrip] = (),
     export_formats: frozenset[str] | None = None,
@@ -467,6 +480,8 @@ def render_cross_section_from_geometry(
         raise ValueError("uncertainty_spacing_m must be positive")
     if uncertainty_offset_m <= 0:
         raise ValueError("uncertainty_offset_m must be positive")
+    if track_width_m <= 0:
+        raise ValueError("track_width_m must be positive")
 
     projected = geometry.projected
     polygons = geometry.polygons
@@ -494,55 +509,38 @@ def render_cross_section_from_geometry(
     )
 
     base_profile = profile_for_layout(render_layout)  # type: ignore[arg-type]
-    profile_updates: dict[str, object] = {"show_ground_surface": show_ground_surface}
-    if render_layout == "section_sheet":
-        profile_updates["track_width_m"] = track_width_m
-    if show_water_elevation_labels is not None:
-        profile_updates["show_water_elevation_labels"] = show_water_elevation_labels
-    if show_water_legend is not None:
-        profile_updates["show_water_legend"] = show_water_legend
-    if show_dry_well_nm is not None:
-        profile_updates["show_dry_well_nm"] = show_dry_well_nm
-    if water_interpolate_across_gaps is not None:
-        profile_updates["water_interpolate_across_gaps"] = water_interpolate_across_gaps
+    profile_updates: dict[str, object] = {
+        "show_ground_surface": show_ground_surface,
+        "track_width_m": track_width_m,
+        "auto_fit_track_width": auto_fit_track_width,
+    }
+    _merge_optional_profile_updates(
+        profile_updates,
+        ("show_water_elevation_labels", show_water_elevation_labels),
+        ("show_water_legend", show_water_legend),
+        ("show_dry_well_nm", show_dry_well_nm),
+        ("water_interpolate_across_gaps", water_interpolate_across_gaps),
+        ("show_parameter_labels", show_parameter_labels),
+        ("parameter_interpolate_segments", parameter_interpolate_segments),
+        ("parameter_interpolate_across_gaps", parameter_interpolate_across_gaps),
+        ("parameter_draw_markers", parameter_draw_markers),
+        ("parameter_marker_size", parameter_marker_size),
+        ("parameter_draw_leaders", parameter_draw_leaders),
+        ("parameter_label_include_units", parameter_label_include_units),
+        ("column_header_detail", column_header_detail),
+        ("show_scale_bar", show_scale_bar),
+        ("show_ve_annotation", show_ve_annotation),
+        ("show_parameter_legend_text", show_parameter_legend_text),
+        ("export_font_family", export_font_family),
+        ("export_font_size", export_font_size),
+        ("water_line_solid", water_line_solid),
+        ("legend_ncol", legend_ncol),
+        ("chemistry_color_mode", chemistry_color_mode),
+        ("chemistry_threshold_green_max", chemistry_threshold_green_max),
+        ("chemistry_threshold_yellow_max", chemistry_threshold_yellow_max),
+    )
     if environmental_parameters:
         profile_updates["show_parameter_markers"] = True
-    if show_parameter_labels is not None:
-        profile_updates["show_parameter_labels"] = show_parameter_labels
-    if parameter_interpolate_segments is not None:
-        profile_updates["parameter_interpolate_segments"] = parameter_interpolate_segments
-    if parameter_interpolate_across_gaps is not None:
-        profile_updates["parameter_interpolate_across_gaps"] = parameter_interpolate_across_gaps
-    if parameter_draw_markers is not None:
-        profile_updates["parameter_draw_markers"] = parameter_draw_markers
-    if parameter_marker_size is not None:
-        profile_updates["parameter_marker_size"] = parameter_marker_size
-    if parameter_draw_leaders is not None:
-        profile_updates["parameter_draw_leaders"] = parameter_draw_leaders
-    if parameter_label_include_units is not None:
-        profile_updates["parameter_label_include_units"] = parameter_label_include_units
-    if column_header_detail is not None:
-        profile_updates["column_header_detail"] = column_header_detail
-    if show_scale_bar is not None:
-        profile_updates["show_scale_bar"] = show_scale_bar
-    if show_ve_annotation is not None:
-        profile_updates["show_ve_annotation"] = show_ve_annotation
-    if show_parameter_legend_text is not None:
-        profile_updates["show_parameter_legend_text"] = show_parameter_legend_text
-    if export_font_family is not None:
-        profile_updates["export_font_family"] = export_font_family
-    if export_font_size is not None:
-        profile_updates["export_font_size"] = export_font_size
-    if water_line_solid is not None:
-        profile_updates["water_line_solid"] = water_line_solid
-    if legend_ncol is not None:
-        profile_updates["legend_ncol"] = legend_ncol
-    if chemistry_color_mode is not None:
-        profile_updates["chemistry_color_mode"] = chemistry_color_mode
-    if chemistry_threshold_green_max is not None:
-        profile_updates["chemistry_threshold_green_max"] = chemistry_threshold_green_max
-    if chemistry_threshold_yellow_max is not None:
-        profile_updates["chemistry_threshold_yellow_max"] = chemistry_threshold_yellow_max
     if render_layout == "consulting_section" and interpretation_mode == "borehole_only":
         profile_updates["show_track_lithology"] = True
         if parameter_draw_markers is None:
@@ -564,6 +562,7 @@ def render_cross_section_from_geometry(
         effective_interpolate_wt = True
     if export_framing is not None and not export_framing.include_water_table:
         effective_interpolate_wt = False
+        plotted_water = ()
     effective_consulting_block = consulting_title_block
     if export_framing is not None and (
         export_framing.fence_only or not export_framing.include_title_block

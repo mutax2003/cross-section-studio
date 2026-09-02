@@ -6,7 +6,9 @@ import json
 import re
 import zipfile
 from io import BytesIO
-from typing import Literal, Mapping, Sequence
+from typing import Literal, Mapping
+
+_FILENAME_SAFE_RE = re.compile(r"[^\w\-]+")
 
 from pydantic import BaseModel, Field
 
@@ -107,6 +109,11 @@ def export_figsize_in(
     return None
 
 
+def _sanitize_stem(text: str, *, fallback: str = "cross_section") -> str:
+    cleaned = _FILENAME_SAFE_RE.sub("_", text.strip())[:80].strip("_")
+    return cleaned or fallback
+
+
 def build_export_filename(
     *,
     pattern: ExportFilenamePattern | str,
@@ -118,8 +125,6 @@ def build_export_filename(
     draft: bool = False,
 ) -> str:
     """Return a sanitized filename stem for deliverables."""
-    from ui_helpers import sanitize_filename
-
     rev = revision.strip()
     if draft and rev and not rev.upper().startswith("DRAFT"):
         rev = f"DRAFT_{rev}"
@@ -130,16 +135,16 @@ def build_export_filename(
         parts = [
             project_number or "project",
             figure_number or "fig",
-            transect_label or sanitize_filename(section_title, fallback="transect"),
+            transect_label or _sanitize_stem(section_title, fallback="transect"),
         ]
         if rev:
             parts.append(rev)
-        stem = "_".join(sanitize_filename(part, fallback="x") for part in parts)
+        stem = "_".join(_sanitize_stem(part, fallback="x") for part in parts)
         return stem[:120].strip("_") or "cross_section"
 
-    stem = sanitize_filename(section_title)
+    stem = _sanitize_stem(section_title)
     if rev:
-        stem = f"{stem}_{sanitize_filename(rev, fallback='rev')}"
+        stem = f"{stem}_{_sanitize_stem(rev, fallback='rev')}"
     return stem[:120].strip("_") or "cross_section"
 
 
@@ -192,6 +197,7 @@ def save_exports_to_directory(
     png_bytes: bytes,
     pdf_bytes: bytes,
     metadata: Mapping[str, object],
+    docx_bytes: bytes | None = None,
 ) -> list[str]:
     """Write export bytes to a project folder; returns written paths."""
     from pathlib import Path
@@ -203,6 +209,7 @@ def save_exports_to_directory(
         f"{stem}.svg": svg_bytes,
         f"{stem}.png": png_bytes,
         f"{stem}.pdf": pdf_bytes,
+        f"{stem}.docx": docx_bytes or b"",
         f"{stem}_metadata.json": json.dumps(metadata, indent=2, default=str).encode("utf-8"),
     }
     for name, payload in mapping.items():
@@ -221,30 +228,17 @@ def png_clipboard_html(png_bytes: bytes) -> str:
     if not png_bytes:
         return "<p>No PNG prepared yet.</p>"
     encoded = base64.b64encode(png_bytes).decode("ascii")
-    return f"""
-<div>
-  <button id="copyPngBtn" type="button">Copy PNG to clipboard</button>
-  <span id="copyPngStatus" style="margin-left:8px;"></span>
-</div>
-<script>
-(function() {{
-  const btn = document.getElementById('copyPngBtn');
-  const status = document.getElementById('copyPngStatus');
-  btn.addEventListener('click', async () => {{
-    try {{
-      const raw = atob('{encoded}');
-      const bytes = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-      const blob = new Blob([bytes], {{type: 'image/png'}});
-      await navigator.clipboard.write([new ClipboardItem({{'image/png': blob}})]);
-      status.textContent = 'Copied';
-    }} catch (err) {{
-      status.textContent = 'Copy failed — use Download PNG';
-    }}
-  }});
-}})();
-</script>
-"""
+    return (
+        '<div><button id="copyPngBtn" type="button">Copy PNG to clipboard</button>'
+        '<span id="copyPngStatus" style="margin-left:8px;"></span></div>'
+        "<script>(function(){"
+        "const b=document.getElementById('copyPngBtn'),s=document.getElementById('copyPngStatus');"
+        "b.addEventListener('click',async()=>{"
+        "try{const u=Uint8Array.from(atob('" + encoded + "'),c=>c.charCodeAt(0));"
+        "await navigator.clipboard.write([new ClipboardItem({'image/png':new Blob([u],{type:'image/png'})})]);"
+        "s.textContent='Copied';}catch(e){s.textContent='Copy failed — use Download PNG';}});"
+        "})();</script>"
+    )
 
 
 def merge_framing_into_profile_updates(
@@ -272,19 +266,26 @@ def merge_framing_into_profile_updates(
     return updates
 
 
+def apply_export_page_size(
+    fig,
+    framing: ExportFramingConfig | None,
+    *,
+    layout: str,
+) -> None:
+    """Resize figure to letter/tabloid preset before raster/vector export."""
+    size = export_figsize_in(framing, layout=layout)
+    if size is not None:
+        fig.set_size_inches(size[0], size[1], forward=True)
+
+
 def apply_viewport_crop(fig, framing: ExportFramingConfig | None) -> None:
     """Restrict axis limits when viewport crop bounds are set."""
     if framing is None:
         return
-    bounds = (
-        framing.viewport_xmin,
-        framing.viewport_xmax,
-        framing.viewport_ymin,
-        framing.viewport_ymax,
-    )
-    if any(value is None for value in bounds):
-        return
-    xmin, xmax, ymin, ymax = bounds
+    xmin = framing.viewport_xmin
+    xmax = framing.viewport_xmax
+    ymin = framing.viewport_ymin
+    ymax = framing.viewport_ymax
     if xmin is None or xmax is None or ymin is None or ymax is None:
         return
     if xmin >= xmax or ymin >= ymax:
@@ -292,6 +293,47 @@ def apply_viewport_crop(fig, framing: ExportFramingConfig | None) -> None:
     for axis in fig.axes:
         axis.set_xlim(xmin, xmax)
         axis.set_ylim(ymin, ymax)
+
+
+def apply_fixed_page_margins(
+    fig,
+    framing: ExportFramingConfig | None,
+    *,
+    layout: str,
+) -> None:
+    """Apply asymmetric margins on fixed-page presets (tight_fence uses pad_inches)."""
+    if framing is None:
+        return
+    if framing.effective_page_preset(layout) == "tight_fence":
+        return
+    if (
+        framing.margin_left_in
+        == framing.margin_right_in
+        == framing.margin_top_in
+        == framing.margin_bottom_in
+        == 0.0
+    ):
+        return
+    width, height = fig.get_size_inches()
+    if width <= 0 or height <= 0:
+        return
+    left = min(max(framing.margin_left_in / width, 0.0), 0.45)
+    right = max(1.0 - min(framing.margin_right_in / width, 0.45), left + 0.05)
+    bottom = min(max(framing.margin_bottom_in / height, 0.0), 0.45)
+    top = max(1.0 - min(framing.margin_top_in / height, 0.45), bottom + 0.05)
+    fig.subplots_adjust(left=left, right=right, bottom=bottom, top=top)
+
+
+def prepare_export_figure(
+    fig,
+    framing: ExportFramingConfig | None,
+    *,
+    layout: str,
+) -> None:
+    """Apply page size, margins, and viewport crop before savefig (not geometry)."""
+    apply_export_page_size(fig, framing, layout=layout)
+    apply_fixed_page_margins(fig, framing, layout=layout)
+    apply_viewport_crop(fig, framing)
 
 
 def apply_draft_watermark(fig, framing: ExportFramingConfig | None) -> None:

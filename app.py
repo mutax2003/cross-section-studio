@@ -191,6 +191,7 @@ else:
                         chemistry_threshold_yellow_max=configure_state.chemistry_threshold_yellow_max,
                         render_layout=sidebar.render_layout,
                         track_width_m=sidebar.track_width_m,
+                        auto_fit_track_width=sidebar.auto_fit_track_width,
                         coordinate_reference=coordinate_reference,
                         uses_placeholder_elevation=bool(
                             import_report and import_report.uses_placeholder_elevation
@@ -371,6 +372,7 @@ else:
                     chemistry_threshold_yellow_max=configure_state.chemistry_threshold_yellow_max,
                     render_layout=sidebar.render_layout,
                     track_width_m=sidebar.track_width_m,
+                    auto_fit_track_width=sidebar.auto_fit_track_width,
                     coordinate_reference=coordinate_reference,
                     uses_placeholder_elevation=uses_placeholder,
                     elevation_mode=configure_state.elevation_mode,

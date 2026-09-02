@@ -512,13 +512,16 @@ def render_configure_step(
             "'Block export on polygon overlaps' after manual review."
         )
 
-    with st.expander("Batch transect export labels", expanded=False):
+    with st.expander("Filename-copy ZIP labels", expanded=False):
         st.text_area(
-            "Transect labels (one per line for batch ZIP on Generate)",
+            "Filename labels (one per line) for copy ZIP on Generate",
             key="batch_transect_labels",
             placeholder="A-A prime\nB-B prime\nC-C prime",
             height=100,
-            help="Uses the current section figure for each label stem in a ZIP package.",
+            help=(
+                "Builds a ZIP with the **current** section figure copied under each label "
+                "as a filename stem. Does not rebuild separate transects."
+            ),
         )
 
     return ConfigureState(

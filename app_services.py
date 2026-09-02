@@ -208,6 +208,7 @@ def _run_build_cross_section(
         chemistry_threshold_yellow_max=request.chemistry_threshold_yellow_max,
         render_layout=request.render_layout,
         track_width_m=request.track_width_m,
+        auto_fit_track_width=request.auto_fit_track_width,
         elevation_mode=request.elevation_mode,
         raster_log_strips=request.raster_log_strips,
         export_formats=export_formats,

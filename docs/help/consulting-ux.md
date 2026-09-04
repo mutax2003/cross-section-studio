@@ -10,9 +10,9 @@ Cross Section Studio targets **2D fence reporting** — Excel as source of truth
 | 2 | **Validate** — QA metrics, lithology mapping | Data checker, import QA |
 | 3 | **Configure** — plan view, hole order, transect A–A′ | Fence line / section definition |
 | 4 | **Generate** — SVG profile (fast preview) | Section preview |
-| 5 | **Prepare PNG & PDF** — raster exports on demand | Report sheet / layout export |
+| 5 | **Prepare deliverables** — PNG/PDF (one draw); optional Word / multi-transect ZIP | Report sheet / layout export |
 
-> **Note:** Rows 1–4 map to Streamlit’s four workflow steps (Upload → Validate → Configure → Generate). **Prepare** is a Generate-step export action, not a fifth workflow step.
+> **Note:** Rows 1–4 map to Streamlit’s four workflow steps (Upload → Validate → Configure → Generate). **Prepare deliverables** is a Generate-step export action, not a fifth workflow step.
 
 ## UI patterns
 

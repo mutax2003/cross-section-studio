@@ -50,7 +50,7 @@ result = build_cross_section(
 | `cache_key(hole_ids)` | Full request + holes — UI staleness (`render_cache_key`) |
 | `geometry_cache_payload()` / `geometry_cache_key(hole_ids)` | Projection/stratigraphy inputs only — Streamlit `cached_compute_section_geometry` |
 
-Geometry payload includes transect, offsets, interpretation mode, pinch-outs, correlation overrides, deviations, and `max_offset_for_interpolation_m`. **Excludes** cosmetics (title, VE, hatches, fonts, water/chemistry display, layout), uncertainty banding thresholds (renderer-only), and QA flags (`fail_on_overlaps`, `warn_on_correlation_gaps`) — those are applied after a geometry cache hit via `app_services._apply_section_geometry_qa()`.
+Geometry payload includes transect, offsets, interpretation mode, pinch-outs, correlation overrides, deviations, and `max_offset_for_interpolation_m`. **Excludes** cosmetics (title, VE, hatches, fonts, water/chemistry display, layout, `export_framing`, `track_width_m`, `auto_fit_track_width`), uncertainty banding thresholds (renderer-only), and QA flags (`fail_on_overlaps`, `warn_on_correlation_gaps`) — those are applied after a geometry cache hit via `app_services._apply_section_geometry_qa()`.
 
 Note: pipeline defaults `allow_pinch_outs=True`; **`SectionBuildRequest.allow_pinch_outs` defaults `False`** (conservative UI default). `correlation_lines` still builds polygons; fill vs line-only is renderer-side.
 
@@ -63,11 +63,11 @@ Note: pipeline defaults `allow_pinch_outs=True`; **`SectionBuildRequest.allow_pi
 | `PDF_EXPORT_FORMATS` | `{"pdf"}` | PDF-only callers |
 | `ALL_EXPORT_FORMATS` | `{"svg", "png", "pdf"}` | `cached_build_section_bundle` / scripts; Generate uses SVG-only |
 
-Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes the same figure to requested formats. PDF uses `report_export.export_section_pdf()` with the existing figure (no second render when `section_figure` is passed). Consulting exports use a fixed letter landscape canvas (`figsize=(11, 8.5)`, `bbox_inches=None`) so PNG at 300 dpi is ≈ 3300×2550.
+Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes the same figure to requested formats. PDF uses `report_export.export_section_pdf()` with the existing figure (no second render when `section_figure` is passed). Consulting defaults to a fixed letter landscape canvas (`figsize=(11, 8.5)`, `bbox_inches=None`) so PNG at 300 dpi is ≈ 3300×2550; **`ExportFramingConfig` page presets / margins may override at export time**.
 
 ## Flow
 
-**Geometry stage:** `compute_section_geometry()` — projection, stratigraphy, overlap/correlation QA, lithology codes. `build_cross_section()` calls it then renders/exports. Streamlit Generate is SVG-first; Prepare reuses `SectionGeometry` from `cached_compute_section_geometry` (keyed by geometry-scoped JSON, not full request) and draws PNG+PDF together.
+**Geometry stage:** `compute_section_geometry()` — projection, stratigraphy, overlap/correlation QA, lithology codes. `build_cross_section()` calls it then renders/exports. Streamlit Generate is SVG-first; **Prepare deliverables** reuses `SectionGeometry` from `cached_compute_section_geometry` (keyed by geometry-scoped JSON, not full request) and draws PNG+PDF together.
 
 1. `Transect(points=...)` → `project_boreholes()` → projected DataFrame
 2. `filter_projected_for_interpolation()` / `_filter_projected_for_interpolation()` when `max_offset_for_interpolation_m` set — drops **whole holes** whose **max** `offset_distance` exceeds the threshold (unique `hole_id`, not individual lithology rows); requires ≥2 holes remaining
@@ -76,8 +76,8 @@ Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes t
 5. When polygons exist (≥2): `detect_polygon_overlaps(polygons)` → `log_polygon_overlaps()` → overlap warnings (residual overlaps after clipping). Optional `warn_on_correlation_gaps=True` appends correlation-gap messages from `preview_correlation_health()` (warn-only).
 6. `collect_lithology_codes(projected, polygons)` via `lithology_codes.py`
 7. `auto_scale_bar_m(x_span)` picks nearest scale-bar length from `[1, 2, 5, 10, 20, 50]` m
-8. `profile_for_layout(render_layout)` + `profile_with_elevation_mode()` → merge water/GW flags (`water_interpolate_segments`, `water_interpolate_across_gaps`, `show_water_elevation_labels`, …) → `CrossSectionRenderer(render_profile=...)`
-9. `renderer.render(...)` → one figure → `renderer.export_figure_bytes(figure, export_formats, ...)`
+8. `profile_for_layout(render_layout)` + `profile_with_elevation_mode()` → merge water/GW flags and track width / auto-fit → `merge_framing_into_profile_updates(export_framing, …)` for layer toggles → `CrossSectionRenderer(render_profile=..., export_framing=...)`
+9. `renderer.render(...)` → one figure → `renderer.export_figure_bytes(figure, export_formats, ...)` (framing: `prepare_export_figure`, DPI, draft watermark, optional CAD SVG metadata — **post-geometry**)
 
 **Water table (renderer, not stratigraphy):** `_draw_water_table()` draws per-series markers + dashed lines. Labels follow Y-axis mode: **masl** (prefer stored `elevation_masl`) in `elevation_rl`, **mbgs** in `depth_below_collar`. Default **segment mode** connects only consecutive transect holes with readings; `water_interpolate_across_gaps=True` restores full min→max span. Consulting profile forces interpolation on; section sheet uses profile/sidebar toggles.
 
@@ -98,7 +98,7 @@ Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes t
 ## Streamlit export strategy
 
 - **Generate:** `cached_build_section()` builds **SVG only**; geometry via `cached_compute_section_geometry(subset_json, geometry_request_json)` → `SectionGeometry` (Streamlit `@st.cache_data` serializes; no manual pickle). Cache always computes with `fail_on_overlaps=False` / `warn_on_correlation_gaps=True`; `_apply_section_geometry_qa()` then applies the request’s real QA flags.
-- **Prepare:** all UI paths (`Prepare PNG & PDF`, PNG-only, PDF-only) use `cached_build_section_exports()` — **one** matplotlib draw for both formats; reuses cached `SectionGeometry` (no second projection/stratigraphy pass)
+- **Prepare deliverables:** UI builds PNG+PDF via `cached_build_section_exports()` — **one** matplotlib draw for both formats; reuses cached `SectionGeometry`. Optional DOCX (`docx_export`). **Multi-transect ZIP** (`batch_export.build_multi_transect_exports`) rebuilds each Configure batch line through the pipeline.
 - **Wrappers:** `cached_build_section_png()` / `cached_build_section_pdf()` delegate to exports (shared draw cache); UI `_ensure_png_export` / `_ensure_pdf_export` call `_ensure_both_exports()`
 - **One-shot:** `cached_build_section_bundle()` still offers SVG+PNG+PDF for scripts; not used by Generate
 - **API:** `render_cross_section_from_geometry()` renders from precomputed geometry without re-projecting
@@ -117,12 +117,14 @@ Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes t
 ## Consumers
 
 - `app_services.cached_build_section()` — SVG-only Generate (reuses geometry cache for Prepare)
-- `app_services.cached_build_section_exports()` — Prepare PNG & PDF (one draw)
+- `app_services.cached_build_section_exports()` — Prepare deliverables PNG & PDF (one draw)
 - `app_services.cached_build_section_png()` / `cached_build_section_pdf()` — thin wrappers → exports
 - `app_services.cached_build_section_bundle()` — optional one-shot SVG+PNG+PDF
 - `app_services.cached_configure_preflight()` — Configure correlation + overlap QA **and** warms Generate geometry cache when inputs match
+- `batch_export` / `docx_export` / `export_framing` — post-render packaging and cosmetics (not geometry)
 - `scripts/smoke_test.py` — end-to-end smoke via `build_cross_section()`
 - `tests/conftest.py` — `run_pipeline()`
+- Tests: `tests/test_pipeline.py`, `tests/test_section_build_request.py`, `tests/test_export_framing.py`, `tests/test_batch_export.py`, `tests/test_docx_export.py`
 - CLI plot scripts — see catalog Entry Points (`plot_advantage_transects.py`, `plot_advantage_p2_chloride_transects.py`, `plot_ecoventure_gwm.py`, …)
 
 When adding new render options, extend `build_cross_section()` parameters (and `SectionBuildRequest`) — do not add parallel render paths in `app.py`.

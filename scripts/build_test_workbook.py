@@ -112,7 +112,7 @@ def main() -> Path:
                 "In Streamlit sidebar, upload this file (data/test_workbook.xlsx).",
                 "Validate: check Data Health, groundwater series, chloride coverage.",
                 "Configure: choose MW-01 → MW-04 (omit MW-05 to avoid off-transect noise, or include it to test offsets).",
-                "Generate: SVG should appear immediately; use Prepare PNG / Prepare PDF for deliverables.",
+                "Generate: SVG should appear immediately; use Prepare deliverables for PNG/PDF/Word/package.",
                 "Regenerate anytime: python scripts/build_test_workbook.py",
             ],
         }

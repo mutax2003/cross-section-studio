@@ -512,15 +512,51 @@ def render_configure_step(
             "'Block export on polygon overlaps' after manual review."
         )
 
-    with st.expander("Filename-copy ZIP labels", expanded=False):
+    with st.expander("Multi-transect batch ZIP", expanded=False):
+        st.caption(
+            "One transect per line: ``Label | hole1, hole2, …``. "
+            "Generate rebuilds each line (not filename copies)."
+        )
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("Add current transect", key="batch_add_current"):
+                selection = preflight_selection
+                if selection is None:
+                    st.warning("Pick a transect first.")
+                else:
+                    hole_ids, _pts = selection
+                    label = (
+                        str(st.session_state.get("consulting_section_label") or "").strip()
+                        or f"{hole_ids[0]}→{hole_ids[-1]}"
+                    )
+                    line = f"{label} | {', '.join(hole_ids)}"
+                    existing = str(st.session_state.get("batch_transect_specs", "")).rstrip()
+                    st.session_state["batch_transect_specs"] = (
+                        f"{existing}\n{line}".strip() if existing else line
+                    )
+                    st.rerun()
+        with col_b:
+            if st.button("Fill from recommended", key="batch_fill_recommended"):
+                candidates = st.session_state.get("transect_candidates") or []
+                if not candidates:
+                    st.warning("Switch to Recommended mode once to load candidates.")
+                else:
+                    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    lines: list[str] = []
+                    for idx, candidate in enumerate(candidates[:8]):
+                        letter = letters[idx] if idx < len(letters) else str(idx + 1)
+                        label = f"{letter}-{letter}'"
+                        lines.append(f"{label} | {', '.join(candidate.hole_ids)}")
+                    st.session_state["batch_transect_specs"] = "\n".join(lines)
+                    st.rerun()
         st.text_area(
-            "Filename labels (one per line) for copy ZIP on Generate",
-            key="batch_transect_labels",
-            placeholder="A-A prime\nB-B prime\nC-C prime",
-            height=100,
+            "Batch transects",
+            key="batch_transect_specs",
+            placeholder="A-A' | BH-01, BH-02, BH-03\nB-B' | BH-08, BH-09, BH-10",
+            height=120,
             help=(
-                "Builds a ZIP with the **current** section figure copied under each label "
-                "as a filename stem. Does not rebuild separate transects."
+                "Each line is rebuilt through the cross-section pipeline when you build "
+                "the multi-transect ZIP on Generate."
             ),
         )
 

@@ -1,6 +1,6 @@
 ---
-description: Vector rendering, lithology fills, scale bar, and label anti-collision
-globs: renderer.py,**/renderer.py,renderer_*.py,render_profiles.py,render_theme.py,report_export.py,constants.py
+description: Vector rendering, lithology fills, scale bar, track width, and export framing cosmetics
+globs: renderer.py,**/renderer.py,renderer_*.py,render_profiles.py,render_theme.py,report_export.py,export_framing.py,constants.py
 alwaysApply: false
 ---
 
@@ -8,13 +8,14 @@ alwaysApply: false
 
 | Module | Role |
 |--------|------|
-| `renderer.py` | `CrossSectionRenderer` facade; dispatches to layout mixins; overlays/export live here |
+| `renderer.py` | `CrossSectionRenderer` facade; dispatches to layout mixins; overlays/export; `resolve_track_half_width()` |
 | `renderer_common.py` | `RendererGeometryMixin` — wells, screens, style resolution, shared collections |
 | `renderer_water.py` | `RendererWaterMixin` — water table markers/segments (`LineCollection`), legends |
 | `renderer_chemistry.py` | `RendererChemistryMixin` — environmental parameter labels/fence/sticks |
 | `renderer_section_sheet.py` | `SectionSheetLayoutMixin` — Strater-like section sheet (fixed `subplots_adjust`, no `tight_layout`) |
 | `renderer_chart.py` | `ChartLayoutMixin` — legacy debug chart |
 | `renderer_consulting.py` | `ConsultingLayoutMixin` — report sheet, title block, screens/gradients |
+| `export_framing.py` | Page/DPI/margins, draft watermark, CAD SVG metadata — **cosmetic**; not geometry |
 
 Input: `GeologicalPolygon` list, projected DataFrame, optional `WaterLevel` / screens / gradients / `EnvironmentalReading`.
 Output: Matplotlib figure or SVG/PNG/PDF bytes.
@@ -32,6 +33,7 @@ Lithology fills use the **BH Log** legend (Excel → `constants.get_lithology_st
 |-------|-------------------------|-------------------|----------------|
 | `layout` | `section_sheet` | `consulting_section` | `chart` |
 | `track_width_m` | 3.0 | 1.2 (white columns) | 1.6 |
+| `auto_fit_track_width` | optional | optional | optional |
 | `show_track_lithology` | true | false | true |
 | `show_grid` / `show_report_grid` | false | report grid (1 m / 10 m) | true |
 | `show_ground_surface` / `show_sky_fill` | true / true | true / false | false |
@@ -45,6 +47,8 @@ Lithology fills use the **BH Log** legend (Excel → `constants.get_lithology_st
 
 Wire profile via `pipeline.build_cross_section(render_layout=..., elevation_mode=...)` or `CrossSectionRenderer(render_profile=...)`.
 Theme colors live in `render_theme.py`.
+
+**Track width:** schematic fence column width on the profile X axis (not casing diameter). `auto_fit_track_width` + `resolve_track_half_width()` may shrink columns vs closest hole spacing (cap ~40%). Cosmetic — does not change projection/stratigraphy; excluded from `geometry_cache_payload()`.
 
 ## Interpretation Modes
 
@@ -121,9 +125,11 @@ Water is a **rule-based overlay** (markers + linear segments between measured ho
 ## Export
 
 - `to_svg_bytes()` / `to_png_bytes(dpi=300)` on rendered figure
-- `export_figure_bytes(figure, export_formats, ...)` — single figure, selective encoding via `export_formats` (ordered svg → png → pdf; avoid extra `canvas.draw()`)
-- `pipeline.build_cross_section(export_formats=...)` returns SVG/PNG/PDF bytes per format set (default `{"svg"}` for tests)
-- Streamlit Generate: `cached_build_section()` is **SVG-only**; Prepare (button or expander) always uses `cached_build_section_exports()` — one draw for PNG+PDF; `cached_build_section_png` / `_pdf` are thin wrappers
-- Geometry Streamlit cache: `cached_compute_section_geometry(subset_json, geometry_request_json)` returns `SectionGeometry` (Streamlit serializes once); keyed from `geometry_cache_payload()` — title/VE/hatches/fonts and QA flags do not invalidate geometry (post-cache QA in `app_services`)
+- `export_figure_bytes(figure, export_formats, ...)` — single figure, selective encoding via `export_formats` (ordered svg → png → pdf; avoid extra `canvas.draw()`); applies `ExportFramingConfig` (page size/margins/DPI, draft watermark on PNG/PDF, optional CAD SVG metadata)
+- `pipeline.build_cross_section(export_formats=..., export_framing=...)` returns SVG/PNG/PDF bytes per format set (default `{"svg"}` for tests)
+- Streamlit Generate: `cached_build_section()` is **SVG-only**; **Prepare deliverables** uses `cached_build_section_exports()` — one draw for PNG+PDF; `cached_build_section_png` / `_pdf` are thin wrappers
+- Geometry Streamlit cache: `cached_compute_section_geometry(subset_json, geometry_request_json)` returns `SectionGeometry` (Streamlit serializes once); keyed from `geometry_cache_payload()` — title/VE/hatches/fonts/`export_framing`/`track_width_m`/`auto_fit_track_width` and QA flags do not invalidate geometry (post-cache QA in `app_services`)
+- Consulting defaults to fixed letter landscape canvas; **page presets / margins in `ExportFramingConfig` may override at export time**
 - `report_export.export_section_pdf()` — page 1 section, page 2 legend/metadata/QA summary; reuses `section_figure` when provided
 - Allowed: import stratigraphy **types** (`GeologicalPolygon`, `PolygonOverlap`) — not correlation/pinch-out logic
+- Packaging (DOCX / ZIP / clipboard / folder) lives in `docx_export` / `batch_export` / Generate UI — not in renderer mixins

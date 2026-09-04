@@ -25,9 +25,13 @@ Click **Prepare deliverables (PNG · PDF · Word · package)** once. That builds
 
 Under **Export framing & deliverables**: page preset, margins, DPI, fence-only, DRAFT watermark, layer toggles, viewport crop, filename pattern, CAD-friendly SVG tag (metadata hint only — not full CAD layer groups), and optional output folder path.
 
-## Filename-copy ZIP (optional)
+## Multi-transect ZIP
 
-Configure → **Batch transect export labels**: one label per line. On Generate, **Build filename-copy ZIP** packages the **current** figure under each filename stem. It does **not** rebuild separate transects.
+Configure → **Multi-transect batch ZIP**: one line per transect as `Label | hole1, hole2, …`.
+
+On Generate, **Build multi-transect ZIP** rebuilds SVG/PNG/PDF for each line through the pipeline (distinct figures), then packages them. Optional **report_binder.pdf** merges section PDFs when `pypdf` is installed.
+
+Helpers: **Add current transect** and **Fill from recommended** (after Recommended mode has run once).
 
 ## CAD note
 

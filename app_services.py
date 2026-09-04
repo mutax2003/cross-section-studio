@@ -127,7 +127,7 @@ def _cached_section_inputs(
 def cached_compute_section_geometry(
     subset_json: str, geometry_request_json: str
 ) -> SectionGeometry:
-    """``SectionGeometry`` shared by Generate SVG and Prepare PNG/PDF.
+    """``SectionGeometry`` shared by Generate SVG and Prepare deliverables (PNG/PDF).
 
     Streamlit ``@st.cache_data`` serializes the returned object. Cache key is
     geometry-scoped JSON from ``SectionBuildRequest.geometry_cache_payload()``

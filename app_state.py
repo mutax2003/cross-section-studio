@@ -139,7 +139,7 @@ DEFAULT_SESSION: dict[str, object] = {
     "export_viewport_ymax": None,
     "export_cad_svg_layers": False,
     "export_output_dir": "",
-    "batch_transect_labels": "",
+    "batch_transect_specs": "",
     "parameter_marker_size": 16.0,
     "connect_chemistry_values": False,
 }

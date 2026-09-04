@@ -7,10 +7,16 @@ import streamlit.components.v1 as components
 
 from app_common import _display_svg, _render_overlap_warnings, _render_profile_chips
 from app_services import cached_build_section_bundle, cached_build_section_exports
-from batch_export import build_batch_zip, export_binder_pdf
+from batch_export import (
+    build_batch_zip,
+    build_multi_transect_exports,
+    export_binder_pdf,
+    parse_batch_transect_lines,
+)
 from docx_export import build_figure_docx_bytes
 from export_framing import ExportFramingConfig, build_export_filename, build_report_package_bytes, png_clipboard_html, save_exports_to_directory
 from models import ConsultingTitleBlock
+from section_build_request import SectionBuildRequest
 from ui_helpers import export_metadata_payload, sanitize_filename
 
 try:
@@ -192,48 +198,64 @@ def _render_batch_export(
     *,
     section_title: str,
     export_framing: ExportFramingConfig | None,
+    consulting_title_block: ConsultingTitleBlock | None,
     is_stale: bool,
 ) -> None:
-    labels_raw = str(st.session_state.get("batch_transect_labels", "")).strip()
-    if not labels_raw:
+    specs_raw = str(st.session_state.get("batch_transect_specs", "")).strip()
+    if not specs_raw:
         return
-    labels = [line.strip() for line in labels_raw.splitlines() if line.strip()]
-    if not labels:
+    st.markdown("**Multi-transect ZIP**")
+    try:
+        specs = parse_batch_transect_lines(specs_raw)
+    except ValueError as exc:
+        st.warning(str(exc))
         return
-    st.markdown("**Filename copies (batch ZIP)**")
     st.caption(
-        f"{len(labels)} label(s) — packages the **current** section figure under each "
-        "filename stem (does not rebuild separate transects)."
+        f"{len(specs)} transect(s) — each line rebuilds SVG/PNG/PDF via the pipeline "
+        "(not filename copies of the current figure)."
     )
     if is_stale:
-        st.info("Regenerate the current section before batch export.")
+        st.info("Regenerate the current section first so style settings are locked for batch.")
         return
-    if st.button("Build filename-copy ZIP", key="prepare_batch_zip"):
-        svg_bytes, png_bytes, pdf_bytes = _ensure_all_exports()
-        entries = [
-            (
-                sanitize_filename(
-                    _export_stem(
-                        section_title=section_title,
-                        export_framing=export_framing,
-                        consulting_title_block=None,
-                        transect_label=label,
-                    )
-                ),
-                svg_bytes,
-                png_bytes,
-                pdf_bytes,
+    parse_result = st.session_state.get("parse_result")
+    request_json = st.session_state.get("section_build_request_json")
+    if parse_result is None or not request_json:
+        st.info("Generate at least one section before building the multi-transect ZIP.")
+        return
+    if st.button("Build multi-transect ZIP", key="prepare_batch_zip"):
+        try:
+            base_request = SectionBuildRequest.model_validate_json(request_json)
+            with st.spinner(f"Rebuilding {len(specs)} transect(s)…"):
+                raw_entries = build_multi_transect_exports(parse_result, base_request, specs)
+            entries = [
+                (
+                    sanitize_filename(
+                        _export_stem(
+                            section_title=section_title,
+                            export_framing=export_framing,
+                            consulting_title_block=consulting_title_block,
+                            transect_label=label,
+                        )
+                    ),
+                    svg_bytes,
+                    png_bytes,
+                    pdf_bytes,
+                )
+                for label, svg_bytes, png_bytes, pdf_bytes in raw_entries
+            ]
+            pdfs = [pdf for _stem, _svg, _png, pdf in entries if pdf]
+            st.session_state["batch_package_bytes"] = build_batch_zip(
+                entries,
+                binder_pdf=export_binder_pdf(pdfs, cover_title=section_title) or None,
             )
-            for label in labels
-        ]
-        st.session_state["batch_package_bytes"] = build_batch_zip(
-            entries,
-            binder_pdf=export_binder_pdf([pdf_bytes] if pdf_bytes else []) or None,
-        )
+            st.success(f"Packaged {len(entries)} rebuilt transect(s).")
+        except Exception as exc:  # noqa: BLE001 — surface any rebuild failure in UI
+            st.error(f"Multi-transect export failed: {exc}")
+            return
     batch_payload = st.session_state.get("batch_package_bytes")
     if batch_payload:
         st.download_button(
-            "Download filename-copy ZIP",
+            "Download multi-transect ZIP",
             data=batch_payload,
             file_name=f"{sanitize_filename(section_title)}_batch.zip",
             mime="application/zip",
@@ -433,5 +455,6 @@ def render_profile_and_downloads(
     _render_batch_export(
         section_title=section_title,
         export_framing=export_framing,
+        consulting_title_block=consulting_title_block,
         is_stale=is_stale,
     )

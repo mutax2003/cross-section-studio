@@ -15,7 +15,7 @@ Geology is **not** edited inside Streamlit widgets; the workbook is the source o
 1. **Enter / Upload** — Template + Excel, or sidebar upload of an existing `.xlsx`. Use **Try sample project** (or `Ctrl+Shift+O`) for a ready-made demo.
 2. **Validate** — Review parse warnings, lithology codes, and groundwater series. Fix sheet issues before configuring the section.
 3. **Configure** — Choose holes, transect order, layout/style, and overlays (water, screens, gradients). Resolve correlation preflight if prompted.
-4. **Generate** — Build the cross-section (**SVG is ready immediately**). Click **Prepare PNG & PDF** for deliverable downloads (PNG-only / PDF-only under the expander still builds both in one step). Regenerate after config changes.
+4. **Generate** — Build the cross-section (**SVG is ready immediately**). Click **Prepare deliverables** for PNG/PDF (and optional Word / multi-transect ZIP). Regenerate after config changes.
 
 ## Sample project
 

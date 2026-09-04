@@ -152,7 +152,7 @@ def render_welcome_card() -> None:
     <li><strong>Enter</strong> — Download the multi-tab template and fill <em>Collars</em> + <em>Lithology</em> (optional Water, Screens, …).</li>
     <li><strong>Upload</strong> — Use <em>Upload Excel workbook</em> in the sidebar Data source section.</li>
     <li><strong>Validate &amp; Configure</strong> — Review Data Health, then pick transect holes and style.</li>
-    <li><strong>Generate</strong> — SVG is ready immediately; Prepare PNG/PDF for deliverables.</li>
+    <li><strong>Generate</strong> — SVG is ready immediately; Prepare deliverables for PNG/PDF/Word/package.</li>
   </ol>
 </div>
 """,

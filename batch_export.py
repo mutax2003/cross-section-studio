@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import zipfile
+from collections import OrderedDict
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Sequence
@@ -12,8 +13,34 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 from models import Collar, ConsultingTitleBlock, ParseResult
 from parse_ops import subset_parse_result
-from pipeline import ALL_EXPORT_FORMATS, build_cross_section
+from pipeline import (
+    ALL_EXPORT_FORMATS,
+    SectionGeometry,
+    compute_section_geometry,
+    render_cross_section_from_geometry,
+)
 from section_build_request import SectionBuildRequest
+
+_GEOMETRY_MEMO_MAX = 8
+_geometry_memo: OrderedDict[str, SectionGeometry] = OrderedDict()
+
+
+def _memo_section_geometry(cache_key: str, factory) -> SectionGeometry:
+    """Process-local LRU for multi-transect ZIP rebuilds (no Streamlit cache)."""
+    cached = _geometry_memo.get(cache_key)
+    if cached is not None:
+        _geometry_memo.move_to_end(cache_key)
+        return cached
+    geometry = factory()
+    _geometry_memo[cache_key] = geometry
+    while len(_geometry_memo) > _GEOMETRY_MEMO_MAX:
+        _geometry_memo.popitem(last=False)
+    return geometry
+
+
+def clear_batch_geometry_memo() -> None:
+    """Clear the process-local geometry memo (tests / long-running workers)."""
+    _geometry_memo.clear()
 
 
 @dataclass(frozen=True)
@@ -143,34 +170,50 @@ def build_one_transect_exports(
     *,
     export_formats: frozenset[str] | None = None,
 ) -> tuple[str, bytes, bytes, bytes]:
-    """Rebuild one transect via ``pipeline.build_cross_section``; return stem + bytes."""
+    """Rebuild one transect; reuse process-local geometry when payloads match."""
     subset, request = prepare_batch_section_request(parse_result, base_request, spec)
     formats = export_formats or ALL_EXPORT_FORMATS
-    result = build_cross_section(
-        subset.collars,
-        subset.lithologies,
+    hole_ids = tuple(collar.hole_id for collar in subset.collars)
+    geometry_key = request.geometry_cache_key(hole_ids)
+
+    def _compute() -> SectionGeometry:
+        return compute_section_geometry(
+            subset.collars,
+            subset.lithologies,
+            request.transect_points,
+            offset_warning_m=request.offset_warning_m,
+            interpretation_mode=request.interpretation_mode,
+            allow_pinch_outs=request.allow_pinch_outs,
+            fail_on_overlaps=False,
+            max_offset_for_interpolation_m=request.max_offset_for_interpolation_m,
+            correlation_overrides=request.correlation_overrides,
+            deviation_readings=request.deviation_readings,
+            warn_on_correlation_gaps=False,
+        )
+
+    geometry = _memo_section_geometry(geometry_key, _compute)
+    if request.fail_on_overlaps and geometry.overlap_pairs:
+        raise ValueError(
+            f"Polygon overlap detected ({len(geometry.overlap_pairs)} pair(s)); "
+            "resolve correlation or set fail_on_overlaps=False to export."
+        )
+    result = render_cross_section_from_geometry(
+        geometry,
         request.transect_points,
         vertical_exaggeration=request.vertical_exaggeration,
         show_hatches=request.show_hatches,
         show_legend=request.show_legend,
         title=request.section_title,
-        offset_warning_m=request.offset_warning_m,
         interpretation_mode=request.interpretation_mode,
-        allow_pinch_outs=request.allow_pinch_outs,
-        fail_on_overlaps=request.fail_on_overlaps,
         water_levels=request.water_levels or None,
         uncertainty_spacing_m=request.uncertainty_spacing_m,
         uncertainty_offset_m=request.uncertainty_offset_m,
-        max_offset_for_interpolation_m=request.max_offset_for_interpolation_m,
-        correlation_overrides=request.correlation_overrides,
         faults=request.faults,
         unconformities=request.unconformities,
         environmental_readings=request.environmental_readings,
-        deviation_readings=request.deviation_readings,
         figure_metadata=request.figure_metadata,
         show_ground_surface=request.show_ground_surface,
         interpolate_water_table=request.interpolate_water_table,
-        warn_on_correlation_gaps=request.warn_on_correlation_gaps,
         show_water_elevation_labels=request.show_water_elevation_labels,
         show_water_legend=request.show_water_legend,
         show_dry_well_nm=request.show_dry_well_nm,

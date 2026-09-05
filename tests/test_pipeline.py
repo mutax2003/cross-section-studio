@@ -41,6 +41,9 @@ def test_compute_section_geometry_returns_projected_and_polygons() -> None:
     assert geometry.projected_hole_ids == frozenset({"BH-01", "BH-02"})
     assert geometry.collar_depths == {"BH-01": 10.0, "BH-02": 10.0}
     assert geometry.x_span > 0.0
+    assert len(geometry.correlation_summaries) == 1
+    assert geometry.correlation_summaries[0].left_hole_id == "BH-01"
+    assert geometry.correlation_summaries[0].right_hole_id == "BH-02"
 
     result = build_cross_section(collars, lithologies, [(0.0, 0.0), (50.0, 0.0)])
     assert len(result.projected) == len(geometry.projected)

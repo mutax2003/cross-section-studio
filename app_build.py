@@ -370,7 +370,22 @@ def generate_cross_section(
             "deviation_readings": subset.deviation_readings,
         }
     )
-    subset_json = subset.model_dump_json()
+    # Reuse Configure-warmed subset JSON when hole set + workbook signature match
+    # (avoids a second full ParseResult.model_dump_json on Generate).
+    preflight_key = st.session_state.get("_preflight_json_key")
+    cached_subset_json = st.session_state.get("_preflight_subset_json")
+    if (
+        lithology_index is None
+        and cached_subset_json
+        and isinstance(preflight_key, tuple)
+        and len(preflight_key) >= 9
+        and preflight_key[0] == tuple(hole_ids)
+        and preflight_key[7] == st.session_state.get("file_hash")
+        and preflight_key[8] == st.session_state.get("parse_signature")
+    ):
+        subset_json = cached_subset_json
+    else:
+        subset_json = subset.model_dump_json()
     request_json = build_request.model_dump_json()
     st.session_state.section_build_subset_json = subset_json
     st.session_state.section_build_request_json = request_json

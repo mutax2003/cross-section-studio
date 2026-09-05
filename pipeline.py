@@ -73,6 +73,7 @@ class SectionGeometry:
     max_offset: float
     projected_hole_ids: frozenset[str]
     stick_up_by_hole: dict[str, float] = field(default_factory=dict)
+    correlation_summaries: tuple[CorrelationPairSummary, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -208,13 +209,11 @@ def compute_section_geometry(
         max_offset_for_interpolation_m,
     )
 
+    correlation_summaries: list[CorrelationPairSummary] = []
     if interpretation_mode == "borehole_only":
         polygons: list[GeologicalPolygon] = []
         overlap_pairs: tuple[PolygonOverlap, ...] = ()
     else:
-        correlation_summaries: list[CorrelationPairSummary] | None = (
-            [] if warn_on_correlation_gaps else None
-        )
         polygons = build_stratigraphy(
             interpolation_df,
             allow_pinch_outs=allow_pinch_outs,
@@ -233,7 +232,7 @@ def compute_section_geometry(
     )
     correlation_warnings: list[str] = []
     if warn_on_correlation_gaps and interpretation_mode != "borehole_only":
-        for summary in correlation_summaries or ():
+        for summary in correlation_summaries:
             if summary.unmatched_keys_count > 0 or summary.pinch_out_candidates > 0:
                 correlation_warnings.append(
                     f"Correlation gap {summary.left_hole_id}–{summary.right_hole_id}: "
@@ -276,6 +275,7 @@ def compute_section_geometry(
         max_offset=max_offset,
         projected_hole_ids=projected_hole_ids,
         stick_up_by_hole=stick_up_by_hole,
+        correlation_summaries=tuple(correlation_summaries),
     )
 
 

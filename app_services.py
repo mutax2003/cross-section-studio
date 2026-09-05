@@ -10,7 +10,13 @@ from typing import Any
 import streamlit as st
 
 from ingestion import ingest_workbook
-from models import CorrelationOverride, ParseResult, SectionFigureMetadata, Transect
+from models import (
+    CorrelationOverride,
+    DeviationReading,
+    ParseResult,
+    SectionFigureMetadata,
+    Transect,
+)
 from pipeline import (
     ALL_EXPORT_FORMATS,
     SectionGeometry,
@@ -27,6 +33,7 @@ from stratigraphy import (
     detect_polygon_overlaps,
     preview_correlation_health,
 )
+from transect_planner import recommend_transects
 
 
 def _apply_section_geometry_qa(
@@ -48,7 +55,6 @@ def _apply_section_geometry_qa(
         if filtered_warnings != geometry.overlap_warnings:
             geometry = replace(geometry, overlap_warnings=filtered_warnings)
     return geometry
-from transect_planner import recommend_transects
 
 
 @st.cache_data(show_spinner="Parsing workbook...", ttl=3600, max_entries=8)
@@ -135,18 +141,29 @@ def cached_compute_section_geometry(
     this cache.
     """
     subset = cached_parse_subset(subset_json)
-    request = SectionBuildRequest.model_validate(json.loads(geometry_request_json))
-    _figure_metadata, mode, overrides = _build_section_kwargs(subset, request)
+    payload = json.loads(geometry_request_json)
+    mode = validate_interpretation_mode(str(payload["interpretation_mode"]))
+    overrides = tuple(
+        CorrelationOverride.model_validate(item)
+        for item in payload.get("correlation_overrides", ())
+    ) + tuple(subset.correlation_overrides)
+    deviations = tuple(
+        DeviationReading.model_validate(item)
+        for item in payload.get("deviation_readings", ())
+    ) or tuple(subset.deviation_readings)
+    transect_points = tuple(
+        (float(point[0]), float(point[1])) for point in payload["transect_points"]
+    )
     return compute_section_geometry(
         subset.collars,
         subset.lithologies,
-        request.transect_points,
-        offset_warning_m=request.offset_warning_m,
+        transect_points,
+        offset_warning_m=float(payload["offset_warning_m"]),
         interpretation_mode=mode,
-        allow_pinch_outs=request.allow_pinch_outs,
-        max_offset_for_interpolation_m=request.max_offset_for_interpolation_m,
+        allow_pinch_outs=bool(payload["allow_pinch_outs"]),
+        max_offset_for_interpolation_m=payload.get("max_offset_for_interpolation_m"),
         correlation_overrides=overrides,
-        deviation_readings=request.deviation_readings or subset.deviation_readings,
+        deviation_readings=deviations,
         warn_on_correlation_gaps=True,
         fail_on_overlaps=False,
     )
@@ -433,19 +450,22 @@ def cached_configure_preflight(
             ),
         )
 
-    try:
-        filtered = filter_projected_for_interpolation(
-            geometry.projected,
-            max_offset_for_interpolation_m,
+    # Geometry stage already collected pair summaries during build_stratigraphy
+    # (cached_compute_section_geometry always enables correlation-gap collection).
+    summaries = geometry.correlation_summaries
+    if not summaries:
+        try:
+            filtered = filter_projected_for_interpolation(
+                geometry.projected,
+                max_offset_for_interpolation_m,
+            )
+        except ValueError:
+            return warnings + overlap_extra, ()
+        summaries = tuple(
+            preview_correlation_health(
+                filtered,
+                allow_pinch_outs=allow_pinch_outs,
+                correlation_overrides=overrides,
+            )
         )
-    except ValueError:
-        return warnings + overlap_extra, ()
-
-    summaries = tuple(
-        preview_correlation_health(
-            filtered,
-            allow_pinch_outs=allow_pinch_outs,
-            correlation_overrides=overrides,
-        )
-    )
     return warnings + overlap_extra, summaries

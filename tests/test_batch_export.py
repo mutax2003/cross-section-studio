@@ -11,6 +11,8 @@ from batch_export import (
     BatchTransectSpec,
     build_batch_zip,
     build_multi_transect_exports,
+    build_one_transect_exports,
+    clear_batch_geometry_memo,
     export_binder_pdf,
     parse_batch_transect_lines,
     prepare_batch_section_request,
@@ -137,3 +139,26 @@ def test_prepare_batch_section_request_overrides_geometry() -> None:
     assert "C-C" in request.section_title
     assert request.consulting_title_block is not None
     assert request.consulting_title_block.section_label == "C-C"
+
+
+def test_batch_geometry_memo_reuses_same_payload() -> None:
+    clear_batch_geometry_memo()
+    parse_result = _four_hole_parse()
+    base = SectionBuildRequest(
+        transect_points=((0.0, 0.0), (100.0, 0.0)),
+        section_title="Site",
+        export_formats=frozenset({"svg"}),
+    )
+    spec = BatchTransectSpec(label="A-A", hole_ids=("BH-01", "BH-02", "BH-03"))
+    first = build_one_transect_exports(
+        parse_result, base, spec, export_formats=frozenset({"svg"})
+    )
+    second = build_one_transect_exports(
+        parse_result,
+        base.model_copy(update={"section_title": "Site renamed"}),
+        spec,
+        export_formats=frozenset({"svg"}),
+    )
+    assert first[0] == second[0] == "A-A"
+    assert first[1] and second[1]
+    clear_batch_geometry_memo()

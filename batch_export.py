@@ -21,6 +21,9 @@ from pipeline import (
 )
 from section_build_request import SectionBuildRequest
 
+# Default batch deliverables skip SVG encode (usually the slowest); opt in via export_formats.
+BATCH_DEFAULT_EXPORT_FORMATS = frozenset({"png", "pdf"})
+
 _GEOMETRY_MEMO_MAX = 8
 _geometry_memo: OrderedDict[str, SectionGeometry] = OrderedDict()
 
@@ -172,7 +175,7 @@ def build_one_transect_exports(
 ) -> tuple[str, bytes, bytes, bytes]:
     """Rebuild one transect; reuse process-local geometry when payloads match."""
     subset, request = prepare_batch_section_request(parse_result, base_request, spec)
-    formats = export_formats or ALL_EXPORT_FORMATS
+    formats = export_formats or BATCH_DEFAULT_EXPORT_FORMATS
     hole_ids = tuple(collar.hole_id for collar in subset.collars)
     geometry_key = request.geometry_cache_key(hole_ids)
 

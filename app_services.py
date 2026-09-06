@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from dataclasses import replace
 from io import BytesIO
-from typing import Any
+from typing import Any, Callable
 
 import streamlit as st
 
@@ -34,6 +35,37 @@ from stratigraphy import (
     preview_correlation_health,
 )
 from transect_planner import recommend_transects
+
+_GEOMETRY_MEMO_MAX = 8
+_geometry_memo: OrderedDict[tuple[int, str], SectionGeometry] = OrderedDict()
+
+_EXPORT_MEMO_MAX = 6
+_ExportResult = tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]
+_export_memo: OrderedDict[tuple[int, int, frozenset[str]], _ExportResult] = OrderedDict()
+
+
+def clear_service_memos() -> None:
+    """Clear process-local geometry/export memos (tests / long-running workers)."""
+    _geometry_memo.clear()
+    _export_memo.clear()
+
+
+def _memo_get(
+    store: OrderedDict,
+    key: Any,
+    factory: Callable[[], Any],
+    *,
+    max_entries: int,
+) -> Any:
+    cached = store.get(key)
+    if cached is not None:
+        store.move_to_end(key)
+        return cached
+    value = factory()
+    store[key] = value
+    while len(store) > max_entries:
+        store.popitem(last=False)
+    return value
 
 
 def _apply_section_geometry_qa(
@@ -135,10 +167,10 @@ def cached_compute_section_geometry(
 ) -> SectionGeometry:
     """``SectionGeometry`` shared by Generate SVG and Prepare deliverables (PNG/PDF).
 
-    Streamlit ``@st.cache_data`` serializes the returned object. Cache key is
-    geometry-scoped JSON from ``SectionBuildRequest.geometry_cache_payload()``
-    (``geometry_request_json``), so cosmetic / render-only fields do not bust
-    this cache.
+    Streamlit ``@st.cache_data`` serializes the returned object. Prefer
+    ``_resolve_section_geometry`` on hot paths so process-local LRU skips unpickle.
+    Cache key is geometry-scoped JSON from ``SectionBuildRequest.geometry_cache_payload()``
+    (``geometry_request_json``), so cosmetic / render-only fields do not bust this cache.
     """
     subset = cached_parse_subset(subset_json)
     payload = json.loads(geometry_request_json)
@@ -169,17 +201,38 @@ def cached_compute_section_geometry(
     )
 
 
+def _resolve_section_geometry(subset_json: str, geometry_request_json: str) -> SectionGeometry:
+    """Process-local LRU over ``cached_compute_section_geometry`` (avoids pickle on hits)."""
+    key = (hash(subset_json), geometry_request_json)
+    return _memo_get(
+        _geometry_memo,
+        key,
+        lambda: cached_compute_section_geometry(subset_json, geometry_request_json),
+        max_entries=_GEOMETRY_MEMO_MAX,
+    )
+
+
 def _run_build_cross_section(
     subset: ParseResult,
     request: SectionBuildRequest,
     *,
     export_formats: frozenset[str],
     subset_json: str,
+    request_json: str | None = None,
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
+    formats = frozenset(export_formats)
+    export_key: tuple[int, int, frozenset[str]] | None = None
+    if request_json is not None:
+        export_key = (hash(subset_json), hash(request_json), formats)
+        cached = _export_memo.get(export_key)
+        if cached is not None:
+            _export_memo.move_to_end(export_key)
+            return cached
+
     figure_metadata, mode, _overrides = _build_section_kwargs(subset, request)
     geometry_json = json.dumps(request.geometry_cache_payload(), sort_keys=True)
     geometry = _apply_section_geometry_qa(
-        cached_compute_section_geometry(subset_json, geometry_json),
+        _resolve_section_geometry(subset_json, geometry_json),
         request,
     )
     result = render_cross_section_from_geometry(
@@ -228,13 +281,13 @@ def _run_build_cross_section(
         auto_fit_track_width=request.auto_fit_track_width,
         elevation_mode=request.elevation_mode,
         raster_log_strips=request.raster_log_strips,
-        export_formats=export_formats,
+        export_formats=formats,
         consulting_title_block=request.consulting_title_block,
         screen_intervals=request.screen_intervals or subset.screen_intervals,
         vertical_gradients=request.vertical_gradients or subset.vertical_gradients,
         export_framing=request.export_framing,
     )
-    return (
+    packed: _ExportResult = (
         result.svg_bytes,
         result.png_bytes,
         result.pdf_bytes,
@@ -242,6 +295,11 @@ def _run_build_cross_section(
         result.lithology_codes,
         result.overlap_warnings,
     )
+    if export_key is not None:
+        _export_memo[export_key] = packed
+        while len(_export_memo) > _EXPORT_MEMO_MAX:
+            _export_memo.popitem(last=False)
+    return packed
 
 
 @st.cache_data(show_spinner=False, ttl=3600, max_entries=16)
@@ -256,6 +314,7 @@ def cached_build_section_bundle(
         request,
         export_formats=ALL_EXPORT_FORMATS,
         subset_json=subset_json,
+        request_json=request_json,
     )
 
 
@@ -271,6 +330,7 @@ def cached_build_section(
         request,
         export_formats=frozenset({"svg"}),
         subset_json=subset_json,
+        request_json=request_json,
     )
     return svg, b"", b"", count, codes, warnings
 
@@ -305,6 +365,7 @@ def cached_build_section_exports(
         request,
         export_formats=frozenset({"png", "pdf"}),
         subset_json=subset_json,
+        request_json=request_json,
     )
     return png, pdf
 
@@ -434,7 +495,7 @@ def cached_configure_preflight(
         sort_keys=True,
     )
     try:
-        geometry = cached_compute_section_geometry(subset_json, geometry_json)
+        geometry = _resolve_section_geometry(subset_json, geometry_json)
     except ValueError as exc:
         message = str(exc)
         if message.startswith("No lithology intervals were projected"):

@@ -29,7 +29,7 @@ Under **Export framing & deliverables**: page preset, margins, DPI, fence-only, 
 
 Configure → **Multi-transect batch ZIP**: one line per transect as `Label | hole1, hole2, …`.
 
-On Generate, **Build multi-transect ZIP** rebuilds SVG/PNG/PDF for each line through the pipeline (distinct figures), then packages them. Optional **report_binder.pdf** merges section PDFs when `pypdf` is installed.
+On Generate, **Build multi-transect ZIP** rebuilds PNG/PDF for each line through the pipeline (distinct figures), then packages them. Check **Include SVG** only when needed (encode is slower). Optional **report_binder.pdf** merges section PDFs when `pypdf` is installed.
 
 Helpers: **Add current transect** and **Fill from recommended** (after Recommended mode has run once).
 

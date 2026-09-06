@@ -74,6 +74,7 @@ def test_import_app_modules() -> None:
     assert callable(app_services.cached_build_section_pdf)
     assert callable(app_services.cached_parse_subset)
     assert callable(app_services.cached_parse_request)
+    assert callable(app_services.clear_service_memos)
     assert app_state.DEFAULT_SESSION
     assert "show_hatches" in app_state.DEFAULT_SESSION
     assert "enable_ai_suggestions" in app_state.DEFAULT_SESSION

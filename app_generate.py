@@ -6,8 +6,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from app_common import _display_svg, _render_overlap_warnings, _render_profile_chips
-from app_services import cached_build_section_bundle, cached_build_section_exports
+from app_services import cached_build_section_bundle, cached_build_section_exports, cached_parse_request
 from batch_export import (
+    BATCH_DEFAULT_EXPORT_FORMATS,
+    ALL_EXPORT_FORMATS,
     build_batch_zip,
     build_multi_transect_exports,
     export_binder_pdf,
@@ -16,7 +18,6 @@ from batch_export import (
 from docx_export import build_figure_docx_bytes
 from export_framing import ExportFramingConfig, build_export_filename, build_report_package_bytes, png_clipboard_html, save_exports_to_directory
 from models import ConsultingTitleBlock
-from section_build_request import SectionBuildRequest
 from ui_helpers import export_metadata_payload, sanitize_filename
 
 try:
@@ -211,8 +212,14 @@ def _render_batch_export(
         st.warning(str(exc))
         return
     st.caption(
-        f"{len(specs)} transect(s) — each line rebuilds SVG/PNG/PDF via the pipeline "
-        "(not filename copies of the current figure)."
+        f"{len(specs)} transect(s) — each line rebuilds PNG/PDF via the pipeline "
+        "(optional SVG). Not filename copies of the current figure."
+    )
+    include_svg = st.checkbox(
+        "Include SVG in multi-transect ZIP",
+        value=False,
+        key="batch_include_svg",
+        help="SVG encode is often the slowest step; leave off for deliverable rasters/PDFs.",
     )
     if is_stale:
         st.info("Regenerate the current section first so style settings are locked for batch.")
@@ -224,9 +231,15 @@ def _render_batch_export(
         return
     if st.button("Build multi-transect ZIP", key="prepare_batch_zip"):
         try:
-            base_request = SectionBuildRequest.model_validate_json(request_json)
+            base_request = cached_parse_request(request_json)
+            formats = ALL_EXPORT_FORMATS if include_svg else BATCH_DEFAULT_EXPORT_FORMATS
             with st.spinner(f"Rebuilding {len(specs)} transect(s)…"):
-                raw_entries = build_multi_transect_exports(parse_result, base_request, specs)
+                raw_entries = build_multi_transect_exports(
+                    parse_result,
+                    base_request,
+                    specs,
+                    export_formats=formats,
+                )
             entries = [
                 (
                     sanitize_filename(

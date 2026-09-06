@@ -29,6 +29,7 @@ EXPECTED_SHEETS = {
     "Environmental",
     "Screens",
     "Gradients",
+    "Sections",
     "Example",
     "Data Entry",
 }
@@ -72,6 +73,12 @@ def test_ingest_workbook_data_entry_template(tmp_path: Path) -> None:
     assert len(result.lithologies) >= 8
     assert len(result.environmental_readings) == 5
     assert "Data Entry" in report.optional_sheets_detected
+    assert "Sections" in report.optional_sheets_detected
+    assert len(result.section_specs) == 2
+    assert result.section_specs[0].label == "A-A'"
+    assert result.section_specs[0].hole_ids == ("MW-01", "MW-02", "MW-03")
+    assert result.section_specs[1].hole_ids == ("MW-01", "MW-03")
+    assert report.section_specs == list(result.section_specs)
     assert report.project_metadata["client_name"] == "C-GROUP ENERGY INC."
     assert report.project_metadata["prepared_by"] == "ECOVENTURE"
 

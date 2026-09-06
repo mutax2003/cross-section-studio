@@ -29,6 +29,7 @@ from models import (
     LITHOLOGY_COLUMNS,
     DataParser,
     ParseResult,
+    WorkbookSectionSpec,
     assign_missing_unit_orders,
     geology_sheet_counts,
     lithology_has_unit_order_column,
@@ -103,6 +104,7 @@ class ImportReport:
     suggested_utm_crs: str | None = None
     profile_default_elevation_m: float | None = None
     project_metadata: dict[str, str] = field(default_factory=dict)
+    section_specs: list[WorkbookSectionSpec] = field(default_factory=list)
 
 
 def _as_workbook(source: str | Path | BinaryIO | BytesIO | pd.ExcelFile) -> pd.ExcelFile:
@@ -612,6 +614,7 @@ def _detect_optional_workbook_sheets(workbook: pd.ExcelFile) -> list[str]:
         "instructions": "Instructions",
         "screens": "Screens",
         "gradients": "Gradients",
+        "sections": "Sections",
     }
     detected: list[str] = []
     for sheet_name in workbook.sheet_names:
@@ -758,6 +761,7 @@ def ingest_workbook(
                 faults=parse_result.faults,
                 unconformities=parse_result.unconformities,
                 environmental_readings=parse_result.environmental_readings,
+                section_specs=parse_result.section_specs,
             )
 
     if "Field Data" in optional_sheets:
@@ -770,6 +774,12 @@ def ingest_workbook(
             warnings.append(
                 f"Field Data sheet: parsed {ova_ec_count} OVA/EC reading(s)."
             )
+
+    if parse_result.section_specs:
+        warnings.append(
+            f"Sections sheet: loaded {len(parse_result.section_specs)} transect "
+            "spec(s) for Configure multi-transect batch."
+        )
 
     qa = analyze_parsed_data(
         parse_result.collars,
@@ -804,6 +814,7 @@ def ingest_workbook(
         suggested_utm_crs=suggested_utm_crs,
         profile_default_elevation_m=profile_default_elevation_m,
         project_metadata=project_metadata,
+        section_specs=list(parse_result.section_specs),
     )
     return parse_result, report
 

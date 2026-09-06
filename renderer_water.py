@@ -277,8 +277,10 @@ class RendererWaterMixin:
                                 zorder=6,
                             )
                             ax.add_collection(collection)
+                            if self._cad_svg_layers_enabled():
+                                self._set_cad_gid(collection, "water")
                     else:
-                        ax.plot(
+                        plotted = ax.plot(
                             xs_arr,
                             ys,
                             color=color,
@@ -286,6 +288,8 @@ class RendererWaterMixin:
                             linestyle=gw_linestyle,
                             zorder=6,
                         )
+                        if self._cad_svg_layers_enabled() and plotted:
+                            self._set_cad_gid(plotted[0], "water")
             level_label_text, elevation_label_text = self._water_legend_captions(
                 series_id, label, default_label
             )

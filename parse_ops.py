@@ -16,6 +16,7 @@ from models import (
     ScreenInterval,
     VerticalGradient,
     WaterLevel,
+    WorkbookSectionSpec,
 )
 
 def lithologies_by_hole(
@@ -116,6 +117,11 @@ def geology_sheet_counts(parse_result: ParseResult) -> dict[str, int]:
         "faults": len(parse_result.faults),
         "unconformities": len(parse_result.unconformities),
     }
+
+
+def format_section_specs_as_batch_text(specs: Sequence[WorkbookSectionSpec]) -> str:
+    """Format Sections rows as ``Label | hole1, hole2, …`` lines for Configure batch ZIP."""
+    return "\n".join(f"{spec.label} | {', '.join(spec.hole_ids)}" for spec in specs)
 
 
 def lithology_has_unit_order_column(lithologies: Sequence[Lithology]) -> bool:

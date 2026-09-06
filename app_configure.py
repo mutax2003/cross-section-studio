@@ -517,7 +517,21 @@ def render_configure_step(
             "One transect per line: ``Label | hole1, hole2, …``. "
             "Generate rebuilds each line (not filename copies)."
         )
-        col_a, col_b = st.columns(2)
+        workbook_specs = ()
+        report = st.session_state.get("import_report")
+        if report is not None:
+            workbook_specs = tuple(getattr(report, "section_specs", ()) or ())
+        if not workbook_specs:
+            parse_result = st.session_state.get("parse_result")
+            if parse_result is not None:
+                workbook_specs = tuple(getattr(parse_result, "section_specs", ()) or ())
+        if workbook_specs and not str(st.session_state.get("batch_transect_specs", "")).strip():
+            from parse_ops import format_section_specs_as_batch_text
+
+            st.session_state["batch_transect_specs"] = format_section_specs_as_batch_text(
+                workbook_specs
+            )
+        col_a, col_b, col_c = st.columns(3)
         with col_a:
             if st.button("Add current transect", key="batch_add_current"):
                 selection = preflight_selection
@@ -549,6 +563,17 @@ def render_configure_step(
                         lines.append(f"{label} | {', '.join(candidate.hole_ids)}")
                     st.session_state["batch_transect_specs"] = "\n".join(lines)
                     st.rerun()
+        with col_c:
+            if st.button("Load from workbook Sections", key="batch_load_sections"):
+                if not workbook_specs:
+                    st.warning("No Sections sheet rows in the uploaded workbook.")
+                else:
+                    from parse_ops import format_section_specs_as_batch_text
+
+                    st.session_state["batch_transect_specs"] = format_section_specs_as_batch_text(
+                        workbook_specs
+                    )
+                    st.rerun()
         st.text_area(
             "Batch transects",
             key="batch_transect_specs",
@@ -556,7 +581,8 @@ def render_configure_step(
             height=120,
             help=(
                 "Each line is rebuilt through the cross-section pipeline when you build "
-                "the multi-transect ZIP on Generate."
+                "the multi-transect ZIP on Generate. Optional workbook Sections sheet "
+                "seeds this box when empty."
             ),
         )
 

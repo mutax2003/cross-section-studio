@@ -23,7 +23,7 @@ Click **Prepare deliverables (PNG · PDF · Word · package)** once. That builds
 
 ## Sidebar framing
 
-Under **Export framing & deliverables**: page preset, margins, DPI, fence-only, DRAFT watermark, layer toggles, viewport crop, filename pattern, CAD-friendly SVG tag (metadata hint only — not full CAD layer groups), and optional output folder path.
+Under **Export framing & deliverables**: page preset, margins, DPI, fence-only, DRAFT watermark, layer toggles, viewport crop, filename pattern, CAD-friendly SVG layers (Inkscape layer groups when enabled), and optional output folder path.
 
 ## Multi-transect ZIP
 
@@ -31,11 +31,11 @@ Configure → **Multi-transect batch ZIP**: one line per transect as `Label | ho
 
 On Generate, **Build multi-transect ZIP** rebuilds PNG/PDF for each line through the pipeline (distinct figures), then packages them. Check **Include SVG** only when needed (encode is slower). Optional **report_binder.pdf** merges section PDFs when `pypdf` is installed.
 
-Helpers: **Add current transect** and **Fill from recommended** (after Recommended mode has run once).
+Helpers: **Add current transect**, **Fill from recommended** (after Recommended mode has run once), and **Load from workbook Sections** (when the uploaded workbook has a **Sections** sheet). An empty batch box is auto-seeded from that sheet on Configure.
 
 ## CAD note
 
-Download SVG for drafting. The CAD-friendly toggle only adjusts SVG Creator metadata; it does not create AutoCAD/Inkscape layer groups yet.
+Download SVG for drafting. With **CAD-friendly SVG layers** on, export promotes known groups (`fence`, `tracks`, `water`, `legend`, `surface`, `headers`) to V1 Inkscape layer groups (`inkscape:groupmode="layer"`) and sets Creator metadata to Cross Section Studio CAD. Default SVG stays unchanged when the toggle is off.
 
 ## Regenerate
 

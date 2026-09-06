@@ -355,19 +355,78 @@ def apply_draft_watermark(fig, framing: ExportFramingConfig | None) -> None:
     )
 
 
+# Matplotlib set_gid / SVG id values promoted to Inkscape layers when CAD toggle is on.
+CAD_SVG_LAYER_IDS: frozenset[str] = frozenset(
+    {"fence", "tracks", "water", "legend", "surface", "headers"}
+)
+CAD_SVG_LAYER_LABELS: dict[str, str] = {
+    "fence": "Fence",
+    "tracks": "Tracks",
+    "water": "Water",
+    "legend": "Legend",
+    "surface": "Surface",
+    "headers": "Headers",
+}
+_INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
+_SVG_ROOT_RE = re.compile(r"<svg\b[^>]*>", re.IGNORECASE)
+_G_OPEN_RE = re.compile(r"<g\b[^>]*>", re.IGNORECASE)
+_ID_OR_GID_RE = re.compile(
+    r"""\b(?:id|gid)\s*=\s*(['"])(?P<value>[^'"]+)\1""",
+    re.IGNORECASE,
+)
+
+
 def annotate_svg_layers(svg_bytes: bytes) -> bytes:
-    """Add Creator metadata hint for CAD layer import."""
+    """Add Creator CAD hint and promote known SVG groups to Inkscape layers."""
     text = svg_bytes.decode("utf-8", errors="replace")
-    if "Cross Section Studio CAD" in text:
-        return svg_bytes
+
     if 'metadata={"Creator": "Cross Section Studio"}' in text:
-        return text.replace(
+        text = text.replace(
             'metadata={"Creator": "Cross Section Studio"}',
             'metadata={"Creator": "Cross Section Studio CAD"}',
             1,
-        ).encode("utf-8")
-    return text.replace(
-        "Cross Section Studio",
-        "Cross Section Studio CAD",
-        1,
-    ).encode("utf-8")
+        )
+    elif "Cross Section Studio CAD" not in text and "Cross Section Studio" in text:
+        text = text.replace(
+            "Cross Section Studio",
+            "Cross Section Studio CAD",
+            1,
+        )
+
+    def _promote_group(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        id_match = _ID_OR_GID_RE.search(tag)
+        if id_match is None:
+            return tag
+        layer_id = id_match.group("value")
+        if layer_id not in CAD_SVG_LAYER_IDS:
+            return tag
+        label = CAD_SVG_LAYER_LABELS.get(layer_id, layer_id)
+        attrs: list[str] = []
+        if 'inkscape:groupmode="' not in tag and "inkscape:groupmode='" not in tag:
+            attrs.append('inkscape:groupmode="layer"')
+        if 'inkscape:label="' not in tag and "inkscape:label='" not in tag:
+            attrs.append(f'inkscape:label="{label}"')
+        if not attrs:
+            return tag
+        if tag.endswith("/>"):
+            return f"{tag[:-2]} {' '.join(attrs)}/>"
+        return f"{tag[:-1]} {' '.join(attrs)}>"
+
+    promoted = _G_OPEN_RE.sub(_promote_group, text)
+    needs_inkscape_ns = (
+        'inkscape:groupmode="' in promoted or "inkscape:groupmode='" in promoted
+    ) and f'xmlns:inkscape="{_INKSCAPE_NS}"' not in promoted
+
+    if needs_inkscape_ns:
+        def _add_inkscape_ns(match: re.Match[str]) -> str:
+            root = match.group(0)
+            if "xmlns:inkscape=" in root:
+                return root
+            if root.endswith("/>"):
+                return f'{root[:-2]} xmlns:inkscape="{_INKSCAPE_NS}"/>'
+            return f'{root[:-1]} xmlns:inkscape="{_INKSCAPE_NS}">'
+
+        promoted = _SVG_ROOT_RE.sub(_add_inkscape_ns, promoted, count=1)
+
+    return promoted.encode("utf-8")

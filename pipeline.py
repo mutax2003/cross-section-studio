@@ -125,6 +125,27 @@ def _normalize_export_formats(export_formats: frozenset[str] | None) -> frozense
 
 PDF_EXPORT_FORMATS = frozenset({"pdf"})
 
+_retained_figure: object | None = None
+_retained_export_bundle: dict[str, object] | None = None
+
+
+def take_retained_figure():
+    """Pop the figure left open by ``render_cross_section_from_geometry(close_figure=False)``."""
+    global _retained_figure
+    figure = _retained_figure
+    _retained_figure = None
+    return figure
+
+
+def take_retained_export_bundle() -> dict[str, object] | None:
+    """Pop figure + renderer context for a follow-up encode (Generate→Prepare one-draw)."""
+    global _retained_export_bundle, _retained_figure
+    bundle = _retained_export_bundle
+    _retained_export_bundle = None
+    _retained_figure = None
+    return bundle
+
+
 _DISCLAIMER_BY_MODE = {
     "borehole_only": BOREHOLE_ONLY_DISCLAIMER,
     "correlation_lines": CORRELATION_LINES_DISCLAIMER,
@@ -470,8 +491,13 @@ def render_cross_section_from_geometry(
     screen_intervals: Sequence[ScreenInterval] | None = None,
     vertical_gradients: Sequence[VerticalGradient] | None = None,
     export_framing: ExportFramingConfig | None = None,
+    close_figure: bool = True,
 ) -> CrossSectionResult:
-    """Render/export from precomputed ``SectionGeometry`` (Prepare can reuse Generate geometry)."""
+    """Render/export from precomputed ``SectionGeometry`` (Prepare can reuse Generate geometry).
+
+    When ``close_figure`` is False, the matplotlib figure is left open for a follow-up
+    encode pass (caller must ``plt.close``). Used by Streamlit Generate→Prepare one-draw.
+    """
     export_formats = _normalize_export_formats(export_formats)
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
     if vertical_exaggeration <= 0:
@@ -616,9 +642,25 @@ def render_cross_section_from_geometry(
             qa_lines=qa_lines,
         )
     finally:
-        from matplotlib import pyplot as plt
+        global _retained_figure, _retained_export_bundle
+        if close_figure:
+            from matplotlib import pyplot as plt
 
-        plt.close(figure)
+            plt.close(figure)
+            _retained_figure = None
+            _retained_export_bundle = None
+        else:
+            _retained_figure = figure
+            _retained_export_bundle = {
+                "figure": figure,
+                "renderer": renderer,
+                "polygons": polygons,
+                "projected": projected,
+                "collar_depths": collar_depths,
+                "water_levels": water_levels,
+                "lithology_codes": lithology_codes,
+                "qa_lines": qa_lines,
+            }
     return CrossSectionResult(
         projected=projected,
         polygons=polygons,

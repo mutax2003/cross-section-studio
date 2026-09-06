@@ -29,6 +29,7 @@ from models import (
     Unconformity,
     VerticalGradient,
     WaterLevel,
+    WorkbookSectionSpec,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ class DataParser:
     WATER_SHEET = "Water"
     SCREENS_SHEET = "Screens"
     GRADIENTS_SHEET = "Gradients"
+    SECTIONS_SHEET = "Sections"
 
     def parse_file(
         self,
@@ -159,6 +161,7 @@ class DataParser:
         vertical_gradients: list[VerticalGradient] = []
         screen_errors: list[str] = []
         gradient_errors: list[str] = []
+        section_specs: list[WorkbookSectionSpec] = []
         if water_df is not None:
             water_levels, water_errors = self._parse_water_levels(
                 _normalize_columns(water_df), collars
@@ -198,6 +201,9 @@ class DataParser:
             faults = self._parse_fault_sheet(workbook)
             unconformities = self._parse_unconformity_sheet(workbook)
 
+        if workbook is not None:
+            section_specs = self._parse_sections_sheet(workbook, collars)
+
         if lithology_aliases:
             lithologies = self._apply_lithology_aliases(lithologies, lithology_aliases)
 
@@ -226,6 +232,7 @@ class DataParser:
             faults=tuple(faults),
             unconformities=tuple(unconformities),
             environmental_readings=tuple(environmental_readings),
+            section_specs=tuple(section_specs),
         )
 
     def _apply_lithology_aliases(
@@ -768,3 +775,65 @@ class DataParser:
             for name, points in surfaces.items()
             if len(points) >= 2
         ]
+
+    @staticmethod
+    def _split_section_hole_ids(raw: object) -> tuple[str, ...]:
+        """Split hole_ids on comma, semicolon, or → (also accepts ASCII ->)."""
+        if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+            return ()
+        text = str(raw).strip()
+        if not text:
+            return ()
+        normalized = text.replace("→", ",").replace("->", ",").replace(";", ",")
+        return tuple(part.strip() for part in normalized.split(",") if part.strip())
+
+    def _parse_sections_sheet(
+        self,
+        workbook: pd.ExcelFile,
+        collars: list[Collar],
+    ) -> list[WorkbookSectionSpec]:
+        """Parse optional Sections sheet; log-and-skip bad rows (not folded into errors)."""
+        sheet = self._find_sheet(workbook.sheet_names, self.SECTIONS_SHEET)
+        if not sheet:
+            return []
+        frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
+        if "section_label" not in frame.columns or "hole_ids" not in frame.columns:
+            logger.warning(
+                "Sections sheet missing required columns section_label and hole_ids; skipped"
+            )
+            return []
+        collar_ids = {collar.hole_id for collar in collars}
+        specs: list[WorkbookSectionSpec] = []
+        for row_num, row in enumerate(frame.itertuples(index=False), start=2):
+            label_raw = getattr(row, "section_label", None)
+            holes_raw = getattr(row, "hole_ids", None)
+            if (
+                label_raw is None
+                or (isinstance(label_raw, float) and pd.isna(label_raw))
+                or str(label_raw).strip() == ""
+            ) and (
+                holes_raw is None
+                or (isinstance(holes_raw, float) and pd.isna(holes_raw))
+                or str(holes_raw).strip() == ""
+            ):
+                continue
+            hole_ids = self._split_section_hole_ids(holes_raw)
+            try:
+                spec = WorkbookSectionSpec.model_validate(
+                    {"label": label_raw, "hole_ids": hole_ids}
+                )
+            except Exception as exc:
+                logger.warning("Skipping Sections row %s: %s", row_num, exc)
+                continue
+            if collar_ids:
+                unknown = [hole_id for hole_id in spec.hole_ids if hole_id not in collar_ids]
+                if unknown:
+                    logger.warning(
+                        "Skipping Sections row %s (%s): unknown collar(s): %s",
+                        row_num,
+                        spec.label,
+                        ", ".join(unknown),
+                    )
+                    continue
+            specs.append(spec)
+        return specs

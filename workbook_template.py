@@ -3,7 +3,7 @@
 Sheets:
   Instructions — how to fill the workbook
   Project — client / figure metadata (also mirrored on Data Entry for ingest)
-  Collars, Lithology, Water, Environmental, Screens, Gradients — primary data entry
+  Collars, Lithology, Water, Environmental, Screens, Gradients, Sections — primary data entry
   Example — filled sample project (reference only; not parsed)
   Data Entry — PROJECT block for ``DATA_ENTRY_PROFILE_ID`` + consulting seed
 """
@@ -32,6 +32,7 @@ WATER_SHEET = "Water"
 ENVIRONMENTAL_SHEET = "Environmental"
 SCREENS_SHEET = "Screens"
 GRADIENTS_SHEET = "Gradients"
+SECTIONS_SHEET = "Sections"
 
 DATA_SHEETS: tuple[str, ...] = (
     COLLARS_SHEET,
@@ -40,6 +41,7 @@ DATA_SHEETS: tuple[str, ...] = (
     ENVIRONMENTAL_SHEET,
     SCREENS_SHEET,
     GRADIENTS_SHEET,
+    SECTIONS_SHEET,
 )
 
 PROJECT_FIELDS: tuple[tuple[str, str], ...] = (
@@ -84,6 +86,7 @@ ENVIRONMENTAL_COLUMNS = (
 )
 SCREEN_COLUMNS = ("hole_id", "from_depth", "to_depth")
 GRADIENT_COLUMNS = ("hole_id", "direction")
+SECTION_COLUMNS = ("section_label", "hole_ids")
 
 TABLE_SECTIONS: dict[str, tuple[str, ...]] = {
     "COLLARS": COLLAR_COLUMNS,
@@ -92,6 +95,7 @@ TABLE_SECTIONS: dict[str, tuple[str, ...]] = {
     "ENVIRONMENTAL": ENVIRONMENTAL_COLUMNS,
     "SCREENS": SCREEN_COLUMNS,
     "GRADIENTS": GRADIENT_COLUMNS,
+    "SECTIONS": SECTION_COLUMNS,
 }
 
 _HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
@@ -114,6 +118,7 @@ _TAB_COLORS = {
     ENVIRONMENTAL_SHEET: "5B9BD5",
     SCREENS_SHEET: "A9D08E",
     GRADIENTS_SHEET: "A9D08E",
+    SECTIONS_SHEET: "ED7D31",
     EXAMPLE_SHEET: "7030A0",
     DATA_ENTRY_SHEET: "7F7F7F",
 }
@@ -335,6 +340,13 @@ def _sample_gradients() -> list[dict[str, object]]:
     ]
 
 
+def _sample_sections() -> list[dict[str, object]]:
+    return [
+        {"section_label": "A-A'", "hole_ids": "MW-01, MW-02, MW-03"},
+        {"section_label": "B-B'", "hole_ids": "MW-01→MW-03"},
+    ]
+
+
 def _column_hints() -> dict[str, dict[str, str]]:
     return {
         COLLARS_SHEET: {
@@ -379,6 +391,10 @@ def _column_hints() -> dict[str, dict[str, str]]:
             "hole_id": "Must match Collars.hole_id",
             "direction": "up or down",
         },
+        SECTIONS_SHEET: {
+            "section_label": "Transect label (e.g. A-A') — seeds Configure batch lines",
+            "hole_ids": "Ordered holes: comma, semicolon, or → separated (≥2)",
+        },
     }
 
 
@@ -399,7 +415,7 @@ def _instructions_lines() -> list[str]:
         "1. Open the Project tab and replace the sample client / figure metadata.",
         "2. Enter boreholes on Collars (one row per hole).",
         "3. Enter lithology intervals on Lithology (from_depth / to_depth below collar).",
-        "4. Optionally fill Water, Environmental, Screens, and Gradients.",
+        "4. Optionally fill Water, Environmental, Screens, Gradients, and Sections.",
         "5. Upload this file in Cross Section Studio (Upload step).",
         "6. On Configure, pick the transect holes, groundwater series (max 4), and lab parameters to plot.",
         "7. Optional: set chemistry label colour to green/yellow/red thresholds on Configure.",
@@ -413,6 +429,7 @@ def _instructions_lines() -> list[str]:
         "• Environmental — optional. Lab/field parameters at a point depth or depth interval. Units belong in the legend; threshold colours are set in the app Configure step.",
         "• Screens — optional. Screened intervals (consulting hatch bands).",
         "• Gradients — optional. Vertical gradient arrows (direction = up or down).",
+        "• Sections — optional. Named transects (section_label + hole_ids) that seed Configure multi-transect batch lines.",
         "• Example — filled MW-01 / MW-02 / MW-03 demo. Copy rows into the data tabs, or replace samples.",
         "• Data Entry — compatibility sheet (PROJECT metadata for auto-detect). Prefer the named tabs above.",
         "",
@@ -449,7 +466,7 @@ def _build_data_entry_project_only_rows() -> list[list[object]]:
     rows: list[list[object]] = [
         ["CROSS SECTION STUDIO — DATA ENTRY (compatibility)", "", "", "", "", "", "", ""],
         [
-            "Prefer Collars / Lithology / Water / Environmental / Screens / Gradients tabs for data.",
+            "Prefer Collars / Lithology / Water / Environmental / Screens / Gradients / Sections tabs for data.",
             "",
             "",
             "",
@@ -696,7 +713,7 @@ def _write_example_sheet(writer: pd.ExcelWriter) -> None:
     rows: list[list[object]] = [
         ["EXAMPLE PROJECT — MW-01 / MW-02 / MW-03 (reference only)", "", "", "", "", "", "", ""],
         [
-            "Copy rows into Collars / Lithology / Water / Environmental / Screens / Gradients, or replace the sample rows already on those tabs.",
+            "Copy rows into Collars / Lithology / Water / Environmental / Screens / Gradients / Sections, or replace the sample rows already on those tabs.",
             "",
             "",
             "",
@@ -726,6 +743,7 @@ def _write_example_sheet(writer: pd.ExcelWriter) -> None:
     append_table("ENVIRONMENTAL / LAB (optional)", ENVIRONMENTAL_COLUMNS, _sample_environmental())
     append_table("SCREENS (optional)", SCREEN_COLUMNS, _sample_screens())
     append_table("GRADIENTS (optional)", GRADIENT_COLUMNS, _sample_gradients())
+    append_table("SECTIONS (optional)", SECTION_COLUMNS, _sample_sections())
 
     frame = pd.DataFrame(rows)
     frame.to_excel(writer, sheet_name=EXAMPLE_SHEET, index=False, header=False)
@@ -818,6 +836,14 @@ def _populate_input_template(writer: pd.ExcelWriter) -> None:
         sheet_name=GRADIENTS_SHEET,
         columns=GRADIENT_COLUMNS,
         sample=_sample_gradients(),
+        blank_count=5,
+        required=False,
+    )
+    _write_dataframe_sheet(
+        writer,
+        sheet_name=SECTIONS_SHEET,
+        columns=SECTION_COLUMNS,
+        sample=_sample_sections(),
         blank_count=5,
         required=False,
     )

@@ -780,3 +780,44 @@ def test_data_entry_water_precedence_warns_when_native_ignored(tmp_path: Path) -
     assert result.water_levels[0].depth == pytest.approx(1.5)
     assert any("Native Water sheet was ignored" in message for message in result.errors)
 
+
+def test_sections_sheet_parses_and_seeds_batch_lines(tmp_path: Path) -> None:
+    from batch_export import parse_batch_transect_lines
+    from parse_ops import format_section_specs_as_batch_text
+
+    workbook = tmp_path / "sections.xlsx"
+    collars = [
+        {"hole_id": "MW-01", "easting": 0.0, "northing": 0.0, "elevation": 100.0, "total_depth": 10.0},
+        {"hole_id": "MW-02", "easting": 10.0, "northing": 0.0, "elevation": 100.0, "total_depth": 10.0},
+        {"hole_id": "MW-03", "easting": 20.0, "northing": 0.0, "elevation": 100.0, "total_depth": 10.0},
+    ]
+    lithology = [
+        {"hole_id": hid, "from_depth": 0.0, "to_depth": 10.0, "lithology_code": "Clay"}
+        for hid in ("MW-01", "MW-02", "MW-03")
+    ]
+    sections = [
+        {"section_label": "A-A'", "hole_ids": "MW-01, MW-02, MW-03"},
+        {"section_label": "B-B'", "hole_ids": "MW-01→MW-03"},
+        {"section_label": "C-C'", "hole_ids": "MW-01; MW-02"},
+        {"section_label": "Bad", "hole_ids": "MW-01"},  # <2 holes — skip
+        {"section_label": "Orphan", "hole_ids": "MW-01, GHOST"},  # unknown collar — skip
+    ]
+    with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
+        pd.DataFrame(collars).to_excel(writer, sheet_name="Collars", index=False)
+        pd.DataFrame(lithology).to_excel(writer, sheet_name="Lithology", index=False)
+        pd.DataFrame(sections).to_excel(writer, sheet_name="Sections", index=False)
+
+    result, report = ingest_workbook(workbook)
+    assert "Sections" in report.optional_sheets_detected
+    assert len(result.section_specs) == 3
+    assert result.section_specs[0].hole_ids == ("MW-01", "MW-02", "MW-03")
+    assert result.section_specs[1].hole_ids == ("MW-01", "MW-03")
+    assert result.section_specs[2].hole_ids == ("MW-01", "MW-02")
+    assert report.section_specs == list(result.section_specs)
+    assert any("Sections sheet: loaded 3" in warning for warning in report.warnings)
+
+    batch_text = format_section_specs_as_batch_text(result.section_specs)
+    specs = parse_batch_transect_lines(batch_text)
+    assert [spec.label for spec in specs] == ["A-A'", "B-B'", "C-C'"]
+    assert specs[0].hole_ids == ("MW-01", "MW-02", "MW-03")
+

@@ -89,9 +89,41 @@ def test_save_exports_to_directory_writes_docx(tmp_path) -> None:
 
 
 def test_annotate_svg_layers() -> None:
-    raw = b'<svg metadata={"Creator": "Cross Section Studio"}></svg>'
+    raw = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" '
+        b'metadata={"Creator": "Cross Section Studio"}>'
+        b'<g id="fence"><path d="M0 0"/></g>'
+        b'<g id="tracks"/>'
+        b'<g id="other"/>'
+        b"</svg>"
+    )
     updated = annotate_svg_layers(raw)
-    assert b"Cross Section Studio CAD" in updated
+    text = updated.decode("utf-8")
+    assert "Cross Section Studio CAD" in text
+    assert 'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"' in text
+    assert 'id="fence"' in text
+    assert 'inkscape:groupmode="layer"' in text
+    assert 'inkscape:label="Fence"' in text
+    assert 'inkscape:label="Tracks"' in text
+    # Unmatched groups stay plain.
+    assert 'id="other"' in text
+    other_idx = text.index('id="other"')
+    other_tag = text[text.rindex("<g", 0, other_idx) : text.index(">", other_idx) + 1]
+    assert "inkscape:groupmode" not in other_tag
+
+
+def test_annotate_svg_layers_idempotent_on_existing_inkscape() -> None:
+    raw = (
+        b'<svg xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+        b'metadata={"Creator": "Cross Section Studio CAD"}>'
+        b'<g id="legend" inkscape:groupmode="layer" inkscape:label="Legend"/>'
+        b"</svg>"
+    )
+    updated = annotate_svg_layers(raw)
+    text = updated.decode("utf-8")
+    assert text.count('xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"') == 1
+    assert text.count('inkscape:groupmode="layer"') == 1
+    assert text.count('inkscape:label="Legend"') == 1
 
 
 def test_apply_export_page_size_letter_landscape() -> None:

@@ -440,6 +440,8 @@ class CrossSectionRenderer(
                     linestyles=line_style,
                     zorder=3,
                 )
+                if self._cad_svg_layers_enabled():
+                    self._set_cad_gid(collection, "fence")
                 ax.add_collection(collection)
             return
         polygon_groups: dict[tuple[str, str, str, str, float], list[np.ndarray]] = {}
@@ -463,6 +465,8 @@ class CrossSectionRenderer(
                 alpha=patch_alpha,
             )
             collection.set_zorder(2)
+            if self._cad_svg_layers_enabled():
+                self._set_cad_gid(collection, "fence")
             ax.add_collection(collection)
 
     def _draw_sky_and_surface(
@@ -487,7 +491,16 @@ class CrossSectionRenderer(
             y_top = y_dense.max() + 0.12 * max(y_dense.max() - y_dense.min(), 1.0)
             ax.fill_between(x_dense, y_dense, y_top, facecolor=SKY_FILL_COLOR, edgecolor="none", alpha=0.85, zorder=1)
         if self.profile.show_ground_surface:
-            ax.plot(x_dense, y_dense, color=SURFACE_COLOR, linewidth=3.0, solid_capstyle="round", zorder=6)
+            (surface_line,) = ax.plot(
+                x_dense,
+                y_dense,
+                color=SURFACE_COLOR,
+                linewidth=3.0,
+                solid_capstyle="round",
+                zorder=6,
+            )
+            if self._cad_svg_layers_enabled():
+                self._set_cad_gid(surface_line, "surface")
 
     def _draw_track_lithology(
         self,
@@ -499,6 +512,8 @@ class CrossSectionRenderer(
         *,
         collar_arr: np.ndarray | None = None,
     ) -> None:
+        # Track fills are built in renderer_common; tag new collections here for CAD SVG.
+        before = len(ax.collections)
         self._draw_lithology_interval_rects(
             ax,
             projected_df,
@@ -507,6 +522,9 @@ class CrossSectionRenderer(
             collar_lookup,
             collar_arr=collar_arr,
         )
+        if self._cad_svg_layers_enabled():
+            for collection in ax.collections[before:]:
+                self._set_cad_gid(collection, "tracks")
 
     def _draw_track_borders(
         self,
@@ -656,7 +674,7 @@ class CrossSectionRenderer(
             else:
                 y_pos = 1.05
                 va = "bottom"
-            ax.text(
+            text_artist = ax.text(
                 float(row.x_profile),
                 y_pos,
                 header_text,
@@ -670,6 +688,8 @@ class CrossSectionRenderer(
                 clip_on=False,
                 zorder=10,
             )
+            if self._cad_svg_layers_enabled():
+                self._set_cad_gid(text_artist, "headers")
 
     def _draw_deviated_centerlines(
         self,
@@ -971,7 +991,7 @@ class CrossSectionRenderer(
                     label="Inferred pinch-out",
                 )
             )
-        ax.legend(
+        legend = ax.legend(
             handles=legend_handles,
             title="Lithology",
             loc="upper left",
@@ -983,6 +1003,8 @@ class CrossSectionRenderer(
             title_fontsize=9,
             ncol=max(1, self.profile.legend_ncol) if len(legend_handles) > 1 else 1,
         )
+        if self._cad_svg_layers_enabled():
+            self._set_cad_gid(legend, "legend")
 
     def _draw_ve_annotation(self, ax) -> None:
         x_min, x_max = ax.get_xlim()
@@ -1035,6 +1057,21 @@ class CrossSectionRenderer(
             lines.append("WARNING: placeholder collar elevation")
         return lines
 
+    def _cad_svg_layers_enabled(self) -> bool:
+        return (
+            self.export_framing is not None
+            and bool(self.export_framing.cad_svg_layers)
+        )
+
+    @staticmethod
+    def _set_cad_gid(artist, layer_id: str) -> None:
+        """Tag a matplotlib artist so SVG export emits id= for Inkscape layer promotion."""
+        if artist is None:
+            return
+        setter = getattr(artist, "set_gid", None)
+        if callable(setter):
+            setter(layer_id)
+
     def _savefig_kwargs(self) -> dict[str, object]:
         """Export framing controls page crop; consulting default is fixed letter page."""
         return savefig_kwargs(
@@ -1075,11 +1112,9 @@ class CrossSectionRenderer(
         fig.savefig(buffer, **kwargs)
         buffer.seek(0)
         payload = buffer.getvalue()
-        if (
-            fmt == "svg"
-            and self.export_framing is not None
-            and self.export_framing.cad_svg_layers
-        ):
+        # TODO(cad-svg-layers): tag water artists with gid="water" in renderer_water.py
+        # when ExportFramingConfig.cad_svg_layers is on (V1 promotes matching groups only).
+        if fmt == "svg" and self._cad_svg_layers_enabled():
             return annotate_svg_layers(payload)
         return payload
 
@@ -1138,6 +1173,8 @@ class CrossSectionRenderer(
                     # Lazy import: PDF backend/font tools are heavy and slow startup for SVG/PNG-only runs.
                     from report_export import export_section_pdf
 
+                    # Encode page 1 once with framing/DPI; summary page merges via pypdf.
+                    page1_pdf = self._savefig_format(figure, fmt="pdf")
                     pdf_bytes = export_section_pdf(
                         self,
                         polygons,
@@ -1146,7 +1183,7 @@ class CrossSectionRenderer(
                         water_levels=water_levels,
                         lithology_codes=lithology_codes,
                         qa_lines=qa_lines,
-                        section_figure=figure,
+                        section_page_pdf=page1_pdf,
                     )
         return svg_bytes, png_bytes, pdf_bytes
 

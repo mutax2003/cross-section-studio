@@ -23,6 +23,7 @@ from pipeline import (
     SectionGeometry,
     compute_section_geometry,
     render_cross_section_from_geometry,
+    take_retained_export_bundle,
     filter_projected_for_interpolation,
     validate_interpretation_mode,
 )
@@ -43,11 +44,21 @@ _EXPORT_MEMO_MAX = 6
 _ExportResult = tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]
 _export_memo: OrderedDict[tuple[int, int, frozenset[str]], _ExportResult] = OrderedDict()
 
+_FIGURE_MEMO_MAX = 2
+_figure_memo: OrderedDict[tuple[int, int], dict[str, object]] = OrderedDict()
+
 
 def clear_service_memos() -> None:
-    """Clear process-local geometry/export memos (tests / long-running workers)."""
+    """Clear process-local geometry/export/figure memos (tests / long-running workers)."""
+    from matplotlib import pyplot as plt
+
     _geometry_memo.clear()
     _export_memo.clear()
+    while _figure_memo:
+        _key, bundle = _figure_memo.popitem(last=False)
+        figure = bundle.get("figure")
+        if figure is not None:
+            plt.close(figure)
 
 
 def _memo_get(
@@ -222,12 +233,49 @@ def _run_build_cross_section(
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
     formats = frozenset(export_formats)
     export_key: tuple[int, int, frozenset[str]] | None = None
+    request_key: tuple[int, int] | None = None
     if request_json is not None:
-        export_key = (hash(subset_json), hash(request_json), formats)
+        request_key = (hash(subset_json), hash(request_json))
+        export_key = (*request_key, formats)
         cached = _export_memo.get(export_key)
         if cached is not None:
             _export_memo.move_to_end(export_key)
             return cached
+
+    # Prepare PNG+PDF: reuse live figure retained from SVG Generate (one matplotlib draw).
+    if request_key is not None and formats == frozenset({"png", "pdf"}):
+        retained = _figure_memo.pop(request_key, None)
+        if retained is not None:
+            from matplotlib import pyplot as plt
+
+            figure = retained["figure"]
+            renderer = retained["renderer"]
+            try:
+                _svg, png_bytes, pdf_bytes = renderer.export_figure_bytes(  # type: ignore[union-attr]
+                    figure,
+                    formats,
+                    polygons=retained["polygons"],  # type: ignore[arg-type]
+                    projected_df=retained["projected"],  # type: ignore[arg-type]
+                    collar_depths=retained.get("collar_depths"),  # type: ignore[arg-type]
+                    water_levels=retained.get("water_levels"),  # type: ignore[arg-type]
+                    lithology_codes=retained.get("lithology_codes"),  # type: ignore[arg-type]
+                    qa_lines=tuple(retained.get("qa_lines") or ()),  # type: ignore[arg-type]
+                )
+                packed_reuse: _ExportResult = (
+                    b"",
+                    png_bytes,
+                    pdf_bytes,
+                    int(retained.get("polygon_count") or 0),
+                    tuple(retained.get("lithology_codes_tuple") or ()),  # type: ignore[arg-type]
+                    tuple(retained.get("overlap_warnings") or ()),  # type: ignore[arg-type]
+                )
+            finally:
+                plt.close(figure)
+            if export_key is not None:
+                _export_memo[export_key] = packed_reuse
+                while len(_export_memo) > _EXPORT_MEMO_MAX:
+                    _export_memo.popitem(last=False)
+            return packed_reuse
 
     figure_metadata, mode, _overrides = _build_section_kwargs(subset, request)
     geometry_json = json.dumps(request.geometry_cache_payload(), sort_keys=True)
@@ -235,6 +283,7 @@ def _run_build_cross_section(
         _resolve_section_geometry(subset_json, geometry_json),
         request,
     )
+    retain = request_key is not None and formats == frozenset({"svg"})
     result = render_cross_section_from_geometry(
         geometry,
         request.transect_points,
@@ -286,7 +335,24 @@ def _run_build_cross_section(
         screen_intervals=request.screen_intervals or subset.screen_intervals,
         vertical_gradients=request.vertical_gradients or subset.vertical_gradients,
         export_framing=request.export_framing,
+        close_figure=not retain,
     )
+    if retain and request_key is not None:
+        bundle = take_retained_export_bundle()
+        if bundle is not None:
+            bundle["polygon_count"] = len(result.polygons)
+            bundle["lithology_codes_tuple"] = tuple(result.lithology_codes)
+            bundle["overlap_warnings"] = result.overlap_warnings
+            # Evict oldest open figures when over capacity.
+            while len(_figure_memo) >= _FIGURE_MEMO_MAX and request_key not in _figure_memo:
+                _old_key, old_bundle = _figure_memo.popitem(last=False)
+                from matplotlib import pyplot as plt
+
+                old_fig = old_bundle.get("figure")
+                if old_fig is not None:
+                    plt.close(old_fig)
+            _figure_memo[request_key] = bundle
+            _figure_memo.move_to_end(request_key)
     packed: _ExportResult = (
         result.svg_bytes,
         result.png_bytes,

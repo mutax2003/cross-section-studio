@@ -50,15 +50,37 @@ _FIGURE_MEMO_MAX = 16
 _FIGURE_MEMO_MAX_PER_SESSION = 2
 _figure_memo: OrderedDict[tuple[str, str, str], dict[str, object]] = OrderedDict()
 
+# Distinguishes Streamlit ``_cached_build_section_svg_draw`` cache hits (body skipped)
+# from misses (body ran + retain already attempted). Prevents a second full redraw when
+# a miss leaves the memo empty (failed retain) while still allowing warm-hit re-retain.
+_svg_draw_body_flag = threading.local()
+
+
+def _reset_svg_draw_body_flag() -> None:
+    _svg_draw_body_flag.ran = False
+
+
+def _note_svg_draw_body_ran() -> None:
+    _svg_draw_body_flag.ran = True
+
+
+def _svg_draw_body_ran() -> bool:
+    return bool(getattr(_svg_draw_body_flag, "ran", False))
+
 
 def clear_service_memos() -> None:
-    """Clear process-local geometry/export/figure memos (tests / long-running workers)."""
+    """Clear process-local geometry/export/figure memos (tests / long-running workers).
+
+    Also resets the Generate SVG body thread-local flag. Does not clear Streamlit
+    ``@st.cache_data`` entries.
+    """
     with _memo_lock:
         _geometry_memo.clear()
         _export_memo.clear()
         while _figure_memo:
             _key, bundle = _figure_memo.popitem(last=False)
             _close_figure_bundle(bundle)
+    _reset_svg_draw_body_flag()
 
 
 def _memo_session_id() -> str:
@@ -80,14 +102,85 @@ def _digest_text(text: str) -> str:
     return hashlib.blake2b(text.encode("utf-8"), digest_size=16).hexdigest()
 
 
+def _request_memo_key(subset_json: str, request_json: str) -> tuple[str, str, str]:
+    """Session-scoped key for ``_figure_memo`` / ``_export_memo`` request identity."""
+    return (
+        _memo_session_id(),
+        _digest_text(subset_json),
+        _digest_text(request_json),
+    )
+
+
 def _close_figure_bundle(bundle: dict[str, object] | None) -> None:
+    """Close a retained matplotlib figure; never raise (Prepare fallback must stay open).
+
+    Clears ``bundle["figure"]`` after the close attempt so a second call is a no-op
+    (avoids double ``plt.close`` / double-tracking in tests and eviction races).
+    """
     if not bundle:
         return
-    from matplotlib import pyplot as plt
-
     figure = bundle.get("figure")
-    if figure is not None:
+    if figure is None:
+        return
+    # Drop the handle first so concurrent/duplicate close is idempotent even if plt.close hangs/fails.
+    bundle["figure"] = None
+    try:
+        from matplotlib import pyplot as plt
+
         plt.close(figure)
+    except Exception:
+        # Figure may already be closed or a non-matplotlib test double; never abort callers.
+        pass
+
+
+_REQUIRED_RETAINED_KEYS = frozenset({"figure", "renderer", "polygons", "projected"})
+
+
+def _try_export_from_retained_figure(
+    retained: dict[str, object],
+    formats: frozenset[str],
+) -> _ExportResult | None:
+    """Export PNG/PDF from a retained Generate figure, or ``None`` to force redraw.
+
+    Validates required bundle keys, wraps ``export_figure_bytes`` so any failure
+    (missing keys, ``AttributeError``, export raise, non-bytes payloads) yields
+    ``None``, and always closes the retained figure exactly once via
+    ``_close_figure_bundle`` (close errors must not override the return / fallback).
+    """
+    try:
+        if not _REQUIRED_RETAINED_KEYS.issubset(retained.keys()):
+            return None
+        figure = retained["figure"]
+        renderer = retained["renderer"]
+        if figure is None or renderer is None:
+            return None
+        _svg, png_bytes, pdf_bytes = renderer.export_figure_bytes(  # type: ignore[union-attr]
+            figure,
+            formats,
+            polygons=retained["polygons"],  # type: ignore[arg-type]
+            projected_df=retained["projected"],  # type: ignore[arg-type]
+            collar_depths=retained.get("collar_depths"),  # type: ignore[arg-type]
+            water_levels=retained.get("water_levels"),  # type: ignore[arg-type]
+            lithology_codes=retained.get("lithology_codes"),  # type: ignore[arg-type]
+            qa_lines=tuple(retained.get("qa_lines") or ()),  # type: ignore[arg-type]
+        )
+        # Reject non-bytes so we never memoize None / str and greenwash a bad retain.
+        if not isinstance(png_bytes, (bytes, bytearray)) or not isinstance(
+            pdf_bytes, (bytes, bytearray)
+        ):
+            return None
+        return (
+            b"",
+            bytes(png_bytes),
+            bytes(pdf_bytes),
+            int(retained.get("polygon_count") or 0),
+            tuple(retained.get("lithology_codes_tuple") or ()),  # type: ignore[arg-type]
+            tuple(retained.get("overlap_warnings") or ()),  # type: ignore[arg-type]
+        )
+    except Exception:
+        return None
+    finally:
+        _close_figure_bundle(retained)
 
 
 def _session_figure_count(session_id: str) -> int:
@@ -129,15 +222,75 @@ def _drop_export_memo_for_request(session_id: str, subset_digest: str, request_d
 
 
 def _invalidate_streamlit_prepare_caches() -> None:
-    """Drop Streamlit Prepare caches so the next Prepare uses retained figure / fresh draw."""
+    """Best-effort clear of Streamlit Prepare draw caches after SVG retain / Prepare.
+
+    Optional alone for correctness: ``cached_build_section_exports`` prefers live
+    ``_figure_memo``, then process ``_export_memo``, and on failed retain forces an
+    uncached redraw so a noop ``.clear()`` cannot greenwash pre-Generate bytes.
+    Clearing still matters to drop stale draw entries from memory.
+    """
     try:
-        cached_build_section_exports.clear()
+        _cached_build_section_exports_draw.clear()
     except Exception:
         pass
     try:
         cached_build_section_bundle.clear()
     except Exception:
         pass
+
+
+def _consume_retained_prepare_exports(
+    subset_json: str,
+    request_json: str,
+) -> tuple[tuple[bytes, bytes] | None, bool]:
+    """Sole retain consume for Prepare PNG+PDF (pop → export → seed memo).
+
+    Returns ``((png, pdf) | None, force_uncached_draw)``:
+    - ``((png, pdf), False)`` on successful retain (seeds ``_export_memo`` when safe;
+      best-effort Streamlit clear)
+    - ``(None, True)`` when a retain existed but export failed — caller must bypass
+      ``@st.cache_data`` so a noop clear cannot serve pre-Generate draw bytes
+    - ``(None, False)`` when no retained figure
+    """
+    request_key = _request_memo_key(subset_json, request_json)
+    formats = frozenset({"png", "pdf"})
+    export_key = (*request_key, formats)
+
+    with _memo_lock:
+        retained = _figure_memo.pop(request_key, None)
+    if retained is None:
+        return None, False
+
+    packed = _try_export_from_retained_figure(retained, formats)
+    if packed is None:
+        _drop_export_memo_for_request(request_key[0], request_key[1], request_key[2])
+        _invalidate_streamlit_prepare_caches()
+        return None, True
+
+    with _memo_lock:
+        # Newer Generate may have re-retained under request_key while we
+        # exported; skip memo write so the next Prepare prefers that figure.
+        if request_key not in _figure_memo:
+            _export_memo[export_key] = packed
+            while len(_export_memo) > _EXPORT_MEMO_MAX:
+                _export_memo.popitem(last=False)
+    # Drop any warm Streamlit draw left after a failed Generate-time clear.
+    _invalidate_streamlit_prepare_caches()
+    return (packed[1], packed[2]), False
+
+
+def _lookup_prepare_export_memo(
+    subset_json: str,
+    request_json: str,
+) -> tuple[bytes, bytes] | None:
+    """Process-local PNG/PDF seeded by retain/draw; consulted before Streamlit draw."""
+    export_key = (*_request_memo_key(subset_json, request_json), frozenset({"png", "pdf"}))
+    with _memo_lock:
+        packed = _export_memo.get(export_key)
+        if packed is None:
+            return None
+        _export_memo.move_to_end(export_key)
+        return packed[1], packed[2]
 
 
 def _memo_get(
@@ -317,54 +470,23 @@ def _run_build_cross_section(
     subset_json: str,
     request_json: str | None = None,
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
+    """Draw / export only — does not consume ``_figure_memo`` retain for png+pdf.
+
+    Prepare retain consume is solely via ``cached_build_section_exports`` →
+    ``_consume_retained_prepare_exports``. SVG Generate still retains here when
+    ``export_formats == {svg}``.
+    """
     formats = frozenset(export_formats)
-    session_id = _memo_session_id()
     export_key: tuple[str, str, str, frozenset[str]] | None = None
     request_key: tuple[str, str, str] | None = None
-    subset_digest = _digest_text(subset_json)
-    request_digest = _digest_text(request_json) if request_json is not None else None
-    if request_json is not None and request_digest is not None:
-        request_key = (session_id, subset_digest, request_digest)
+    if request_json is not None:
+        request_key = _request_memo_key(subset_json, request_json)
         export_key = (*request_key, formats)
 
-    # Prepare PNG+PDF: prefer live figure retained from SVG Generate (before export memo).
-    if request_key is not None and formats == frozenset({"png", "pdf"}):
-        with _memo_lock:
-            retained = _figure_memo.pop(request_key, None)
-        if retained is not None:
-            from matplotlib import pyplot as plt
-
-            figure = retained["figure"]
-            renderer = retained["renderer"]
-            try:
-                _svg, png_bytes, pdf_bytes = renderer.export_figure_bytes(  # type: ignore[union-attr]
-                    figure,
-                    formats,
-                    polygons=retained["polygons"],  # type: ignore[arg-type]
-                    projected_df=retained["projected"],  # type: ignore[arg-type]
-                    collar_depths=retained.get("collar_depths"),  # type: ignore[arg-type]
-                    water_levels=retained.get("water_levels"),  # type: ignore[arg-type]
-                    lithology_codes=retained.get("lithology_codes"),  # type: ignore[arg-type]
-                    qa_lines=tuple(retained.get("qa_lines") or ()),  # type: ignore[arg-type]
-                )
-                packed_reuse: _ExportResult = (
-                    b"",
-                    png_bytes,
-                    pdf_bytes,
-                    int(retained.get("polygon_count") or 0),
-                    tuple(retained.get("lithology_codes_tuple") or ()),  # type: ignore[arg-type]
-                    tuple(retained.get("overlap_warnings") or ()),  # type: ignore[arg-type]
-                )
-            finally:
-                plt.close(figure)
-            if export_key is not None:
-                with _memo_lock:
-                    _export_memo[export_key] = packed_reuse
-                    while len(_export_memo) > _EXPORT_MEMO_MAX:
-                        _export_memo.popitem(last=False)
-            return packed_reuse
-
-    if export_key is not None:
+    # SVG Generate must redraw to re-retain; process ``_export_memo`` is for Prepare
+    # png+pdf (and full-bundle) reuse — never short-circuit an SVG retain rebuild.
+    retain = request_key is not None and formats == frozenset({"svg"})
+    if export_key is not None and not retain:
         with _memo_lock:
             cached = _export_memo.get(export_key)
             if cached is not None:
@@ -376,7 +498,6 @@ def _run_build_cross_section(
         _resolve_section_geometry(subset_json, geometry_json),
         request,
     )
-    retain = request_key is not None and formats == frozenset({"svg"})
     result = render_cross_section_from_geometry(
         geometry,
         request.transect_points,
@@ -436,7 +557,9 @@ def _run_build_cross_section(
             bundle["polygon_count"] = len(result.polygons)
             bundle["lithology_codes_tuple"] = tuple(result.lithology_codes)
             bundle["overlap_warnings"] = result.overlap_warnings
-            _drop_export_memo_for_request(session_id, subset_digest, request_digest or "")
+            _drop_export_memo_for_request(
+                request_key[0], request_key[1], request_key[2]
+            )
             _store_figure_memo(request_key, bundle)
             _invalidate_streamlit_prepare_caches()
     packed: _ExportResult = (
@@ -471,12 +594,21 @@ def cached_build_section_bundle(
     )
 
 
-@st.cache_data(show_spinner=False, ttl=3600, max_entries=16)
-def cached_build_section(
+def _has_live_retained_figure(subset_json: str, request_json: str) -> bool:
+    """True when ``_figure_memo`` holds a non-``None`` figure for this Generate key."""
+    request_key = _request_memo_key(subset_json, request_json)
+    with _memo_lock:
+        bundle = _figure_memo.get(request_key)
+        if bundle is None:
+            return False
+        return bundle.get("figure") is not None
+
+
+def _build_section_svg_uncached(
     subset_json: str,
     request_json: str,
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
-    """Generate path: SVG only. Geometry is cached for Prepare reuse."""
+    """SVG Generate draw without Streamlit cache (re-retain / cold-path escape hatch)."""
     subset, request = _cached_section_inputs(subset_json, request_json)
     svg, _png, _pdf, count, codes, warnings = _run_build_cross_section(
         subset,
@@ -486,6 +618,68 @@ def cached_build_section(
         request_json=request_json,
     )
     return svg, b"", b"", count, codes, warnings
+
+
+# ---------------------------------------------------------------------------
+# Generate / Prepare figure state machine
+#
+#   Generate (``cached_build_section``):
+#     SVG draw → retain live figure in ``_figure_memo`` (``close_figure=False``).
+#     Warm Streamlit SVG hit + empty memo → uncached re-retain (body-ran / TOCTOU).
+#
+#   Prepare (``cached_build_section_exports``):
+#     1. ``_consume_retained_prepare_exports`` — sole pop/export of live figure
+#     2. Failed retain → uncached redraw (never warm Streamlit after noop clear)
+#     3. Process ``_export_memo`` (retain-seeded bytes)
+#     4. Streamlit ``_cached_build_section_exports_draw``
+#
+#   ``_run_build_cross_section`` draws / memoizes only; it does not consume retain.
+# ---------------------------------------------------------------------------
+
+
+def cached_build_section(
+    subset_json: str,
+    request_json: str,
+) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
+    """Generate path: SVG with live figure retain even on Streamlit cache hits.
+
+    Not ``@st.cache_data`` — after Prepare consumes ``_figure_memo``, a same-key
+    Streamlit SVG hit must still re-retain. Order:
+    1. Call Streamlit SVG draw (miss retains inside the body; hit returns bytes only)
+    2. Live ``_figure_memo`` after draw → return those SVG bytes (no second rebuild)
+    3. Empty memo after a warm hit (body skipped) → uncached retain rebuild for
+       side-effect only; still return the warm SVG bytes
+    4. Empty memo after a miss (body already ran) → do **not** rebuild again
+       (avoids double-draw / session-cap thrash when retain failed)
+
+    Re-checks memo after the draw so a concurrent Prepare that pops a live figure
+    during a warm hit still falls through to uncached re-retain (TOCTOU).
+
+    The body-ran flag is always cleared on exit (return or raise) so process-local
+    retain-machine state does not leak across Generate calls.
+    """
+    _reset_svg_draw_body_flag()
+    try:
+        packed = _cached_build_section_svg_draw(subset_json, request_json)
+        if _has_live_retained_figure(subset_json, request_json):
+            return packed
+        # Warm Streamlit hit skipped retain — rebuild uncached for side-effect only.
+        # Skip when the draw body already ran (miss path attempted retain once).
+        if not _svg_draw_body_ran():
+            _build_section_svg_uncached(subset_json, request_json)
+        return packed
+    finally:
+        _reset_svg_draw_body_flag()
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=16)
+def _cached_build_section_svg_draw(
+    subset_json: str,
+    request_json: str,
+) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
+    """Inner Generate SVG draw cache; retain runs only on Streamlit miss."""
+    _note_svg_draw_body_ran()
+    return _build_section_svg_uncached(subset_json, request_json)
 
 
 def cached_build_section_png(
@@ -506,12 +700,11 @@ def cached_build_section_pdf(
     return pdf
 
 
-@st.cache_data(show_spinner="Preparing PNG/PDF exports...", ttl=3600, max_entries=8)
-def cached_build_section_exports(
+def _build_prepare_exports_uncached(
     subset_json: str,
     request_json: str,
 ) -> tuple[bytes, bytes]:
-    """Prepare both: one matplotlib draw for PNG+PDF; reuses Generate geometry cache."""
+    """One matplotlib PNG+PDF draw without Streamlit cache (failed-retain escape hatch)."""
     subset, request = _cached_section_inputs(subset_json, request_json)
     _svg, png, pdf, _count, _codes, _warnings = _run_build_cross_section(
         subset,
@@ -521,6 +714,39 @@ def cached_build_section_exports(
         request_json=request_json,
     )
     return png, pdf
+
+
+def cached_build_section_exports(
+    subset_json: str,
+    request_json: str,
+) -> tuple[bytes, bytes]:
+    """Prepare both: retain → process export memo → Streamlit draw (uncached on fail).
+
+    Not ``@st.cache_data`` — retain consume must run even when Streamlit has a warm
+    draw cache hit. Order:
+    1. Live ``_figure_memo`` retain (``_consume_retained_prepare_exports``)
+    2. On failed retain: uncached redraw (never trust warm Streamlit after noop clear)
+    3. Process ``_export_memo`` (retain-seeded bytes outrank stale Streamlit)
+    4. ``_cached_build_section_exports_draw``
+    """
+    retained, force_uncached = _consume_retained_prepare_exports(subset_json, request_json)
+    if retained is not None:
+        return retained
+    if force_uncached:
+        return _build_prepare_exports_uncached(subset_json, request_json)
+    memoized = _lookup_prepare_export_memo(subset_json, request_json)
+    if memoized is not None:
+        return memoized
+    return _cached_build_section_exports_draw(subset_json, request_json)
+
+
+@st.cache_data(show_spinner="Preparing PNG/PDF exports...", ttl=3600, max_entries=8)
+def _cached_build_section_exports_draw(
+    subset_json: str,
+    request_json: str,
+) -> tuple[bytes, bytes]:
+    """Inner Prepare draw cache: one matplotlib draw for PNG+PDF on retain miss."""
+    return _build_prepare_exports_uncached(subset_json, request_json)
 
 
 def preflight_correlation_health(

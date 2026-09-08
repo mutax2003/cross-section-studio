@@ -15,7 +15,9 @@ from stratigraphy import GeologicalPolygon
 
 
 def _merge_pdf_pages(page_pdfs: Sequence[bytes]) -> bytes:
-    """Concatenate PDF page streams (pypdf when available; else return first page)."""
+    """Concatenate PDF page streams (pypdf required for 2+ pages)."""
+    import logging
+
     valid = [payload for payload in page_pdfs if payload]
     if not valid:
         return b""
@@ -24,6 +26,10 @@ def _merge_pdf_pages(page_pdfs: Sequence[bytes]) -> bytes:
     try:
         from pypdf import PdfReader, PdfWriter
     except ImportError:
+        logging.getLogger(__name__).warning(
+            "pypdf is not installed; returning section page only (summary page omitted). "
+            "Install pypdf>=4 for two-page section PDFs."
+        )
         return valid[0]
     writer = PdfWriter()
     for payload in valid:

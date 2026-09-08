@@ -87,6 +87,7 @@ class CrossSectionResult:
     pdf_bytes: bytes
     lithology_codes: list[str]
     overlap_warnings: tuple[str, ...]
+    retained_export_bundle: dict[str, object] | None = field(default=None, repr=False, compare=False)
 
     def __iter__(self) -> Iterator[object]:
         """Allow legacy tuple unpacking: ``proj, polys, svg, png, pdf, codes, warns = result``."""
@@ -125,25 +126,15 @@ def _normalize_export_formats(export_formats: frozenset[str] | None) -> frozense
 
 PDF_EXPORT_FORMATS = frozenset({"pdf"})
 
-_retained_figure: object | None = None
-_retained_export_bundle: dict[str, object] | None = None
-
 
 def take_retained_figure():
-    """Pop the figure left open by ``render_cross_section_from_geometry(close_figure=False)``."""
-    global _retained_figure
-    figure = _retained_figure
-    _retained_figure = None
-    return figure
+    """Deprecated no-op: figures are returned on ``CrossSectionResult.retained_export_bundle``."""
+    return None
 
 
 def take_retained_export_bundle() -> dict[str, object] | None:
-    """Pop figure + renderer context for a follow-up encode (Generate→Prepare one-draw)."""
-    global _retained_export_bundle, _retained_figure
-    bundle = _retained_export_bundle
-    _retained_export_bundle = None
-    _retained_figure = None
-    return bundle
+    """Deprecated no-op: use ``CrossSectionResult.retained_export_bundle`` instead."""
+    return None
 
 
 _DISCLAIMER_BY_MODE = {
@@ -641,26 +632,27 @@ def render_cross_section_from_geometry(
             lithology_codes=lithology_codes,
             qa_lines=qa_lines,
         )
-    finally:
-        global _retained_figure, _retained_export_bundle
-        if close_figure:
-            from matplotlib import pyplot as plt
+    except Exception:
+        from matplotlib import pyplot as plt
 
-            plt.close(figure)
-            _retained_figure = None
-            _retained_export_bundle = None
-        else:
-            _retained_figure = figure
-            _retained_export_bundle = {
-                "figure": figure,
-                "renderer": renderer,
-                "polygons": polygons,
-                "projected": projected,
-                "collar_depths": collar_depths,
-                "water_levels": water_levels,
-                "lithology_codes": lithology_codes,
-                "qa_lines": qa_lines,
-            }
+        plt.close(figure)
+        raise
+    retained: dict[str, object] | None = None
+    if close_figure:
+        from matplotlib import pyplot as plt
+
+        plt.close(figure)
+    else:
+        retained = {
+            "figure": figure,
+            "renderer": renderer,
+            "polygons": polygons,
+            "projected": projected,
+            "collar_depths": collar_depths,
+            "water_levels": water_levels,
+            "lithology_codes": lithology_codes,
+            "qa_lines": qa_lines,
+        }
     return CrossSectionResult(
         projected=projected,
         polygons=polygons,
@@ -669,4 +661,5 @@ def render_cross_section_from_geometry(
         pdf_bytes=pdf_bytes,
         lithology_codes=lithology_codes,
         overlap_warnings=overlap_warnings,
+        retained_export_bundle=retained,
     )

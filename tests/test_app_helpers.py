@@ -210,7 +210,7 @@ def test_init_session_defaults_bumps_schema_and_clears_stale() -> None:
     assert session["_schema_version"] == SESSION_SCHEMA_VERSION
     for key in SESSION_PARSE_KEYS:
         if key in session:
-            assert session[key] is None or session[key] == [] or session[key] is False
+            assert session[key] is None or session[key] == [] or session[key] is False or session[key] == ""
     assert session.get("parse_result") is None
     assert session.get("svg_bytes") is None
     assert session.get("qa_narrative") is None

@@ -525,12 +525,17 @@ def render_configure_step(
             parse_result = st.session_state.get("parse_result")
             if parse_result is not None:
                 workbook_specs = tuple(getattr(parse_result, "section_specs", ()) or ())
-        if workbook_specs and not str(st.session_state.get("batch_transect_specs", "")).strip():
+        if (
+            workbook_specs
+            and not str(st.session_state.get("batch_transect_specs", "")).strip()
+            and not st.session_state.get("_batch_specs_seeded_from_sections")
+        ):
             from parse_ops import format_section_specs_as_batch_text
 
             st.session_state["batch_transect_specs"] = format_section_specs_as_batch_text(
                 workbook_specs
             )
+            st.session_state["_batch_specs_seeded_from_sections"] = True
         col_a, col_b, col_c = st.columns(3)
         with col_a:
             if st.button("Add current transect", key="batch_add_current"):
@@ -573,6 +578,7 @@ def render_configure_step(
                     st.session_state["batch_transect_specs"] = format_section_specs_as_batch_text(
                         workbook_specs
                     )
+                    st.session_state["_batch_specs_seeded_from_sections"] = True
                     st.rerun()
         st.text_area(
             "Batch transects",
@@ -581,8 +587,8 @@ def render_configure_step(
             height=120,
             help=(
                 "Each line is rebuilt through the cross-section pipeline when you build "
-                "the multi-transect ZIP on Generate. Optional workbook Sections sheet "
-                "seeds this box when empty."
+                "the multi-transect ZIP on Generate. An empty box is seeded once from the "
+                "workbook Sections sheet; use Load from workbook Sections to refresh."
             ),
         )
 

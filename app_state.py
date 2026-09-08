@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 # Bump when session key shapes change so Cloud reconnects drop stale state.
-SESSION_SCHEMA_VERSION = 2
+SESSION_SCHEMA_VERSION = 3
 
 # Domain key groups for targeted resets
 SESSION_PARSE_KEYS = (
@@ -21,6 +21,8 @@ SESSION_PARSE_KEYS = (
     "parse_signature",
     "file_hash",
     "lithology_aliases",
+    "batch_transect_specs",
+    "_batch_specs_seeded_from_sections",
 )
 
 SESSION_SECTION_KEYS = (
@@ -140,6 +142,7 @@ DEFAULT_SESSION: dict[str, object] = {
     "export_cad_svg_layers": False,
     "export_output_dir": "",
     "batch_transect_specs": "",
+    "_batch_specs_seeded_from_sections": False,
     "parameter_marker_size": 16.0,
     "connect_chemistry_values": False,
 }

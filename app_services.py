@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections import OrderedDict
 from dataclasses import replace
 from io import BytesIO
@@ -23,7 +24,6 @@ from pipeline import (
     SectionGeometry,
     compute_section_geometry,
     render_cross_section_from_geometry,
-    take_retained_export_bundle,
     filter_projected_for_interpolation,
     validate_interpretation_mode,
 )
@@ -37,28 +37,107 @@ from stratigraphy import (
 )
 from transect_planner import recommend_transects
 
+_memo_lock = threading.RLock()
+
 _GEOMETRY_MEMO_MAX = 8
-_geometry_memo: OrderedDict[tuple[int, str], SectionGeometry] = OrderedDict()
+_geometry_memo: OrderedDict[tuple[str, str, str], SectionGeometry] = OrderedDict()
 
 _EXPORT_MEMO_MAX = 6
 _ExportResult = tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]
-_export_memo: OrderedDict[tuple[int, int, frozenset[str]], _ExportResult] = OrderedDict()
+_export_memo: OrderedDict[tuple[str, str, str, frozenset[str]], _ExportResult] = OrderedDict()
 
-_FIGURE_MEMO_MAX = 2
-_figure_memo: OrderedDict[tuple[int, int], dict[str, object]] = OrderedDict()
+_FIGURE_MEMO_MAX = 16
+_FIGURE_MEMO_MAX_PER_SESSION = 2
+_figure_memo: OrderedDict[tuple[str, str, str], dict[str, object]] = OrderedDict()
 
 
 def clear_service_memos() -> None:
     """Clear process-local geometry/export/figure memos (tests / long-running workers)."""
+    with _memo_lock:
+        _geometry_memo.clear()
+        _export_memo.clear()
+        while _figure_memo:
+            _key, bundle = _figure_memo.popitem(last=False)
+            _close_figure_bundle(bundle)
+
+
+def _memo_session_id() -> str:
+    """Isolate process memos per Streamlit session when a script context exists."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        ctx = get_script_run_ctx()
+        if ctx is not None and getattr(ctx, "session_id", None):
+            return str(ctx.session_id)
+    except Exception:
+        pass
+    return "local"
+
+
+def _digest_text(text: str) -> str:
+    import hashlib
+
+    return hashlib.blake2b(text.encode("utf-8"), digest_size=16).hexdigest()
+
+
+def _close_figure_bundle(bundle: dict[str, object] | None) -> None:
+    if not bundle:
+        return
     from matplotlib import pyplot as plt
 
-    _geometry_memo.clear()
-    _export_memo.clear()
-    while _figure_memo:
-        _key, bundle = _figure_memo.popitem(last=False)
-        figure = bundle.get("figure")
-        if figure is not None:
-            plt.close(figure)
+    figure = bundle.get("figure")
+    if figure is not None:
+        plt.close(figure)
+
+
+def _session_figure_count(session_id: str) -> int:
+    return sum(1 for key in _figure_memo if key[0] == session_id)
+
+
+def _store_figure_memo(key: tuple[str, str, str], bundle: dict[str, object]) -> None:
+    with _memo_lock:
+        existing = _figure_memo.get(key)
+        if existing is not None and existing is not bundle:
+            _close_figure_bundle(existing)
+        session_id = key[0]
+        while (
+            _session_figure_count(session_id) >= _FIGURE_MEMO_MAX_PER_SESSION
+            and key not in _figure_memo
+        ):
+            for old_key in list(_figure_memo):
+                if old_key[0] == session_id:
+                    _close_figure_bundle(_figure_memo.pop(old_key))
+                    break
+            else:
+                break
+        while len(_figure_memo) >= _FIGURE_MEMO_MAX and key not in _figure_memo:
+            _old_key, old_bundle = _figure_memo.popitem(last=False)
+            _close_figure_bundle(old_bundle)
+        _figure_memo[key] = bundle
+        _figure_memo.move_to_end(key)
+
+
+def _drop_export_memo_for_request(session_id: str, subset_digest: str, request_digest: str) -> None:
+    with _memo_lock:
+        stale = [
+            key
+            for key in _export_memo
+            if key[0] == session_id and key[1] == subset_digest and key[2] == request_digest
+        ]
+        for key in stale:
+            _export_memo.pop(key, None)
+
+
+def _invalidate_streamlit_prepare_caches() -> None:
+    """Drop Streamlit Prepare caches so the next Prepare uses retained figure / fresh draw."""
+    try:
+        cached_build_section_exports.clear()
+    except Exception:
+        pass
+    try:
+        cached_build_section_bundle.clear()
+    except Exception:
+        pass
 
 
 def _memo_get(
@@ -68,15 +147,18 @@ def _memo_get(
     *,
     max_entries: int,
 ) -> Any:
-    cached = store.get(key)
-    if cached is not None:
-        store.move_to_end(key)
-        return cached
+    with _memo_lock:
+        cached = store.get(key)
+        if cached is not None:
+            store.move_to_end(key)
+            return cached
     value = factory()
-    store[key] = value
-    while len(store) > max_entries:
-        store.popitem(last=False)
-    return value
+    with _memo_lock:
+        store[key] = value
+        store.move_to_end(key)
+        while len(store) > max_entries:
+            store.popitem(last=False)
+        return store[key]
 
 
 def _apply_section_geometry_qa(
@@ -214,10 +296,14 @@ def cached_compute_section_geometry(
 
 def _resolve_section_geometry(subset_json: str, geometry_request_json: str) -> SectionGeometry:
     """Process-local LRU over ``cached_compute_section_geometry`` (avoids pickle on hits)."""
-    key = (hash(subset_json), geometry_request_json)
+    geo_key = (
+        _memo_session_id(),
+        _digest_text(subset_json),
+        _digest_text(geometry_request_json),
+    )
     return _memo_get(
         _geometry_memo,
-        key,
+        geo_key,
         lambda: cached_compute_section_geometry(subset_json, geometry_request_json),
         max_entries=_GEOMETRY_MEMO_MAX,
     )
@@ -232,19 +318,19 @@ def _run_build_cross_section(
     request_json: str | None = None,
 ) -> tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]:
     formats = frozenset(export_formats)
-    export_key: tuple[int, int, frozenset[str]] | None = None
-    request_key: tuple[int, int] | None = None
-    if request_json is not None:
-        request_key = (hash(subset_json), hash(request_json))
+    session_id = _memo_session_id()
+    export_key: tuple[str, str, str, frozenset[str]] | None = None
+    request_key: tuple[str, str, str] | None = None
+    subset_digest = _digest_text(subset_json)
+    request_digest = _digest_text(request_json) if request_json is not None else None
+    if request_json is not None and request_digest is not None:
+        request_key = (session_id, subset_digest, request_digest)
         export_key = (*request_key, formats)
-        cached = _export_memo.get(export_key)
-        if cached is not None:
-            _export_memo.move_to_end(export_key)
-            return cached
 
-    # Prepare PNG+PDF: reuse live figure retained from SVG Generate (one matplotlib draw).
+    # Prepare PNG+PDF: prefer live figure retained from SVG Generate (before export memo).
     if request_key is not None and formats == frozenset({"png", "pdf"}):
-        retained = _figure_memo.pop(request_key, None)
+        with _memo_lock:
+            retained = _figure_memo.pop(request_key, None)
         if retained is not None:
             from matplotlib import pyplot as plt
 
@@ -272,11 +358,18 @@ def _run_build_cross_section(
             finally:
                 plt.close(figure)
             if export_key is not None:
-                _export_memo[export_key] = packed_reuse
-                while len(_export_memo) > _EXPORT_MEMO_MAX:
-                    _export_memo.popitem(last=False)
+                with _memo_lock:
+                    _export_memo[export_key] = packed_reuse
+                    while len(_export_memo) > _EXPORT_MEMO_MAX:
+                        _export_memo.popitem(last=False)
             return packed_reuse
 
+    if export_key is not None:
+        with _memo_lock:
+            cached = _export_memo.get(export_key)
+            if cached is not None:
+                _export_memo.move_to_end(export_key)
+                return cached
     figure_metadata, mode, _overrides = _build_section_kwargs(subset, request)
     geometry_json = json.dumps(request.geometry_cache_payload(), sort_keys=True)
     geometry = _apply_section_geometry_qa(
@@ -338,21 +431,14 @@ def _run_build_cross_section(
         close_figure=not retain,
     )
     if retain and request_key is not None:
-        bundle = take_retained_export_bundle()
+        bundle = result.retained_export_bundle
         if bundle is not None:
             bundle["polygon_count"] = len(result.polygons)
             bundle["lithology_codes_tuple"] = tuple(result.lithology_codes)
             bundle["overlap_warnings"] = result.overlap_warnings
-            # Evict oldest open figures when over capacity.
-            while len(_figure_memo) >= _FIGURE_MEMO_MAX and request_key not in _figure_memo:
-                _old_key, old_bundle = _figure_memo.popitem(last=False)
-                from matplotlib import pyplot as plt
-
-                old_fig = old_bundle.get("figure")
-                if old_fig is not None:
-                    plt.close(old_fig)
-            _figure_memo[request_key] = bundle
-            _figure_memo.move_to_end(request_key)
+            _drop_export_memo_for_request(session_id, subset_digest, request_digest or "")
+            _store_figure_memo(request_key, bundle)
+            _invalidate_streamlit_prepare_caches()
     packed: _ExportResult = (
         result.svg_bytes,
         result.png_bytes,
@@ -362,9 +448,10 @@ def _run_build_cross_section(
         result.overlap_warnings,
     )
     if export_key is not None:
-        _export_memo[export_key] = packed
-        while len(_export_memo) > _EXPORT_MEMO_MAX:
-            _export_memo.popitem(last=False)
+        with _memo_lock:
+            _export_memo[export_key] = packed
+            while len(_export_memo) > _EXPORT_MEMO_MAX:
+                _export_memo.popitem(last=False)
     return packed
 
 

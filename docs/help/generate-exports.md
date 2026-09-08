@@ -31,7 +31,7 @@ Configure → **Multi-transect batch ZIP**: one line per transect as `Label | ho
 
 On Generate, **Build multi-transect ZIP** rebuilds PNG/PDF for each line through the pipeline (distinct figures), then packages them. Check **Include SVG** only when needed (encode is slower). Optional **report_binder.pdf** merges section PDFs when `pypdf` is installed.
 
-Helpers: **Add current transect**, **Fill from recommended** (after Recommended mode has run once), and **Load from workbook Sections** (when the uploaded workbook has a **Sections** sheet). An empty batch box is auto-seeded from that sheet on Configure.
+Helpers: **Add current transect**, **Fill from recommended** (after Recommended mode has run once), and **Load from workbook Sections** (when the uploaded workbook has a **Sections** sheet). An empty batch box is seeded **once** from that sheet on Configure; clearing the box after that does not re-seed—use **Load from workbook Sections** to refresh.
 
 ## CAD note
 

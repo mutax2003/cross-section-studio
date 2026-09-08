@@ -801,6 +801,7 @@ def test_sections_sheet_parses_and_seeds_batch_lines(tmp_path: Path) -> None:
         {"section_label": "C-C'", "hole_ids": "MW-01; MW-02"},
         {"section_label": "Bad", "hole_ids": "MW-01"},  # <2 holes — skip
         {"section_label": "Orphan", "hole_ids": "MW-01, GHOST"},  # unknown collar — skip
+        {"section_label": "Inject|Bad", "hole_ids": "MW-01, MW-02"},  # label injection — skip
     ]
     with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
         pd.DataFrame(collars).to_excel(writer, sheet_name="Collars", index=False)

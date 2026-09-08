@@ -375,6 +375,8 @@ class WorkbookSectionSpec(BaseModel, frozen=True):
         text = str(value).strip()
         if not text:
             raise ValueError("section_label is required")
+        if any(ch in text for ch in ("\n", "\r", "|")):
+            raise ValueError("section_label cannot contain newlines or '|'")
         return text
 
     @field_validator("hole_ids", mode="before")
@@ -387,6 +389,11 @@ class WorkbookSectionSpec(BaseModel, frozen=True):
         holes = tuple(str(item).strip() for item in value if str(item).strip())
         if len(holes) < 2:
             raise ValueError("section requires at least two hole_ids")
+        for hole in holes:
+            if any(ch in hole for ch in (",", ";", "|", "\n", "\r")) or "→" in hole or "->" in hole:
+                raise ValueError(
+                    f"hole_id {hole!r} cannot contain separators (, ; | →) or newlines"
+                )
         return holes
 
 

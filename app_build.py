@@ -349,30 +349,38 @@ def generate_cross_section(
         )
 
     transect = Transect(points=transect_points)
-    warnings = off_transect_warnings(subset.collars, transect, offset_warning_m)
+    preflight_key = st.session_state.get("_preflight_json_key")
+    transect_points_tuple = tuple(transect_points)
+    # Configure already ran off-transect warnings for the same holes/transect/threshold.
+    skip_off_transect = (
+        isinstance(preflight_key, tuple)
+        and len(preflight_key) >= 9
+        and preflight_key[0] == tuple(hole_ids)
+        and preflight_key[1] == transect_points_tuple
+        and preflight_key[5] == offset_warning_m
+        and preflight_key[7] == st.session_state.get("file_hash")
+        and preflight_key[8] == st.session_state.get("parse_signature")
+    )
+    warnings: list[str] = []
+    if not skip_off_transect:
+        warnings.extend(off_transect_warnings(subset.collars, transect, offset_warning_m))
     if request.render_layout in {"consulting_section", "section_sheet"}:
-        warnings = list(warnings) + screen_interval_warnings(hole_ids, subset.screen_intervals)
+        warnings.extend(screen_interval_warnings(hole_ids, subset.screen_intervals))
     if warnings:
         for message in dedupe_messages(warnings):
             st.warning(message)
 
+    # Overlays live on the subset; render uses ``request.X or subset.X``.
+    # Keeping them off the request shrinks request_json hash/cache/validate cost.
     build_request = request.model_copy(
         update={
-            "transect_points": tuple(transect_points),
+            "transect_points": transect_points_tuple,
             "correlation_overrides": _session_correlation_overrides()
             + tuple(subset.correlation_overrides),
-            "water_levels": subset.water_levels,
-            "screen_intervals": subset.screen_intervals,
-            "vertical_gradients": subset.vertical_gradients,
-            "faults": subset.faults,
-            "unconformities": subset.unconformities,
-            "environmental_readings": subset.environmental_readings,
-            "deviation_readings": subset.deviation_readings,
         }
     )
     # Reuse Configure-warmed subset JSON when hole set + workbook signature match
     # (avoids a second full ParseResult.model_dump_json on Generate).
-    preflight_key = st.session_state.get("_preflight_json_key")
     cached_subset_json = st.session_state.get("_preflight_subset_json")
     if (
         lithology_index is None

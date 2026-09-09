@@ -42,6 +42,9 @@ _memo_lock = threading.RLock()
 _GEOMETRY_MEMO_MAX = 8
 _geometry_memo: OrderedDict[tuple[str, str, str], SectionGeometry] = OrderedDict()
 
+_GEOMETRY_JSON_MEMO_MAX = 32
+_geometry_json_memo: OrderedDict[str, str] = OrderedDict()
+
 _EXPORT_MEMO_MAX = 6
 _ExportResult = tuple[bytes, bytes, bytes, int, tuple[str, ...], tuple[str, ...]]
 _export_memo: OrderedDict[tuple[str, str, str, frozenset[str]], _ExportResult] = OrderedDict()
@@ -76,6 +79,7 @@ def clear_service_memos() -> None:
     """
     with _memo_lock:
         _geometry_memo.clear()
+        _geometry_json_memo.clear()
         _export_memo.clear()
         while _figure_memo:
             _key, bundle = _figure_memo.popitem(last=False)
@@ -421,10 +425,13 @@ def cached_compute_section_geometry(
     subset = cached_parse_subset(subset_json)
     payload = json.loads(geometry_request_json)
     mode = validate_interpretation_mode(str(payload["interpretation_mode"]))
-    overrides = tuple(
+    # Configure / Generate already merge workbook overrides into the request payload.
+    # Prefer payload overrides; fall back to subset when the payload omitted them.
+    payload_overrides = tuple(
         CorrelationOverride.model_validate(item)
         for item in payload.get("correlation_overrides", ())
-    ) + tuple(subset.correlation_overrides)
+    )
+    overrides = payload_overrides or tuple(subset.correlation_overrides)
     deviations = tuple(
         DeviationReading.model_validate(item)
         for item in payload.get("deviation_readings", ())
@@ -462,6 +469,23 @@ def _resolve_section_geometry(subset_json: str, geometry_request_json: str) -> S
     )
 
 
+def _geometry_request_json(request: SectionBuildRequest, request_digest: str | None = None) -> str:
+    """Serialize ``geometry_cache_payload`` once per request digest when possible."""
+    if request_digest is not None:
+        with _memo_lock:
+            cached = _geometry_json_memo.get(request_digest)
+            if cached is not None:
+                _geometry_json_memo.move_to_end(request_digest)
+                return cached
+    geometry_json = json.dumps(request.geometry_cache_payload(), sort_keys=True)
+    if request_digest is not None:
+        with _memo_lock:
+            _geometry_json_memo[request_digest] = geometry_json
+            while len(_geometry_json_memo) > _GEOMETRY_JSON_MEMO_MAX:
+                _geometry_json_memo.popitem(last=False)
+    return geometry_json
+
+
 def _run_build_cross_section(
     subset: ParseResult,
     request: SectionBuildRequest,
@@ -479,8 +503,10 @@ def _run_build_cross_section(
     formats = frozenset(export_formats)
     export_key: tuple[str, str, str, frozenset[str]] | None = None
     request_key: tuple[str, str, str] | None = None
+    request_digest: str | None = None
     if request_json is not None:
         request_key = _request_memo_key(subset_json, request_json)
+        request_digest = request_key[2]
         export_key = (*request_key, formats)
 
     # SVG Generate must redraw to re-retain; process ``_export_memo`` is for Prepare
@@ -493,7 +519,7 @@ def _run_build_cross_section(
                 _export_memo.move_to_end(export_key)
                 return cached
     figure_metadata, mode, _overrides = _build_section_kwargs(subset, request)
-    geometry_json = json.dumps(request.geometry_cache_payload(), sort_keys=True)
+    geometry_json = _geometry_request_json(request, request_digest)
     geometry = _apply_section_geometry_qa(
         _resolve_section_geometry(subset_json, geometry_json),
         request,

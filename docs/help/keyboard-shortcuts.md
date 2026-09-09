@@ -9,6 +9,6 @@
 | `Ctrl+/ or F1` | Keyboard shortcuts help |
 | `Ctrl+Shift+/` | Getting started help |
 
-Shortcuts apply when the app window has focus. On some browsers or hosts, system or browser bindings may take priority.
+Shortcuts apply when the app window has focus. On some browsers or hosts, system or browser bindings may take priority. Shortcuts are ignored while typing in text fields.
 
-> The in-app Help dialog builds this table from `app_menubar._SHORTCUT_ROWS` so the UI cannot drift from this file’s intent.
+> In-app **Help → Keyboard shortcuts** is built from `app_menubar._SHORTCUT_ROWS` so the dialog cannot drift from the accelerator table. Keep this file’s key column in sync when adding shortcuts.

@@ -10,8 +10,10 @@ import pandas as pd
 
 from constants import (
     BOREHOLE_ONLY_DISCLAIMER,
+    CHEMISTRY_OVERLAY_DISCLAIMER,
     CORRELATION_LINES_DISCLAIMER,
     INTERPOLATED_DISCLAIMER,
+    WATER_TABLE_OVERLAY_DISCLAIMER,
 )
 from export_framing import ExportFramingConfig, merge_framing_into_profile_updates
 from lithology_codes import collect_lithology_codes
@@ -580,6 +582,19 @@ def render_cross_section_from_geometry(
     if export_framing is not None and not export_framing.include_water_table:
         effective_interpolate_wt = False
         plotted_water = ()
+    overlay_notes: list[str] = []
+    if plotted_water:
+        overlay_notes.append(WATER_TABLE_OVERLAY_DISCLAIMER)
+    chemistry_plotted = bool(environmental_parameters) and bool(
+        environmental_readings or ()
+    )
+    if chemistry_plotted and (
+        render_profile.parameter_interpolate_segments
+        or render_profile.parameter_interpolate_across_gaps
+    ):
+        overlay_notes.append(CHEMISTRY_OVERLAY_DISCLAIMER)
+    if overlay_notes:
+        disclaimer = f"{disclaimer} {' '.join(overlay_notes)}"
     effective_consulting_block = consulting_title_block
     if export_framing is not None and (
         export_framing.fence_only or not export_framing.include_title_block

@@ -29,7 +29,7 @@ Optional: `hatch_pattern`, `unit_order` (needed when the same code repeats in on
 
 | Sheet | Purpose |
 |-------|---------|
-| **Water** | Groundwater markers (`depth` **or** `elevation_masl`, not both). Optional series columns for multi-date snapshots. |
+| **Water** | Groundwater markers (`depth` **or** `elevation_masl`, not both). Optional `status` (`measured` / `dry` / `nm`), series columns for multi-date snapshots. |
 | **Screens** | Screen interval hatch bands (consulting layout) |
 | **Gradients** | Vertical gradient arrows (`up` / `down`) |
 | **Environmental** | Lab/screening values at depth or interval — pick parameters on **Configure** |

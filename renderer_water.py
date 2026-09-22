@@ -9,6 +9,12 @@ import pandas as pd
 from matplotlib.collections import LineCollection
 
 from models import WaterLevel
+from hydro_metrics import (
+    format_gradient_label,
+    horizontal_gradients_along_profile,
+    water_head_masl,
+    water_status,
+)
 from render_theme import (
     CONSULTING_NM_COLOR,
     CONSULTING_WATER_COLOR,
@@ -197,7 +203,7 @@ class RendererWaterMixin:
                         zorder=8,
                     )
             # Draw each connect_group nest separately so shallow/deep do not join.
-            for _group_id, group_levels in _connect_subgroups(levels).items():
+            for group_id, group_levels in _connect_subgroups(levels).items():
                 level_by_id = {item.hole_id: item for item in group_levels}
                 xs: list[float] = []
                 water_rls: list[float] = []
@@ -211,8 +217,21 @@ class RendererWaterMixin:
                     if profile is None:
                         continue
                     x_profile, collar_rl = profile
+                    status = water_status(level)
+                    if status in {"dry", "nm"}:
+                        y_nm = self._plot_y(collar_rl - 1.0, collar_rl)
+                        ax.annotate(
+                            "NM" if status == "nm" else "DRY",
+                            xy=(float(x_profile), float(y_nm)),
+                            xytext=(4, 0),
+                            textcoords="offset points",
+                            fontsize=8,
+                            color=CONSULTING_NM_COLOR,
+                            zorder=8,
+                        )
+                        continue
                     xs.append(x_profile)
-                    water_rls.append(collar_rl - level.depth)
+                    water_rls.append(water_head_masl(level, collar_rl))
                     collars.append(collar_rl)
                     measured_levels.append(level)
                 if not xs:
@@ -290,6 +309,35 @@ class RendererWaterMixin:
                         )
                         if self._cad_svg_layers_enabled() and plotted:
                             self._set_cad_gid(plotted[0], "water")
+                    # Schematic horizontal i = Δh/Δx between adjacent measured heads.
+                    gradient_segments = horizontal_gradients_along_profile(
+                        measured_levels,
+                        hole_order=transect_hole_ids,
+                        x_by_hole=transect_x,
+                        collar_rl_by_hole={
+                            hid: float(profile_lookup[hid][1])
+                            for hid in transect_hole_ids
+                            if hid in profile_lookup
+                        },
+                        series_id=series_id,
+                        connect_group=group_id,
+                    )
+                    for segment in gradient_segments:
+                        mid_collar = 0.5 * (
+                            float(profile_lookup[segment.left_hole_id][1])
+                            + float(profile_lookup[segment.right_hole_id][1])
+                        )
+                        mid_y = self._plot_y(segment.mid_head_masl, mid_collar)
+                        ax.annotate(
+                            format_gradient_label(segment),
+                            xy=(segment.mid_x, float(mid_y)),
+                            xytext=(0, 6),
+                            textcoords="offset points",
+                            fontsize=6,
+                            color=color,
+                            ha="center",
+                            zorder=9,
+                        )
             level_label_text, elevation_label_text = self._water_legend_captions(
                 series_id, label, default_label
             )

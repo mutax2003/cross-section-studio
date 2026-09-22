@@ -63,11 +63,13 @@ Full schemas: [`docs/workbook-format.md`](docs/workbook-format.md). Short in-app
 ## Windows desktop
 
 ```powershell
-pip install -r requirements.txt pyinstaller
+pip install -r requirements.txt -r requirements-build.txt
 powershell -File scripts/build_windows.ps1
 ```
 
-Run `dist\CrossSectionStudio\CrossSectionStudio.exe` (launches Streamlit on localhost).
+Produces `dist\CrossSectionStudio-win64-vX.Y.Z.zip` (from the root [`VERSION`](VERSION) file), a legacy `CrossSectionStudio-win64.zip` copy, and `dist\release-manifest.json` (SHA-256 + download URL). Run `dist\CrossSectionStudio\CrossSectionStudio.exe` (launches Streamlit on localhost).
+
+In-app **Help → Check for updates** compares the bundled version to the published `release-manifest.json`. On the Windows desktop build you can open the download page or use **Download and install (restart)** (full zip + SHA-256 + PowerShell sidecar). Override the manifest with `CROSS_SECTION_UPDATE_MANIFEST_URL`.
 
 ## Docker
 

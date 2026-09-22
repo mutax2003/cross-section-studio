@@ -82,7 +82,10 @@ def test_import_app_modules() -> None:
 
     try:
         import app_menubar
+        import app_version
     except ImportError:
         pass
     else:
         assert callable(app_menubar.render_menubar)
+        assert callable(app_version.get_version)
+        assert callable(app_version.check_for_updates)

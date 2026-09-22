@@ -94,7 +94,7 @@ Fence-first layout matching consulting cross-section figures (`render_layout="co
 2. **Fence polygons** — opaque fills (`fence_alpha=1.0`) when `interpretation_mode` is interpolated; empty in `borehole_only`
 3. **Ground surface** — interpolated collar polyline (no sky fill)
 4. **Well columns** — grey fill (`CONSULTING_COLUMN_FILL`); `borehole_only` also draws **track lithology** inside the column
-5. **Screen intervals** — opaque `TRACK_FILL_COLOR` + `hatch="///"` (legend swatch only when screens exist)
+5. **Screen intervals** — opaque `TRACK_FILL_COLOR` + horizontal `SCREEN_INTERVAL_HATCH` (`"--"`; legend swatch only when screens exist) — distinct from lithology diagonals
 6. **Gradients** — vertical arrows when provided
 7. **Hole ID labels** — above each stick
 8. **Transect end labels** — optional via `ConsultingTitleBlock`

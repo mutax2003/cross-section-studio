@@ -12,8 +12,18 @@ LITHOLOGY_COLUMNS = {"hole_id", "from_depth", "to_depth", "lithology_code"}
 LITHOLOGY_OPTIONAL_COLUMNS = {"hatch_pattern", "unit_order"}
 WATER_COLUMNS = {"hole_id"}
 WATER_VALUE_COLUMNS = frozenset({"depth", "elevation_masl"})
+WATER_STATUS_COLUMNS = frozenset({"status"})
 WATER_OPTIONAL_COLUMNS = frozenset(
-    {"series_id", "series_label", "color", "marker", "depth", "elevation_masl", "connect_group"}
+    {
+        "series_id",
+        "series_label",
+        "color",
+        "marker",
+        "depth",
+        "elevation_masl",
+        "connect_group",
+        "status",
+    }
 )
 SCREEN_COLUMNS = {"hole_id", "from_depth", "to_depth"}
 GRADIENT_COLUMNS = {"hole_id", "direction"}
@@ -122,6 +132,7 @@ class WaterLevel(BaseModel, frozen=True):
     color: str | None = None
     marker: str | None = None
     connect_group: str = ""
+    status: str = "measured"
 
     @field_validator("hole_id", mode="before")
     @classmethod
@@ -144,6 +155,24 @@ class WaterLevel(BaseModel, frozen=True):
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return ""
         return str(value).strip()
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, value: object) -> str:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return "measured"
+        text = str(value).strip().lower()
+        if not text:
+            return "measured"
+        if text in {"dry", "d"}:
+            return "dry"
+        if text in {"nm", "n/m", "not measured", "not_measured", "ns", "not sampled", "not_sampled"}:
+            return "nm"
+        if text in {"measured", "meas", "m", "wet"}:
+            return "measured"
+        raise ValueError(
+            f"status must be measured, dry, or nm (got {value!r})"
+        )
 
     @field_validator("color", "marker", mode="before")
     @classmethod
@@ -201,7 +230,9 @@ class VerticalGradient(BaseModel, frozen=True):
             return "up"
         if text in {"down", "d", "↓"}:
             return "down"
-        return "up"
+        if not text:
+            return "up"
+        raise ValueError(f"direction must be up or down (got {value!r})")
 
 
 class DeviationReading(BaseModel, frozen=True):

@@ -10,7 +10,7 @@ from matplotlib.collections import PolyCollection
 
 from constants import get_lithology_style
 from models import ScreenInterval
-from render_theme import TRACK_BORDER_COLOR, TRACK_FILL_COLOR
+from render_theme import SCREEN_INTERVAL_HATCH, TRACK_BORDER_COLOR, TRACK_FILL_COLOR
 
 
 class RendererGeometryMixin:
@@ -289,6 +289,6 @@ class RendererGeometryMixin:
             edgecolors=TRACK_BORDER_COLOR,
             linewidths=0.6,
             zorder=9,
-            hatch="///",
+            hatch=SCREEN_INTERVAL_HATCH,
         )
 

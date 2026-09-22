@@ -102,6 +102,32 @@ def test_build_cross_section_returns_svg() -> None:
     assert_valid_svg(svg_bytes)
 
 
+def test_water_overlay_disclaimer_appended() -> None:
+    from constants import WATER_TABLE_OVERLAY_DISCLAIMER
+    from models import WaterLevel
+
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=10.0),
+    ]
+    lithologies = [
+        Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+        Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+    ]
+    water = (
+        WaterLevel(hole_id="BH-01", depth=2.0),
+        WaterLevel(hole_id="BH-02", depth=3.0),
+    )
+    result = build_cross_section(
+        collars,
+        lithologies,
+        [(0.0, 0.0), (50.0, 0.0)],
+        water_levels=water,
+        interpolate_water_table=True,
+    )
+    assert WATER_TABLE_OVERLAY_DISCLAIMER.encode() in result.svg_bytes
+
+
 def test_borehole_only_mode_skips_polygons() -> None:
     collars = [
         Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),

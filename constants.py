@@ -171,6 +171,14 @@ INTERPOLATED_DISCLAIMER = (
 CORRELATION_LINES_DISCLAIMER = (
     "Contact lines only — linear contacts between adjacent boreholes (no unit fill)."
 )
+WATER_TABLE_OVERLAY_DISCLAIMER = (
+    "Groundwater markers/lines are schematic linear connectors between measured "
+    "levels — not a potentiometric surface."
+)
+CHEMISTRY_OVERLAY_DISCLAIMER = (
+    "Chemistry fences are schematic depth-matched connectors — not concentration "
+    "contours or plume envelopes."
+)
 DEFAULT_PROFILE_ELEVATION_M = 100.0
 
 

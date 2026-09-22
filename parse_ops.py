@@ -9,6 +9,7 @@ from typing import Sequence
 from itertools import chain
 
 from models import (
+    Collar,
     DeviationReading,
     EnvironmentalReading,
     Lithology,

@@ -17,6 +17,7 @@ from models import (
     SCREEN_COLUMNS,
     WATER_COLUMNS,
     WATER_OPTIONAL_COLUMNS,
+    WATER_STATUS_COLUMNS,
     WATER_VALUE_COLUMNS,
     Collar,
     CorrelationOverride,
@@ -402,8 +403,10 @@ class DataParser:
         columns = set(df.columns)
         if "hole_id" not in columns:
             raise ValueError("Water sheet missing columns: hole_id")
-        if not columns.intersection(WATER_VALUE_COLUMNS):
-            raise ValueError("Water sheet requires hole_id plus depth or elevation_masl")
+        if not columns.intersection(WATER_VALUE_COLUMNS | WATER_STATUS_COLUMNS):
+            raise ValueError(
+                "Water sheet requires hole_id plus depth, elevation_masl, or status (dry/nm)"
+            )
 
         for index, row in enumerate(df.itertuples(index=True)):
             row_num = int(row.Index) + 2
@@ -411,13 +414,30 @@ class DataParser:
                 continue
             try:
                 hole_id = str(row.hole_id).strip()
+                status_raw = getattr(row, "status", None)
+                status_text = (
+                    ""
+                    if status_raw is None or (isinstance(status_raw, float) and pd.isna(status_raw))
+                    else str(status_raw).strip().lower()
+                )
+                is_non_measured = status_text in {
+                    "dry",
+                    "d",
+                    "nm",
+                    "n/m",
+                    "not measured",
+                    "not_measured",
+                    "ns",
+                    "not sampled",
+                    "not_sampled",
+                }
                 depth_raw = getattr(row, "depth", None)
                 masl_raw = getattr(row, "elevation_masl", None)
                 has_depth = depth_raw is not None and not pd.isna(depth_raw) and str(depth_raw).strip() != ""
                 has_masl = masl_raw is not None and not pd.isna(masl_raw) and str(masl_raw).strip() != ""
                 if has_depth and has_masl:
                     raise ValueError("provide depth or elevation_masl, not both")
-                if not has_depth and not has_masl:
+                if not has_depth and not has_masl and not is_non_measured:
                     raise ValueError("depth or elevation_masl is required")
                 elevation_masl: float | None = None
                 if has_masl:
@@ -431,14 +451,16 @@ class DataParser:
                             f"{collar.elevation} (artesian / above-collar water level)"
                         )
                     depth = collar.elevation - elevation_masl
-                else:
+                elif has_depth:
                     depth = float(depth_raw)
+                else:
+                    depth = 0.0
                 payload: dict[str, object] = {
                     "hole_id": hole_id,
                     "depth": depth,
                     "elevation_masl": elevation_masl,
                 }
-                for col in ("series_id", "series_label", "color", "marker", "connect_group"):
+                for col in ("series_id", "series_label", "color", "marker", "connect_group", "status"):
                     if hasattr(row, col):
                         payload[col] = getattr(row, col)
                 level = WaterLevel.model_validate(payload)
@@ -602,13 +624,15 @@ class DataParser:
                     and str(payload["from_depth"]).strip() != ""
                     and str(payload["to_depth"]).strip() != ""
                 )
+                if has_point and has_interval_values:
+                    raise ValueError("provide depth or from_depth/to_depth, not both")
                 if has_point:
                     payload["from_depth"] = None
                     payload["to_depth"] = None
                 elif has_interval_values:
                     payload["depth"] = None
                 else:
-                    continue
+                    raise ValueError("depth or from_depth and to_depth are required")
                 if payload.get("value_label") in ("", None) or pd.isna(payload.get("value_label")):
                     payload["value_label"] = ""
                 reading = EnvironmentalReading.model_validate(payload)

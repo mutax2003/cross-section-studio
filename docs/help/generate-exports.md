@@ -43,6 +43,8 @@ Download SVG for drafting. With **CAD-friendly SVG layers** on, export promotes 
 
 If **Block export on polygon overlaps** is on in Configure, resolve overlaps (or clear the gate after manual review) before Generate or batch ZIP. Cosmetic changes (title, VE, hatches, fonts, column width) still need Generate for a new SVG; projection/stratigraphy can reuse cached geometry when only cosmetics change.
 
+Water and chemistry connector layers (when plotted) add footer text clarifying they are **schematic** — not potentiometric surfaces or plume contours. Chemistry colour thresholds in Configure are global (not per-parameter guidelines); keep chemistry interpolate off for stick-style P2 figures.
+
 ## Regenerate
 
 If transect, style, or correlation settings change, **Generate** again. SVG refreshes immediately; run **Prepare deliverables** again for PNG/PDF/Word/ZIP.

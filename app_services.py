@@ -425,17 +425,17 @@ def cached_compute_section_geometry(
     subset = cached_parse_subset(subset_json)
     payload = json.loads(geometry_request_json)
     mode = validate_interpretation_mode(str(payload["interpretation_mode"]))
-    # Configure / Generate already merge workbook overrides into the request payload.
-    # Prefer payload overrides; fall back to subset when the payload omitted them.
-    payload_overrides = tuple(
+    # Configure / Generate merge workbook overrides into the request payload.
+    # Always trust the geometry payload lists (including empty) — never reinject
+    # subset Correlations/Deviations when the caller explicitly cleared them.
+    overrides = tuple(
         CorrelationOverride.model_validate(item)
         for item in payload.get("correlation_overrides", ())
     )
-    overrides = payload_overrides or tuple(subset.correlation_overrides)
     deviations = tuple(
         DeviationReading.model_validate(item)
         for item in payload.get("deviation_readings", ())
-    ) or tuple(subset.deviation_readings)
+    )
     transect_points = tuple(
         (float(point[0]), float(point[1])) for point in payload["transect_points"]
     )
@@ -689,7 +689,8 @@ def cached_build_section(
         packed = _cached_build_section_svg_draw(subset_json, request_json)
         if _has_live_retained_figure(subset_json, request_json):
             return packed
-        # Warm Streamlit hit skipped retain — rebuild uncached for side-effect only.
+        # Warm Streamlit hit skipped retain — rebuild uncached for side-effect only;
+        # still return the warm SVG bytes (UI display must match Streamlit cache).
         # Skip when the draw body already ran (miss path attempted retain once).
         if not _svg_draw_body_ran():
             _build_section_svg_uncached(subset_json, request_json)

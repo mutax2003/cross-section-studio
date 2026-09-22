@@ -21,6 +21,10 @@
 | `CROSS_SECTION_DISABLE_LLM` | `1`/`true` — hide LLM assist controls (no third-party prompts) |
 | `CROSS_SECTION_DEBUG_UI` | `1`/`true` — show full generate tracebacks in the UI (dev only) |
 | `CROSS_SECTION_PORT` | Desktop launcher port override |
+| `CROSS_SECTION_UPDATE_MANIFEST_URL` | JSON release manifest for **Help → Check for updates** (default: GitHub Releases `release-manifest.json`) |
+| `CROSS_SECTION_RELEASE_DOWNLOAD_URL` | Override download URL written into `dist/release-manifest.json` by `build_windows.ps1` |
+| `CROSS_SECTION_ALLOW_DEV_UPDATE` | `1` — enable full-zip auto-install outside a frozen build (use with `CROSS_SECTION_INSTALL_DIR`) |
+| `CROSS_SECTION_INSTALL_DIR` | Target onedir folder for dev auto-install tests |
 | `SENTRY_DSN` / `SENTRY_TRACES_RATE` / `SENTRY_ENVIRONMENT` | Optional APM (PII scrubbed; sample rate clamped 0–1) |
 | `STREAMLIT_API_TOKEN` | Streamlit Community Cloud API deploy (`scripts/deploy_streamlit_cloud.py`). Create at [share.streamlit.io](https://share.streamlit.io) → Settings → API tokens |
 | `GROQ_API_KEY` | **Recommended free LLM** — [console.groq.com](https://console.groq.com); auto-enables Assist when set |
@@ -47,14 +51,24 @@ Help markdown lives in `docs/help/` (bundled for desktop; Docker keeps `docs/hel
 ## Release checklist
 
 1. Run the full E2E gate (see [README](../README.md)).
-2. Bump version tag if releasing a build artifact.
+2. Bump the product version in [`VERSION`](../VERSION) (and matching `version` in [`pyproject.toml`](../pyproject.toml)). Tag the release `vX.Y.Z`.
 3. Regenerate GWM figures: `python scripts/plot_ecoventure_gwm.py --transect all`
 4. Refresh PDF reference extracts at 300 dpi (needs PyMuPDF): `python scripts/extract_pdf_figures.py --suite all`
 5. Ensure P2 generated PNGs exist under `data/Data2/test_output/` (`fig6_aa_lithology_chlorides.png`, `fig7_bb_lithology_chlorides.png`)
 6. Run parity check: `python scripts/compare_figure_parity.py --suite all` (suite MSE ceilings hard-fail in quality CI; `--warn-only` softens MSE for local soft runs; aspirational visual target remains lower but is not the CI gate). Optional `--require-same-size` only when crops/DPI truly match.
-7. Rebuild Windows desktop: `powershell -File scripts/build_windows.ps1`
-8. For Docker: `docker build -t cross-section-studio .`
-9. Streamlit Cloud: push `main`, or `STREAMLIT_API_TOKEN=… python scripts/deploy_streamlit_cloud.py`
+7. Rebuild Windows desktop: `powershell -File scripts/build_windows.ps1` — produces `dist/CrossSectionStudio-win64-vX.Y.Z.zip`, legacy `CrossSectionStudio-win64.zip`, and `dist/release-manifest.json` (SHA-256 + download URL).
+8. Publish the versioned zip **and** `release-manifest.json` as GitHub Release assets (so Help → Check for updates can fetch the default manifest URL).
+9. For Docker: `docker build -t cross-section-studio .`
+10. Streamlit Cloud: push `main`, or `STREAMLIT_API_TOKEN=… python scripts/deploy_streamlit_cloud.py`
+
+### Desktop updates
+
+Field installs use **Help → Check for updates** to compare the bundled `VERSION` against the published manifest.
+
+- **Manual:** open the download link, quit the app, unzip over the install folder (keep `_internal` beside the exe).
+- **Auto (Windows desktop build):** **Download and install (restart)** downloads the zip to `%LOCALAPPDATA%\CrossSectionStudio\updates\`, verifies SHA-256, then runs a PowerShell sidecar that swaps the install folder after the app exits and relaunches `CrossSectionStudio.exe`. Requires `sha256` in the manifest. Binary delta patching is not supported.
+
+Override the manifest with `CROSS_SECTION_UPDATE_MANIFEST_URL`. Dev checkouts can opt into auto-install with `CROSS_SECTION_ALLOW_DEV_UPDATE=1` and `CROSS_SECTION_INSTALL_DIR` pointing at a disposable onedir copy (never your git tree).
 
 ## Troubleshooting
 

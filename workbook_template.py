@@ -70,6 +70,7 @@ WATER_COLUMNS = (
     "hole_id",
     "depth",
     "elevation_masl",
+    "status",
     "series_id",
     "series_label",
     "connect_group",
@@ -232,6 +233,7 @@ def _sample_water() -> list[dict[str, object]]:
             "hole_id": "MW-01",
             "depth": 3.2,
             "elevation_masl": "",
+            "status": "measured",
             "series_id": "2025-06",
             "series_label": "June 2025",
             "connect_group": "shallow",
@@ -240,6 +242,7 @@ def _sample_water() -> list[dict[str, object]]:
             "hole_id": "MW-02",
             "depth": "",
             "elevation_masl": 631.0,
+            "status": "measured",
             "series_id": "2025-06",
             "series_label": "June 2025",
             "connect_group": "shallow",
@@ -248,6 +251,7 @@ def _sample_water() -> list[dict[str, object]]:
             "hole_id": "MW-03",
             "depth": 3.8,
             "elevation_masl": "",
+            "status": "measured",
             "series_id": "2025-06",
             "series_label": "June 2025",
             "connect_group": "shallow",
@@ -256,6 +260,7 @@ def _sample_water() -> list[dict[str, object]]:
             "hole_id": "MW-01",
             "depth": 8.0,
             "elevation_masl": "",
+            "status": "measured",
             "series_id": "2025-06-deep",
             "series_label": "June 2025 deep",
             "connect_group": "deep",
@@ -264,8 +269,18 @@ def _sample_water() -> list[dict[str, object]]:
             "hole_id": "MW-03",
             "depth": 7.5,
             "elevation_masl": "",
+            "status": "measured",
             "series_id": "2025-06-deep",
             "series_label": "June 2025 deep",
+            "connect_group": "deep",
+        },
+        {
+            "hole_id": "MW-02",
+            "depth": "",
+            "elevation_masl": "",
+            "status": "dry",
+            "series_id": "2025-06",
+            "series_label": "June 2025",
             "connect_group": "deep",
         },
     ]
@@ -368,6 +383,7 @@ def _column_hints() -> dict[str, dict[str, str]]:
             "hole_id": "Must match Collars.hole_id",
             "depth": "Water depth below collar (m) — OR use elevation_masl",
             "elevation_masl": "Water RL (masl) — do not fill both depth and this",
+            "status": "measured (default), dry, or nm — dry/nm may omit depth/masl",
             "series_id": "Optional snapshot id (e.g. 2025-06); max 4 series plotted",
             "series_label": "Optional legend label (e.g. June 2025)",
             "connect_group": "Optional nest id (e.g. shallow/deep) — only same group connects",
@@ -445,6 +461,7 @@ def _instructions_lines() -> list[str]:
         "WATER RULES",
         "• Up to four series_id values can be plotted; pick them on Configure.",
         "• connect_group links shallow/deep nest readings — only the same group connects.",
+        "• status: measured (default), dry, or nm. Dry/nm rows may omit depth/elevation_masl.",
         "",
         f"COMMON LITHOLOGY CODES: {lithology_list}",
         "",
@@ -518,12 +535,40 @@ def _normalize_key(value: object) -> str:
     return str(value).strip().lower().replace(" ", "_")
 
 
-def _table_frame(rows: list[list[object]], columns: tuple[str, ...]) -> pd.DataFrame:
+def _table_frame(
+    rows: list[list[object]],
+    columns: tuple[str, ...],
+    *,
+    header_cells: list[object] | None = None,
+) -> pd.DataFrame:
+    """Build a DataFrame from Data Entry table rows.
+
+    When ``header_cells`` is provided (from the sheet header row), values are mapped
+    by column name so optional columns like ``status`` can be inserted without
+    shifting ``series_id`` / other fields. Without a header, rows are positional
+    against ``columns`` (legacy layout).
+    """
     cleaned: list[dict[str, object]] = []
+    header_keys: list[str] | None = None
+    if header_cells:
+        header_keys = [_normalize_key(cell) for cell in header_cells]
+        # Drop trailing empties so short legacy headers still map cleanly.
+        while header_keys and header_keys[-1] in {"", "nan"}:
+            header_keys.pop()
     for row in rows:
         if not row or all(str(cell).strip() == "" or str(cell).strip().lower() == "nan" for cell in row):
             continue
-        payload = {columns[index]: row[index] if index < len(row) else "" for index in range(len(columns))}
+        if header_keys:
+            by_name = {
+                header_keys[index]: row[index] if index < len(row) else ""
+                for index in range(len(header_keys))
+            }
+            payload = {column: by_name.get(column, "") for column in columns}
+        else:
+            payload = {
+                columns[index]: row[index] if index < len(row) else ""
+                for index in range(len(columns))
+            }
         key_col = columns[0]
         if str(payload.get(key_col, "")).strip() == "":
             continue
@@ -537,6 +582,7 @@ def parse_data_entry_sheet(frame: pd.DataFrame) -> DataEntrySheets:
     """Parse the unified Data Entry layout into section DataFrames."""
     project: dict[str, str] = {}
     section_rows: dict[str, list[list[object]]] = {key: [] for key in TABLE_SECTIONS}
+    section_headers: dict[str, list[object]] = {}
     mode = "scan"
     current_section: str | None = None
     project_fields = {field for field, _label in PROJECT_FIELDS}
@@ -572,23 +618,50 @@ def parse_data_entry_sheet(frame: pd.DataFrame) -> DataEntrySheets:
             continue
 
         if mode == "table_header" and current_section:
+            section_headers[current_section] = cells
             mode = "table"
             continue
 
         if mode == "table" and current_section:
             header_key = _normalize_key(TABLE_SECTIONS[current_section][0])
             if _normalize_key(first) == header_key:
+                # Duplicate header row — refresh header mapping.
+                section_headers[current_section] = cells
                 continue
             section_rows[current_section].append(cells)
 
     return DataEntrySheets(
         project=project,
-        collars=_table_frame(section_rows["COLLARS"], COLLAR_COLUMNS),
-        lithology=_table_frame(section_rows["LITHOLOGY"], LITHOLOGY_COLUMNS),
-        water=_table_frame(section_rows["WATER"], WATER_COLUMNS),
-        environmental=_table_frame(section_rows["ENVIRONMENTAL"], ENVIRONMENTAL_COLUMNS),
-        screens=_table_frame(section_rows["SCREENS"], SCREEN_COLUMNS),
-        gradients=_table_frame(section_rows["GRADIENTS"], GRADIENT_COLUMNS),
+        collars=_table_frame(
+            section_rows["COLLARS"],
+            COLLAR_COLUMNS,
+            header_cells=section_headers.get("COLLARS"),
+        ),
+        lithology=_table_frame(
+            section_rows["LITHOLOGY"],
+            LITHOLOGY_COLUMNS,
+            header_cells=section_headers.get("LITHOLOGY"),
+        ),
+        water=_table_frame(
+            section_rows["WATER"],
+            WATER_COLUMNS,
+            header_cells=section_headers.get("WATER"),
+        ),
+        environmental=_table_frame(
+            section_rows["ENVIRONMENTAL"],
+            ENVIRONMENTAL_COLUMNS,
+            header_cells=section_headers.get("ENVIRONMENTAL"),
+        ),
+        screens=_table_frame(
+            section_rows["SCREENS"],
+            SCREEN_COLUMNS,
+            header_cells=section_headers.get("SCREENS"),
+        ),
+        gradients=_table_frame(
+            section_rows["GRADIENTS"],
+            GRADIENT_COLUMNS,
+            header_cells=section_headers.get("GRADIENTS"),
+        ),
     )
 
 
@@ -972,8 +1045,16 @@ def export_cleaned_workbook_bytes(
         water_rows.append(
             {
                 "hole_id": level.hole_id,
-                "depth": level.depth,
-                "elevation_masl": "",
+                "depth": (
+                    ""
+                    if (level.status or "measured") in {"dry", "nm"} and level.depth == 0.0
+                    and level.elevation_masl is None
+                    else level.depth
+                ),
+                "elevation_masl": (
+                    level.elevation_masl if level.elevation_masl is not None else ""
+                ),
+                "status": level.status or "measured",
                 "series_id": level.series_id or "",
                 "series_label": level.series_label or "",
                 "connect_group": level.connect_group or "",

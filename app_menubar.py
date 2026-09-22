@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import time
+
 import streamlit as st
 
 from app_state import clear_ai_session_state, clear_section_output_state
@@ -64,7 +67,86 @@ def load_help_markdown(topic: str) -> str:
     path = help_topic_path(stem)
     if path is None or not path.is_file():
         return f"Help topic `{topic}` was not found."
-    return path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
+    if stem == "about":
+        from app_version import about_version_markdown
+
+        text = text.rstrip() + "\n\n" + about_version_markdown()
+    return text
+
+
+@st.dialog("Check for updates")
+def _updates_dialog() -> None:
+    from app_version import check_for_updates
+    from desktop_updater import auto_install_allowed, download_and_schedule_install
+    from paths import is_frozen
+
+    with st.spinner("Checking for updates…"):
+        result = check_for_updates()
+    st.caption(f"Installed version: **{result.current_version}**")
+    if result.error:
+        st.warning(result.error)
+        st.caption(f"Manifest: `{result.manifest_url}`")
+        st.caption(
+            "Set `CROSS_SECTION_UPDATE_MANIFEST_URL` to override the default "
+            "GitHub Releases manifest URL."
+        )
+    elif result.update_available:
+        st.success(f"Update available: **{result.latest_version}**")
+        if result.notes:
+            st.markdown(result.notes)
+        if result.download_url:
+            st.link_button(
+                "Open download page",
+                result.download_url,
+                width="stretch",
+            )
+            st.caption(
+                "Manual install: download the Windows zip, quit Cross Section Studio, "
+                "then replace the install folder (keep `_internal` next to the `.exe`). "
+                f"Expected SHA-256: `{result.sha256 or 'see release notes'}`."
+            )
+            if auto_install_allowed() and result.sha256:
+                if st.button(
+                    "Download and install (restart)",
+                    key="menu_help_updates_install",
+                    width="stretch",
+                    type="primary",
+                ):
+                    status = st.empty()
+                    try:
+
+                        def _progress(message: str, fraction: float | None) -> None:
+                            if fraction is None:
+                                status.info(message)
+                            else:
+                                status.progress(fraction, text=message)
+
+                        download_and_schedule_install(result, progress=_progress)
+                        status.success(
+                            "Update verified. The app will close and restart on the new build."
+                        )
+                        st.caption("If the window does not close, quit Cross Section Studio manually.")
+                        time.sleep(1.2)
+                        os._exit(0)
+                    except Exception as exc:  # noqa: BLE001 — show to operator
+                        status.error(f"Update failed: {exc}")
+            elif is_frozen() and not result.sha256:
+                st.caption("Auto-install requires a SHA-256 in the release manifest.")
+            elif not is_frozen():
+                st.caption(
+                    "Auto-install is available in the Windows desktop build "
+                    "(or set `CROSS_SECTION_ALLOW_DEV_UPDATE=1`)."
+                )
+        else:
+            st.info("A newer version is published but the manifest has no download URL.")
+    else:
+        st.info(
+            f"You are on the latest published version"
+            f"{f' ({result.latest_version})' if result.latest_version else ''}."
+        )
+    if st.button("Close", key="help_dialog_close_updates"):
+        st.rerun()
 
 
 def _set_help_topic(topic: str) -> None:
@@ -180,6 +262,9 @@ def render_menubar() -> None:
             if _menu_item("About", key="menu_help_about"):
                 _set_help_topic("about")
                 st.rerun()
+            if _menu_item("Check for updates", key="menu_help_updates"):
+                st.session_state["_menu_check_updates"] = True
+                st.rerun()
 
     with c_hint:
         st.caption("Menus · F1 or Ctrl+/ for shortcuts")
@@ -194,6 +279,23 @@ def render_menubar() -> None:
         else:
             with st.expander(f"Help — {topic}", expanded=True):
                 st.markdown(load_help_markdown(topic))
+
+    if st.session_state.pop("_menu_check_updates", None):
+        if hasattr(st, "dialog"):
+            _updates_dialog()
+        else:
+            from app_version import check_for_updates
+
+            result = check_for_updates()
+            with st.expander("Check for updates", expanded=True):
+                if result.error:
+                    st.warning(result.error)
+                elif result.update_available:
+                    st.success(f"Update available: {result.latest_version}")
+                    if result.download_url:
+                        st.markdown(f"[Download]({result.download_url})")
+                else:
+                    st.info("You are on the latest published version.")
 
     _render_accelerator_buttons()
     # Parent-document listener persists across Streamlit reruns; avoid remounting the iframe.

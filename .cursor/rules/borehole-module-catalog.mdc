@@ -1,6 +1,6 @@
 ---
 description: Module catalog, workbook sheets, and entry points for the borehole platform
-globs: app.py,app_*.py,**/renderer*.py,**/render_*.py,pipeline.py,stratigraphy.py,projection.py,ingestion.py,models.py,parsing.py,parse_ops.py,ai_quality.py,ai_assistant.py,constants.py,lithology_codes.py,report_export.py,export_framing.py,batch_export.py,docx_export.py,**/ops_*.py,section_build_request.py,workbook_template.py,ui_output_presets.py,transect_planner.py,ui_helpers.py,launcher.py,paths.py,gwm_reference/**,advantage_p2_reference/**
+globs: app.py,app_*.py,**/renderer*.py,**/render_*.py,pipeline.py,stratigraphy.py,projection.py,ingestion.py,models.py,parsing.py,parse_ops.py,ai_quality.py,hydro_metrics.py,ai_assistant.py,constants.py,lithology_codes.py,report_export.py,export_framing.py,batch_export.py,docx_export.py,**/ops_*.py,section_build_request.py,workbook_template.py,ui_output_presets.py,transect_planner.py,ui_helpers.py,launcher.py,paths.py,gwm_reference/**,advantage_p2_reference/**
 alwaysApply: false
 ---
 

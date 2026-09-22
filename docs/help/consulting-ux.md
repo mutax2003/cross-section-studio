@@ -32,6 +32,13 @@ Inter-hole fills are a **rule-based fence** (linear contacts, midpoint pinch-out
 - **Consulting report (title block)** — footer title block, groundwater legend; consulting QA often **blocks export on polygon overlaps** by default — disable only after manual review.
 - **Quick preview (chart)** — minimal chart for internal review.
 
+## Groundwater and chemistry overlays
+
+- Water table polylines and chemistry “fences” are **schematic connectors** between measured sticks — **not** a potentiometric surface or plume envelope. Figure footers append overlay disclaimers when those layers plot.
+- Optional Water column `status`: `measured` (default), `dry`, or `nm` (not measured). Prefer this over omitting rows when a well was visited but dry/NM.
+- Chemistry label colours use Configure green/yellow thresholds (defaults resemble chloride mg/L scales — retune per parameter). Turning on **interpolate chemistry between holes** draws depth-matched segments only; keep it off for P2 stick-style figures.
+- When water connectors plot, adjacent measured heads may show a schematic **i=Δh/Δx** label. Validate warns if \|i\| is unrealistically large.
+
 ## Keyboard shortcuts
 
 - **Ctrl+G** — Generate / Regenerate (same as menubar **File → Generate cross-section**).

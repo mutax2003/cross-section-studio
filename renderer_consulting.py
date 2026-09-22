@@ -39,6 +39,7 @@ from render_theme import (
     STICK_COLOR,
     TRACK_BORDER_COLOR,
     TRACK_FILL_COLOR,
+    SCREEN_INTERVAL_HATCH,
     consulting_section_title,
     export_font_rc,
     primary_water_depth_by_hole,
@@ -785,7 +786,7 @@ class ConsultingLayoutMixin:
                     {
                         "facecolor": TRACK_FILL_COLOR,
                         "edgecolor": TRACK_BORDER_COLOR,
-                        "hatch": "///",
+                        "hatch": SCREEN_INTERVAL_HATCH,
                     },
                 )
             )

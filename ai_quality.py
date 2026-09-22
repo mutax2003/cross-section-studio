@@ -16,6 +16,11 @@ import pandas as pd
 from rapidfuzz import fuzz
 
 from constants import CANONICAL_LITHOLOGY_CODES
+from hydro_metrics import (
+    absurd_horizontal_gradient_warnings,
+    horizontal_gradients_along_profile,
+    is_measured_water_level,
+)
 from models import (
     COLLAR_COLUMNS,
     LITHOLOGY_COLUMNS,
@@ -624,16 +629,20 @@ def summarize_water_levels(
     collar_by_id = {collar.hole_id: collar for collar in collars}
     warnings: list[str] = []
     by_series: dict[str, list[WaterLevel]] = {}
-    seen_keys: set[tuple[str, str]] = set()
+    # Deduplicate per hole × series × connect_group nest (blank nest = shared polyline).
+    seen_keys: set[tuple[str, str, str]] = set()
     holes_with_any: set[str] = set()
     orphan_ids: set[str] = set()
     masl_on_placeholder = False
     for level in water_levels:
         series_id = level.series_id or "default"
-        key = (level.hole_id, series_id)
+        connect_group = (level.connect_group or "").strip()
+        key = (level.hole_id, series_id, connect_group)
         if key in seen_keys:
+            nest_note = f", nest {connect_group}" if connect_group else ""
             warnings.append(
-                f"{level.hole_id} ({series_id}): duplicate groundwater reading — last value is used on the section"
+                f"{level.hole_id} ({series_id}{nest_note}): duplicate groundwater reading — "
+                "last value is used on the section"
             )
         seen_keys.add(key)
         if level.hole_id not in hole_set:
@@ -644,7 +653,7 @@ def summarize_water_levels(
         collar = collar_by_id.get(level.hole_id)
         if collar is None:
             continue
-        if level.depth > collar.total_depth:
+        if is_measured_water_level(level) and level.depth > collar.total_depth:
             warnings.append(
                 f"{level.hole_id} ({series_id}): water depth {level.depth:.2f} m exceeds total depth "
                 f"{collar.total_depth:.2f} m"
@@ -688,6 +697,44 @@ def summarize_water_levels(
             "Groundwater readings for holes not on the selected transect: "
             + ", ".join(sorted(orphan_ids))
         )
+
+    # Schematic |Δh/Δx| QA using plan distance between consecutive transect collars.
+    collar_xy = {c.hole_id: (float(c.easting), float(c.northing)) for c in collars}
+    x_along: dict[str, float] = {}
+    cumulative = 0.0
+    prev_xy: tuple[float, float] | None = None
+    for hole_id in transect_holes:
+        xy = collar_xy.get(hole_id)
+        if xy is None:
+            continue
+        if prev_xy is not None:
+            cumulative += (
+                (xy[0] - prev_xy[0]) ** 2 + (xy[1] - prev_xy[1]) ** 2
+            ) ** 0.5
+        x_along[hole_id] = cumulative
+        prev_xy = xy
+    collar_rl = {c.hole_id: float(c.elevation) for c in collars}
+    for series_id, levels in by_series.items():
+        label = next((level.series_label for level in levels if level.series_label), series_id)
+        by_nest: dict[str, list[WaterLevel]] = {}
+        for level in levels:
+            by_nest.setdefault((level.connect_group or "").strip(), []).append(level)
+        for nest_id, nest_levels in by_nest.items():
+            series_label = label or series_id
+            if nest_id:
+                series_label = f"{series_label} [{nest_id}]"
+            segments = horizontal_gradients_along_profile(
+                nest_levels,
+                hole_order=transect_holes,
+                x_by_hole=x_along,
+                collar_rl_by_hole=collar_rl,
+                series_id=series_id,
+                connect_group=nest_id,
+            )
+            warnings.extend(
+                absurd_horizontal_gradient_warnings(segments, series_label=series_label)
+            )
+
     return WaterQualitySummary(
         series=tuple(series_summaries),
         holes_without_any_water=holes_without_any,

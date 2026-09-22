@@ -15,11 +15,18 @@ sys.path.insert(0, str(ROOT))
 from constants import CONSULTING_LITHOLOGY_COLORS, USGS_LITHOLOGY_COLORS, USGS_LITHOLOGY_HATCHES, get_lithology_style
 from models import Collar, ConsultingTitleBlock, EnvironmentalReading, Lithology, ScreenInterval, VerticalGradient, WaterLevel
 from render_profiles import CHART_PROFILE, CONSULTING_SECTION_PROFILE, SECTION_SHEET_PROFILE
-from render_theme import PARAMETER_READING_COLOR
+from render_theme import PARAMETER_READING_COLOR, SCREEN_INTERVAL_HATCH
 from pipeline import build_cross_section
 from renderer import CrossSectionRenderer, _resolve_parameter_label_offsets
 from stratigraphy import build_stratigraphy
 from tests.conftest import assert_valid_svg, run_pipeline
+
+
+def test_screen_interval_hatch_is_horizontal() -> None:
+    """Screen bands use horizontal hatch so they do not read as lithology diagonals."""
+    assert "-" in SCREEN_INTERVAL_HATCH
+    assert "/" not in SCREEN_INTERVAL_HATCH
+    assert "\\" not in SCREEN_INTERVAL_HATCH
 
 
 def test_parameter_label_offsets_stagger_dense_stacks() -> None:

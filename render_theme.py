@@ -7,6 +7,8 @@ SKY_FILL_COLOR = "#E8F4FC"
 STICK_COLOR = "#1F2937"
 TRACK_BORDER_COLOR = "#111827"
 TRACK_FILL_COLOR = "#FFFFFF"
+# Horizontal hatch for screened intervals — distinct from lithology diagonals (/, \, x).
+SCREEN_INTERVAL_HATCH = "--"
 CONSULTING_COLUMN_FILL = "#D0D5DD"
 LABEL_COLOR = "#111827"
 GRID_COLOR = "#D1D5DB"
@@ -168,16 +170,23 @@ def primary_water_depth_by_hole(water_levels) -> dict[str, float]:
 
     Workbooks typically list older snapshots first; the last distinct ``series_id``
     is treated as the current/primary series for consulting gradient anchors.
+    Dry / nm rows are excluded so arrow anchors are not placed at the depth=0 sentinel.
     """
     if not water_levels:
         return {}
+    from hydro_metrics import is_measured_water_level
+
     by_series: dict[str, list] = {}
     order: list[str] = []
     for level in water_levels:
+        if not is_measured_water_level(level):
+            continue
         series_id = getattr(level, "series_id", None) or "default"
         if series_id not in by_series:
             order.append(series_id)
         by_series.setdefault(series_id, []).append(level)
+    if not order:
+        return {}
     primary_series = order[-1]
     return {level.hole_id: level.depth for level in by_series[primary_series]}
 

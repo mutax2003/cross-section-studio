@@ -1,6 +1,6 @@
 ---
 description: Module catalog, workbook sheets, and entry points for the borehole platform
-globs: app.py,app_*.py,**/renderer*.py,**/render_*.py,pipeline.py,stratigraphy.py,projection.py,ingestion.py,models.py,parsing.py,parse_ops.py,ai_quality.py,hydro_metrics.py,ai_assistant.py,constants.py,lithology_codes.py,report_export.py,export_framing.py,batch_export.py,docx_export.py,**/ops_*.py,section_build_request.py,workbook_template.py,ui_output_presets.py,transect_planner.py,ui_helpers.py,launcher.py,paths.py,gwm_reference/**,advantage_p2_reference/**
+globs: app.py,app_*.py,**/renderer*.py,**/render_*.py,pipeline.py,stratigraphy.py,projection.py,ingestion.py,models.py,parsing.py,parse_ops.py,ai_quality.py,hydro_metrics.py,ai_assistant.py,constants.py,lithology_codes.py,report_export.py,export_framing.py,batch_export.py,docx_export.py,app_version.py,desktop_updater.py,update_url_policy.py,**/ops_*.py,section_build_request.py,workbook_template.py,ui_output_presets.py,transect_planner.py,ui_helpers.py,launcher.py,paths.py,gwm_reference/**,advantage_p2_reference/**
 alwaysApply: false
 ---
 
@@ -25,6 +25,7 @@ Companion to `borehole-platform-architecture.mdc` (always-on boundaries). Load w
 | `parse_ops.py` | `subset_parse_result`, `apply_unit_order_fix`, `geology_sheet_counts`, lithology index helpers |
 | `ingestion.py` | Multi-format ingest: `FormatDetector`, `FieldExportAdapter`, `ingest_workbook()`, `get_cached_field_data_frame()` |
 | `ai_quality.py` | QA heuristics, fuzzy column mapping, lithology aliases, water/screens/environmental summaries (`summarize_*`) |
+| `hydro_metrics.py` | Leaf hydrogeology metrics: `water_status` / `is_measured_water_level` / `water_head_masl`, horizontal gradients (shared by `ai_quality` + `renderer_water`) |
 | `ai_assistant.py` | Optional LLM + local advisory assist (UI only; never in engine) |
 | `projection.py` | Vector math — 3D collar → 2D profile coordinates; deviation surveys |
 | `stratigraphy.py` | Layer correlation, pinch-outs, overlap clipping, correlation preflight |
@@ -60,6 +61,9 @@ Companion to `borehole-platform-architecture.mdc` (always-on boundaries). Load w
 | `app_common.py` | Shared display helpers (workflow, legend, assistant, quality refresh) |
 | `paths.py` | Resource paths for PyInstaller, Docker, local dev (incl. `help_dir` / `help_topic_path`) |
 | `launcher.py` | Windows desktop entry |
+| `app_version.py` | `VERSION` read, semver compare, release-manifest update check (notify-only; Help → Check for updates) |
+| `desktop_updater.py` | Full-zip desktop update: download, SHA-256 verify, sidecar replace + restart (Windows onedir only; applied via `launcher.py`) |
+| `update_url_policy.py` | Leaf HTTPS / `file://` allowlist policy for update manifest and zip URLs (re-exported by `app_version` / `desktop_updater`) |
 | `ops_auth.py`, `ops_logging.py`, `ops_audit.py`, `ops_apm.py` | Optional production hardening (auth gate, structured logs, audit trail, APM hook) |
 | `gwm_reference/`, `advantage_p2_reference/` | Golden/reference fixtures + plot helpers (tests/scripts only; not production geometry) |
 

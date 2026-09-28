@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from typing import Sequence
-
+from collections.abc import Sequence
 from itertools import chain
 
 from models import (
@@ -19,6 +18,7 @@ from models import (
     WaterLevel,
     WorkbookSectionSpec,
 )
+
 
 def lithologies_by_hole(
     lithologies: Sequence[Lithology],

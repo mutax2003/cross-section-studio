@@ -5,13 +5,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ingestion import export_platform_workbook, parse_depth_interval
-from paths import advantage_platform_workbook, advantage_source_workbook
+from ingestion import export_platform_workbook, parse_depth_interval  # noqa: E402
+from paths import advantage_platform_workbook, advantage_source_workbook  # noqa: E402
 
 OUTPUT = advantage_platform_workbook()
 SOURCE = advantage_source_workbook()

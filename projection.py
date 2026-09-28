@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -102,7 +102,7 @@ def _deviated_projection_frame(
     hole_lithologies: Sequence[Lithology],
     collar: Collar,
     survey: Sequence[_SurveyStation],
-    geometry: "_TransectGeometry",
+    geometry: _TransectGeometry,
 ) -> pd.DataFrame:
     count = len(hole_lithologies)
     if count == 0:
@@ -146,7 +146,7 @@ def _points_cache_key(transect: Transect) -> tuple[tuple[float, float], ...]:
 
 
 @lru_cache(maxsize=64)
-def _geometry_from_points(points: tuple[tuple[float, float], ...]) -> "_TransectGeometry":
+def _geometry_from_points(points: tuple[tuple[float, float], ...]) -> _TransectGeometry:
     array = np.asarray(points, dtype=float)
     deltas = np.diff(array, axis=0)
     segment_lengths = np.linalg.norm(deltas, axis=1)

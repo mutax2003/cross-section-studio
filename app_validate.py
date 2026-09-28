@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from io import BytesIO
-from typing import Any, Callable, Sequence
+from typing import Any
 
 import pandas as pd
 import streamlit as st
 
-from ai_quality import save_lithology_alias
 from ai_assistant import AIAssistant
+from ai_quality import save_lithology_alias
 from app_common import (
     _apply_auto_unit_order_fix,
     _build_assistant,
@@ -547,7 +548,7 @@ def render_validate_step() -> None:
                 f"**{quality_report.info_count} info**"
             )
         else:
-            st.markdown(f"**Data health OK** — no blocking issues detected.")
+            st.markdown("**Data health OK** — no blocking issues detected.")
         details_loaded = st.session_state.get("validate_details_loaded")
         if quality_report.warning_count and not details_loaded:
             top_warnings = [

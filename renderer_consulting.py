@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import logging
 import textwrap
-from typing import Sequence
+from collections.abc import Sequence
 
 import matplotlib as mpl
 import matplotlib.image as mpimg
@@ -18,33 +18,30 @@ from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.patches import FancyArrow, Rectangle
 from matplotlib.ticker import FuncFormatter, MultipleLocator
 
-from constants import get_lithology_style
 from lithology_codes import collect_lithology_codes
 from models import ConsultingTitleBlock, VerticalGradient, WaterLevel
-from stratigraphy import GeologicalPolygon
 from render_theme import (
     CONSULTING_COLUMN_FILL,
     CONSULTING_FIGURE_BG,
-    CONSULTING_NM_COLOR,
     CONSULTING_SCALE_BAR_M,
     CONSULTING_SURFACE_COLOR,
     CONSULTING_WATER_COLOR,
     DEFAULT_CONSULTING_NOTES,
     LABEL_COLOR,
-    PARAMETER_READING_COLOR,
     OVERLAP_MARKER_COLOR,
-    PINCH_OUT_ALPHA,
+    PARAMETER_READING_COLOR,
     REPORT_GRID_ALPHA,
     REPORT_GRID_COLOR,
+    SCREEN_INTERVAL_HATCH,
     STICK_COLOR,
     TRACK_BORDER_COLOR,
     TRACK_FILL_COLOR,
-    SCREEN_INTERVAL_HATCH,
     consulting_section_title,
     export_font_rc,
     primary_water_depth_by_hole,
     water_has_multiple_series,
 )
+from stratigraphy import GeologicalPolygon
 
 logger = logging.getLogger(__name__)
 

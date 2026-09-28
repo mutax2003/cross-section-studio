@@ -8,16 +8,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from constants import BOREHOLE_ONLY_DISCLAIMER, INTERPOLATED_DISCLAIMER
-from models import Collar, Lithology, WaterLevel, EnvironmentalReading
-from pipeline import (
+from constants import BOREHOLE_ONLY_DISCLAIMER, INTERPOLATED_DISCLAIMER  # noqa: E402
+from models import Collar, EnvironmentalReading, Lithology, WaterLevel  # noqa: E402
+from pipeline import (  # noqa: E402
     auto_scale_bar_m,
     build_cross_section,
     compute_section_geometry,
     render_cross_section_from_geometry,
     validate_interpretation_mode,
 )
-from tests.conftest import assert_valid_svg
+from tests.conftest import assert_valid_svg  # noqa: E402
 
 
 def test_auto_scale_bar_picks_nearest_candidate() -> None:

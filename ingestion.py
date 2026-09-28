@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
-from typing import BinaryIO, Literal, Sequence
+from typing import BinaryIO, Literal
 
 import pandas as pd
 from pydantic import BaseModel, Field
@@ -23,7 +24,6 @@ from ai_quality import (
     propose_workbook_mapping,
     read_mapped_sheets,
 )
-from constants import DEFAULT_PROFILE_ELEVATION_M
 from models import (
     COLLAR_COLUMNS,
     LITHOLOGY_COLUMNS,
@@ -34,10 +34,9 @@ from models import (
     geology_sheet_counts,
     lithology_has_unit_order_column,
 )
+from paths import import_profiles_dir
 
 logger = logging.getLogger(__name__)
-
-from paths import import_profiles_dir
 
 PROFILES_DIR = import_profiles_dir()
 OVERRIDES_DIR = PROFILES_DIR / "overrides"

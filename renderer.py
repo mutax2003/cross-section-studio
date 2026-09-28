@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import io
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import matplotlib as mpl
 
@@ -38,14 +38,13 @@ from models import (
     WaterLevel,
 )
 from render_profiles import (
-    CrossSectionRenderProfile,
     SECTION_SHEET_PROFILE,
+    CrossSectionRenderProfile,
 )
 from render_theme import (
     CONTACT_TICK_COLOR,
     CONTACT_TICK_WIDTH,
     EOL_BAR_COLOR,
-    export_font_rc,
     LABEL_COLOR,
     OVERLAP_MARKER_COLOR,
     PINCH_OUT_ALPHA,
@@ -54,15 +53,19 @@ from render_theme import (
     SURFACE_COLOR,
     TRACK_BORDER_COLOR,
     UNCERTAINTY_COLOR,
+    export_font_rc,
 )
-from stratigraphy import GeologicalPolygon, PolygonOverlap
 from renderer_chart import ChartLayoutMixin
-from renderer_chemistry import ParameterLegendEntry, RendererChemistryMixin
-from renderer_chemistry import _resolve_parameter_label_offsets  # noqa: F401
+from renderer_chemistry import (
+    ParameterLegendEntry,
+    RendererChemistryMixin,
+    _resolve_parameter_label_offsets,  # noqa: F401
+)
 from renderer_common import RendererGeometryMixin
 from renderer_consulting import ConsultingLayoutMixin
 from renderer_section_sheet import SectionSheetLayoutMixin
 from renderer_water import RendererWaterMixin, WaterSeriesLegendEntry
+from stratigraphy import GeologicalPolygon, PolygonOverlap
 
 logger = logging.getLogger(__name__)
 

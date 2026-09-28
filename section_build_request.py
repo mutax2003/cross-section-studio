@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from export_framing import ExportFramingConfig
 from models import (
     ConsultingTitleBlock,
     CorrelationOverride,
@@ -21,7 +22,6 @@ from models import (
     VerticalGradient,
     WaterLevel,
 )
-from export_framing import ExportFramingConfig
 from render_profiles import ChemistryColorMode, ColumnHeaderDetail, LayoutMode
 
 ElevationMode = Literal["absolute", "relative"]

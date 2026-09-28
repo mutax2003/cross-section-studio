@@ -12,21 +12,20 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from models import DataParser
-from ingestion import (
+from ingestion import (  # noqa: E402
     NATIVE_PROFILE_ID,
     DepthParser,
     FieldExportAdapter,
     FormatDetector,
-    ImportProfile,
+    export_platform_workbook,
+    ingest_workbook,
     load_override,
     load_profile,
-    ingest_workbook,
     parse_depth_interval,
-    export_platform_workbook,
 )
-from tests.conftest import make_workbook_bytes
-from paths import advantage_platform_workbook, advantage_source_workbook
+from models import DataParser  # noqa: E402
+from paths import advantage_platform_workbook, advantage_source_workbook  # noqa: E402
+from tests.conftest import make_workbook_bytes  # noqa: E402
 
 SOURCE = advantage_source_workbook()
 OUTPUT = advantage_platform_workbook()

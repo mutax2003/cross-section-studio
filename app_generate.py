@@ -6,17 +6,27 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from app_common import _display_svg, _render_overlap_warnings, _render_profile_chips
-from app_services import cached_build_section_bundle, cached_build_section_exports, cached_parse_request
+from app_services import (
+    cached_build_section_bundle,
+    cached_build_section_exports,
+    cached_parse_request,
+)
 from batch_export import (
-    BATCH_DEFAULT_EXPORT_FORMATS,
     ALL_EXPORT_FORMATS,
+    BATCH_DEFAULT_EXPORT_FORMATS,
     build_batch_zip,
     build_multi_transect_exports,
     export_binder_pdf,
     parse_batch_transect_lines,
 )
 from docx_export import build_figure_docx_bytes
-from export_framing import ExportFramingConfig, build_export_filename, build_report_package_bytes, png_clipboard_html, save_exports_to_directory
+from export_framing import (
+    ExportFramingConfig,
+    build_export_filename,
+    build_report_package_bytes,
+    png_clipboard_html,
+    save_exports_to_directory,
+)
 from models import ConsultingTitleBlock
 from ui_helpers import export_metadata_payload, sanitize_filename
 

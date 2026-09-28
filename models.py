@@ -445,17 +445,17 @@ class ParseResult(BaseModel, frozen=True):
 
 # Re-exports for backward-compatible imports
 from parse_ops import (  # noqa: E402
-    apply_unit_order_fix,
-    assign_missing_unit_orders,
-    format_section_specs_as_batch_text,
-    geology_sheet_counts,
-    holes_with_duplicate_lithology_codes,
-    lithologies_by_hole,
-    lithology_has_unit_order_column,
-    parse_bundle_from_json,
-    parse_result_to_json_bundle,
-    subset_json_bundle,
-    subset_parse_result,
+    apply_unit_order_fix,  # noqa: F401
+    assign_missing_unit_orders,  # noqa: F401
+    format_section_specs_as_batch_text,  # noqa: F401
+    geology_sheet_counts,  # noqa: F401
+    holes_with_duplicate_lithology_codes,  # noqa: F401
+    lithologies_by_hole,  # noqa: F401
+    lithology_has_unit_order_column,  # noqa: F401
+    parse_bundle_from_json,  # noqa: F401
+    parse_result_to_json_bundle,  # noqa: F401
+    subset_json_bundle,  # noqa: F401
+    subset_parse_result,  # noqa: F401
 )
 
 

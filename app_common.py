@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import TYPE_CHECKING, Any, Sequence
-
-from dataclasses import dataclass, replace
+from collections.abc import Sequence
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any
 
 import streamlit as st
 
@@ -19,7 +19,12 @@ if TYPE_CHECKING:
 from ai_quality import analyze_parsed_data, load_lithology_aliases
 from app_services import cached_ingest_workbook
 from app_state import clear_section_output_state
-from constants import DEFAULT_LITHOLOGY_COLOR, USGS_LITHOLOGY_HATCHES, get_lithology_style, normalize_hex_colour
+from constants import (
+    DEFAULT_LITHOLOGY_COLOR,
+    USGS_LITHOLOGY_HATCHES,
+    get_lithology_style,
+    normalize_hex_colour,
+)
 from ingestion import ImportReport
 from models import (
     ConsultingTitleBlock,

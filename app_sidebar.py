@@ -6,6 +6,12 @@ from dataclasses import dataclass
 
 import streamlit as st
 
+from ai_assistant import (
+    DEFAULT_LLM_PROVIDER,
+    is_free_llm_provider,
+    preferred_llm_provider_from_env,
+    resolve_llm_api_key,
+)
 from app_common import (
     _apply_pending_offset_thresholds,
     _apply_report_suggestion,
@@ -15,12 +21,6 @@ from app_common import (
     _llm_api_key_for_provider,
     _report_context_from_selection,
     llm_disabled_by_deployment,
-)
-from ai_assistant import (
-    DEFAULT_LLM_PROVIDER,
-    is_free_llm_provider,
-    preferred_llm_provider_from_env,
-    resolve_llm_api_key,
 )
 from app_upload import (
     apply_pending_project_seed,
@@ -33,7 +33,7 @@ from export_framing import ExportFramingConfig
 from ingestion import DATA_ENTRY_PROFILE_ID, NATIVE_PROFILE_ID, list_profiles
 from models import ConsultingTitleBlock
 from pipeline import DEFAULT_UNCERTAINTY_SPACING_M
-from ui_output_presets import OUTPUT_PRESET_LABELS, FIGURE_PRESET_IDS, resolve_output_preset
+from ui_output_presets import FIGURE_PRESET_IDS, OUTPUT_PRESET_LABELS, resolve_output_preset
 
 
 @dataclass(frozen=True)
@@ -413,7 +413,7 @@ def render_sidebar() -> SidebarState:
     consulting_title_block: ConsultingTitleBlock | None = None
 
     with st.expander("Advanced", expanded=False):
-        column_header_detail = st.selectbox(
+        st.selectbox(
             "Borehole label detail",
             options=["id_only", "id_rl_td"],
             format_func=lambda value: (
@@ -422,20 +422,20 @@ def render_sidebar() -> SidebarState:
             key="column_header_detail",
             help="Section-sheet column headers. Consulting layout always uses hole ID only.",
         )
-        export_font_family = st.selectbox(
+        st.selectbox(
             "Export font",
             options=["Arial", "Calibri", "DejaVu Sans"],
             key="export_font_family",
             help="Prefer Arial so PDF edits match drafting templates.",
         )
-        export_font_size = st.number_input(
+        st.number_input(
             "Export font size",
             min_value=6.0,
             max_value=14.0,
             step=0.5,
             key="export_font_size",
         )
-        parameter_marker_size = st.number_input(
+        st.number_input(
             "Chemistry marker size",
             min_value=4.0,
             max_value=64.0,
@@ -443,22 +443,22 @@ def render_sidebar() -> SidebarState:
             key="parameter_marker_size",
             help="Matplotlib scatter size for chemistry sample dots.",
         )
-        show_scale_bar = st.toggle(
+        st.toggle(
             "Show scale bar",
             key="show_scale_bar",
             help="In-plot scale (section sheet) or subtitle scale band (consulting).",
         )
-        show_ve_annotation = st.toggle(
+        st.toggle(
             "Show V.E. annotation",
             key="show_ve_annotation",
             help="In-plot V.E. text on section sheet; also keeps consulting subtitle VE with scale.",
         )
-        show_parameter_legend_text = st.toggle(
+        st.toggle(
             "Show Parameters text block",
             key="show_parameter_legend_text",
             help="Bottom-left 'Parameters: Chloride…' overlay on section sheet.",
         )
-        connect_chemistry_values = st.toggle(
+        st.toggle(
             "Connect chemistry values",
             key="connect_chemistry_values",
             help="Draw dashed lines between chemistry samples on adjacent holes.",
@@ -480,7 +480,7 @@ def render_sidebar() -> SidebarState:
             disabled=is_consulting_layout,
             help="Consulting layout places the legend in the footer title block.",
         )
-        legend_two_columns = st.toggle(
+        st.toggle(
             "Two-column lithology legend",
             key="legend_two_columns",
             value=True,

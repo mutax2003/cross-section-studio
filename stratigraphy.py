@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import logging
 from collections import Counter, defaultdict
+from collections.abc import Hashable, Sequence
 from dataclasses import dataclass
-from typing import Hashable, Sequence
-
-from models import CorrelationOverride
 
 import numpy as np
 import pandas as pd
 from shapely.geometry import Polygon
 from shapely.strtree import STRtree
+
+from models import CorrelationOverride
 
 logger = logging.getLogger(__name__)
 

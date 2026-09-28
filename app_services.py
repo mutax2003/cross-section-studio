@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import replace
 from io import BytesIO
-from typing import Any, Callable
+from typing import Any
 
 import streamlit as st
 
@@ -23,8 +24,8 @@ from pipeline import (
     ALL_EXPORT_FORMATS,
     SectionGeometry,
     compute_section_geometry,
-    render_cross_section_from_geometry,
     filter_projected_for_interpolation,
+    render_cross_section_from_geometry,
     validate_interpretation_mode,
 )
 from projection import off_transect_warnings, project_boreholes

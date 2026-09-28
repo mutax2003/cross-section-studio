@@ -41,6 +41,9 @@ def test_compute_section_geometry_returns_projected_and_polygons() -> None:
     assert geometry.projected_hole_ids == frozenset({"BH-01", "BH-02"})
     assert geometry.collar_depths == {"BH-01": 10.0, "BH-02": 10.0}
     assert geometry.x_span > 0.0
+    assert len(geometry.correlation_summaries) == 1
+    assert geometry.correlation_summaries[0].left_hole_id == "BH-01"
+    assert geometry.correlation_summaries[0].right_hole_id == "BH-02"
 
     result = build_cross_section(collars, lithologies, [(0.0, 0.0), (50.0, 0.0)])
     assert len(result.projected) == len(geometry.projected)
@@ -97,6 +100,32 @@ def test_build_cross_section_returns_svg() -> None:
     assert len(polygons) == 1
     assert codes == ["Clay"]
     assert_valid_svg(svg_bytes)
+
+
+def test_water_overlay_disclaimer_appended() -> None:
+    from constants import WATER_TABLE_OVERLAY_DISCLAIMER
+    from models import WaterLevel
+
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=10.0),
+    ]
+    lithologies = [
+        Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+        Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+    ]
+    water = (
+        WaterLevel(hole_id="BH-01", depth=2.0),
+        WaterLevel(hole_id="BH-02", depth=3.0),
+    )
+    result = build_cross_section(
+        collars,
+        lithologies,
+        [(0.0, 0.0), (50.0, 0.0)],
+        water_levels=water,
+        interpolate_water_table=True,
+    )
+    assert WATER_TABLE_OVERLAY_DISCLAIMER.encode() in result.svg_bytes
 
 
 def test_borehole_only_mode_skips_polygons() -> None:
@@ -178,6 +207,41 @@ def test_water_levels_render_in_svg() -> None:
     assert_valid_svg(svg_bytes)
 
 
+def test_export_framing_can_suppress_water_table() -> None:
+    from export_framing import ExportFramingConfig
+
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=10.0),
+    ]
+    lithologies = [
+        Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+        Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+    ]
+    water = [
+        WaterLevel(hole_id="BH-01", depth=3.0),
+        WaterLevel(hole_id="BH-02", depth=4.0),
+    ]
+    _, _, with_water, _, _, _, _ = build_cross_section(
+        collars,
+        lithologies,
+        [(0.0, 0.0), (50.0, 0.0)],
+        water_levels=water,
+        interpolate_water_table=True,
+    )
+    _, _, without_water, _, _, _, _ = build_cross_section(
+        collars,
+        lithologies,
+        [(0.0, 0.0), (50.0, 0.0)],
+        water_levels=water,
+        interpolate_water_table=True,
+        export_framing=ExportFramingConfig(include_water_table=False),
+    )
+    assert_valid_svg(with_water)
+    assert_valid_svg(without_water)
+    assert len(without_water) < len(with_water)
+
+
 def test_environmental_readings_render_labels_in_svg() -> None:
     collars = [
         Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
@@ -201,8 +265,10 @@ def test_environmental_readings_render_labels_in_svg() -> None:
     )
     assert_valid_svg(svg_bytes)
     text = svg_bytes.decode("utf-8", errors="ignore")
-    assert "120 mg/L" in text
-    assert "85 mg/L" in text
+    assert "120" in text
+    assert "85" in text
+    assert "120 mg/L" not in text
+    assert "85 mg/L" not in text
 
 
 def test_validate_interpretation_mode_accepts_correlation_lines() -> None:

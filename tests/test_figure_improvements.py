@@ -98,15 +98,16 @@ def test_ops_audit_writes_json_line(tmp_path, monkeypatch) -> None:
 
 def test_gwm_c_c_transect_hole_membership_matches_reference() -> None:
     spec = GWM_TRANSECTS["C_C"]
+    # Digitized from data/pdf_extract Fig 5 (C north → C' south).
     assert spec.hole_ids == (
         "BH18-07",
-        "MW18-19",
+        "MW18-16",
         "BH18-04",
-        "BH18-05",
+        "BH18-03",
         "MW18-20",
-        "MW18-17",
+        "MW18-21",
     )
-    assert spec.profile_eastings == (0.0, 245.0, 260.0, 360.0, 410.0, 570.0)
+    assert spec.profile_eastings == (0.0, 180.0, 260.0, 320.0, 390.0, 570.0)
 
 
 def test_consulting_pinch_out_legend_when_pinch_present() -> None:
@@ -257,11 +258,11 @@ def test_preflight_polygon_overlap_warnings(monkeypatch: pytest.MonkeyPatch) -> 
     assert "Polygon overlap" in warnings[0]
 
 
-def test_gwm_dual_gw_series_uses_june_2024() -> None:
+def test_gwm_dual_gw_series_uses_june_2025() -> None:
     spec, subset = build_subset("A_A")
     series_ids = {level.series_id for level in subset.water_levels}
     assert "2024-05" in series_ids
-    assert "2024-06" in series_ids
+    assert "2025-06" in series_ids
     transect_points = [(collar.easting, collar.northing) for collar in subset.collars]
     result = build_cross_section(
         subset.collars,
@@ -277,4 +278,4 @@ def test_gwm_dual_gw_series_uses_june_2024() -> None:
     assert svg_is_valid(result.svg_bytes)
     text = result.svg_bytes.decode("utf-8", errors="ignore").upper()
     assert "MAY 2024" in text
-    assert "JUNE 2024" in text
+    assert "JUNE 2025" in text

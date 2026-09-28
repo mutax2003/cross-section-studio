@@ -1,0 +1,7 @@
+{
+  "version": "0.1.0",
+  "url": "https://github.com/mutax2003/cross-section-studio/releases/download/v0.1.0/CrossSectionStudio-win64-v0.1.0.zip",
+  "sha256": "replace-with-sha256-from-build_windows.ps1",
+  "notes": "Example release manifest. Publish as a GitHub Release asset named release-manifest.json.",
+  "zip": "CrossSectionStudio-win64-v0.1.0.zip"
+}

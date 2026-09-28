@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 # Bump when session key shapes change so Cloud reconnects drop stale state.
-SESSION_SCHEMA_VERSION = 2
+SESSION_SCHEMA_VERSION = 3
 
 # Domain key groups for targeted resets
 SESSION_PARSE_KEYS = (
@@ -21,6 +21,8 @@ SESSION_PARSE_KEYS = (
     "parse_signature",
     "file_hash",
     "lithology_aliases",
+    "batch_transect_specs",
+    "_batch_specs_seeded_from_sections",
 )
 
 SESSION_SECTION_KEYS = (
@@ -38,6 +40,9 @@ SESSION_SECTION_KEYS = (
     "pdf_bytes",
     "section_build_subset_json",
     "section_build_request_json",
+    "report_package_bytes",
+    "figure_docx_bytes",
+    "batch_package_bytes",
 )
 
 SESSION_AI_KEYS = (
@@ -79,6 +84,9 @@ DEFAULT_SESSION: dict[str, object] = {
     "svg_bytes": None,
     "png_bytes": None,
     "pdf_bytes": None,
+    "report_package_bytes": None,
+    "figure_docx_bytes": None,
+    "batch_package_bytes": None,
     "section_build_subset_json": None,
     "section_build_request_json": None,
     "qa_narrative": None,
@@ -98,13 +106,45 @@ DEFAULT_SESSION: dict[str, object] = {
     "uploaded_name": None,
     "workbook_uploader_key": 0,
     "output_preset": "section_sheet",
+    "track_width_m": 3.0,
+    "auto_fit_track_width": True,
     "allow_pinch_outs": False,
     "show_ground_surface": True,
-    "show_hatches": True,
+    "show_hatches": False,
     "show_legend": True,
     "enable_ai_suggestions": False,
     "fail_on_overlaps": False,
     "llm_provider": "groq",
+    "column_header_detail": "id_only",
+    "show_scale_bar": False,
+    "show_ve_annotation": False,
+    "show_parameter_legend_text": False,
+    "export_font_family": "Arial",
+    "export_font_size": 8.0,
+    "export_page_preset": "auto",
+    "export_margin_top_in": 0.0,
+    "export_margin_bottom_in": 0.0,
+    "export_margin_left_in": 0.0,
+    "export_margin_right_in": 0.0,
+    "export_dpi": 300,
+    "export_show_draft_watermark": False,
+    "export_include_title_block": True,
+    "export_include_legend": True,
+    "export_include_water_table": True,
+    "export_include_qa_footer": True,
+    "export_fence_only": False,
+    "export_filename_pattern": "section_title",
+    "export_revision": "",
+    "export_viewport_xmin": None,
+    "export_viewport_xmax": None,
+    "export_viewport_ymin": None,
+    "export_viewport_ymax": None,
+    "export_cad_svg_layers": False,
+    "export_output_dir": "",
+    "batch_transect_specs": "",
+    "_batch_specs_seeded_from_sections": False,
+    "parameter_marker_size": 16.0,
+    "connect_chemistry_values": False,
 }
 
 

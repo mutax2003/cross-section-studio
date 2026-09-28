@@ -17,6 +17,7 @@ from models import (
     SCREEN_COLUMNS,
     WATER_COLUMNS,
     WATER_OPTIONAL_COLUMNS,
+    WATER_STATUS_COLUMNS,
     WATER_VALUE_COLUMNS,
     Collar,
     CorrelationOverride,
@@ -29,9 +30,21 @@ from models import (
     Unconformity,
     VerticalGradient,
     WaterLevel,
+    WorkbookSectionSpec,
 )
 
 logger = logging.getLogger(__name__)
+
+WorkbookSource = str | Path | BinaryIO | BytesIO | pd.ExcelFile
+
+
+def _as_excel(source: WorkbookSource) -> pd.ExcelFile:
+    if isinstance(source, pd.ExcelFile):
+        return source
+    if hasattr(source, "seek"):
+        source.seek(0)
+    return pd.ExcelFile(source)
+
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     renamed = {col: str(col).strip().lower().replace(" ", "_") for col in df.columns}
@@ -46,10 +59,11 @@ class DataParser:
     WATER_SHEET = "Water"
     SCREENS_SHEET = "Screens"
     GRADIENTS_SHEET = "Gradients"
+    SECTIONS_SHEET = "Sections"
 
     def parse_file(
         self,
-        source: str | Path | BinaryIO | BytesIO,
+        source: WorkbookSource,
         *,
         collars_df: pd.DataFrame | None = None,
         lithology_df: pd.DataFrame | None = None,
@@ -57,23 +71,25 @@ class DataParser:
         lithology_sheet: str | None = None,
         lithology_aliases: dict[str, str] | None = None,
         water_df: pd.DataFrame | None = None,
+        workbook: pd.ExcelFile | None = None,
     ) -> ParseResult:
-        workbook: pd.ExcelFile | None = None
         water_frame = None
         environmental_frame = None
         screens_frame = None
         gradients_frame = None
         data_entry_precedence_warnings: list[str] = []
-        if collars_df is not None and lithology_df is not None:
+        supplied_geology = collars_df is not None and lithology_df is not None
+        if workbook is None:
+            try:
+                workbook = _as_excel(source)
+            except Exception:
+                if not supplied_geology:
+                    raise
+                workbook = None
+        if supplied_geology:
             collars_frame = _normalize_columns(collars_df)
             lithology_frame = _normalize_columns(lithology_df)
-            # Still open the workbook so optional Water / Environmental / Screens load.
-            try:
-                workbook = pd.ExcelFile(source)
-            except Exception:
-                workbook = None
         else:
-            workbook = pd.ExcelFile(source)
             data_entry_sheet = self._find_sheet(workbook.sheet_names, "Data Entry")
             collars_name = collars_sheet or self.COLLARS_SHEET
             lithology_name = lithology_sheet or self.LITHOLOGY_SHEET
@@ -146,6 +162,7 @@ class DataParser:
         vertical_gradients: list[VerticalGradient] = []
         screen_errors: list[str] = []
         gradient_errors: list[str] = []
+        section_specs: list[WorkbookSectionSpec] = []
         if water_df is not None:
             water_levels, water_errors = self._parse_water_levels(
                 _normalize_columns(water_df), collars
@@ -165,6 +182,11 @@ class DataParser:
                 environmental_readings, environmental_errors = self._parse_environmental_sheet(
                     workbook, collars
                 )
+            field_readings, field_errors = self._parse_field_data_environmental_sheet(
+                workbook, collars
+            )
+            environmental_readings.extend(field_readings)
+            environmental_errors.extend(field_errors)
             if screens_frame is not None and not screens_frame.empty:
                 screen_intervals, screen_errors = self._parse_screens_dataframe(screens_frame, collars)
             else:
@@ -179,6 +201,9 @@ class DataParser:
             correlation_overrides = self._parse_correlation_sheet(workbook)
             faults = self._parse_fault_sheet(workbook)
             unconformities = self._parse_unconformity_sheet(workbook)
+
+        if workbook is not None:
+            section_specs = self._parse_sections_sheet(workbook, collars)
 
         if lithology_aliases:
             lithologies = self._apply_lithology_aliases(lithologies, lithology_aliases)
@@ -208,6 +233,7 @@ class DataParser:
             faults=tuple(faults),
             unconformities=tuple(unconformities),
             environmental_readings=tuple(environmental_readings),
+            section_specs=tuple(section_specs),
         )
 
     def _apply_lithology_aliases(
@@ -280,7 +306,12 @@ class DataParser:
         missing_cols = COLLAR_COLUMNS - set(df.columns)
         if missing_cols:
             raise ValueError(f"Collars sheet missing columns: {', '.join(sorted(missing_cols))}")
-        optional_cols = {"elevation_datum", "inclination_deg", "azimuth_deg"} & set(df.columns)
+        optional_cols = {
+            "elevation_datum",
+            "inclination_deg",
+            "azimuth_deg",
+            "stick_up_m",
+        } & set(df.columns)
 
         for index, row in enumerate(df.itertuples(index=True)):
             row_num = int(row.Index) + 2
@@ -300,6 +331,8 @@ class DataParser:
                     payload["inclination_deg"] = row.inclination_deg
                 if "azimuth_deg" in optional_cols:
                     payload["azimuth_deg"] = row.azimuth_deg
+                if "stick_up_m" in optional_cols:
+                    payload["stick_up_m"] = row.stick_up_m
                 collar = Collar.model_validate(payload)
             except Exception as exc:
                 errors.append(f"Collars row {row_num}: {exc}")
@@ -370,8 +403,10 @@ class DataParser:
         columns = set(df.columns)
         if "hole_id" not in columns:
             raise ValueError("Water sheet missing columns: hole_id")
-        if not columns.intersection(WATER_VALUE_COLUMNS):
-            raise ValueError("Water sheet requires hole_id plus depth or elevation_masl")
+        if not columns.intersection(WATER_VALUE_COLUMNS | WATER_STATUS_COLUMNS):
+            raise ValueError(
+                "Water sheet requires hole_id plus depth, elevation_masl, or status (dry/nm)"
+            )
 
         for index, row in enumerate(df.itertuples(index=True)):
             row_num = int(row.Index) + 2
@@ -379,13 +414,30 @@ class DataParser:
                 continue
             try:
                 hole_id = str(row.hole_id).strip()
+                status_raw = getattr(row, "status", None)
+                status_text = (
+                    ""
+                    if status_raw is None or (isinstance(status_raw, float) and pd.isna(status_raw))
+                    else str(status_raw).strip().lower()
+                )
+                is_non_measured = status_text in {
+                    "dry",
+                    "d",
+                    "nm",
+                    "n/m",
+                    "not measured",
+                    "not_measured",
+                    "ns",
+                    "not sampled",
+                    "not_sampled",
+                }
                 depth_raw = getattr(row, "depth", None)
                 masl_raw = getattr(row, "elevation_masl", None)
                 has_depth = depth_raw is not None and not pd.isna(depth_raw) and str(depth_raw).strip() != ""
                 has_masl = masl_raw is not None and not pd.isna(masl_raw) and str(masl_raw).strip() != ""
                 if has_depth and has_masl:
                     raise ValueError("provide depth or elevation_masl, not both")
-                if not has_depth and not has_masl:
+                if not has_depth and not has_masl and not is_non_measured:
                     raise ValueError("depth or elevation_masl is required")
                 elevation_masl: float | None = None
                 if has_masl:
@@ -399,14 +451,16 @@ class DataParser:
                             f"{collar.elevation} (artesian / above-collar water level)"
                         )
                     depth = collar.elevation - elevation_masl
-                else:
+                elif has_depth:
                     depth = float(depth_raw)
+                else:
+                    depth = 0.0
                 payload: dict[str, object] = {
                     "hole_id": hole_id,
                     "depth": depth,
                     "elevation_masl": elevation_masl,
                 }
-                for col in ("series_id", "series_label", "color", "marker"):
+                for col in ("series_id", "series_label", "color", "marker", "connect_group", "status"):
                     if hasattr(row, col):
                         payload[col] = getattr(row, col)
                 level = WaterLevel.model_validate(payload)
@@ -570,13 +624,15 @@ class DataParser:
                     and str(payload["from_depth"]).strip() != ""
                     and str(payload["to_depth"]).strip() != ""
                 )
+                if has_point and has_interval_values:
+                    raise ValueError("provide depth or from_depth/to_depth, not both")
                 if has_point:
                     payload["from_depth"] = None
                     payload["to_depth"] = None
                 elif has_interval_values:
                     payload["depth"] = None
                 else:
-                    continue
+                    raise ValueError("depth or from_depth and to_depth are required")
                 if payload.get("value_label") in ("", None) or pd.isna(payload.get("value_label")):
                     payload["value_label"] = ""
                 reading = EnvironmentalReading.model_validate(payload)
@@ -601,6 +657,114 @@ class DataParser:
             return [], []
         frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
         return self._parse_environmental_dataframe(frame, collars)
+
+    def _parse_field_data_environmental_dataframe(
+        self,
+        frame: pd.DataFrame,
+        collars: list[Collar],
+    ) -> tuple[list[EnvironmentalReading], list[str]]:
+        """Map Field Data OVA/EC columns into EnvironmentalReading rows (append path)."""
+        # Lazy import avoids circular load: ingestion → models → parsing.
+        from ingestion import parse_depth_interval
+
+        columns = set(frame.columns)
+        hole_col = next(
+            (name for name in ("label", "hole_id", "hole", "bh_id") if name in columns),
+            None,
+        )
+        if hole_col is None:
+            return [], []
+        has_ova = "ova" in columns
+        has_ec = "ec" in columns
+        if not has_ova and not has_ec:
+            return [], []
+        depth_col = next(
+            (name for name in ("depth", "depth_interval") if name in columns),
+            None,
+        )
+        valid_hole_ids = {collar.hole_id for collar in collars}
+        readings: list[EnvironmentalReading] = []
+        errors: list[str] = []
+        for row_num, row in enumerate(frame.itertuples(index=False), start=2):
+            payload = row._asdict()
+            hole_raw = payload.get(hole_col)
+            if self._blank_hole_id(hole_raw):
+                continue
+            hole_id = str(hole_raw).strip()
+
+            ova_value: float | None = None
+            ec_value: float | None = None
+            if has_ova:
+                parsed_ova = pd.to_numeric(payload.get("ova"), errors="coerce")
+                if not pd.isna(parsed_ova):
+                    ova_value = float(parsed_ova)
+            if has_ec:
+                parsed_ec = pd.to_numeric(payload.get("ec"), errors="coerce")
+                if not pd.isna(parsed_ec):
+                    ec_value = float(parsed_ec)
+            if ova_value is None and ec_value is None:
+                continue
+
+            if depth_col is None:
+                errors.append(
+                    f"Field Data row {row_num}: missing depth interval for hole_id '{hole_id}'"
+                )
+                continue
+            try:
+                from_depth, to_depth = parse_depth_interval(payload.get(depth_col))
+            except Exception as exc:
+                errors.append(f"Field Data row {row_num}: {exc}")
+                continue
+
+            if valid_hole_ids and hole_id not in valid_hole_ids:
+                errors.append(f"Field Data row {row_num}: unknown hole_id '{hole_id}'")
+                continue
+
+            if ova_value is not None:
+                try:
+                    readings.append(
+                        EnvironmentalReading.model_validate(
+                            {
+                                "hole_id": hole_id,
+                                "parameter": "OVA",
+                                "value": ova_value,
+                                "from_depth": from_depth,
+                                "to_depth": to_depth,
+                                "unit": "ppm",
+                            }
+                        )
+                    )
+                except Exception as exc:
+                    errors.append(f"Field Data row {row_num}: {exc}")
+            if ec_value is not None:
+                try:
+                    readings.append(
+                        EnvironmentalReading.model_validate(
+                            {
+                                "hole_id": hole_id,
+                                "parameter": "EC",
+                                "value": ec_value,
+                                "from_depth": from_depth,
+                                "to_depth": to_depth,
+                                "unit": "",
+                            }
+                        )
+                    )
+                except Exception as exc:
+                    errors.append(f"Field Data row {row_num}: {exc}")
+        return readings, errors
+
+    def _parse_field_data_environmental_sheet(
+        self,
+        workbook: pd.ExcelFile,
+        collars: list[Collar],
+    ) -> tuple[list[EnvironmentalReading], list[str]]:
+        from ingestion import get_cached_field_data_frame
+
+        frame = get_cached_field_data_frame(workbook)
+        if frame is None:
+            return [], []
+        return self._parse_field_data_environmental_dataframe(_normalize_columns(frame), collars)
 
     def _parse_fault_sheet(self, workbook: pd.ExcelFile) -> list[Fault]:
         sheet = self._find_sheet(workbook.sheet_names, "Faults")
@@ -635,3 +799,65 @@ class DataParser:
             for name, points in surfaces.items()
             if len(points) >= 2
         ]
+
+    @staticmethod
+    def _split_section_hole_ids(raw: object) -> tuple[str, ...]:
+        """Split hole_ids on comma, semicolon, or → (also accepts ASCII ->)."""
+        if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+            return ()
+        text = str(raw).strip()
+        if not text:
+            return ()
+        normalized = text.replace("→", ",").replace("->", ",").replace(";", ",")
+        return tuple(part.strip() for part in normalized.split(",") if part.strip())
+
+    def _parse_sections_sheet(
+        self,
+        workbook: pd.ExcelFile,
+        collars: list[Collar],
+    ) -> list[WorkbookSectionSpec]:
+        """Parse optional Sections sheet; log-and-skip bad rows (not folded into errors)."""
+        sheet = self._find_sheet(workbook.sheet_names, self.SECTIONS_SHEET)
+        if not sheet:
+            return []
+        frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
+        if "section_label" not in frame.columns or "hole_ids" not in frame.columns:
+            logger.warning(
+                "Sections sheet missing required columns section_label and hole_ids; skipped"
+            )
+            return []
+        collar_ids = {collar.hole_id for collar in collars}
+        specs: list[WorkbookSectionSpec] = []
+        for row_num, row in enumerate(frame.itertuples(index=False), start=2):
+            label_raw = getattr(row, "section_label", None)
+            holes_raw = getattr(row, "hole_ids", None)
+            if (
+                label_raw is None
+                or (isinstance(label_raw, float) and pd.isna(label_raw))
+                or str(label_raw).strip() == ""
+            ) and (
+                holes_raw is None
+                or (isinstance(holes_raw, float) and pd.isna(holes_raw))
+                or str(holes_raw).strip() == ""
+            ):
+                continue
+            hole_ids = self._split_section_hole_ids(holes_raw)
+            try:
+                spec = WorkbookSectionSpec.model_validate(
+                    {"label": label_raw, "hole_ids": hole_ids}
+                )
+            except Exception as exc:
+                logger.warning("Skipping Sections row %s: %s", row_num, exc)
+                continue
+            if collar_ids:
+                unknown = [hole_id for hole_id in spec.hole_ids if hole_id not in collar_ids]
+                if unknown:
+                    logger.warning(
+                        "Skipping Sections row %s (%s): unknown collar(s): %s",
+                        row_num,
+                        spec.label,
+                        ", ".join(unknown),
+                    )
+                    continue
+            specs.append(spec)
+        return specs

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import io
 import logging
-from bisect import bisect_left
 from dataclasses import dataclass
-from typing import Literal, Sequence, TypedDict
+from typing import Sequence
 
 import matplotlib as mpl
 
@@ -14,16 +13,18 @@ mpl.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.collections import LineCollection, PatchCollection, PolyCollection
+from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.figure import Figure
-from matplotlib.gridspec import GridSpec
-from matplotlib.patches import Patch, Rectangle
-from matplotlib.ticker import FuncFormatter, MultipleLocator
-from matplotlib.offsetbox import AnnotationBbox, OffsetImage
-import matplotlib.image as mpimg
+from matplotlib.patches import Patch
 
-from constants import HATCH_LINE_COLOR, POLYGON_EDGE_COLOR, get_lithology_style
-from lithology_codes import collect_lithology_codes
+from constants import HATCH_LINE_COLOR, POLYGON_EDGE_COLOR
+from export_framing import (
+    ExportFramingConfig,
+    annotate_svg_layers,
+    apply_draft_watermark,
+    prepare_export_figure,
+    savefig_kwargs,
+)
 from models import (
     ConsultingTitleBlock,
     EnvironmentalReading,
@@ -37,208 +38,67 @@ from models import (
     WaterLevel,
 )
 from render_profiles import (
-    CHART_PROFILE,
     CrossSectionRenderProfile,
     SECTION_SHEET_PROFILE,
 )
 from render_theme import (
-    AXES_BG,
-    CONSULTING_FIGURE_BG,
-    CONSULTING_NM_COLOR,
-    CONSULTING_SCALE_BAR_M,
-    CONSULTING_SURFACE_COLOR,
-    CONSULTING_WATER_COLOR,
-    consulting_gw_series_style,
-    consulting_section_title,
     CONTACT_TICK_COLOR,
     CONTACT_TICK_WIDTH,
-    DEFAULT_CONSULTING_NOTES,
     EOL_BAR_COLOR,
-    FIGURE_BG,
-    GRID_COLOR,
+    export_font_rc,
     LABEL_COLOR,
-    PARAMETER_PALETTE,
-    PARAMETER_READING_COLOR,
+    OVERLAP_MARKER_COLOR,
     PINCH_OUT_ALPHA,
-    REPORT_GRID_ALPHA,
-    REPORT_GRID_COLOR,
     SKY_FILL_COLOR,
     STICK_COLOR,
     SURFACE_COLOR,
     TRACK_BORDER_COLOR,
-    TRACK_FILL_COLOR,
     UNCERTAINTY_COLOR,
-    WATER_COLOR,
 )
 from stratigraphy import GeologicalPolygon, PolygonOverlap
 from renderer_chart import ChartLayoutMixin
+from renderer_chemistry import ParameterLegendEntry, RendererChemistryMixin
+from renderer_chemistry import _resolve_parameter_label_offsets  # noqa: F401
 from renderer_common import RendererGeometryMixin
 from renderer_consulting import ConsultingLayoutMixin
 from renderer_section_sheet import SectionSheetLayoutMixin
+from renderer_water import RendererWaterMixin, WaterSeriesLegendEntry
 
 logger = logging.getLogger(__name__)
 
-_GW_MARKER_MAP = {
-    "circle": "o",
-    "triangle": "v",
-    "diamond": "D",
-    "plus": "P",
-    "x": "x",
-}
 
-
-class WaterSeriesLegendEntry(TypedDict):
-    series_id: str
-    color: str
-    marker: str
-    level_label: str
-    elevation_label: str
-
-
-class ParameterLegendEntry(TypedDict):
-    parameter: str
-    color: str
-    marker: str
-    label: str
-
-
-def _group_water_levels(
-    water_levels: Sequence[WaterLevel],
-    profile_lookup: dict[str, tuple[float, float]],
-) -> dict[str, list[WaterLevel]]:
-    groups: dict[str, list[WaterLevel]] = {}
-    for level in water_levels:
-        if level.hole_id not in profile_lookup:
-            continue
-        series_id = level.series_id or "default"
-        groups.setdefault(series_id, []).append(level)
-    return groups
-
-
-_PARAMETER_LABEL_MIN_GAP_PTS = 26.0
-_PARAMETER_LABEL_DX = 8.0
-_PARAMETER_LABEL_BASE_DY = 0.0
-_PARAMETER_LABEL_LEADER_EPS_PTS = 2.5
-_PARAMETER_LABEL_FONTSIZE = 6.5
-_PARAMETER_LABEL_FONTSIZE_CONSULTING = 7.25
-_PARAMETER_LABEL_BBOX = {
-    "boxstyle": "square,pad=0.12",
-    "facecolor": "white",
-    "edgecolor": "none",
-    "alpha": 0.88,
-}
-
-
-def _nearest_unused_by_depth(
-    depths: Sequence[float],
-    used: Sequence[bool],
-    target_depth: float,
-) -> int | None:
-    """Return index of unused depth nearest to ``target_depth`` (``depths`` ascending)."""
-    count = len(depths)
-    if count == 0:
-        return None
-    pos = bisect_left(depths, target_depth)
-    best_idx: int | None = None
-    best_delta: float | None = None
-    for index in range(pos, count):
-        if used[index]:
-            continue
-        delta = abs(depths[index] - target_depth)
-        if best_delta is not None and depths[index] - target_depth > best_delta:
-            break
-        if best_delta is None or delta < best_delta:
-            best_idx = index
-            best_delta = delta
-    for index in range(pos - 1, -1, -1):
-        if used[index]:
-            continue
-        delta = abs(depths[index] - target_depth)
-        if best_delta is not None and target_depth - depths[index] > best_delta:
-            break
-        if best_delta is None or delta < best_delta:
-            best_idx = index
-            best_delta = delta
-    return best_idx
-
-
-def _cluster_parameter_bands_by_depth(
-    measured_holes: Sequence[str],
-    readings_by_hole: dict[str, list[EnvironmentalReading]],
+def resolve_track_half_width(
+    track_width_m: float,
     *,
-    depth_tol: float = 1.5,
-) -> list[list[tuple[str, EnvironmentalReading]]]:
-    """Group multi-depth samples into bands (same seed-tolerance semantics as before).
+    auto_fit: bool = True,
+    x_profiles: np.ndarray | None = None,
+    x_sorted: bool = False,
+    min_half_m: float = 0.25,
+    spacing_fraction: float = 0.4,
+) -> float:
+    """Resolve borehole column half-width in profile metres.
 
-    Seeds are created in transect hole order; a reading joins the first existing band
-    whose seed depth is within ``depth_tol``.
+    ``track_width_m`` is schematic fence width on the X axis (not well diameter).
+    When ``auto_fit`` is on, columns shrink so full width stays within
+    ``spacing_fraction`` of the closest hole spacing (avoids overlapping tracks).
+    Pass ``x_sorted=True`` when ``x_profiles`` is already ascending.
     """
-    bands: list[list[tuple[str, EnvironmentalReading]]] = []
-    seed_depths: list[float] = []
-    for hole_id in measured_holes:
-        for reading in readings_by_hole[hole_id]:
-            depth = reading.sample_depth
-            placed = False
-            for band_index, seed_depth in enumerate(seed_depths):
-                if abs(seed_depth - depth) <= depth_tol:
-                    bands[band_index].append((hole_id, reading))
-                    placed = True
-                    break
-            if not placed:
-                bands.append([(hole_id, reading)])
-                seed_depths.append(depth)
-    return bands
-
-
-def _resolve_parameter_label_offsets(
-    ax,
-    marker_labels: list[tuple[float, float, str]],
-    *,
-    min_gap_pts: float = _PARAMETER_LABEL_MIN_GAP_PTS,
-) -> list[tuple[float, float, bool]]:
-    """Return ``(dx, dy, draw_leader)`` offset-points for each parameter label.
-
-    Dense stacks on one hole share the same X. Labels stay in one column to the
-    right of the stick and are nudged downward to keep a minimum vertical gap.
-    """
-    if not marker_labels:
-        return []
-
-    groups: dict[float, list[int]] = {}
-    for index, (x_profile, _y, _text) in enumerate(marker_labels):
-        groups.setdefault(round(float(x_profile), 4), []).append(index)
-
-    y0, y1 = ax.get_ylim()
-    data_span = abs(float(y1) - float(y0)) or 1.0
-    pos = ax.get_position()
-    height_pts = float(ax.figure.get_figheight()) * float(pos.height) * 72.0
-    pts_per_data = height_pts / data_span if height_pts > 0 else 1.0
-
-    offsets: list[tuple[float, float, bool]] = [
-        (_PARAMETER_LABEL_DX, _PARAMETER_LABEL_BASE_DY, False)
-        for _ in marker_labels
-    ]
-
-    for indices in groups.values():
-        indices_sorted = sorted(indices, key=lambda i: marker_labels[i][1], reverse=True)
-        last_text_y: float | None = None
-        for label_index in indices_sorted:
-            _x, y, _text = marker_labels[label_index]
-            marker_y_pts = float(y) * pts_per_data
-            dy = _PARAMETER_LABEL_BASE_DY
-            text_y = marker_y_pts + dy
-            if last_text_y is not None and text_y > last_text_y - min_gap_pts:
-                text_y = last_text_y - min_gap_pts
-                dy = text_y - marker_y_pts
-            # Keep labels inside axes (inverted Y still has y0/y1 span).
-            y_lo_pts = min(float(y0), float(y1)) * pts_per_data
-            y_hi_pts = max(float(y0), float(y1)) * pts_per_data
-            text_y = min(max(text_y, y_lo_pts + min_gap_pts * 0.25), y_hi_pts - min_gap_pts * 0.25)
-            dy = text_y - marker_y_pts
-            draw_leader = abs(dy - _PARAMETER_LABEL_BASE_DY) > _PARAMETER_LABEL_LEADER_EPS_PTS
-            offsets[label_index] = (_PARAMETER_LABEL_DX, dy, draw_leader)
-            last_text_y = text_y
-    return offsets
+    half = max(float(track_width_m) * 0.5, 1e-6)
+    if not auto_fit or x_profiles is None:
+        return half
+    xs = np.asarray(x_profiles, dtype=float).ravel()
+    if xs.size < 2:
+        return half
+    if not x_sorted:
+        xs = np.sort(xs)
+    gaps = np.diff(xs)
+    positive = gaps[gaps > 1e-6]
+    if positive.size == 0:
+        return half
+    max_half = float(positive.min()) * float(spacing_fraction) * 0.5
+    if max_half >= min_half_m:
+        return min(half, max_half)
+    return min(half, max(max_half, 1e-6))
 
 
 @dataclass(frozen=True)
@@ -255,6 +115,8 @@ class CrossSectionRenderer(
     ConsultingLayoutMixin,
     SectionSheetLayoutMixin,
     ChartLayoutMixin,
+    RendererWaterMixin,
+    RendererChemistryMixin,
     RendererGeometryMixin,
 ):
     """Render geological polygons and borehole tracks to a matplotlib figure."""
@@ -285,6 +147,8 @@ class CrossSectionRenderer(
         consulting_title_block: ConsultingTitleBlock | None = None,
         screen_intervals: Sequence[ScreenInterval] = (),
         vertical_gradients: Sequence[VerticalGradient] = (),
+        stick_up_by_hole: dict[str, float] | None = None,
+        export_framing: ExportFramingConfig | None = None,
     ) -> None:
         self.vertical_exaggeration = vertical_exaggeration
         self.scale_bar_length_m = scale_bar_length_m
@@ -308,6 +172,8 @@ class CrossSectionRenderer(
         self.consulting_title_block = consulting_title_block
         self.screen_intervals = tuple(screen_intervals)
         self.vertical_gradients = tuple(vertical_gradients)
+        self.stick_up_by_hole = dict(stick_up_by_hole or {})
+        self.export_framing = export_framing
         self.water_series_legend: list[WaterSeriesLegendEntry] = []
         self.parameter_series_legend: list[ParameterLegendEntry] = []
         self._has_pinch_out = False
@@ -323,7 +189,14 @@ class CrossSectionRenderer(
         *,
         lithology_codes: Sequence[str] | None = None,
     ) -> Figure:
-        hatch_context = {"hatch.color": HATCH_LINE_COLOR, "hatch.linewidth": 0.65}
+        hatch_context = {
+            "hatch.color": HATCH_LINE_COLOR,
+            "hatch.linewidth": 0.65,
+            **export_font_rc(
+                self.profile.export_font_family,
+                self.profile.export_font_size,
+            ),
+        }
         with mpl.rc_context(hatch_context):
             return self._render_figure(
                 polygons,
@@ -411,35 +284,36 @@ class CrossSectionRenderer(
         )
 
     def _hole_context(self, projected_df: pd.DataFrame) -> _HoleContext:
-        summary = projected_df.groupby("hole_id", as_index=False, sort=False).agg(
-            x_profile=("x_profile", "first"),
-            collar_elevation=("collar_elevation", "first"),
-            bottom_elevation=("bottom_elevation", "min"),
-            offset_distance=("offset_distance", "first"),
+        summary = (
+            projected_df.groupby("hole_id", as_index=False, sort=False)
+            .agg(
+                x_profile=("x_profile", "first"),
+                collar_elevation=("collar_elevation", "first"),
+                bottom_elevation=("bottom_elevation", "min"),
+                offset_distance=("offset_distance", "first"),
+            )
+            .sort_values("x_profile", kind="mergesort")
         )
-        if not projected_df["x_profile"].is_monotonic_increasing:
-            summary = summary.sort_values("x_profile")
         hole_ids = summary["hole_id"].astype(str).to_numpy()
-        collar_values = summary["collar_elevation"].to_numpy(dtype=float)
         x_values = summary["x_profile"].to_numpy(dtype=float)
-        profile_lookup = {
-            str(hole_id): (float(x_profile), float(collar))
-            for hole_id, x_profile, collar in zip(hole_ids, x_values, collar_values, strict=True)
-        }
-        collar_lookup = {hole_id: collar for hole_id, (_, collar) in profile_lookup.items()}
-        x_by_hole = {hole_id: x_profile for hole_id, (x_profile, _) in profile_lookup.items()}
-        x_span = (
-            float(summary["x_profile"].max() - summary["x_profile"].min())
-            if len(summary) >= 2
-            else 10.0
-        )
+        collar_values = summary["collar_elevation"].to_numpy(dtype=float)
+        profile_lookup: dict[str, tuple[float, float]] = {}
+        collar_lookup: dict[str, float] = {}
+        x_by_hole: dict[str, float] = {}
+        for hole_id, x_profile, collar in zip(hole_ids, x_values, collar_values, strict=True):
+            xf = float(x_profile)
+            cf = float(collar)
+            profile_lookup[hole_id] = (xf, cf)
+            collar_lookup[hole_id] = cf
+            x_by_hole[hole_id] = xf
+        x_span = float(x_values[-1] - x_values[0]) if x_values.size >= 2 else 10.0
         return _HoleContext(
             summary=summary,
             collar_lookup=collar_lookup,
             x_by_hole=x_by_hole,
             profile_lookup=profile_lookup,
             x_span=x_span,
-            track_half=self._track_half_width(x_span),
+            track_half=self._track_half_width(x_values, x_sorted=True),
         )
 
     def _uncertainty_y_bounds(self, hole_summary: pd.DataFrame) -> tuple[float, float]:
@@ -458,22 +332,37 @@ class CrossSectionRenderer(
             return (collar_rl - elevation) * ve
         return elevation * ve
 
+    def _plot_depths_below_collar(
+        self,
+        hole_id: str,
+        depths: Sequence[float],
+        profile_lookup: dict[str, tuple[float, float]],
+    ) -> np.ndarray:
+        collar_rl = float(profile_lookup[hole_id][1])
+        depth_arr = np.asarray(depths, dtype=float)
+        elevations = collar_rl - depth_arr
+        collars = np.full(depth_arr.shape, collar_rl, dtype=float)
+        return self._plot_y_values(elevations, collars)
+
     def _plot_y_values(self, elevations: np.ndarray, collar_rls: np.ndarray) -> np.ndarray:
         ve = self.vertical_exaggeration
         if self.profile.y_axis_mode == "depth_below_collar":
             return (collar_rls - elevations) * ve
         return elevations * ve
 
-    def _track_half_width(self, x_span: float) -> float:
-        if self.profile.layout in {"section_sheet", "consulting_section"}:
-            return self.profile.track_width_m / 2.0
-        return max(x_span * 0.015, 0.8)
-
-    def _transform_coords(self, coords: list[tuple[float, float]], ve: float | None = None) -> np.ndarray:
-        multiplier = self.vertical_exaggeration if ve is None else ve
-        array = np.asarray(coords, dtype=float)
-        array[:, 1] *= multiplier
-        return array
+    def _track_half_width(
+        self,
+        x_profiles: np.ndarray | None = None,
+        *,
+        x_sorted: bool = False,
+    ) -> float:
+        """Half-width of each borehole column in profile metres."""
+        return resolve_track_half_width(
+            float(self.profile.track_width_m),
+            auto_fit=bool(self.profile.auto_fit_track_width),
+            x_profiles=x_profiles,
+            x_sorted=x_sorted,
+        )
 
     def _fence_plot_coords(
         self,
@@ -483,22 +372,27 @@ class CrossSectionRenderer(
         hole_pair: tuple[str, str] | None,
     ) -> np.ndarray:
         """Map fence polygon (x, elevation) verts into plot Y (RL or depth-below-collar)."""
+        out = np.asarray(coords, dtype=float)
+        if out.size == 0:
+            return out
         if self.profile.y_axis_mode != "depth_below_collar":
-            return self._transform_coords(coords.tolist(), ve)
-        # Prefer left collar for left half of the polygon, right for right half.
+            scaled = out.copy()
+            scaled[:, 1] *= ve
+            return scaled
         left_rl = collar_lookup.get(hole_pair[0]) if hole_pair else None
         right_rl = collar_lookup.get(hole_pair[1]) if hole_pair else None
         if left_rl is None and right_rl is None:
-            return self._transform_coords(coords.tolist(), ve)
-        mid_x = float(np.mean(coords[:, 0])) if len(coords) else 0.0
-        out = np.asarray(coords, dtype=float).copy()
-        for index, (x_val, elev) in enumerate(out):
-            if left_rl is not None and right_rl is not None:
-                collar_rl = left_rl if float(x_val) <= mid_x + 1e-9 else right_rl
-            else:
-                collar_rl = left_rl if left_rl is not None else right_rl
-            out[index, 1] = (float(collar_rl) - float(elev)) * ve
-        return out
+            scaled = out.copy()
+            scaled[:, 1] *= ve
+            return scaled
+        scaled = out.copy()
+        if left_rl is not None and right_rl is not None:
+            mid_x = float(scaled[:, 0].mean())
+            collar_rl = np.where(scaled[:, 0] <= mid_x + 1e-9, left_rl, right_rl)
+        else:
+            collar_rl = left_rl if left_rl is not None else right_rl
+        scaled[:, 1] = (collar_rl - scaled[:, 1]) * ve
+        return scaled
 
     def _draw_fence_polygons(
         self,
@@ -546,6 +440,8 @@ class CrossSectionRenderer(
                     linestyles=line_style,
                     zorder=3,
                 )
+                if self._cad_svg_layers_enabled():
+                    self._set_cad_gid(collection, "fence")
                 ax.add_collection(collection)
             return
         polygon_groups: dict[tuple[str, str, str, str, float], list[np.ndarray]] = {}
@@ -569,6 +465,8 @@ class CrossSectionRenderer(
                 alpha=patch_alpha,
             )
             collection.set_zorder(2)
+            if self._cad_svg_layers_enabled():
+                self._set_cad_gid(collection, "fence")
             ax.add_collection(collection)
 
     def _draw_sky_and_surface(
@@ -593,7 +491,16 @@ class CrossSectionRenderer(
             y_top = y_dense.max() + 0.12 * max(y_dense.max() - y_dense.min(), 1.0)
             ax.fill_between(x_dense, y_dense, y_top, facecolor=SKY_FILL_COLOR, edgecolor="none", alpha=0.85, zorder=1)
         if self.profile.show_ground_surface:
-            ax.plot(x_dense, y_dense, color=SURFACE_COLOR, linewidth=3.0, solid_capstyle="round", zorder=6)
+            (surface_line,) = ax.plot(
+                x_dense,
+                y_dense,
+                color=SURFACE_COLOR,
+                linewidth=3.0,
+                solid_capstyle="round",
+                zorder=6,
+            )
+            if self._cad_svg_layers_enabled():
+                self._set_cad_gid(surface_line, "surface")
 
     def _draw_track_lithology(
         self,
@@ -605,6 +512,8 @@ class CrossSectionRenderer(
         *,
         collar_arr: np.ndarray | None = None,
     ) -> None:
+        # Track fills are built in renderer_common; tag new collections here for CAD SVG.
+        before = len(ax.collections)
         self._draw_lithology_interval_rects(
             ax,
             projected_df,
@@ -613,6 +522,9 @@ class CrossSectionRenderer(
             collar_lookup,
             collar_arr=collar_arr,
         )
+        if self._cad_svg_layers_enabled():
+            for collection in ax.collections[before:]:
+                self._set_cad_gid(collection, "tracks")
 
     def _draw_track_borders(
         self,
@@ -741,26 +653,31 @@ class CrossSectionRenderer(
         collar_lookup: dict[str, float],
     ) -> None:
         header_transform = ax.get_xaxis_transform()
+        detail = self.profile.column_header_detail
         for row in hole_summary.itertuples(index=False):
             hole_id = str(row.hole_id)
-            collar = float(collar_lookup.get(hole_id, row.collar_elevation))
-            td = collar_depths.get(hole_id)
-            td_text = f"TD {td:.1f} m" if td is not None else ""
-            rl_text = (
-                f"RL {collar:.1f}"
-                if self.profile.y_axis_mode == "elevation_rl"
-                else "Depth section"
-            )
+            if detail == "id_only":
+                header_text = hole_id
+            else:
+                collar = float(collar_lookup.get(hole_id, row.collar_elevation))
+                td = collar_depths.get(hole_id)
+                td_text = f"TD {td:.1f} m" if td is not None else ""
+                rl_text = (
+                    f"RL {collar:.1f}"
+                    if self.profile.y_axis_mode == "elevation_rl"
+                    else "Depth section"
+                )
+                header_text = f"{hole_id}\n{rl_text}\n{td_text}".strip()
             if self.profile.y_axis_mode == "elevation_rl":
                 y_pos = -0.05
                 va = "top"
             else:
                 y_pos = 1.05
                 va = "bottom"
-            ax.text(
+            text_artist = ax.text(
                 float(row.x_profile),
                 y_pos,
-                f"{hole_id}\n{rl_text}\n{td_text}".strip(),
+                header_text,
                 transform=header_transform,
                 ha="center",
                 va=va,
@@ -771,6 +688,8 @@ class CrossSectionRenderer(
                 clip_on=False,
                 zorder=10,
             )
+            if self._cad_svg_layers_enabled():
+                self._set_cad_gid(text_artist, "headers")
 
     def _draw_deviated_centerlines(
         self,
@@ -811,6 +730,11 @@ class CrossSectionRenderer(
     ) -> None:
         if not self.raster_log_strips:
             return
+        x_lefts: list[float] = []
+        y0s: list[float] = []
+        heights: list[float] = []
+        labels: list[tuple[float, float, str]] = []
+        width = 2.0 * track_half_width
         for strip in self.raster_log_strips:
             x = x_by_hole.get(strip.hole_id)
             if x is None:
@@ -818,218 +742,54 @@ class CrossSectionRenderer(
             collar = float(collar_lookup.get(strip.hole_id, 0.0))
             top = self._plot_y(collar - strip.depth_top, collar)
             bottom = self._plot_y(collar - strip.depth_bottom, collar)
-            y0, height = (top, bottom - top) if top <= bottom else (bottom, top - top)
-            ax.add_patch(
-                Rectangle(
-                    (float(x) - track_half_width, y0),
-                    2.0 * track_half_width,
-                    height,
-                    facecolor="#E2E8F0",
-                    edgecolor="#64748B",
-                    linewidth=1.0,
-                    hatch="///",
-                    alpha=0.5,
-                )
-            )
-            ax.text(float(x), y0 + height / 2.0, strip.label, ha="center", va="center", fontsize=6, rotation=90, color="#475569")
+            y0, height = (top, bottom - top) if top <= bottom else (bottom, top - bottom)
+            x_f = float(x)
+            if strip.image_bytes:
+                try:
+                    import matplotlib.image as mpimg
 
-    def _draw_water_table(
-        self,
-        ax,
-        hole_summary: pd.DataFrame,
-        water_levels: Sequence[WaterLevel],
-        collar_lookup: dict[str, float],
-        *,
-        label_elevations: bool = False,
-        label_dry_wells: bool = False,
-        label_series_gaps: bool = False,
-        water_color: str | None = None,
-        profile_lookup: dict[str, tuple[float, float]] | None = None,
-    ) -> None:
-        if hole_summary.empty:
-            return
-        if profile_lookup is None:
-            profile_lookup = self._profile_lookup(hole_summary, collar_lookup)
-        series_groups = _group_water_levels(water_levels, profile_lookup)
-        holes_with_any_water = {
-            level.hole_id for levels in series_groups.values() for level in levels
-        }
-        fully_dry_nm_drawn: set[str] = set()
-        if label_dry_wells:
-            dry_lookup = {
-                hole_id: profile
-                for hole_id, profile in profile_lookup.items()
-                if hole_id not in holes_with_any_water
-            }
-            if dry_lookup:
-                dry_x = np.fromiter((p[0] for p in dry_lookup.values()), dtype=float, count=len(dry_lookup))
-                dry_collars = np.fromiter((p[1] for p in dry_lookup.values()), dtype=float, count=len(dry_lookup))
-                dry_y = self._plot_y_values(dry_collars - 1.0, dry_collars)
-                for hole_id, x_profile, y in zip(dry_lookup.keys(), dry_x, dry_y, strict=True):
-                    fully_dry_nm_drawn.add(str(hole_id))
-                    ax.annotate(
-                        "NM",
-                        xy=(float(x_profile), float(y)),
-                        xytext=(4, 0),
-                        textcoords="offset points",
-                        fontsize=8,
-                        color=CONSULTING_NM_COLOR,
-                        zorder=8,
+                    arr = mpimg.imread(io.BytesIO(strip.image_bytes), format="png")
+                    ax.imshow(
+                        arr,
+                        extent=(x_f - track_half_width, x_f + track_half_width, y0, y0 + height),
+                        aspect="auto",
+                        zorder=2,
                     )
-        if not series_groups:
-            return
-        self.water_series_legend = []
-        interpolate = self.interpolate_water_table or self.profile.interpolate_water_table_default
-        use_segments = self.profile.water_interpolate_segments
-        across_gaps = self.profile.water_interpolate_across_gaps
-        default_water_color = (
-            CONSULTING_WATER_COLOR
-            if self.profile.layout == "consulting_section"
-            else WATER_COLOR
-        )
-        elev_suffix = " masl" if self.profile.layout == "consulting_section" else " m"
-        profile_marker = _GW_MARKER_MAP.get(self.profile.water_symbol, self.profile.water_symbol)
-        transect_hole_ids = hole_summary.sort_values("x_profile")["hole_id"].astype(str).tolist()
-        transect_x = {
-            str(row.hole_id): float(row.x_profile)
-            for row in hole_summary.itertuples(index=False)
-        }
-        for series_id, levels in sorted(series_groups.items()):
-            first = levels[0]
-            default_color, default_marker, default_label = consulting_gw_series_style(
-                series_id,
-                first.series_label,
-            )
-            color = first.color or water_color or default_water_color or default_color
-            marker_key = (first.marker or default_marker or profile_marker).lower()
-            marker = _GW_MARKER_MAP.get(marker_key, marker_key)
-            label = first.series_label or default_label or series_id
-            level_by_hole = {level.hole_id: level for level in levels}
-            if label_series_gaps:
-                # Fully dry holes: one NM only (skip if label_dry_wells already drew them,
-                # or draw once across series when dry-well labeling is off).
-                for hole_id in transect_hole_ids:
-                    if hole_id in level_by_hole:
-                        continue
-                    if hole_id not in holes_with_any_water:
-                        if label_dry_wells or hole_id in fully_dry_nm_drawn:
-                            continue
-                        fully_dry_nm_drawn.add(hole_id)
-                    profile = profile_lookup.get(hole_id)
-                    if profile is None:
-                        continue
-                    x_profile, collar_rl = profile
-                    y = self._plot_y(collar_rl - 1.0, collar_rl)
-                    ax.annotate(
-                        "NM",
-                        xy=(float(x_profile), float(y)),
-                        xytext=(4, 0),
-                        textcoords="offset points",
-                        fontsize=8,
-                        color=CONSULTING_NM_COLOR,
-                        zorder=8,
-                    )
-            xs: list[float] = []
-            water_rls: list[float] = []
-            collars: list[float] = []
-            for hole_id in transect_hole_ids:
-                level = level_by_hole.get(hole_id)
-                if level is None:
                     continue
-                profile = profile_lookup.get(hole_id)
-                if profile is None:
-                    continue
-                x_profile, collar_rl = profile
-                xs.append(x_profile)
-                water_rls.append(collar_rl - level.depth)
-                collars.append(collar_rl)
-            if not xs:
-                continue
-            xs_arr = np.asarray(xs, dtype=float)
-            water_arr = np.asarray(water_rls, dtype=float)
-            collar_arr = np.asarray(collars, dtype=float)
-            ys = self._plot_y_values(water_arr, collar_arr)
-            ax.scatter(xs_arr, ys, marker=marker, c=color, s=49, zorder=7)
-            if label_elevations:
-                for x_profile, water_rl, y in zip(xs_arr, water_arr, ys, strict=True):
-                    ax.annotate(
-                        f"{water_rl:.3f}{elev_suffix}",
-                        xy=(float(x_profile), float(y)),
-                        xytext=(4, -8),
-                        textcoords="offset points",
-                        fontsize=7,
-                        color=color,
-                        zorder=8,
-                    )
-            if len(xs_arr) >= 2 and interpolate:
-                gw_linestyle = "-" if getattr(self.profile, "water_line_solid", False) else "--"
-                if across_gaps:
-                    # Dense interp only when explicitly allowed across dry/missing holes.
-                    x_dense = np.linspace(float(xs_arr.min()), float(xs_arr.max()), 100)
-                    y_dense = np.interp(x_dense, xs_arr, ys)
-                    ax.plot(
-                        x_dense, y_dense, color=color, linewidth=2.0, linestyle=gw_linestyle, zorder=6
-                    )
-                elif use_segments:
-                    for left_id, right_id in zip(transect_hole_ids, transect_hole_ids[1:], strict=False):
-                        if left_id not in level_by_hole or right_id not in level_by_hole:
-                            continue
-                        x0 = transect_x[left_id]
-                        x1 = transect_x[right_id]
-                        y0 = float(
-                            self._plot_y(
-                                profile_lookup[left_id][1] - level_by_hole[left_id].depth,
-                                profile_lookup[left_id][1],
-                            )
-                        )
-                        y1 = float(
-                            self._plot_y(
-                                profile_lookup[right_id][1] - level_by_hole[right_id].depth,
-                                profile_lookup[right_id][1],
-                            )
-                        )
-                        ax.plot(
-                            [x0, x1], [y0, y1], color=color, linewidth=2.0, linestyle=gw_linestyle, zorder=6
-                        )
-                else:
-                    # Measured holes only — do not invent water across dry gaps.
-                    ax.plot(
-                        xs_arr, ys, color=color, linewidth=2.0, linestyle=gw_linestyle, zorder=6
-                    )
-            if series_id == "default" and not label:
-                level_label_text = "GROUNDWATER LEVEL (masl)"
-                elevation_label_text = "GROUNDWATER ELEVATION (masl)"
-            else:
-                display_label = (label or default_label or series_id).upper()
-                level_label_text = f"GROUNDWATER LEVEL ({display_label})"
-                elevation_label_text = f"GROUNDWATER ELEVATION masl ({display_label})"
-            self.water_series_legend.append(
-                {
-                    "series_id": series_id,
-                    "color": color,
-                    "marker": marker,
-                    "level_label": level_label_text,
-                    "elevation_label": elevation_label_text,
-                }
+                except Exception:
+                    logger.debug("Raster log image render failed for %s", strip.hole_id, exc_info=True)
+            x_lefts.append(x_f - track_half_width)
+            y0s.append(y0)
+            heights.append(height)
+            labels.append((x_f, y0 + height / 2.0, strip.label))
+        if x_lefts:
+            count = len(x_lefts)
+            self._add_rect_collection(
+                ax,
+                (
+                    np.asarray(x_lefts, dtype=float),
+                    np.asarray(y0s, dtype=float),
+                    np.full(count, width),
+                    np.asarray(heights, dtype=float),
+                ),
+                facecolors="#E2E8F0",
+                edgecolors="#64748B",
+                linewidths=1.0,
+                zorder=1,
+                hatch="///",
+                alpha=0.5,
             )
-
-    def _draw_compact_water_legend(self, ax) -> None:
-        if not self.water_series_legend:
-            return
-        lines = []
-        for entry in self.water_series_legend:
-            lines.append(entry["level_label"])
-        ax.text(
-            0.01,
-            0.01,
-            " | ".join(lines),
-            transform=ax.transAxes,
-            fontsize=7,
-            color=LABEL_COLOR,
-            va="bottom",
-            ha="left",
-            zorder=20,
-        )
+        for x_f, y_mid, label in labels:
+            ax.text(
+                x_f,
+                y_mid,
+                label,
+                ha="center",
+                va="center",
+                fontsize=6,
+                rotation=90,
+                color="#475569",
+            )
 
     def _collar_rl_for_overlay(
         self,
@@ -1111,21 +871,28 @@ class CrossSectionRenderer(
         spacing = np.abs(np.diff(x_values))
         max_offset = np.maximum(offset_values[:-1], offset_values[1:])
         uncertain = (spacing > self.uncertainty_spacing_m) | (max_offset > self.uncertainty_offset_m)
-        uncertainty_patches = [
-            Rectangle(
-                (min(float(x_values[i]), float(x_values[i + 1])), y_min),
-                abs(float(x_values[i + 1]) - float(x_values[i])),
-                y_max - y_min,
-                facecolor=UNCERTAINTY_COLOR,
-                edgecolor="none",
-                alpha=0.28,
-            )
-            for i in np.flatnonzero(uncertain)
-        ]
-        if uncertainty_patches:
-            collection = PatchCollection(uncertainty_patches, match_original=True)
-            collection.set_zorder(0)
-            ax.add_collection(collection)
+        idxs = np.flatnonzero(uncertain)
+        if idxs.size == 0:
+            return
+        x0 = x_values[idxs]
+        x1 = x_values[idxs + 1]
+        x_left = np.minimum(x0, x1)
+        widths = np.abs(x1 - x0)
+        count = int(idxs.size)
+        self._add_rect_collection(
+            ax,
+            (
+                x_left,
+                np.full(count, y_min),
+                widths,
+                np.full(count, y_max - y_min),
+            ),
+            facecolors=UNCERTAINTY_COLOR,
+            edgecolors="none",
+            linewidths=0.0,
+            zorder=0,
+            alpha=0.28,
+        )
 
     def _draw_faults(
         self,
@@ -1195,210 +962,6 @@ class CrossSectionRenderer(
             )
             ax.add_collection(collection)
 
-    def _draw_parameter_readings(
-        self,
-        ax,
-        hole_summary: pd.DataFrame,
-        collar_lookup: dict[str, float],
-        *,
-        profile_lookup: dict[str, tuple[float, float]] | None = None,
-    ) -> None:
-        if hole_summary.empty or not self.environmental_readings:
-            return
-        if not self.profile.show_parameter_markers or not self.environmental_parameters:
-            return
-        if profile_lookup is None:
-            profile_lookup = self._profile_lookup(hole_summary, collar_lookup)
-        active_parameters = {name.strip() for name in self.environmental_parameters if name.strip()}
-        if not active_parameters:
-            return
-
-        use_segments = self.profile.parameter_interpolate_segments
-        across_gaps = self.profile.parameter_interpolate_across_gaps
-        label_values = self.profile.show_parameter_labels
-        marker_key = self.profile.parameter_marker
-        marker = _GW_MARKER_MAP.get(marker_key, marker_key)
-        transect_hole_ids = hole_summary.sort_values("x_profile")["hole_id"].astype(str).tolist()
-        transect_x = {
-            str(row.hole_id): float(row.x_profile)
-            for row in hole_summary.itertuples(index=False)
-        }
-
-        by_parameter: dict[str, list[EnvironmentalReading]] = {}
-        profile_holes = set(profile_lookup)
-        for reading in self.environmental_readings:
-            if reading.parameter not in active_parameters or reading.hole_id not in profile_holes:
-                continue
-            by_parameter.setdefault(reading.parameter, []).append(reading)
-
-        self.parameter_series_legend = []
-        for index, (parameter, readings) in enumerate(sorted(by_parameter.items())):
-            color = PARAMETER_PALETTE[index % len(PARAMETER_PALETTE)]
-            readings_by_hole: dict[str, list[EnvironmentalReading]] = {}
-            for reading in readings:
-                readings_by_hole.setdefault(reading.hole_id, []).append(reading)
-            for hole_readings in readings_by_hole.values():
-                hole_readings.sort(key=lambda item: item.sample_depth)
-
-            marker_xs: list[float] = []
-            marker_ys: list[float] = []
-            marker_labels: list[tuple[float, float, str]] = []
-            y_cache: dict[tuple[str, float], float] = {}
-
-            def plot_depth_y(hole_id: str, sample_depth: float) -> float:
-                key = (hole_id, sample_depth)
-                cached = y_cache.get(key)
-                if cached is not None:
-                    return cached
-                collar_rl = profile_lookup[hole_id][1]
-                y = float(self._plot_y(collar_rl - sample_depth, collar_rl))
-                y_cache[key] = y
-                return y
-
-            for hole_id in transect_hole_ids:
-                hole_readings = readings_by_hole.get(hole_id)
-                if not hole_readings:
-                    continue
-                x_profile = float(profile_lookup[hole_id][0])
-                for reading in hole_readings:
-                    y = plot_depth_y(hole_id, reading.sample_depth)
-                    marker_xs.append(x_profile)
-                    marker_ys.append(y)
-                    if (
-                        reading.from_depth is not None
-                        and reading.to_depth is not None
-                        and abs(reading.to_depth - reading.from_depth) > 1e-9
-                    ):
-                        y_top = plot_depth_y(hole_id, reading.from_depth)
-                        y_bottom = plot_depth_y(hole_id, reading.to_depth)
-                        ax.plot(
-                            [x_profile, x_profile],
-                            [y_top, y_bottom],
-                            color=color,
-                            linewidth=2.0,
-                            solid_capstyle="round",
-                            zorder=7,
-                        )
-                    if label_values:
-                        marker_labels.append((x_profile, y, reading.display_label))
-
-            if not marker_xs:
-                continue
-            ax.scatter(marker_xs, marker_ys, marker=marker, c=color, s=49, zorder=8)
-            label_offsets = _resolve_parameter_label_offsets(ax, marker_labels)
-            font_size = (
-                _PARAMETER_LABEL_FONTSIZE_CONSULTING
-                if getattr(self.profile, "layout", "") == "consulting_section"
-                else _PARAMETER_LABEL_FONTSIZE
-            )
-            label_base_kwargs: dict[str, object] = {
-                "textcoords": "offset points",
-                "fontsize": font_size,
-                "color": color,
-                "zorder": 9,
-                "clip_on": False,
-                "ha": "left",
-                "va": "center",
-                "bbox": _PARAMETER_LABEL_BBOX,
-            }
-            leader_props = {
-                "arrowstyle": "-",
-                "color": color,
-                "lw": 0.55,
-                "linestyle": "--",
-                "shrinkA": 2,
-                "shrinkB": 1,
-                "alpha": 0.7,
-            }
-            for (x_profile, y, label_text), (dx, dy, draw_leader) in zip(
-                marker_labels, label_offsets, strict=True
-            ):
-                annotate_kwargs = {
-                    **label_base_kwargs,
-                    "xy": (x_profile, y),
-                    "xytext": (dx, dy),
-                }
-                if draw_leader:
-                    annotate_kwargs["arrowprops"] = leader_props
-                ax.annotate(label_text, **annotate_kwargs)
-
-            measured_holes = [hole_id for hole_id in transect_hole_ids if readings_by_hole.get(hole_id)]
-            if use_segments and not across_gaps:
-                for left_id, right_id in zip(transect_hole_ids, transect_hole_ids[1:], strict=False):
-                    left_items = readings_by_hole.get(left_id, [])
-                    right_items = readings_by_hole.get(right_id, [])
-                    if not left_items or not right_items:
-                        continue
-                    x0 = transect_x[left_id]
-                    x1 = transect_x[right_id]
-                    used_right = [False] * len(right_items)
-                    right_depths = [item.sample_depth for item in right_items]
-                    for left_reading in left_items:
-                        best_idx = _nearest_unused_by_depth(
-                            right_depths, used_right, left_reading.sample_depth
-                        )
-                        if best_idx is None:
-                            continue
-                        used_right[best_idx] = True
-                        right_reading = right_items[best_idx]
-                        y0 = plot_depth_y(left_id, left_reading.sample_depth)
-                        y1 = plot_depth_y(right_id, right_reading.sample_depth)
-                        ax.plot([x0, x1], [y0, y1], color=color, linewidth=1.5, linestyle="--", zorder=7)
-            elif len(measured_holes) >= 2:
-                # Single sample per hole: classic fence (dense when across_gaps).
-                # Multi-depth: band by nearest sample depth so deep contacts are not dropped.
-                if all(len(readings_by_hole[hole_id]) == 1 for hole_id in measured_holes):
-                    bands = [
-                        [
-                            (hole_id, readings_by_hole[hole_id][0])
-                            for hole_id in measured_holes
-                        ]
-                    ]
-                else:
-                    bands = _cluster_parameter_bands_by_depth(
-                        measured_holes, readings_by_hole, depth_tol=1.5
-                    )
-                for band in bands:
-                    if len(band) < 2:
-                        continue
-                    band.sort(key=lambda item: float(profile_lookup[item[0]][0]))
-                    fence_xs = [float(profile_lookup[hole_id][0]) for hole_id, _reading in band]
-                    fence_ys = [
-                        plot_depth_y(hole_id, reading.sample_depth) for hole_id, reading in band
-                    ]
-                    xs_arr = np.asarray(fence_xs, dtype=float)
-                    ys_arr = np.asarray(fence_ys, dtype=float)
-                    if across_gaps and len(xs_arr) >= 2:
-                        x_dense = np.linspace(float(xs_arr.min()), float(xs_arr.max()), 100)
-                        y_dense = np.interp(x_dense, xs_arr, ys_arr)
-                        ax.plot(x_dense, y_dense, color=color, linewidth=1.5, linestyle="--", zorder=7)
-                    else:
-                        ax.plot(xs_arr, ys_arr, color=color, linewidth=1.5, linestyle="--", zorder=7)
-            self.parameter_series_legend.append(
-                {
-                    "parameter": parameter,
-                    "color": color,
-                    "marker": marker,
-                    "label": parameter.upper(),
-                }
-            )
-
-    def _draw_compact_parameter_legend(self, ax) -> None:
-        if not self.parameter_series_legend:
-            return
-        lines = []
-        for entry in self.parameter_series_legend:
-            lines.append(f"{entry['label']} ({entry['marker']})")
-        ax.text(
-            0.01,
-            0.02,
-            "Parameters: " + "; ".join(lines),
-            transform=ax.transAxes,
-            fontsize=7,
-            color=LABEL_COLOR,
-            va="bottom",
-        )
-
     def _draw_legend(
         self,
         ax,
@@ -1428,7 +991,7 @@ class CrossSectionRenderer(
                     label="Inferred pinch-out",
                 )
             )
-        ax.legend(
+        legend = ax.legend(
             handles=legend_handles,
             title="Lithology",
             loc="upper left",
@@ -1438,7 +1001,10 @@ class CrossSectionRenderer(
             edgecolor="#CBD5E1",
             fontsize=8,
             title_fontsize=9,
+            ncol=max(1, self.profile.legend_ncol) if len(legend_handles) > 1 else 1,
         )
+        if self._cad_svg_layers_enabled():
+            self._set_cad_gid(legend, "legend")
 
     def _draw_ve_annotation(self, ax) -> None:
         x_min, x_max = ax.get_xlim()
@@ -1491,47 +1057,85 @@ class CrossSectionRenderer(
             lines.append("WARNING: placeholder collar elevation")
         return lines
 
+    def _cad_svg_layers_enabled(self) -> bool:
+        return (
+            self.export_framing is not None
+            and bool(self.export_framing.cad_svg_layers)
+        )
+
+    @staticmethod
+    def _set_cad_gid(artist, layer_id: str) -> None:
+        """Tag a matplotlib artist so SVG export emits id= for Inkscape layer promotion."""
+        if artist is None:
+            return
+        setter = getattr(artist, "set_gid", None)
+        if callable(setter):
+            setter(layer_id)
+
     def _savefig_kwargs(self) -> dict[str, object]:
-        """Consulting uses fixed letter page; other layouts keep tight crop."""
-        if getattr(self.profile, "layout", "") == "consulting_section":
-            return {"bbox_inches": None, "pad_inches": 0.05}
-        return {"bbox_inches": "tight"}
+        """Export framing controls page crop; consulting default is fixed letter page."""
+        return savefig_kwargs(
+            self.export_framing,
+            layout=str(getattr(self.profile, "layout", "")),
+        )
+
+    def _prepare_export_figure(self, figure: Figure) -> Figure:
+        prepare_export_figure(
+            figure,
+            self.export_framing,
+            layout=str(getattr(self.profile, "layout", "")),
+        )
+        return figure
+
+    def _export_dpi(self, default: int = 300) -> int:
+        if self.export_framing is not None:
+            return int(self.export_framing.export_dpi)
+        return default
+
+    def _savefig_format(
+        self,
+        fig: Figure,
+        *,
+        fmt: str,
+        dpi: int | None = None,
+    ) -> bytes:
+        buffer = io.BytesIO()
+        kwargs: dict[str, object] = {
+            "format": fmt,
+            "facecolor": fig.get_facecolor(),
+            **self._savefig_kwargs(),
+        }
+        if fmt == "svg":
+            kwargs["metadata"] = {"Creator": "Cross Section Studio"}
+        if fmt == "png":
+            kwargs["dpi"] = dpi if dpi is not None else self._export_dpi()
+        fig.savefig(buffer, **kwargs)
+        buffer.seek(0)
+        payload = buffer.getvalue()
+        # TODO(cad-svg-layers): tag water artists with gid="water" in renderer_water.py
+        # when ExportFramingConfig.cad_svg_layers is on (V1 promotes matching groups only).
+        if fmt == "svg" and self._cad_svg_layers_enabled():
+            return annotate_svg_layers(payload)
+        return payload
 
     def to_svg_bytes(self, fig: Figure) -> bytes:
-        buffer = io.BytesIO()
-        fig.savefig(
-            buffer,
-            format="svg",
-            facecolor=fig.get_facecolor(),
-            metadata={"Creator": "Cross Section Studio"},
-            **self._savefig_kwargs(),
-        )
-        buffer.seek(0)
-        return buffer.getvalue()
+        self._prepare_export_figure(fig)
+        return self._savefig_format(fig, fmt="svg")
 
-    def to_png_bytes(self, fig: Figure, *, dpi: int = 300) -> bytes:
-        buffer = io.BytesIO()
-        fig.savefig(
-            buffer,
-            format="png",
-            dpi=dpi,
-            facecolor=fig.get_facecolor(),
-            **self._savefig_kwargs(),
+    def to_png_bytes(self, fig: Figure, *, dpi: int | None = None) -> bytes:
+        self._prepare_export_figure(fig)
+        apply_draft_watermark(fig, self.export_framing)
+        return self._savefig_format(
+            fig,
+            fmt="png",
+            dpi=dpi if dpi is not None else self._export_dpi(),
         )
-        buffer.seek(0)
-        return buffer.getvalue()
 
     def to_pdf_bytes(self, fig: Figure) -> bytes:
         """Single-page vector PDF of the rendered figure."""
-        buffer = io.BytesIO()
-        fig.savefig(
-            buffer,
-            format="pdf",
-            facecolor=fig.get_facecolor(),
-            **self._savefig_kwargs(),
-        )
-        buffer.seek(0)
-        return buffer.getvalue()
+        self._prepare_export_figure(fig)
+        apply_draft_watermark(fig, self.export_framing)
+        return self._savefig_format(fig, fmt="pdf")
 
     def export_figure_bytes(
         self,
@@ -1551,46 +1155,26 @@ class CrossSectionRenderer(
         svg_bytes = b""
         png_bytes = b""
         pdf_bytes = b""
-        save_kwargs = self._savefig_kwargs()
-        face = figure.get_facecolor()
+        self._prepare_export_figure(figure)
+        export_dpi = self._export_dpi()
+        watermark_applied = False
         for fmt in ordered:
+            if fmt in ("png", "pdf") and not watermark_applied:
+                apply_draft_watermark(figure, self.export_framing)
+                watermark_applied = True
             if fmt == "svg":
-                buffer = io.BytesIO()
-                figure.savefig(
-                    buffer,
-                    format="svg",
-                    facecolor=face,
-                    metadata={"Creator": "Cross Section Studio"},
-                    **save_kwargs,
-                )
-                buffer.seek(0)
-                svg_bytes = buffer.getvalue()
+                svg_bytes = self._savefig_format(figure, fmt="svg")
             elif fmt == "png":
-                buffer = io.BytesIO()
-                figure.savefig(
-                    buffer,
-                    format="png",
-                    dpi=300,
-                    facecolor=face,
-                    **save_kwargs,
-                )
-                buffer.seek(0)
-                png_bytes = buffer.getvalue()
+                png_bytes = self._savefig_format(figure, fmt="png", dpi=export_dpi)
             elif fmt == "pdf":
                 if self.profile.layout == "consulting_section":
-                    buffer = io.BytesIO()
-                    figure.savefig(
-                        buffer,
-                        format="pdf",
-                        facecolor=face,
-                        **save_kwargs,
-                    )
-                    buffer.seek(0)
-                    pdf_bytes = buffer.getvalue()
+                    pdf_bytes = self._savefig_format(figure, fmt="pdf")
                 else:
                     # Lazy import: PDF backend/font tools are heavy and slow startup for SVG/PNG-only runs.
                     from report_export import export_section_pdf
 
+                    # Encode page 1 once with framing/DPI; summary page merges via pypdf.
+                    page1_pdf = self._savefig_format(figure, fmt="pdf")
                     pdf_bytes = export_section_pdf(
                         self,
                         polygons,
@@ -1599,17 +1183,13 @@ class CrossSectionRenderer(
                         water_levels=water_levels,
                         lithology_codes=lithology_codes,
                         qa_lines=qa_lines,
-                        section_figure=figure,
+                        section_page_pdf=page1_pdf,
                     )
         return svg_bytes, png_bytes, pdf_bytes
 
-    def _transform_y(self, value: float) -> float:
-        return value * self.vertical_exaggeration
-
-    def _transform_ys(self, values: list[float] | np.ndarray) -> np.ndarray:
-        return np.asarray(values, dtype=float) * self.vertical_exaggeration
-
     def _draw_scale_bar(self, ax) -> None:
+        if not self.profile.show_scale_bar:
+            return
         x_min, x_max = ax.get_xlim()
         y_min, y_max = ax.get_ylim()
         bar_length = self.scale_bar_length_m

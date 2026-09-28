@@ -8,6 +8,7 @@ import streamlit as st
 
 from app_common import _active_transect_selection, _session_correlation_overrides
 from app_services import cached_build_section
+from export_framing import ExportFramingConfig
 from models import (
     ConsultingTitleBlock,
     Lithology,
@@ -18,6 +19,7 @@ from models import (
 from projection import off_transect_warnings
 from section_build_request import SectionBuildRequest
 from ui_helpers import dedupe_messages, holes_missing_lithology, screen_interval_warnings
+from ui_output_presets import resolve_output_preset
 
 
 @dataclass(frozen=True)
@@ -25,6 +27,7 @@ class EffectiveRenderOptions:
     layout: str
     show_ground_surface: bool
     track_width_m: float
+    auto_fit_track_width: bool
     show_legend: bool
     interpolate_water_table: bool
     allow_pinch_outs: bool
@@ -37,20 +40,28 @@ def effective_render_options(
     render_layout: str,
     show_ground_surface: bool,
     track_width_m: float,
+    auto_fit_track_width: bool = True,
     show_legend: bool,
     interpolate_water_table: bool,
     allow_pinch_outs: bool,
     consulting_title_block: ConsultingTitleBlock | None,
+    sample_figure_profile: bool = False,
 ) -> EffectiveRenderOptions:
     layout = "section_sheet" if report_preset else render_layout
     is_consulting = layout == "consulting_section"
+    # Generic consulting forces fence defaults; sample presets (GWM / P2) keep
+    # explicit water / pinch-out choices from the output preset.
+    force_consulting_defaults = is_consulting and not sample_figure_profile
     return EffectiveRenderOptions(
         layout=layout,
         show_ground_surface=True if report_preset or is_consulting else show_ground_surface,
-        track_width_m=3.0 if report_preset else track_width_m,
+        track_width_m=track_width_m,
+        auto_fit_track_width=auto_fit_track_width,
         show_legend=False if is_consulting else show_legend,
-        interpolate_water_table=True if is_consulting else interpolate_water_table,
-        allow_pinch_outs=False if is_consulting else allow_pinch_outs,
+        interpolate_water_table=(
+            True if force_consulting_defaults else interpolate_water_table
+        ),
+        allow_pinch_outs=False if force_consulting_defaults else allow_pinch_outs,
         consulting_title_block=consulting_title_block if is_consulting else None,
     )
 
@@ -79,13 +90,31 @@ def build_section_request(
     show_parameter_labels: bool | None = None,
     parameter_interpolate_segments: bool | None = None,
     parameter_interpolate_across_gaps: bool | None = None,
+    parameter_draw_markers: bool | None = None,
+    parameter_marker_size: float | None = None,
+    parameter_draw_leaders: bool | None = None,
+    parameter_label_include_units: bool | None = None,
+    column_header_detail: str | None = None,
+    show_scale_bar: bool | None = None,
+    show_ve_annotation: bool | None = None,
+    show_parameter_legend_text: bool | None = None,
+    export_font_family: str | None = None,
+    export_font_size: float | None = None,
+    selected_water_series_ids: tuple[str, ...] = (),
+    water_line_solid: bool | None = None,
+    legend_ncol: int | None = None,
+    chemistry_color_mode: str | None = None,
+    chemistry_threshold_green_max: float | None = None,
+    chemistry_threshold_yellow_max: float | None = None,
     render_layout: str,
     track_width_m: float,
+    auto_fit_track_width: bool = True,
     coordinate_reference: str,
     uses_placeholder_elevation: bool,
     elevation_mode: str,
     consulting_title_block: ConsultingTitleBlock | None = None,
     fail_on_overlaps: bool = False,
+    export_framing: ExportFramingConfig | None = None,
 ) -> SectionBuildRequest:
     return SectionBuildRequest(
         transect_points=transect_points,
@@ -110,14 +139,32 @@ def build_section_request(
         show_parameter_labels=show_parameter_labels,
         parameter_interpolate_segments=parameter_interpolate_segments,
         parameter_interpolate_across_gaps=parameter_interpolate_across_gaps,
+        parameter_draw_markers=parameter_draw_markers,
+        parameter_marker_size=parameter_marker_size,
+        parameter_draw_leaders=parameter_draw_leaders,
+        parameter_label_include_units=parameter_label_include_units,
+        column_header_detail=column_header_detail,  # type: ignore[arg-type]
+        show_scale_bar=show_scale_bar,
+        show_ve_annotation=show_ve_annotation,
+        show_parameter_legend_text=show_parameter_legend_text,
+        export_font_family=export_font_family,
+        export_font_size=export_font_size,
+        selected_water_series_ids=selected_water_series_ids,
+        water_line_solid=water_line_solid,
+        legend_ncol=legend_ncol,
+        chemistry_color_mode=chemistry_color_mode,  # type: ignore[arg-type]
+        chemistry_threshold_green_max=chemistry_threshold_green_max,
+        chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
         render_layout=render_layout,  # type: ignore[arg-type]
         track_width_m=track_width_m,
+        auto_fit_track_width=auto_fit_track_width,
         coordinate_reference=coordinate_reference,
         uses_placeholder_elevation=uses_placeholder_elevation,
         elevation_mode=elevation_mode,  # type: ignore[arg-type]
         correlation_overrides=_session_correlation_overrides(),
         consulting_title_block=consulting_title_block,
         fail_on_overlaps=fail_on_overlaps,
+        export_framing=export_framing,
     )
 
 
@@ -148,8 +195,25 @@ def collect_section_build_request(
     show_parameter_labels: bool | None = None,
     parameter_interpolate_segments: bool | None = None,
     parameter_interpolate_across_gaps: bool | None = None,
+    parameter_draw_markers: bool | None = None,
+    parameter_marker_size: float | None = None,
+    parameter_draw_leaders: bool | None = None,
+    parameter_label_include_units: bool | None = None,
+    column_header_detail: str | None = None,
+    show_scale_bar: bool | None = None,
+    show_ve_annotation: bool | None = None,
+    show_parameter_legend_text: bool | None = None,
+    export_font_family: str | None = None,
+    export_font_size: float | None = None,
+    selected_water_series_ids: tuple[str, ...] = (),
+    water_line_solid: bool | None = None,
+    legend_ncol: int | None = None,
+    chemistry_color_mode: str | None = None,
+    chemistry_threshold_green_max: float | None = None,
+    chemistry_threshold_yellow_max: float | None = None,
     render_layout: str,
     track_width_m: float,
+    auto_fit_track_width: bool = True,
     coordinate_reference: str,
     uses_placeholder_elevation: bool,
     elevation_mode: str,
@@ -157,6 +221,8 @@ def collect_section_build_request(
     consulting_title_block: ConsultingTitleBlock | None = None,
     selection: tuple[tuple[str, ...], tuple[tuple[float, float], ...]] | None = None,
     fail_on_overlaps: bool = False,
+    output_preset: str | None = None,
+    export_framing: ExportFramingConfig | None = None,
 ) -> tuple[SectionBuildRequest | None, str | None]:
     """Single collector for generate click and staleness checks."""
     if selection is None:
@@ -170,15 +236,18 @@ def collect_section_build_request(
     if selection is None:
         return None, None
     active_hole_ids, transect_points = selection
+    preset = resolve_output_preset(output_preset or "")
     effective = effective_render_options(
         report_preset=report_preset,
         render_layout=render_layout,
         show_ground_surface=show_ground_surface,
         track_width_m=track_width_m,
+        auto_fit_track_width=auto_fit_track_width,
         show_legend=show_legend,
         interpolate_water_table=interpolate_water_table,
         allow_pinch_outs=allow_pinch_outs,
         consulting_title_block=consulting_title_block,
+        sample_figure_profile=preset.sample_figure_profile,
     )
     request = build_section_request(
         transect_points=transect_points,
@@ -203,13 +272,31 @@ def collect_section_build_request(
         show_parameter_labels=show_parameter_labels,
         parameter_interpolate_segments=parameter_interpolate_segments,
         parameter_interpolate_across_gaps=parameter_interpolate_across_gaps,
+        parameter_draw_markers=parameter_draw_markers,
+        parameter_marker_size=parameter_marker_size,
+        parameter_draw_leaders=parameter_draw_leaders,
+        parameter_label_include_units=parameter_label_include_units,
+        column_header_detail=column_header_detail,
+        show_scale_bar=show_scale_bar,
+        show_ve_annotation=show_ve_annotation,
+        show_parameter_legend_text=show_parameter_legend_text,
+        export_font_family=export_font_family,
+        export_font_size=export_font_size,
+        selected_water_series_ids=selected_water_series_ids,
+        water_line_solid=water_line_solid,
+        legend_ncol=legend_ncol,
+        chemistry_color_mode=chemistry_color_mode,  # type: ignore[arg-type]
+        chemistry_threshold_green_max=chemistry_threshold_green_max,
+        chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
         render_layout=effective.layout,
         track_width_m=effective.track_width_m,
+        auto_fit_track_width=effective.auto_fit_track_width,
         coordinate_reference=coordinate_reference,
         uses_placeholder_elevation=uses_placeholder_elevation,
         elevation_mode=elevation_mode,
         consulting_title_block=effective.consulting_title_block,
         fail_on_overlaps=fail_on_overlaps,
+        export_framing=export_framing,
     )
     return request, request.cache_key(active_hole_ids)
 
@@ -262,28 +349,51 @@ def generate_cross_section(
         )
 
     transect = Transect(points=transect_points)
-    warnings = off_transect_warnings(subset.collars, transect, offset_warning_m)
+    preflight_key = st.session_state.get("_preflight_json_key")
+    transect_points_tuple = tuple(transect_points)
+    # Configure already ran off-transect warnings for the same holes/transect/threshold.
+    skip_off_transect = (
+        isinstance(preflight_key, tuple)
+        and len(preflight_key) >= 9
+        and preflight_key[0] == tuple(hole_ids)
+        and preflight_key[1] == transect_points_tuple
+        and preflight_key[5] == offset_warning_m
+        and preflight_key[7] == st.session_state.get("file_hash")
+        and preflight_key[8] == st.session_state.get("parse_signature")
+    )
+    warnings: list[str] = []
+    if not skip_off_transect:
+        warnings.extend(off_transect_warnings(subset.collars, transect, offset_warning_m))
     if request.render_layout in {"consulting_section", "section_sheet"}:
-        warnings = list(warnings) + screen_interval_warnings(hole_ids, subset.screen_intervals)
+        warnings.extend(screen_interval_warnings(hole_ids, subset.screen_intervals))
     if warnings:
         for message in dedupe_messages(warnings):
             st.warning(message)
 
+    # Overlays live on the subset; render uses ``request.X or subset.X``.
+    # Keeping them off the request shrinks request_json hash/cache/validate cost.
     build_request = request.model_copy(
         update={
-            "transect_points": tuple(transect_points),
+            "transect_points": transect_points_tuple,
             "correlation_overrides": _session_correlation_overrides()
             + tuple(subset.correlation_overrides),
-            "water_levels": subset.water_levels,
-            "screen_intervals": subset.screen_intervals,
-            "vertical_gradients": subset.vertical_gradients,
-            "faults": subset.faults,
-            "unconformities": subset.unconformities,
-            "environmental_readings": subset.environmental_readings,
-            "deviation_readings": subset.deviation_readings,
         }
     )
-    subset_json = subset.model_dump_json()
+    # Reuse Configure-warmed subset JSON when hole set + workbook signature match
+    # (avoids a second full ParseResult.model_dump_json on Generate).
+    cached_subset_json = st.session_state.get("_preflight_subset_json")
+    if (
+        lithology_index is None
+        and cached_subset_json
+        and isinstance(preflight_key, tuple)
+        and len(preflight_key) >= 9
+        and preflight_key[0] == tuple(hole_ids)
+        and preflight_key[7] == st.session_state.get("file_hash")
+        and preflight_key[8] == st.session_state.get("parse_signature")
+    ):
+        subset_json = cached_subset_json
+    else:
+        subset_json = subset.model_dump_json()
     request_json = build_request.model_dump_json()
     st.session_state.section_build_subset_json = subset_json
     st.session_state.section_build_request_json = request_json

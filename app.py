@@ -125,6 +125,12 @@ else:
                     import_report=st.session_state.import_report,
                     is_consulting_layout=sidebar.is_consulting_layout,
                     max_offset_for_interpolation_m=sidebar.max_offset_for_interpolation_m,
+                    prefer_chemistry=sidebar.prefer_chemistry,
+                    show_parameter_labels_default=sidebar.show_parameter_labels_default,
+                    parameter_interpolate_segments_default=(
+                        sidebar.parameter_interpolate_segments_default
+                    ),
+                    elevation_mode_default=sidebar.elevation_mode_default,
                 )
 
             is_stale = True
@@ -161,10 +167,31 @@ else:
                         water_interpolate_across_gaps=sidebar.water_interpolate_across_gaps,
                         environmental_parameters=configure_state.environmental_parameters,
                         show_parameter_labels=configure_state.show_parameter_labels,
-                        parameter_interpolate_segments=configure_state.parameter_interpolate_segments,
+                        parameter_interpolate_segments=(
+                            True
+                            if sidebar.connect_chemistry_values
+                            else configure_state.parameter_interpolate_segments
+                        ),
                         parameter_interpolate_across_gaps=sidebar.parameter_interpolate_across_gaps,
+                        parameter_draw_markers=sidebar.parameter_draw_markers_default,
+                        parameter_marker_size=sidebar.parameter_marker_size,
+                        parameter_draw_leaders=False,
+                        parameter_label_include_units=False,
+                        column_header_detail=sidebar.column_header_detail,
+                        show_scale_bar=sidebar.show_scale_bar,
+                        show_ve_annotation=sidebar.show_ve_annotation,
+                        show_parameter_legend_text=sidebar.show_parameter_legend_text,
+                        export_font_family=sidebar.export_font_family,
+                        export_font_size=sidebar.export_font_size,
+                        selected_water_series_ids=configure_state.selected_water_series_ids,
+                        water_line_solid=sidebar.water_line_solid_default,
+                        legend_ncol=sidebar.legend_ncol,
+                        chemistry_color_mode=configure_state.chemistry_color_mode,
+                        chemistry_threshold_green_max=configure_state.chemistry_threshold_green_max,
+                        chemistry_threshold_yellow_max=configure_state.chemistry_threshold_yellow_max,
                         render_layout=sidebar.render_layout,
                         track_width_m=sidebar.track_width_m,
+                        auto_fit_track_width=sidebar.auto_fit_track_width,
                         coordinate_reference=coordinate_reference,
                         uses_placeholder_elevation=bool(
                             import_report and import_report.uses_placeholder_elevation
@@ -174,6 +201,8 @@ else:
                         consulting_title_block=sidebar.consulting_title_block,
                         selection=configure_state.transect_selection,
                         fail_on_overlaps=configure_state.fail_on_overlaps,
+                        output_preset=sidebar.output_preset,
+                        export_framing=sidebar.export_framing,
                     )
                     is_stale = (
                         st.session_state.render_cache_key is None
@@ -197,6 +226,8 @@ else:
                 preset_label=OUTPUT_PRESET_LABELS.get(preset_key),
                 render_layout=sidebar.render_layout,
                 transect_label=transect_label,
+                export_framing=sidebar.export_framing,
+                consulting_title_block=sidebar.consulting_title_block,
             )
         else:
             render_validate_step()
@@ -212,6 +243,12 @@ else:
                 import_report=st.session_state.import_report,
                 is_consulting_layout=sidebar.is_consulting_layout,
                 max_offset_for_interpolation_m=sidebar.max_offset_for_interpolation_m,
+                prefer_chemistry=sidebar.prefer_chemistry,
+                show_parameter_labels_default=sidebar.show_parameter_labels_default,
+                parameter_interpolate_segments_default=(
+                    sidebar.parameter_interpolate_segments_default
+                ),
+                elevation_mode_default=sidebar.elevation_mode_default,
             )
 
         generate_clicked = False
@@ -311,10 +348,31 @@ else:
                     water_interpolate_across_gaps=sidebar.water_interpolate_across_gaps,
                     environmental_parameters=configure_state.environmental_parameters,
                     show_parameter_labels=configure_state.show_parameter_labels,
-                    parameter_interpolate_segments=configure_state.parameter_interpolate_segments,
+                    parameter_interpolate_segments=(
+                        True
+                        if sidebar.connect_chemistry_values
+                        else configure_state.parameter_interpolate_segments
+                    ),
                     parameter_interpolate_across_gaps=sidebar.parameter_interpolate_across_gaps,
+                    parameter_draw_markers=sidebar.parameter_draw_markers_default,
+                    parameter_marker_size=sidebar.parameter_marker_size,
+                    parameter_draw_leaders=False,
+                    parameter_label_include_units=False,
+                    column_header_detail=sidebar.column_header_detail,
+                    show_scale_bar=sidebar.show_scale_bar,
+                    show_ve_annotation=sidebar.show_ve_annotation,
+                    show_parameter_legend_text=sidebar.show_parameter_legend_text,
+                    export_font_family=sidebar.export_font_family,
+                    export_font_size=sidebar.export_font_size,
+                    selected_water_series_ids=configure_state.selected_water_series_ids,
+                    water_line_solid=sidebar.water_line_solid_default,
+                    legend_ncol=sidebar.legend_ncol,
+                    chemistry_color_mode=configure_state.chemistry_color_mode,
+                    chemistry_threshold_green_max=configure_state.chemistry_threshold_green_max,
+                    chemistry_threshold_yellow_max=configure_state.chemistry_threshold_yellow_max,
                     render_layout=sidebar.render_layout,
                     track_width_m=sidebar.track_width_m,
+                    auto_fit_track_width=sidebar.auto_fit_track_width,
                     coordinate_reference=coordinate_reference,
                     uses_placeholder_elevation=uses_placeholder,
                     elevation_mode=configure_state.elevation_mode,
@@ -322,6 +380,8 @@ else:
                     consulting_title_block=sidebar.consulting_title_block,
                     selection=selection,
                     fail_on_overlaps=configure_state.fail_on_overlaps,
+                    output_preset=sidebar.output_preset,
+                    export_framing=sidebar.export_framing,
                 )
                 if build_request is None or cache_key is None:
                     raise ValueError("Select at least two holes for the transect")

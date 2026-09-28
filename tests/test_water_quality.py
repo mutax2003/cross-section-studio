@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from ai_quality import summarize_water_levels
 from models import Collar, WaterLevel
 
@@ -78,3 +81,75 @@ def test_water_has_multiple_series_requires_distinct_ids() -> None:
     )
     assert water_has_multiple_series(multi) is True
     assert water_has_multiple_series(()) is False
+
+
+def test_summarize_water_levels_flags_duplicate_series_and_placeholder_masl() -> None:
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=20.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=20.0),
+    ]
+    levels = (
+        WaterLevel(hole_id="BH-01", depth=2.0, series_id="2024-05", series_label="May 2024"),
+        WaterLevel(
+            hole_id="BH-01",
+            depth=2.5,
+            elevation_masl=97.5,
+            series_id="2024-05",
+            series_label="May 2024",
+        ),
+    )
+    summary = summarize_water_levels(
+        collars, levels, ("BH-01", "BH-02"), placeholder_elevation_m=100.0
+    )
+    assert any("duplicate groundwater reading" in warning for warning in summary.warnings)
+    assert any("placeholder collar RL" in warning for warning in summary.warnings)
+
+
+def test_summarize_water_levels_allows_distinct_connect_group_nests() -> None:
+    """Shallow/deep nests share series_id but are not duplicates."""
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=20.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=20.0),
+    ]
+    levels = (
+        WaterLevel(hole_id="BH-01", depth=2.0, series_id="s1", connect_group="shallow"),
+        WaterLevel(hole_id="BH-01", depth=8.0, series_id="s1", connect_group="deep"),
+        WaterLevel(hole_id="BH-02", depth=2.5, series_id="s1", connect_group="shallow"),
+        WaterLevel(hole_id="BH-02", depth=9.0, series_id="s1", connect_group="deep"),
+    )
+    summary = summarize_water_levels(collars, levels, ("BH-01", "BH-02"))
+    assert summary.total_levels == 4
+    assert not any("duplicate groundwater reading" in warning for warning in summary.warnings)
+
+
+def test_summarize_water_levels_flags_duplicate_within_same_nest() -> None:
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=20.0),
+    ]
+    levels = (
+        WaterLevel(hole_id="BH-01", depth=2.0, series_id="s1", connect_group="shallow"),
+        WaterLevel(hole_id="BH-01", depth=2.2, series_id="s1", connect_group="shallow"),
+    )
+    summary = summarize_water_levels(collars, levels, ("BH-01",))
+    assert any("duplicate groundwater reading" in warning for warning in summary.warnings)
+    assert any("nest shallow" in warning for warning in summary.warnings)
+
+
+def test_summarize_water_levels_flags_absurd_horizontal_gradient() -> None:
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=30.0),
+        Collar(hole_id="BH-02", easting=10.0, northing=0.0, elevation=100.0, total_depth=30.0),
+    ]
+    levels = (
+        WaterLevel(hole_id="BH-01", depth=1.0, elevation_masl=99.0, series_id="s1"),
+        WaterLevel(hole_id="BH-02", depth=25.0, elevation_masl=75.0, series_id="s1"),
+    )
+    summary = summarize_water_levels(collars, levels, ("BH-01", "BH-02"))
+    assert any("Horizontal hydraulic gradient" in warning for warning in summary.warnings)
+
+
+def test_water_level_status_field() -> None:
+    dry = WaterLevel(hole_id="BH-01", depth=0.0, status="dry")
+    assert dry.status == "dry"
+    with pytest.raises(ValidationError):
+        WaterLevel(hole_id="BH-01", depth=1.0, status="wet-well")

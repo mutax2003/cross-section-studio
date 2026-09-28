@@ -12,7 +12,7 @@
 | `elevation` | float | Collar RL |
 | `total_depth` | float | Metres below collar |
 
-Optional: `elevation_datum`, `inclination_deg`, `azimuth_deg`.
+Optional: `elevation_datum`, `inclination_deg`, `azimuth_deg`, `stick_up_m` (metres above collar for MW stick-up).
 
 ### Lithology
 
@@ -29,20 +29,23 @@ Optional: `hatch_pattern`, `unit_order` (1 = shallowest; when the same code repe
 
 | Sheet | Columns | Purpose |
 |-------|---------|---------|
-| **Water** | `hole_id`, `depth` **or** `elevation_masl` (not both) | Groundwater markers. Use `depth` (below collar) or `elevation_masl` (RL). Optional: `series_id`, `series_label`, `color`, `marker` for multi-date snapshots |
+| **Water** | `hole_id`, `depth` **or** `elevation_masl` (not both) | Groundwater markers. Use `depth` (below collar) or `elevation_masl` (RL). Optional: `status` (`measured` default, `dry`, or `nm`), `series_id`, `series_label`, `connect_group` (nest id — only rows with the same group connect), `color`, `marker`. Rows with `dry`/`nm` may omit depth/masl. Up to **4** series can be plotted; choose them on **Configure**. Schematic water lines are **not** a potentiometric surface. |
 | **Screens** | `hole_id`, `from_depth`, `to_depth` | Screen interval hatch bands (consulting layout) |
 | **Gradients** | `hole_id`, `direction` (`up` / `down`) | Vertical gradient arrows (consulting layout) |
 | **Deviations** | `hole_id`, `depth`, `inclination_deg`, `azimuth_deg` | Deviated stick paths |
 | **Correlations** | `left_hole_id`, `right_hole_id`, `left_unit_order`, `right_unit_order` | Manual unit pairing |
 | **Faults** | `name`, `x_profile`, `elevation` | Profile-plane fault traces |
 | **Unconformities** | `name`, `x_profile`, `elevation` | Profile-plane surfaces |
-| **Environmental** | `hole_id`, `parameter`, `value`, `depth` **or** `from_depth`+`to_depth` | Lab/screening samples (e.g. chloride at 3.5 m). Optional: `unit` (e.g. `mg/L`) |
+| **Environmental** | `hole_id`, `parameter`, `value`, `depth` **or** `from_depth`+`to_depth` | Lab/screening samples (e.g. chloride at 3.5 m). Optional: `unit` (e.g. `mg/L`), `value_label` (figure text). Select parameters on **Configure**; optional green/yellow/red threshold colouring is set there (not in the workbook). |
+| **Sections** | `section_label`, `hole_ids` | Named transects for Configure **Multi-transect batch ZIP**. `hole_ids` are ordered holes separated by comma, semicolon, or `→` (e.g. `MW-01, MW-02, MW-03` or `MW-01→MW-02→MW-03`). Each valid row (≥2 known collars) seeds a line `Label \| h1, h2, …`. |
 
 Sheet names are matched case-insensitively.
 
 ## Field export profile
 
 Single `Lithology` sheet with `Label`, `Depth` (e.g. `0.00-2.00m`), `Lithology`, `Lat`, `Long`. Converted to UTM on import; elevation may use a profile placeholder until surveyed RL is provided.
+
+Optional **Field Data** sheet (same workbook): `Label` (or `hole_id`), `Depth` interval, plus `OVA` and/or `EC`. Those columns become environmental readings with parameters `OVA` / `EC` (not stratigraphy). Select them on **Configure** like other Environmental parameters.
 
 ## Lithology styles
 
@@ -64,6 +67,7 @@ For field teams, download the multi-tab template from the app welcome card, or r
 | **Environmental** | Optional — lab/field parameters at point depth or interval |
 | **Screens** | Optional — screened intervals (consulting hatch) |
 | **Gradients** | Optional — vertical gradient `up` / `down` |
+| **Sections** | Optional — `section_label` + `hole_ids` (seeds Configure multi-transect batch) |
 | **Example** | Filled MW-01…03 demo (reference only — not parsed) |
 | **Data Entry** | Compatibility sheet (PROJECT metadata for auto-detect) |
 

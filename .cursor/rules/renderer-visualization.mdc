@@ -1,6 +1,6 @@
 ---
-description: Vector rendering, lithology fills, scale bar, and label anti-collision
-globs: renderer.py,**/renderer.py,renderer_*.py,render_profiles.py,render_theme.py,report_export.py,constants.py
+description: Vector rendering, lithology fills, scale bar, track width, and export framing cosmetics
+globs: renderer.py,**/renderer.py,renderer_*.py,render_profiles.py,render_theme.py,report_export.py,export_framing.py,constants.py
 alwaysApply: false
 ---
 
@@ -8,11 +8,14 @@ alwaysApply: false
 
 | Module | Role |
 |--------|------|
-| `renderer.py` | `CrossSectionRenderer` facade; dispatches to layout mixins |
-| `renderer_common.py` | `RendererGeometryMixin` — wells, profile lookup, style resolution |
-| `renderer_section_sheet.py` | `SectionSheetLayoutMixin` — Strater-like section sheet |
+| `renderer.py` | `CrossSectionRenderer` facade; dispatches to layout mixins; overlays/export; `resolve_track_half_width()` |
+| `renderer_common.py` | `RendererGeometryMixin` — wells, screens, style resolution, shared collections |
+| `renderer_water.py` | `RendererWaterMixin` — water table markers/segments (`LineCollection`), legends |
+| `renderer_chemistry.py` | `RendererChemistryMixin` — environmental parameter labels/fence/sticks |
+| `renderer_section_sheet.py` | `SectionSheetLayoutMixin` — Strater-like section sheet (fixed `subplots_adjust`, no `tight_layout`) |
 | `renderer_chart.py` | `ChartLayoutMixin` — legacy debug chart |
 | `renderer_consulting.py` | `ConsultingLayoutMixin` — report sheet, title block, screens/gradients |
+| `export_framing.py` | Page/DPI/margins, draft watermark, CAD SVG metadata — **cosmetic**; not geometry |
 
 Input: `GeologicalPolygon` list, projected DataFrame, optional `WaterLevel` / screens / gradients / `EnvironmentalReading`.
 Output: Matplotlib figure or SVG/PNG/PDF bytes.
@@ -30,6 +33,7 @@ Lithology fills use the **BH Log** legend (Excel → `constants.get_lithology_st
 |-------|-------------------------|-------------------|----------------|
 | `layout` | `section_sheet` | `consulting_section` | `chart` |
 | `track_width_m` | 3.0 | 1.2 (white columns) | 1.6 |
+| `auto_fit_track_width` | optional | optional | optional |
 | `show_track_lithology` | true | false | true |
 | `show_grid` / `show_report_grid` | false | report grid (1 m / 10 m) | true |
 | `show_ground_surface` / `show_sky_fill` | true / true | true / false | false |
@@ -43,6 +47,8 @@ Lithology fills use the **BH Log** legend (Excel → `constants.get_lithology_st
 
 Wire profile via `pipeline.build_cross_section(render_layout=..., elevation_mode=...)` or `CrossSectionRenderer(render_profile=...)`.
 Theme colors live in `render_theme.py`.
+
+**Track width:** schematic fence column width on the profile X axis (not casing diameter). `auto_fit_track_width` + `resolve_track_half_width()` may shrink columns vs closest hole spacing (cap ~40%). Cosmetic — does not change projection/stratigraphy; excluded from `geometry_cache_payload()`.
 
 ## Interpretation Modes
 
@@ -63,7 +69,7 @@ Set via `CrossSectionRenderer(interpretation_mode=...)` or `pipeline.build_cross
 5. **Track borders** — white column outline from collar to TD
 6. **Contact ticks** — horizontal lines at interval tops/bottoms across track width
 7. **Deviated centerlines** — dotted polyline through interval midpoints when deviation survey present
-8. **Raster log strips** — optional hatched placeholder column (`RasterLogStrip` model); drawn with default patch zorder 1, so it sits beneath fence polygons and track lithology; `image_bytes` is defined but not yet rendered
+8. **Raster log strips** — optional image column (`RasterLogStrip` model): `image_bytes` rendered via `imshow` (zorder 2); hatched placeholder rectangles otherwise (zorder 1, beneath fence polygons and track lithology)
 9. **Ground surface** — thick green/brown polyline
 10. **Water table** — symbol per hole (circle/triangle/diamond) + optional dashed interpolation
 11. **EOL bars** — horizontal end-of-log marker at TD
@@ -80,20 +86,20 @@ Thin center sticks, optional dashed grid, floating bbox labels, no sky/EOL/conta
 
 ## Consulting Section Layout (EcoVenture-style report sheet)
 
-Fence-first layout matching consulting cross-section figures (`render_layout="consulting_section"`). Uses `GridSpec` `height_ratios=[58, 12, 22]`: plot (~63%), subtitle band (~13%), simplified title block (~24%).
+Fence-first layout matching consulting cross-section figures (`render_layout="consulting_section"`). Uses `GridSpec` height ratios **58 / 12 / 22** (plot / subtitle / title block).
 
 **Plot layers (z-order):**
 
-1. **Report grid** — 1 m elevation / 10 m distance majors (20 m when span > 200 m); dual **ELEVATION ABOVE SEA LEVEL (MASL)** axes (profile `y_axis_label`; `ELEVATION (m)` is the last-resort fallback)
-2. **Fence polygons** — opaque fills (`fence_alpha=1.0`); no wide track lithology
+1. **Report grid** — 1 m elevation / 10 m distance majors; dual Y axes (MASL or `DEPTH (mbgs)`)
+2. **Fence polygons** — opaque fills (`fence_alpha=1.0`) when `interpretation_mode` is interpolated; empty in `borehole_only`
 3. **Ground surface** — interpolated collar polyline (no sky fill)
-4. **Well columns** — narrow filled rectangles collar to TD via `_draw_well_columns` (`TRACK_FILL_COLOR`); `_draw_thin_well_sticks` exists but is unused
-5. **Screen intervals** — opaque `TRACK_FILL_COLOR` + `hatch="///"` (Matplotlib needs a non-transparent face for hatch); legend swatch matches
+4. **Well columns** — grey fill (`CONSULTING_COLUMN_FILL`); `borehole_only` also draws **track lithology** inside the column
+5. **Screen intervals** — opaque `TRACK_FILL_COLOR` + horizontal `SCREEN_INTERVAL_HATCH` (`"--"`; legend swatch only when screens exist) — distinct from lithology diagonals
 6. **Gradients** — vertical arrows when provided
 7. **Hole ID labels** — above each stick
 8. **Transect end labels** — optional via `ConsultingTitleBlock`
-9. **Water table** — labeled RL at each ▼; solid interpolation line when ≥2 points (`water_line_solid=True`)
-10. **Faults / unconformities / parameter markers** (`_draw_parameter_readings` when `show_parameter_markers`)
+9. **Water table** — inverted triangles + compact numeric RL (no `masl` suffix on the plot); solid segments when ≥2 measured holes; **NM** only when dry-well labeling is on and water data exist (P2 borehole-only with no Water sheet turns NM off)
+10. **Faults / unconformities / parameter markers** — consulting `borehole_only` uses red numeric labels (`parameter_draw_markers=False`)
 
 **Subtitle band:** section label, `SCALE {map_scale}`, `{VE}× VERTICAL EXAGGERATION`, graphic scale bar.
 
@@ -107,18 +113,23 @@ Streamlit: sidebar **Output style** selectbox preset **Consulting report (title 
 - Fill polygons via `matplotlib.collections.PolyCollection` using `constants.get_lithology_style()` (BH Log palette)
 - User overrides via `paths.lithology_styles_path()` (user data dir, not repo `data/`)
 - Expose **`vertical_exaggeration`** (Y-axis multiplier) and **`scale_bar_length_m`**
-- Hatch patterns toggled via `show_hatches`
+- Hatch patterns toggled via `show_hatches` (applies under consulting palette too; parity scripts use hatches on)
 
 ## Y-Axis Modes
 
-- `elevation_rl` — absolute reduced level (default)
-- `depth_below_collar` — inverted depth axis; wired from UI `elevation_mode=relative`
+- `elevation_rl` — absolute reduced level (default). Water labels use stored `elevation_masl` when present, else `collar RL − depth`. Consulting plot labels are compact `{rl:.3f}`; `masl` stays in the title-block legend/notes.
+- `depth_below_collar` — inverted depth axis; wired from UI `elevation_mode=relative`. Water labels use **mbgs** (depth below collar), not fake masl.
+
+Water is a **rule-based overlay** (markers + linear segments between measured holes). Segment polylines and chemistry sticks/fence bands are batched via `matplotlib.collections.LineCollection` (same geometry/style as prior per-call `ax.plot`). Do not interpolate across unmeasured holes unless `water_interpolate_across_gaps`. Consulting title-block GW legend is gated on `show_water_legend` and only drawn when a series was plotted.
 
 ## Export
 
 - `to_svg_bytes()` / `to_png_bytes(dpi=300)` on rendered figure
-- `export_figure_bytes(figure, export_formats, ...)` — single figure, selective encoding via `export_formats`
-- `pipeline.build_cross_section(export_formats=...)` returns SVG/PNG/PDF bytes per format set (default `{"svg"}` for tests)
-- Streamlit Generate: `cached_build_section()` is **SVG-only**; primary Prepare PNG & PDF via `cached_build_section_exports()`; secondary per-format via `cached_build_section_png` / `cached_build_section_pdf`
+- `export_figure_bytes(figure, export_formats, ...)` — single figure, selective encoding via `export_formats` (ordered svg → png → pdf; avoid extra `canvas.draw()`); applies `ExportFramingConfig` (page size/margins/DPI, draft watermark on PNG/PDF, optional CAD SVG metadata)
+- `pipeline.build_cross_section(export_formats=..., export_framing=...)` returns SVG/PNG/PDF bytes per format set (default `{"svg"}` for tests)
+- Streamlit Generate: `cached_build_section()` is **SVG-only**; **Prepare deliverables** uses `cached_build_section_exports()` — one draw for PNG+PDF; `cached_build_section_png` / `_pdf` are thin wrappers
+- Geometry Streamlit cache: `cached_compute_section_geometry(subset_json, geometry_request_json)` returns `SectionGeometry` (Streamlit serializes once); keyed from `geometry_cache_payload()` — title/VE/hatches/fonts/`export_framing`/`track_width_m`/`auto_fit_track_width` and QA flags do not invalidate geometry (post-cache QA in `app_services`)
+- Consulting defaults to fixed letter landscape canvas; **page presets / margins in `ExportFramingConfig` may override at export time**
 - `report_export.export_section_pdf()` — page 1 section, page 2 legend/metadata/QA summary; reuses `section_figure` when provided
 - Allowed: import stratigraphy **types** (`GeologicalPolygon`, `PolygonOverlap`) — not correlation/pinch-out logic
+- Packaging (DOCX / ZIP / clipboard / folder) lives in `docx_export` / `batch_export` / Generate UI — not in renderer mixins

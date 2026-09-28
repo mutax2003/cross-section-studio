@@ -8,7 +8,7 @@ Replace `{task}` and `{modules}` before running (IDE Task tool does not auto-sub
 
 When `{modules}` maps to a narrow routing row in `AGENTS.md`, you may run that row's **Verify focus** pytest file(s) plus one smoke (`e2e_smoke_direct` or `smoke_test`) for fast iteration feedback.
 
-For **COMPLETE** handoff (default): still run all three commands below — the full gate is required before merge or SDK `verify`.
+For **COMPLETE** handoff (default): still run all three commands below — the full gate is required before merge or SDK `verify`. IDE agents may follow `.cursor/skills/e2e-verify/SKILL.md`.
 
 ## Task context
 
@@ -20,7 +20,7 @@ For **COMPLETE** handoff (default): still run all three commands below — the f
 
 ## Commands (run all three in order)
 
-Use the shell. Stop on first failure and report the last 50 lines of output.
+Use the shell. Stop on first failure and report the last 50 lines of output. Canonical list: `VERIFY_COMMANDS` in `scripts/agent_supervisor.py` / `AGENTS.md`.
 
 ### Windows (PowerShell)
 

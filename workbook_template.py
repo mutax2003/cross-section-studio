@@ -3,7 +3,7 @@
 Sheets:
   Instructions — how to fill the workbook
   Project — client / figure metadata (also mirrored on Data Entry for ingest)
-  Collars, Lithology, Water, Environmental, Screens, Gradients — primary data entry
+  Collars, Lithology, Water, Environmental, Screens, Gradients, Sections — primary data entry
   Example — filled sample project (reference only; not parsed)
   Data Entry — PROJECT block for ``DATA_ENTRY_PROFILE_ID`` + consulting seed
 """
@@ -32,6 +32,7 @@ WATER_SHEET = "Water"
 ENVIRONMENTAL_SHEET = "Environmental"
 SCREENS_SHEET = "Screens"
 GRADIENTS_SHEET = "Gradients"
+SECTIONS_SHEET = "Sections"
 
 DATA_SHEETS: tuple[str, ...] = (
     COLLARS_SHEET,
@@ -40,6 +41,7 @@ DATA_SHEETS: tuple[str, ...] = (
     ENVIRONMENTAL_SHEET,
     SCREENS_SHEET,
     GRADIENTS_SHEET,
+    SECTIONS_SHEET,
 )
 
 PROJECT_FIELDS: tuple[tuple[str, str], ...] = (
@@ -55,12 +57,24 @@ PROJECT_FIELDS: tuple[tuple[str, str], ...] = (
     ("transect_start", "Transect start label (e.g. A / NORTHWEST)"),
     ("transect_end", "Transect end label (e.g. A' / SOUTHEAST)"),
     ("vertical_exaggeration", "Suggested vertical exaggeration (e.g. 5)"),
+    (
+        "figure_preset",
+        "Output style preset: gwm_fence | p2_chemistry_sticks | consulting_report | section_sheet",
+    ),
     ("notes", "Figure notes (one line; use sidebar for long text)"),
 )
 
-COLLAR_COLUMNS = ("hole_id", "easting", "northing", "elevation", "total_depth")
+COLLAR_COLUMNS = ("hole_id", "easting", "northing", "elevation", "total_depth", "stick_up_m")
 LITHOLOGY_COLUMNS = ("hole_id", "from_depth", "to_depth", "lithology_code", "unit_order")
-WATER_COLUMNS = ("hole_id", "depth", "elevation_masl", "series_id", "series_label")
+WATER_COLUMNS = (
+    "hole_id",
+    "depth",
+    "elevation_masl",
+    "status",
+    "series_id",
+    "series_label",
+    "connect_group",
+)
 ENVIRONMENTAL_COLUMNS = (
     "hole_id",
     "parameter",
@@ -73,6 +87,7 @@ ENVIRONMENTAL_COLUMNS = (
 )
 SCREEN_COLUMNS = ("hole_id", "from_depth", "to_depth")
 GRADIENT_COLUMNS = ("hole_id", "direction")
+SECTION_COLUMNS = ("section_label", "hole_ids")
 
 TABLE_SECTIONS: dict[str, tuple[str, ...]] = {
     "COLLARS": COLLAR_COLUMNS,
@@ -81,6 +96,7 @@ TABLE_SECTIONS: dict[str, tuple[str, ...]] = {
     "ENVIRONMENTAL": ENVIRONMENTAL_COLUMNS,
     "SCREENS": SCREEN_COLUMNS,
     "GRADIENTS": GRADIENT_COLUMNS,
+    "SECTIONS": SECTION_COLUMNS,
 }
 
 _HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
@@ -103,6 +119,7 @@ _TAB_COLORS = {
     ENVIRONMENTAL_SHEET: "5B9BD5",
     SCREENS_SHEET: "A9D08E",
     GRADIENTS_SHEET: "A9D08E",
+    SECTIONS_SHEET: "ED7D31",
     EXAMPLE_SHEET: "7030A0",
     DATA_ENTRY_SHEET: "7F7F7F",
 }
@@ -133,15 +150,37 @@ def _sample_project() -> dict[str, str]:
         "transect_start": "A / NORTHWEST",
         "transect_end": "A' / SOUTHEAST",
         "vertical_exaggeration": "5",
+        "figure_preset": "gwm_fence",
         "notes": "NOTE: masl DENOTES METRES ABOVE SEA LEVEL.",
     }
 
 
 def _sample_collars() -> list[dict[str, object]]:
     return [
-        {"hole_id": "MW-01", "easting": 0.0, "northing": 0.0, "elevation": 635.0, "total_depth": 12.0},
-        {"hole_id": "MW-02", "easting": 45.0, "northing": 0.0, "elevation": 634.5, "total_depth": 12.0},
-        {"hole_id": "MW-03", "easting": 90.0, "northing": 0.0, "elevation": 634.0, "total_depth": 11.5},
+        {
+            "hole_id": "MW-01",
+            "easting": 0.0,
+            "northing": 0.0,
+            "elevation": 635.0,
+            "total_depth": 12.0,
+            "stick_up_m": 0.9,
+        },
+        {
+            "hole_id": "MW-02",
+            "easting": 45.0,
+            "northing": 0.0,
+            "elevation": 634.5,
+            "total_depth": 12.0,
+            "stick_up_m": 0.9,
+        },
+        {
+            "hole_id": "MW-03",
+            "easting": 90.0,
+            "northing": 0.0,
+            "elevation": 634.0,
+            "total_depth": 11.5,
+            "stick_up_m": 0.75,
+        },
     ]
 
 
@@ -194,22 +233,55 @@ def _sample_water() -> list[dict[str, object]]:
             "hole_id": "MW-01",
             "depth": 3.2,
             "elevation_masl": "",
+            "status": "measured",
             "series_id": "2025-06",
             "series_label": "June 2025",
+            "connect_group": "shallow",
         },
         {
             "hole_id": "MW-02",
             "depth": "",
             "elevation_masl": 631.0,
+            "status": "measured",
             "series_id": "2025-06",
             "series_label": "June 2025",
+            "connect_group": "shallow",
         },
         {
             "hole_id": "MW-03",
             "depth": 3.8,
             "elevation_masl": "",
+            "status": "measured",
             "series_id": "2025-06",
             "series_label": "June 2025",
+            "connect_group": "shallow",
+        },
+        {
+            "hole_id": "MW-01",
+            "depth": 8.0,
+            "elevation_masl": "",
+            "status": "measured",
+            "series_id": "2025-06-deep",
+            "series_label": "June 2025 deep",
+            "connect_group": "deep",
+        },
+        {
+            "hole_id": "MW-03",
+            "depth": 7.5,
+            "elevation_masl": "",
+            "status": "measured",
+            "series_id": "2025-06-deep",
+            "series_label": "June 2025 deep",
+            "connect_group": "deep",
+        },
+        {
+            "hole_id": "MW-02",
+            "depth": "",
+            "elevation_masl": "",
+            "status": "dry",
+            "series_id": "2025-06",
+            "series_label": "June 2025",
+            "connect_group": "deep",
         },
     ]
 
@@ -283,6 +355,13 @@ def _sample_gradients() -> list[dict[str, object]]:
     ]
 
 
+def _sample_sections() -> list[dict[str, object]]:
+    return [
+        {"section_label": "A-A'", "hole_ids": "MW-01, MW-02, MW-03"},
+        {"section_label": "B-B'", "hole_ids": "MW-01→MW-03"},
+    ]
+
+
 def _column_hints() -> dict[str, dict[str, str]]:
     return {
         COLLARS_SHEET: {
@@ -291,6 +370,7 @@ def _column_hints() -> dict[str, dict[str, str]]:
             "northing": "Northing / Y (metres)",
             "elevation": "Collar RL (masl)",
             "total_depth": "Total drilled depth (m below collar)",
+            "stick_up_m": "Optional stick-up height above collar (m)",
         },
         LITHOLOGY_SHEET: {
             "hole_id": "Must match Collars.hole_id",
@@ -303,8 +383,10 @@ def _column_hints() -> dict[str, dict[str, str]]:
             "hole_id": "Must match Collars.hole_id",
             "depth": "Water depth below collar (m) — OR use elevation_masl",
             "elevation_masl": "Water RL (masl) — do not fill both depth and this",
-            "series_id": "Optional snapshot id (e.g. 2025-06)",
+            "status": "measured (default), dry, or nm — dry/nm may omit depth/masl",
+            "series_id": "Optional snapshot id (e.g. 2025-06); max 4 series plotted",
             "series_label": "Optional legend label (e.g. June 2025)",
+            "connect_group": "Optional nest id (e.g. shallow/deep) — only same group connects",
         },
         ENVIRONMENTAL_SHEET: {
             "hole_id": "Must match Collars.hole_id",
@@ -324,6 +406,10 @@ def _column_hints() -> dict[str, dict[str, str]]:
         GRADIENTS_SHEET: {
             "hole_id": "Must match Collars.hole_id",
             "direction": "up or down",
+        },
+        SECTIONS_SHEET: {
+            "section_label": "Transect label (e.g. A-A') — seeds Configure batch lines",
+            "hole_ids": "Ordered holes: comma, semicolon, or → separated (≥2)",
         },
     }
 
@@ -345,19 +431,21 @@ def _instructions_lines() -> list[str]:
         "1. Open the Project tab and replace the sample client / figure metadata.",
         "2. Enter boreholes on Collars (one row per hole).",
         "3. Enter lithology intervals on Lithology (from_depth / to_depth below collar).",
-        "4. Optionally fill Water, Environmental, Screens, and Gradients.",
+        "4. Optionally fill Water, Environmental, Screens, Gradients, and Sections.",
         "5. Upload this file in Cross Section Studio (Upload step).",
-        "6. On Configure, pick the transect holes and which lab parameters to plot.",
+        "6. On Configure, pick the transect holes, groundwater series (max 4), and lab parameters to plot.",
+        "7. Optional: set chemistry label colour to green/yellow/red thresholds on Configure.",
         "",
         "TAB GUIDE",
         "• Instructions — this guide.",
         "• Project — client name, project number, section title, transect labels (seeds consulting layout).",
         "• Collars — required. Coordinates and collar elevation (RL).",
         "• Lithology — required. Stick-log intervals; hole_id must match Collars.",
-        "• Water — optional. Groundwater as depth below collar OR elevation_masl (not both on one row).",
-        "• Environmental — optional. Lab/field parameters at a point depth or depth interval.",
+        "• Water — optional. Groundwater as depth below collar OR elevation_masl (not both on one row). Use series_id for snapshots; connect_group for shallow/deep nests.",
+        "• Environmental — optional. Lab/field parameters at a point depth or depth interval. Units belong in the legend; threshold colours are set in the app Configure step.",
         "• Screens — optional. Screened intervals (consulting hatch bands).",
         "• Gradients — optional. Vertical gradient arrows (direction = up or down).",
+        "• Sections — optional. Named transects (section_label + hole_ids) that seed Configure multi-transect batch lines.",
         "• Example — filled MW-01 / MW-02 / MW-03 demo. Copy rows into the data tabs, or replace samples.",
         "• Data Entry — compatibility sheet (PROJECT metadata for auto-detect). Prefer the named tabs above.",
         "",
@@ -368,6 +456,12 @@ def _instructions_lines() -> list[str]:
         "ENVIRONMENTAL RULES",
         "• Use depth for a point sample, OR from_depth + to_depth for an interval — not both.",
         "• value_label is optional display text on the figure (e.g. <5 mg/L for non-detects).",
+        "• Select parameters and optional G/Y/R thresholds on Configure after upload.",
+        "",
+        "WATER RULES",
+        "• Up to four series_id values can be plotted; pick them on Configure.",
+        "• connect_group links shallow/deep nest readings — only the same group connects.",
+        "• status: measured (default), dry, or nm. Dry/nm rows may omit depth/elevation_masl.",
         "",
         f"COMMON LITHOLOGY CODES: {lithology_list}",
         "",
@@ -389,7 +483,7 @@ def _build_data_entry_project_only_rows() -> list[list[object]]:
     rows: list[list[object]] = [
         ["CROSS SECTION STUDIO — DATA ENTRY (compatibility)", "", "", "", "", "", "", ""],
         [
-            "Prefer Collars / Lithology / Water / Environmental / Screens / Gradients tabs for data.",
+            "Prefer Collars / Lithology / Water / Environmental / Screens / Gradients / Sections tabs for data.",
             "",
             "",
             "",
@@ -441,12 +535,40 @@ def _normalize_key(value: object) -> str:
     return str(value).strip().lower().replace(" ", "_")
 
 
-def _table_frame(rows: list[list[object]], columns: tuple[str, ...]) -> pd.DataFrame:
+def _table_frame(
+    rows: list[list[object]],
+    columns: tuple[str, ...],
+    *,
+    header_cells: list[object] | None = None,
+) -> pd.DataFrame:
+    """Build a DataFrame from Data Entry table rows.
+
+    When ``header_cells`` is provided (from the sheet header row), values are mapped
+    by column name so optional columns like ``status`` can be inserted without
+    shifting ``series_id`` / other fields. Without a header, rows are positional
+    against ``columns`` (legacy layout).
+    """
     cleaned: list[dict[str, object]] = []
+    header_keys: list[str] | None = None
+    if header_cells:
+        header_keys = [_normalize_key(cell) for cell in header_cells]
+        # Drop trailing empties so short legacy headers still map cleanly.
+        while header_keys and header_keys[-1] in {"", "nan"}:
+            header_keys.pop()
     for row in rows:
         if not row or all(str(cell).strip() == "" or str(cell).strip().lower() == "nan" for cell in row):
             continue
-        payload = {columns[index]: row[index] if index < len(row) else "" for index in range(len(columns))}
+        if header_keys:
+            by_name = {
+                header_keys[index]: row[index] if index < len(row) else ""
+                for index in range(len(header_keys))
+            }
+            payload = {column: by_name.get(column, "") for column in columns}
+        else:
+            payload = {
+                columns[index]: row[index] if index < len(row) else ""
+                for index in range(len(columns))
+            }
         key_col = columns[0]
         if str(payload.get(key_col, "")).strip() == "":
             continue
@@ -460,6 +582,7 @@ def parse_data_entry_sheet(frame: pd.DataFrame) -> DataEntrySheets:
     """Parse the unified Data Entry layout into section DataFrames."""
     project: dict[str, str] = {}
     section_rows: dict[str, list[list[object]]] = {key: [] for key in TABLE_SECTIONS}
+    section_headers: dict[str, list[object]] = {}
     mode = "scan"
     current_section: str | None = None
     project_fields = {field for field, _label in PROJECT_FIELDS}
@@ -495,23 +618,50 @@ def parse_data_entry_sheet(frame: pd.DataFrame) -> DataEntrySheets:
             continue
 
         if mode == "table_header" and current_section:
+            section_headers[current_section] = cells
             mode = "table"
             continue
 
         if mode == "table" and current_section:
             header_key = _normalize_key(TABLE_SECTIONS[current_section][0])
             if _normalize_key(first) == header_key:
+                # Duplicate header row — refresh header mapping.
+                section_headers[current_section] = cells
                 continue
             section_rows[current_section].append(cells)
 
     return DataEntrySheets(
         project=project,
-        collars=_table_frame(section_rows["COLLARS"], COLLAR_COLUMNS),
-        lithology=_table_frame(section_rows["LITHOLOGY"], LITHOLOGY_COLUMNS),
-        water=_table_frame(section_rows["WATER"], WATER_COLUMNS),
-        environmental=_table_frame(section_rows["ENVIRONMENTAL"], ENVIRONMENTAL_COLUMNS),
-        screens=_table_frame(section_rows["SCREENS"], SCREEN_COLUMNS),
-        gradients=_table_frame(section_rows["GRADIENTS"], GRADIENT_COLUMNS),
+        collars=_table_frame(
+            section_rows["COLLARS"],
+            COLLAR_COLUMNS,
+            header_cells=section_headers.get("COLLARS"),
+        ),
+        lithology=_table_frame(
+            section_rows["LITHOLOGY"],
+            LITHOLOGY_COLUMNS,
+            header_cells=section_headers.get("LITHOLOGY"),
+        ),
+        water=_table_frame(
+            section_rows["WATER"],
+            WATER_COLUMNS,
+            header_cells=section_headers.get("WATER"),
+        ),
+        environmental=_table_frame(
+            section_rows["ENVIRONMENTAL"],
+            ENVIRONMENTAL_COLUMNS,
+            header_cells=section_headers.get("ENVIRONMENTAL"),
+        ),
+        screens=_table_frame(
+            section_rows["SCREENS"],
+            SCREEN_COLUMNS,
+            header_cells=section_headers.get("SCREENS"),
+        ),
+        gradients=_table_frame(
+            section_rows["GRADIENTS"],
+            GRADIENT_COLUMNS,
+            header_cells=section_headers.get("GRADIENTS"),
+        ),
     )
 
 
@@ -636,7 +786,7 @@ def _write_example_sheet(writer: pd.ExcelWriter) -> None:
     rows: list[list[object]] = [
         ["EXAMPLE PROJECT — MW-01 / MW-02 / MW-03 (reference only)", "", "", "", "", "", "", ""],
         [
-            "Copy rows into Collars / Lithology / Water / Environmental / Screens / Gradients, or replace the sample rows already on those tabs.",
+            "Copy rows into Collars / Lithology / Water / Environmental / Screens / Gradients / Sections, or replace the sample rows already on those tabs.",
             "",
             "",
             "",
@@ -666,6 +816,7 @@ def _write_example_sheet(writer: pd.ExcelWriter) -> None:
     append_table("ENVIRONMENTAL / LAB (optional)", ENVIRONMENTAL_COLUMNS, _sample_environmental())
     append_table("SCREENS (optional)", SCREEN_COLUMNS, _sample_screens())
     append_table("GRADIENTS (optional)", GRADIENT_COLUMNS, _sample_gradients())
+    append_table("SECTIONS (optional)", SECTION_COLUMNS, _sample_sections())
 
     frame = pd.DataFrame(rows)
     frame.to_excel(writer, sheet_name=EXAMPLE_SHEET, index=False, header=False)
@@ -761,6 +912,14 @@ def _populate_input_template(writer: pd.ExcelWriter) -> None:
         blank_count=5,
         required=False,
     )
+    _write_dataframe_sheet(
+        writer,
+        sheet_name=SECTIONS_SHEET,
+        columns=SECTION_COLUMNS,
+        sample=_sample_sections(),
+        blank_count=5,
+        required=False,
+    )
     _write_example_sheet(writer)
     _write_data_entry_compat_sheet(writer)
 
@@ -791,7 +950,7 @@ def _load_project_sheet_metadata(source: str | Path | BinaryIO | BytesIO) -> dic
     value_col = normalized.get("value")
     if field_col is None or value_col is None:
         return {}
-    project_fields = {field for field, _label in PROJECT_FIELDS}
+    project_fields = {field for field, _label in PROJECT_FIELDS} | {"section_style"}
     result: dict[str, str] = {}
     for _, row in frame.iterrows():
         key = _normalize_key(row[field_col])
@@ -799,6 +958,8 @@ def _load_project_sheet_metadata(source: str | Path | BinaryIO | BytesIO) -> dic
             value = str(row[value_col]).strip()
             if value and value.lower() != "nan":
                 result[key] = value
+    if "figure_preset" not in result and "section_style" in result:
+        result["figure_preset"] = result["section_style"]
     return result
 
 
@@ -821,3 +982,130 @@ def load_project_metadata(source: str | Path | BinaryIO | BytesIO) -> dict[str, 
     merged = dict(from_data_entry)
     merged.update(from_project)
     return merged
+
+
+def export_cleaned_workbook_bytes(
+    parse_result: object,
+    *,
+    project_metadata: dict[str, str] | None = None,
+    lithology_aliases: dict[str, str] | None = None,
+) -> bytes:
+    """Export a cleaned native workbook from an in-memory ParseResult.
+
+    Applies optional lithology aliases, keeps unit_order, and dedupes Water rows
+    by (hole_id, series_id, depth/elevation).
+    """
+    from ai_quality import normalize_lithology_code
+    from models import ParseResult
+
+    if not isinstance(parse_result, ParseResult):
+        raise TypeError("parse_result must be a ParseResult")
+
+    aliases = lithology_aliases or {}
+    project = dict(project_metadata or {})
+    project.setdefault("notes", "Cleaned export from Cross Section Studio Validate.")
+
+    collars = [
+        {
+            "hole_id": collar.hole_id,
+            "easting": collar.easting,
+            "northing": collar.northing,
+            "elevation": collar.elevation,
+            "total_depth": collar.total_depth,
+            "stick_up_m": collar.stick_up_m if collar.stick_up_m is not None else "",
+        }
+        for collar in parse_result.collars
+    ]
+    lithology = []
+    for interval in parse_result.lithologies:
+        code = normalize_lithology_code(interval.lithology_code, aliases) if aliases else interval.lithology_code
+        lithology.append(
+            {
+                "hole_id": interval.hole_id,
+                "from_depth": interval.from_depth,
+                "to_depth": interval.to_depth,
+                "lithology_code": code,
+                "unit_order": interval.unit_order if interval.unit_order is not None else "",
+            }
+        )
+
+    seen_water: set[tuple[object, ...]] = set()
+    water_rows: list[dict[str, object]] = []
+    for level in parse_result.water_levels:
+        key = (
+            level.hole_id,
+            level.series_id or "",
+            level.connect_group or "",
+            level.depth,
+            level.elevation_masl,
+        )
+        if key in seen_water:
+            continue
+        seen_water.add(key)
+        water_rows.append(
+            {
+                "hole_id": level.hole_id,
+                "depth": (
+                    ""
+                    if (level.status or "measured") in {"dry", "nm"} and level.depth == 0.0
+                    and level.elevation_masl is None
+                    else level.depth
+                ),
+                "elevation_masl": (
+                    level.elevation_masl if level.elevation_masl is not None else ""
+                ),
+                "status": level.status or "measured",
+                "series_id": level.series_id or "",
+                "series_label": level.series_label or "",
+                "connect_group": level.connect_group or "",
+            }
+        )
+
+    environmental = [
+        {
+            "hole_id": reading.hole_id,
+            "parameter": reading.parameter,
+            "value": reading.value,
+            "depth": reading.depth if reading.depth is not None else "",
+            "from_depth": reading.from_depth if reading.from_depth is not None else "",
+            "to_depth": reading.to_depth if reading.to_depth is not None else "",
+            "unit": reading.unit or "",
+            "value_label": reading.value_label or "",
+        }
+        for reading in parse_result.environmental_readings
+    ]
+    screens = [
+        {
+            "hole_id": item.hole_id,
+            "from_depth": item.from_depth,
+            "to_depth": item.to_depth,
+        }
+        for item in parse_result.screen_intervals
+    ]
+    correlations = [
+        {
+            "left_hole_id": item.left_hole_id,
+            "right_hole_id": item.right_hole_id,
+            "left_unit_order": item.left_unit_order,
+            "right_unit_order": item.right_unit_order,
+        }
+        for item in parse_result.correlation_overrides
+    ]
+
+    project_rows = [{"field": key, "value": value} for key, value in project.items() if value]
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        pd.DataFrame(project_rows or [{"field": "notes", "value": "cleaned export"}]).to_excel(
+            writer, sheet_name=PROJECT_SHEET, index=False
+        )
+        pd.DataFrame(collars).to_excel(writer, sheet_name=COLLARS_SHEET, index=False)
+        pd.DataFrame(lithology).to_excel(writer, sheet_name=LITHOLOGY_SHEET, index=False)
+        if water_rows:
+            pd.DataFrame(water_rows).to_excel(writer, sheet_name=WATER_SHEET, index=False)
+        if environmental:
+            pd.DataFrame(environmental).to_excel(writer, sheet_name=ENVIRONMENTAL_SHEET, index=False)
+        if screens:
+            pd.DataFrame(screens).to_excel(writer, sheet_name=SCREENS_SHEET, index=False)
+        if correlations:
+            pd.DataFrame(correlations).to_excel(writer, sheet_name="Correlations", index=False)
+    return buffer.getvalue()

@@ -429,32 +429,6 @@ def _build_consulting_title_block(
     )
 
 
-@dataclass(frozen=True)
-class _EffectiveRenderOptions:
-    layout: str
-    show_ground_surface: bool
-    track_width_m: float
-    show_legend: bool
-    interpolate_water_table: bool
-    allow_pinch_outs: bool
-    consulting_title_block: ConsultingTitleBlock | None
-
-
-def _effective_render_options(**kwargs) -> _EffectiveRenderOptions:
-    from app_build import EffectiveRenderOptions, effective_render_options
-
-    result = effective_render_options(**kwargs)
-    return _EffectiveRenderOptions(
-        layout=result.layout,
-        show_ground_surface=result.show_ground_surface,
-        track_width_m=result.track_width_m,
-        show_legend=result.show_legend,
-        interpolate_water_table=result.interpolate_water_table,
-        allow_pinch_outs=result.allow_pinch_outs,
-        consulting_title_block=result.consulting_title_block,
-    )
-
-
 def _build_section_request(**kwargs) -> SectionBuildRequest:
     from app_build import build_section_request
 

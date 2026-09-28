@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator, Sequence
 
 import pandas as pd
 
 from constants import (
     BOREHOLE_ONLY_DISCLAIMER,
+    CHEMISTRY_OVERLAY_DISCLAIMER,
     CORRELATION_LINES_DISCLAIMER,
     INTERPOLATED_DISCLAIMER,
+    WATER_TABLE_OVERLAY_DISCLAIMER,
 )
+from export_framing import ExportFramingConfig, merge_framing_into_profile_updates
 from lithology_codes import collect_lithology_codes
 from models import (
+    MAX_WATER_SERIES,
     Collar,
     ConsultingTitleBlock,
     CorrelationOverride,
@@ -33,17 +37,28 @@ from models import (
 )
 from projection import DEFAULT_OFFSET_WARNING_M, project_boreholes, transect_azimuth_deg
 from render_profiles import profile_for_layout, profile_with_elevation_mode
+from render_theme import filter_water_levels_for_plot
 from renderer import CrossSectionRenderer
 from stratigraphy import (
+    CorrelationPairSummary,
     GeologicalPolygon,
     PolygonOverlap,
     build_stratigraphy,
     detect_polygon_overlaps,
     log_polygon_overlaps,
-    preview_correlation_health,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _merge_optional_profile_updates(
+    updates: dict[str, object],
+    *pairs: tuple[str, object | None],
+) -> None:
+    """Apply ``(profile_field, value)`` pairs when value is not None."""
+    for key, value in pairs:
+        if value is not None:
+            updates[key] = value
 
 
 @dataclass(frozen=True)
@@ -59,6 +74,8 @@ class SectionGeometry:
     x_span: float
     max_offset: float
     projected_hole_ids: frozenset[str]
+    stick_up_by_hole: dict[str, float] = field(default_factory=dict)
+    correlation_summaries: tuple[CorrelationPairSummary, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -72,6 +89,7 @@ class CrossSectionResult:
     pdf_bytes: bytes
     lithology_codes: list[str]
     overlap_warnings: tuple[str, ...]
+    retained_export_bundle: dict[str, object] | None = field(default=None, repr=False, compare=False)
 
     def __iter__(self) -> Iterator[object]:
         """Allow legacy tuple unpacking: ``proj, polys, svg, png, pdf, codes, warns = result``."""
@@ -109,6 +127,17 @@ def _normalize_export_formats(export_formats: frozenset[str] | None) -> frozense
 
 
 PDF_EXPORT_FORMATS = frozenset({"pdf"})
+
+
+def take_retained_figure():
+    """Deprecated no-op: figures are returned on ``CrossSectionResult.retained_export_bundle``."""
+    return None
+
+
+def take_retained_export_bundle() -> dict[str, object] | None:
+    """Deprecated no-op: use ``CrossSectionResult.retained_export_bundle`` instead."""
+    return None
+
 
 _DISCLAIMER_BY_MODE = {
     "borehole_only": BOREHOLE_ONLY_DISCLAIMER,
@@ -194,6 +223,7 @@ def compute_section_geometry(
         max_offset_for_interpolation_m,
     )
 
+    correlation_summaries: list[CorrelationPairSummary] = []
     if interpretation_mode == "borehole_only":
         polygons: list[GeologicalPolygon] = []
         overlap_pairs: tuple[PolygonOverlap, ...] = ()
@@ -202,6 +232,7 @@ def compute_section_geometry(
             interpolation_df,
             allow_pinch_outs=allow_pinch_outs,
             correlation_overrides=correlation_overrides,
+            pair_summaries=correlation_summaries,
         )
         overlap_pairs = (
             tuple(detect_polygon_overlaps(polygons))
@@ -214,16 +245,8 @@ def compute_section_geometry(
         tuple(overlap.message() for overlap in overlap_pairs) if overlap_pairs else ()
     )
     correlation_warnings: list[str] = []
-    if (
-        warn_on_correlation_gaps
-        and interpretation_mode != "borehole_only"
-        and not interpolation_df.empty
-    ):
-        for summary in preview_correlation_health(
-            interpolation_df,
-            allow_pinch_outs=allow_pinch_outs,
-            correlation_overrides=correlation_overrides,
-        ):
+    if warn_on_correlation_gaps and interpretation_mode != "borehole_only":
+        for summary in correlation_summaries:
             if summary.unmatched_keys_count > 0 or summary.pinch_out_candidates > 0:
                 correlation_warnings.append(
                     f"Correlation gap {summary.left_hole_id}–{summary.right_hole_id}: "
@@ -248,6 +271,11 @@ def compute_section_geometry(
         for collar in collars
         if collar.hole_id in projected_hole_ids
     }
+    stick_up_by_hole = {
+        collar.hole_id: float(collar.stick_up_m)
+        for collar in collars
+        if collar.hole_id in projected_hole_ids and collar.stick_up_m
+    }
     x_span = float(projected["x_profile"].max() - projected["x_profile"].min()) if not projected.empty else 1.0
     max_offset = float(projected["offset_distance"].max()) if not projected.empty else 0.0
     return SectionGeometry(
@@ -260,6 +288,8 @@ def compute_section_geometry(
         x_span=x_span,
         max_offset=max_offset,
         projected_hole_ids=projected_hole_ids,
+        stick_up_by_hole=stick_up_by_hole,
+        correlation_summaries=tuple(correlation_summaries),
     )
 
 
@@ -298,14 +328,32 @@ def build_cross_section(
     show_parameter_labels: bool | None = None,
     parameter_interpolate_segments: bool | None = None,
     parameter_interpolate_across_gaps: bool | None = None,
+    parameter_draw_markers: bool | None = None,
+    parameter_marker_size: float | None = None,
+    parameter_draw_leaders: bool | None = None,
+    parameter_label_include_units: bool | None = None,
+    column_header_detail: str | None = None,
+    show_scale_bar: bool | None = None,
+    show_ve_annotation: bool | None = None,
+    show_parameter_legend_text: bool | None = None,
+    export_font_family: str | None = None,
+    export_font_size: float | None = None,
+    selected_water_series_ids: Sequence[str] | None = None,
+    water_line_solid: bool | None = None,
+    legend_ncol: int | None = None,
+    chemistry_color_mode: str | None = None,
+    chemistry_threshold_green_max: float | None = None,
+    chemistry_threshold_yellow_max: float | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
+    auto_fit_track_width: bool = True,
     elevation_mode: str = "absolute",
     raster_log_strips: Sequence[RasterLogStrip] = (),
     export_formats: frozenset[str] | None = None,
     consulting_title_block: ConsultingTitleBlock | None = None,
     screen_intervals: Sequence[ScreenInterval] | None = None,
     vertical_gradients: Sequence[VerticalGradient] | None = None,
+    export_framing: ExportFramingConfig | None = None,
 ) -> CrossSectionResult:
     """Project, build stratigraphy, render. Returns ``CrossSectionResult`` (also unpackable as a 7-tuple)."""
     export_formats = _normalize_export_formats(export_formats)
@@ -355,14 +403,32 @@ def build_cross_section(
         show_parameter_labels=show_parameter_labels,
         parameter_interpolate_segments=parameter_interpolate_segments,
         parameter_interpolate_across_gaps=parameter_interpolate_across_gaps,
+        parameter_draw_markers=parameter_draw_markers,
+        parameter_marker_size=parameter_marker_size,
+        parameter_draw_leaders=parameter_draw_leaders,
+        parameter_label_include_units=parameter_label_include_units,
+        column_header_detail=column_header_detail,
+        show_scale_bar=show_scale_bar,
+        show_ve_annotation=show_ve_annotation,
+        show_parameter_legend_text=show_parameter_legend_text,
+        export_font_family=export_font_family,
+        export_font_size=export_font_size,
+        selected_water_series_ids=selected_water_series_ids,
+        water_line_solid=water_line_solid,
+        legend_ncol=legend_ncol,
+        chemistry_color_mode=chemistry_color_mode,
+        chemistry_threshold_green_max=chemistry_threshold_green_max,
+        chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
         render_layout=render_layout,
         track_width_m=track_width_m,
+        auto_fit_track_width=auto_fit_track_width,
         elevation_mode=elevation_mode,
         raster_log_strips=raster_log_strips,
         export_formats=export_formats,
         consulting_title_block=consulting_title_block,
         screen_intervals=screen_intervals,
         vertical_gradients=vertical_gradients,
+        export_framing=export_framing,
     )
 
 
@@ -392,16 +458,39 @@ def render_cross_section_from_geometry(
     show_parameter_labels: bool | None = None,
     parameter_interpolate_segments: bool | None = None,
     parameter_interpolate_across_gaps: bool | None = None,
+    parameter_draw_markers: bool | None = None,
+    parameter_marker_size: float | None = None,
+    parameter_draw_leaders: bool | None = None,
+    parameter_label_include_units: bool | None = None,
+    column_header_detail: str | None = None,
+    show_scale_bar: bool | None = None,
+    show_ve_annotation: bool | None = None,
+    show_parameter_legend_text: bool | None = None,
+    export_font_family: str | None = None,
+    export_font_size: float | None = None,
+    selected_water_series_ids: Sequence[str] | None = None,
+    water_line_solid: bool | None = None,
+    legend_ncol: int | None = None,
+    chemistry_color_mode: str | None = None,
+    chemistry_threshold_green_max: float | None = None,
+    chemistry_threshold_yellow_max: float | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
+    auto_fit_track_width: bool = True,
     elevation_mode: str = "absolute",
     raster_log_strips: Sequence[RasterLogStrip] = (),
     export_formats: frozenset[str] | None = None,
     consulting_title_block: ConsultingTitleBlock | None = None,
     screen_intervals: Sequence[ScreenInterval] | None = None,
     vertical_gradients: Sequence[VerticalGradient] | None = None,
+    export_framing: ExportFramingConfig | None = None,
+    close_figure: bool = True,
 ) -> CrossSectionResult:
-    """Render/export from precomputed ``SectionGeometry`` (Prepare can reuse Generate geometry)."""
+    """Render/export from precomputed ``SectionGeometry`` (Prepare can reuse Generate geometry).
+
+    When ``close_figure`` is False, the matplotlib figure is left open for a follow-up
+    encode pass (caller must ``plt.close``). Used by Streamlit Generate→Prepare one-draw.
+    """
     export_formats = _normalize_export_formats(export_formats)
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
     if vertical_exaggeration <= 0:
@@ -410,6 +499,8 @@ def render_cross_section_from_geometry(
         raise ValueError("uncertainty_spacing_m must be positive")
     if uncertainty_offset_m <= 0:
         raise ValueError("uncertainty_offset_m must be positive")
+    if track_width_m <= 0:
+        raise ValueError("track_width_m must be positive")
 
     projected = geometry.projected
     polygons = geometry.polygons
@@ -420,7 +511,14 @@ def render_cross_section_from_geometry(
     x_span = geometry.x_span
     max_offset = geometry.max_offset
     projected_hole_ids = geometry.projected_hole_ids
+    stick_up_by_hole = geometry.stick_up_by_hole
     disclaimer = _DISCLAIMER_BY_MODE[interpretation_mode]
+
+    plotted_water = filter_water_levels_for_plot(
+        water_levels or (),
+        tuple(selected_water_series_ids) if selected_water_series_ids else None,
+        max_series=MAX_WATER_SERIES,
+    )
 
     metadata = figure_metadata or SectionFigureMetadata(
         vertical_exaggeration=vertical_exaggeration,
@@ -430,25 +528,45 @@ def render_cross_section_from_geometry(
     )
 
     base_profile = profile_for_layout(render_layout)  # type: ignore[arg-type]
-    profile_updates: dict[str, object] = {"show_ground_surface": show_ground_surface}
-    if render_layout == "section_sheet":
-        profile_updates["track_width_m"] = track_width_m
-    if show_water_elevation_labels is not None:
-        profile_updates["show_water_elevation_labels"] = show_water_elevation_labels
-    if show_water_legend is not None:
-        profile_updates["show_water_legend"] = show_water_legend
-    if show_dry_well_nm is not None:
-        profile_updates["show_dry_well_nm"] = show_dry_well_nm
-    if water_interpolate_across_gaps is not None:
-        profile_updates["water_interpolate_across_gaps"] = water_interpolate_across_gaps
+    profile_updates: dict[str, object] = {
+        "show_ground_surface": show_ground_surface,
+        "track_width_m": track_width_m,
+        "auto_fit_track_width": auto_fit_track_width,
+    }
+    _merge_optional_profile_updates(
+        profile_updates,
+        ("show_water_elevation_labels", show_water_elevation_labels),
+        ("show_water_legend", show_water_legend),
+        ("show_dry_well_nm", show_dry_well_nm),
+        ("water_interpolate_across_gaps", water_interpolate_across_gaps),
+        ("show_parameter_labels", show_parameter_labels),
+        ("parameter_interpolate_segments", parameter_interpolate_segments),
+        ("parameter_interpolate_across_gaps", parameter_interpolate_across_gaps),
+        ("parameter_draw_markers", parameter_draw_markers),
+        ("parameter_marker_size", parameter_marker_size),
+        ("parameter_draw_leaders", parameter_draw_leaders),
+        ("parameter_label_include_units", parameter_label_include_units),
+        ("column_header_detail", column_header_detail),
+        ("show_scale_bar", show_scale_bar),
+        ("show_ve_annotation", show_ve_annotation),
+        ("show_parameter_legend_text", show_parameter_legend_text),
+        ("export_font_family", export_font_family),
+        ("export_font_size", export_font_size),
+        ("water_line_solid", water_line_solid),
+        ("legend_ncol", legend_ncol),
+        ("chemistry_color_mode", chemistry_color_mode),
+        ("chemistry_threshold_green_max", chemistry_threshold_green_max),
+        ("chemistry_threshold_yellow_max", chemistry_threshold_yellow_max),
+    )
     if environmental_parameters:
         profile_updates["show_parameter_markers"] = True
-    if show_parameter_labels is not None:
-        profile_updates["show_parameter_labels"] = show_parameter_labels
-    if parameter_interpolate_segments is not None:
-        profile_updates["parameter_interpolate_segments"] = parameter_interpolate_segments
-    if parameter_interpolate_across_gaps is not None:
-        profile_updates["parameter_interpolate_across_gaps"] = parameter_interpolate_across_gaps
+    if render_layout == "consulting_section" and interpretation_mode == "borehole_only":
+        profile_updates["show_track_lithology"] = True
+        if parameter_draw_markers is None:
+            profile_updates["parameter_draw_markers"] = False
+        if show_dry_well_nm is None and not plotted_water:
+            profile_updates["show_dry_well_nm"] = False
+    profile_updates = merge_framing_into_profile_updates(export_framing, profile_updates)
     render_profile = profile_with_elevation_mode(base_profile, elevation_mode).model_copy(
         update=profile_updates
     )
@@ -457,8 +575,34 @@ def render_cross_section_from_geometry(
     effective_interpolate_wt = interpolate_water_table
     if render_profile.legend_in_title_block:
         effective_show_legend = False
+    if export_framing is not None and not export_framing.include_legend:
+        effective_show_legend = False
     if render_profile.interpolate_water_table_default:
         effective_interpolate_wt = True
+    if export_framing is not None and not export_framing.include_water_table:
+        effective_interpolate_wt = False
+        plotted_water = ()
+    overlay_notes: list[str] = []
+    if plotted_water:
+        overlay_notes.append(WATER_TABLE_OVERLAY_DISCLAIMER)
+    chemistry_plotted = bool(environmental_parameters) and bool(
+        environmental_readings or ()
+    )
+    if chemistry_plotted and (
+        render_profile.parameter_interpolate_segments
+        or render_profile.parameter_interpolate_across_gaps
+    ):
+        overlay_notes.append(CHEMISTRY_OVERLAY_DISCLAIMER)
+    if overlay_notes:
+        disclaimer = f"{disclaimer} {' '.join(overlay_notes)}"
+    effective_consulting_block = consulting_title_block
+    if export_framing is not None and (
+        export_framing.fence_only or not export_framing.include_title_block
+    ):
+        effective_consulting_block = None
+    qa_lines = overlap_warnings
+    if export_framing is not None and not export_framing.include_qa_footer:
+        qa_lines = ()
     renderer = CrossSectionRenderer(
         vertical_exaggeration=vertical_exaggeration,
         scale_bar_length_m=auto_scale_bar_m(x_span),
@@ -479,15 +623,17 @@ def render_cross_section_from_geometry(
         environmental_parameters=tuple(environmental_parameters or ()),
         render_profile=render_profile,
         raster_log_strips=raster_log_strips,
-        consulting_title_block=consulting_title_block,
+        consulting_title_block=effective_consulting_block,
         screen_intervals=screen_intervals or (),
         vertical_gradients=vertical_gradients or (),
+        stick_up_by_hole=stick_up_by_hole,
+        export_framing=export_framing,
     )
     figure = renderer.render(
         polygons,
         projected,
         collar_depths=collar_depths,
-        water_levels=water_levels,
+        water_levels=plotted_water,
         lithology_codes=lithology_codes,
     )
     try:
@@ -499,12 +645,29 @@ def render_cross_section_from_geometry(
             collar_depths=collar_depths,
             water_levels=water_levels,
             lithology_codes=lithology_codes,
-            qa_lines=overlap_warnings,
+            qa_lines=qa_lines,
         )
-    finally:
+    except Exception:
         from matplotlib import pyplot as plt
 
         plt.close(figure)
+        raise
+    retained: dict[str, object] | None = None
+    if close_figure:
+        from matplotlib import pyplot as plt
+
+        plt.close(figure)
+    else:
+        retained = {
+            "figure": figure,
+            "renderer": renderer,
+            "polygons": polygons,
+            "projected": projected,
+            "collar_depths": collar_depths,
+            "water_levels": water_levels,
+            "lithology_codes": lithology_codes,
+            "qa_lines": qa_lines,
+        }
     return CrossSectionResult(
         projected=projected,
         polygons=polygons,
@@ -513,4 +676,5 @@ def render_cross_section_from_geometry(
         pdf_bytes=pdf_bytes,
         lithology_codes=lithology_codes,
         overlap_warnings=overlap_warnings,
+        retained_export_bundle=retained,
     )

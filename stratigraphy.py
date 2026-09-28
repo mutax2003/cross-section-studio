@@ -284,6 +284,7 @@ def _polygons_for_pair(
     left_lookup: dict[Hashable, _LayerInterval] | None = None,
     right_lookup: dict[Hashable, _LayerInterval] | None = None,
     correlation_overrides: Sequence[CorrelationOverride] = (),
+    pair_summaries: list[CorrelationPairSummary] | None = None,
 ) -> list[GeologicalPolygon]:
     polygons: list[GeologicalPolygon] = []
     if left_lookup is None:
@@ -299,6 +300,16 @@ def _polygons_for_pair(
         right_lookup,
         correlation_overrides,
     )
+    if pair_summaries is not None:
+        pair_summaries.append(
+            _correlation_pair_summary(
+                left_hole_id,
+                right_hole_id,
+                left_lookup,
+                right_lookup,
+                allow_pinch_outs=allow_pinch_outs,
+            )
+        )
     all_keys = sorted(
         set(left_lookup) | set(right_lookup),
         key=lambda key: _correlation_sort_key(key, left_lookup, right_lookup),
@@ -400,6 +411,7 @@ def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[Geologi
         return polygons
 
     from shapely.ops import unary_union
+    from shapely.prepared import prep
 
     ordered = sorted(
         polygons,
@@ -411,6 +423,7 @@ def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[Geologi
     )
     resolved: list[GeologicalPolygon] = []
     occupied_geom: Polygon | None = None
+    occupied_prep = None
     batch: list[Polygon] = []
     batch_limit = 4
     last_index = len(ordered) - 1
@@ -418,8 +431,9 @@ def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[Geologi
         original_area = float(geo_polygon.polygon.area)
         geom = geo_polygon.polygon
         if occupied_geom is not None and not occupied_geom.is_empty:
-            # Skip difference when disjoint or boundary-only touch (no area overlap).
-            if geom.intersects(occupied_geom) and not geom.touches(occupied_geom):
+            # Prepared predicates for skip checks; difference still uses raw geom.
+            probe = occupied_prep if occupied_prep is not None else occupied_geom
+            if probe.intersects(geom) and not probe.touches(geom):
                 geom = geom.difference(occupied_geom)
         largest = _largest_polygon(geom)
         if largest is None or largest.is_empty:
@@ -446,6 +460,11 @@ def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[Geologi
         if len(batch) >= batch_limit or index == last_index:
             chunk = unary_union(batch) if len(batch) > 1 else batch[0]
             occupied_geom = chunk if occupied_geom is None else occupied_geom.union(chunk)
+            occupied_prep = (
+                prep(occupied_geom)
+                if occupied_geom is not None and not occupied_geom.is_empty
+                else None
+            )
             batch.clear()
     return resolved
 
@@ -566,6 +585,42 @@ def _sorted_hole_profiles(
     return hole_profiles
 
 
+def _correlation_pair_summary(
+    left_id: str,
+    right_id: str,
+    left_lookup: dict[Hashable, _LayerInterval],
+    right_lookup: dict[Hashable, _LayerInterval],
+    *,
+    allow_pinch_outs: bool,
+) -> CorrelationPairSummary:
+    matched = 0
+    left_only: set[str] = set()
+    right_only: set[str] = set()
+    pinch_outs = 0
+    for key, left_layer in left_lookup.items():
+        right_layer = right_lookup.get(key)
+        if right_layer is not None:
+            matched += 1
+            continue
+        left_only.add(left_layer.lithology_code)
+        if allow_pinch_outs:
+            pinch_outs += 1
+    for key, right_layer in right_lookup.items():
+        if key in left_lookup:
+            continue
+        right_only.add(right_layer.lithology_code)
+        if allow_pinch_outs:
+            pinch_outs += 1
+    return CorrelationPairSummary(
+        left_hole_id=left_id,
+        right_hole_id=right_id,
+        matched_count=matched,
+        left_only_codes=tuple(sorted(left_only)),
+        right_only_codes=tuple(sorted(right_only)),
+        pinch_out_candidates=pinch_outs,
+    )
+
+
 def preview_correlation_health(
     projected_df: pd.DataFrame,
     *,
@@ -593,32 +648,13 @@ def preview_correlation_health(
             right_lookup,
             _overrides_for_hole_pair(left_id, right_id, override_index),
         )
-        all_keys = set(left_lookup) | set(right_lookup)
-        matched = 0
-        left_only: list[str] = []
-        right_only: list[str] = []
-        pinch_outs = 0
-        for key in all_keys:
-            left_layer = left_lookup.get(key)
-            right_layer = right_lookup.get(key)
-            if left_layer and right_layer:
-                matched += 1
-            elif left_layer:
-                left_only.append(left_layer.lithology_code)
-                if allow_pinch_outs:
-                    pinch_outs += 1
-            elif right_layer:
-                right_only.append(right_layer.lithology_code)
-                if allow_pinch_outs:
-                    pinch_outs += 1
         summaries.append(
-            CorrelationPairSummary(
-                left_hole_id=left_id,
-                right_hole_id=right_id,
-                matched_count=matched,
-                left_only_codes=tuple(sorted(set(left_only))),
-                right_only_codes=tuple(sorted(set(right_only))),
-                pinch_out_candidates=pinch_outs,
+            _correlation_pair_summary(
+                left_id,
+                right_id,
+                left_lookup,
+                right_lookup,
+                allow_pinch_outs=allow_pinch_outs,
             )
         )
     return summaries
@@ -629,6 +665,7 @@ def build_stratigraphy(
     *,
     allow_pinch_outs: bool = True,
     correlation_overrides: Sequence[CorrelationOverride] = (),
+    pair_summaries: list[CorrelationPairSummary] | None = None,
 ) -> list[GeologicalPolygon]:
     """Construct geological polygons between adjacent projected boreholes."""
     hole_profiles = _sorted_hole_profiles(projected_df)
@@ -653,6 +690,7 @@ def build_stratigraphy(
                 left_lookup=left_lookup,
                 right_lookup=right_lookup,
                 correlation_overrides=_overrides_for_hole_pair(left_id, right_id, override_index),
+                pair_summaries=pair_summaries,
             )
         )
         polygons.extend(pair_polygons)

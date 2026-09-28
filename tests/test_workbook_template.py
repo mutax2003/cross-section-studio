@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from io import BytesIO
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,7 @@ from ingestion import DATA_ENTRY_PROFILE_ID, FormatDetector, ingest_workbook
 from workbook_template import (
     build_input_template,
     build_input_template_bytes,
+    export_cleaned_workbook_bytes,
     load_data_entry_sheets,
     load_project_metadata,
 )
@@ -27,6 +29,7 @@ EXPECTED_SHEETS = {
     "Environmental",
     "Screens",
     "Gradients",
+    "Sections",
     "Example",
     "Data Entry",
 }
@@ -70,6 +73,12 @@ def test_ingest_workbook_data_entry_template(tmp_path: Path) -> None:
     assert len(result.lithologies) >= 8
     assert len(result.environmental_readings) == 5
     assert "Data Entry" in report.optional_sheets_detected
+    assert "Sections" in report.optional_sheets_detected
+    assert len(result.section_specs) == 2
+    assert result.section_specs[0].label == "A-A'"
+    assert result.section_specs[0].hole_ids == ("MW-01", "MW-02", "MW-03")
+    assert result.section_specs[1].hole_ids == ("MW-01", "MW-03")
+    assert report.section_specs == list(result.section_specs)
     assert report.project_metadata["client_name"] == "C-GROUP ENERGY INC."
     assert report.project_metadata["prepared_by"] == "ECOVENTURE"
 
@@ -79,7 +88,8 @@ def test_data_entry_template_parses_in_dataparser(tmp_path: Path) -> None:
     result = DataParser().parse_file(path)
     assert len(result.collars) == 3
     assert len(result.lithologies) >= 8
-    assert len(result.water_levels) == 3
+    assert len(result.water_levels) == 6
+    assert any(level.status == "dry" for level in result.water_levels)
     assert len(result.environmental_readings) == 5
     assert len(result.screen_intervals) == 2
     assert len(result.vertical_gradients) == 2
@@ -120,7 +130,8 @@ def test_hybrid_native_plus_data_entry_keeps_environmental(tmp_path: Path) -> No
     hybrid = DataParser().parse_file(path)
     assert len(hybrid.collars) == 3
     assert len(hybrid.environmental_readings) == 5
-    assert len(hybrid.water_levels) == 3
+    assert len(hybrid.water_levels) == 6
+    assert any(level.status == "dry" for level in hybrid.water_levels)
     # Ensure Data Entry still carries PROJECT for metadata path
     sheets = load_data_entry_sheets(path)
     assert sheets.project["client_name"] == "C-GROUP ENERGY INC."
@@ -141,7 +152,8 @@ def test_ingest_native_multi_tab_keeps_overlays(tmp_path: Path) -> None:
     assert detection.profile_id == "native_platform"
     result, _report = ingest_workbook(path)
     assert len(result.collars) == 3
-    assert len(result.water_levels) == 3
+    assert len(result.water_levels) == 6
+    assert any(level.status == "dry" for level in result.water_levels)
     assert len(result.environmental_readings) == 5
     assert len(result.screen_intervals) == 2
 
@@ -159,3 +171,21 @@ def test_load_project_metadata_merges_partial_project(tmp_path: Path) -> None:
     project = load_project_metadata(path)
     assert project["notes"] == "Only notes on Project tab"
     assert project["client_name"] == "C-GROUP ENERGY INC."
+
+
+def test_export_cleaned_workbook_bytes_roundtrip() -> None:
+    path = build_input_template()
+    result, _report = ingest_workbook(path)
+    payload = export_cleaned_workbook_bytes(
+        result,
+        project_metadata={"client_name": "TEST CLIENT", "figure_preset": "gwm_fence"},
+    )
+    assert isinstance(payload, (bytes, bytearray))
+    assert len(payload) > 500
+    cleaned, _report2 = ingest_workbook(BytesIO(payload))
+    assert len(cleaned.collars) == len(result.collars)
+    assert len(cleaned.lithologies) >= 1
+    assert len(cleaned.water_levels) >= 1
+    project = load_project_metadata(BytesIO(payload))
+    assert project.get("client_name") == "TEST CLIENT"
+    assert project.get("figure_preset") == "gwm_fence"

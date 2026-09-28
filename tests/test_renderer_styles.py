@@ -15,10 +15,18 @@ sys.path.insert(0, str(ROOT))
 from constants import CONSULTING_LITHOLOGY_COLORS, USGS_LITHOLOGY_COLORS, USGS_LITHOLOGY_HATCHES, get_lithology_style
 from models import Collar, ConsultingTitleBlock, EnvironmentalReading, Lithology, ScreenInterval, VerticalGradient, WaterLevel
 from render_profiles import CHART_PROFILE, CONSULTING_SECTION_PROFILE, SECTION_SHEET_PROFILE
-from render_theme import PARAMETER_READING_COLOR
+from render_theme import PARAMETER_READING_COLOR, SCREEN_INTERVAL_HATCH
+from pipeline import build_cross_section
 from renderer import CrossSectionRenderer, _resolve_parameter_label_offsets
 from stratigraphy import build_stratigraphy
 from tests.conftest import assert_valid_svg, run_pipeline
+
+
+def test_screen_interval_hatch_is_horizontal() -> None:
+    """Screen bands use horizontal hatch so they do not read as lithology diagonals."""
+    assert "-" in SCREEN_INTERVAL_HATCH
+    assert "/" not in SCREEN_INTERVAL_HATCH
+    assert "\\" not in SCREEN_INTERVAL_HATCH
 
 
 def test_parameter_label_offsets_stagger_dense_stacks() -> None:
@@ -245,7 +253,74 @@ def test_consulting_depth_mode_well_columns_render() -> None:
     assert_valid_svg(svg_bytes)
     text = svg_bytes.decode("utf-8", errors="ignore")
     assert "NM" in text
-    assert "#ffffff" in text.lower() or 'fill="#FFFFFF"' in text
+    assert "#d0d5dd" in text.lower() or "#ffffff" in text.lower()
+
+
+def test_consulting_relative_mode_water_labels_use_mbgs() -> None:
+    collars = [
+        Collar(hole_id="MW-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=20.0),
+        Collar(hole_id="MW-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=18.0),
+    ]
+    lithologies = [
+        Lithology(hole_id="MW-01", from_depth=0.0, to_depth=20.0, lithology_code="Clay"),
+        Lithology(hole_id="MW-02", from_depth=0.0, to_depth=18.0, lithology_code="Clay"),
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (50.0, 0.0)])
+    depth_profile = CONSULTING_SECTION_PROFILE.model_copy(
+        update={"y_axis_mode": "depth_below_collar"}
+    )
+    renderer = CrossSectionRenderer(
+        show_legend=False,
+        render_profile=depth_profile,
+        interpolate_water_table=True,
+        consulting_title_block=ConsultingTitleBlock(section_label="A-A'"),
+    )
+    figure = renderer.render(
+        polygons,
+        projected,
+        collar_depths={"MW-01": 20.0, "MW-02": 18.0},
+        water_levels=[
+            WaterLevel(hole_id="MW-01", depth=2.5),
+            WaterLevel(hole_id="MW-02", depth=3.0),
+        ],
+    )
+    text = renderer.to_svg_bytes(figure).decode("utf-8", errors="ignore")
+    assert "2.50 mbgs" in text
+    assert "3.00 mbgs" in text
+    assert "97.500 masl" not in text
+    assert "mbgs" in text
+
+
+def test_consulting_omits_gw_legend_when_disabled() -> None:
+    collars = [
+        Collar(hole_id="MW-01", easting=0.0, northing=0.0, elevation=665.0, total_depth=20.0),
+        Collar(hole_id="MW-02", easting=50.0, northing=0.0, elevation=664.0, total_depth=18.0),
+    ]
+    lithologies = [
+        Lithology(hole_id="MW-01", from_depth=0.0, to_depth=20.0, lithology_code="Clay"),
+        Lithology(hole_id="MW-02", from_depth=0.0, to_depth=18.0, lithology_code="Clay"),
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (50.0, 0.0)])
+    profile = CONSULTING_SECTION_PROFILE.model_copy(update={"show_water_legend": False})
+    renderer = CrossSectionRenderer(
+        show_legend=False,
+        render_profile=profile,
+        interpolate_water_table=True,
+        consulting_title_block=ConsultingTitleBlock(section_label="A-A'"),
+    )
+    figure = renderer.render(
+        polygons,
+        projected,
+        collar_depths={"MW-01": 20.0, "MW-02": 18.0},
+        water_levels=[
+            WaterLevel(hole_id="MW-01", depth=2.5),
+            WaterLevel(hole_id="MW-02", depth=3.0),
+        ],
+    )
+    text = renderer.to_svg_bytes(figure).decode("utf-8", errors="ignore")
+    assert "662.500" in text or "662.5" in text
+    assert "GROUNDWATER ELEVATION masl" not in text
+    assert "GROUNDWATER LEVEL (masl)" not in text
 
 
 def test_standard_lithology_colors_and_hatches() -> None:
@@ -333,6 +408,60 @@ def test_consulting_section_parity_elements() -> None:
     assert "SCREEN INTERVAL" in text
     assert "VERTICAL GRADIENT DIRECTION" in text
     assert " masl" in text
+
+
+def test_consulting_legend_stays_in_panel_with_many_entries() -> None:
+    """Legend labels must clip inside the left panel, not bleed into the title block."""
+    codes = [f"Lith-{index}" for index in range(10)]
+    collars = [
+        Collar(hole_id=f"MW-{index:02d}", easting=float(index * 40), northing=0.0, elevation=100.0, total_depth=20.0)
+        for index in range(4)
+    ]
+    lithologies = [
+        Lithology(
+            hole_id=collar.hole_id,
+            from_depth=0.0,
+            to_depth=20.0,
+            lithology_code=codes[index],
+        )
+        for index, collar in enumerate(collars)
+    ]
+    water = [
+        WaterLevel(hole_id="MW-00", depth=2.0, series_id="2024-05", series_label="May 2024"),
+        WaterLevel(hole_id="MW-01", depth=2.5, series_id="2024-06", series_label="June 2024"),
+        WaterLevel(hole_id="MW-02", depth=3.0, series_id="2025-06", series_label="June 2025"),
+    ]
+    readings = [
+        EnvironmentalReading(
+            hole_id="MW-00",
+            parameter="Chloride",
+            value=120.0,
+            depth=4.0,
+            unit="mg/L",
+        ),
+    ]
+    result = build_cross_section(
+        collars,
+        lithologies,
+        [(0.0, 0.0), (120.0, 0.0)],
+        water_levels=water,
+        environmental_readings=readings,
+        environmental_parameters=("Chloride",),
+        render_layout="consulting_section",
+        consulting_title_block=ConsultingTitleBlock(
+            section_label="A-A'",
+            project_number="TEST-001",
+            prepared_for="CLIENT",
+            prepared_by="ECOVENTURE",
+        ),
+        show_parameter_labels=True,
+        legend_ncol=2,
+    )
+    assert_valid_svg(result.svg_bytes)
+    text = result.svg_bytes.decode("utf-8", errors="ignore")
+    assert "clip-path" in text.lower()
+    assert "PROJECT" in text
+    assert "LEGEND" in text
 
 
 def test_correlation_lines_renders_pinch_out_wedges() -> None:
@@ -493,7 +622,45 @@ def test_parameter_interval_draws_vertical_bar() -> None:
     )
     svg_bytes = renderer.to_svg_bytes(figure)
     assert_valid_svg(svg_bytes)
-    assert "120 mg/L" in svg_bytes.decode("utf-8", errors="ignore")
+    assert "120" in svg_bytes.decode("utf-8", errors="ignore")
+    assert "120 mg/L" not in svg_bytes.decode("utf-8", errors="ignore")
+
+
+def test_wave_a_section_sheet_drafting_defaults() -> None:
+    """GIS drafting defaults: ID-only headers, no scale/VE/Parameters, compact units."""
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=10.0),
+    ]
+    lithologies = [
+        Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+        Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+    ]
+    readings = [
+        EnvironmentalReading(hole_id="BH-01", parameter="Chloride", value=120.0, depth=3.0, unit="mg/L"),
+        EnvironmentalReading(hole_id="BH-02", parameter="Chloride", value=85.0, depth=4.0, unit="mg/L"),
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (50.0, 0.0)])
+    renderer = CrossSectionRenderer(
+        show_legend=False,
+        environmental_readings=readings,
+        environmental_parameters=("Chloride",),
+        render_profile=SECTION_SHEET_PROFILE,
+    )
+    figure = renderer.render(
+        polygons,
+        projected,
+        collar_depths={"BH-01": 10.0, "BH-02": 10.0},
+    )
+    svg = renderer.to_svg_bytes(figure).decode("utf-8", errors="ignore")
+    assert_valid_svg(svg.encode("utf-8"))
+    assert "BH-01" in svg
+    assert "RL 100" not in svg
+    assert "TD 10" not in svg
+    assert "Parameters:" not in svg
+    assert "V.E." not in svg
+    assert "120 mg/L" not in svg
+    assert "120" in svg
 
 
 def test_lithology_style_override_is_case_insensitive(tmp_path, monkeypatch) -> None:

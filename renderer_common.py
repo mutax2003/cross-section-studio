@@ -10,7 +10,7 @@ from matplotlib.collections import PolyCollection
 
 from constants import get_lithology_style
 from models import ScreenInterval
-from render_theme import TRACK_BORDER_COLOR, TRACK_FILL_COLOR
+from render_theme import SCREEN_INTERVAL_HATCH, TRACK_BORDER_COLOR, TRACK_FILL_COLOR
 
 
 class RendererGeometryMixin:
@@ -49,7 +49,11 @@ class RendererGeometryMixin:
         collar_depths: dict[str, float],
         collar_lookup: dict[str, float],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-        """Return (x_profile, top_y, bottom_y) for well sticks/columns, or None if empty."""
+        """Return (x_profile, top_y, bottom_y) for well sticks/columns, or None if empty.
+
+        When ``stick_up_by_hole`` is set on the renderer, column tops extend above
+        the collar by that stick-up height (Wave B MW construction).
+        """
         if hole_summary.empty:
             return None
         hole_ids = hole_summary["hole_id"].astype(str).to_numpy()
@@ -66,7 +70,15 @@ class RendererGeometryMixin:
             count=len(hole_ids),
         )
         bottom_elev = np.where(np.isfinite(td_values), collars - td_values, row_bottoms)
-        top_y = self._plot_y_values(collars, collars)
+        stick_ups = getattr(self, "stick_up_by_hole", None) or {}
+        top_elev = np.asarray(
+            [
+                float(collars[i]) + float(stick_ups.get(str(hole_ids[i]), 0.0) or 0.0)
+                for i in range(len(hole_ids))
+            ],
+            dtype=float,
+        )
+        top_y = self._plot_y_values(top_elev, collars)
         bottom_y = self._plot_y_values(bottom_elev, collars)
         return x_values, top_y, bottom_y
 
@@ -204,7 +216,7 @@ class RendererGeometryMixin:
 
     def _style_cache_for(self, lithology_codes: Sequence[str]) -> dict:
         consulting_palette = bool(getattr(self.profile, "use_consulting_palette", False))
-        use_hatch = self.show_hatches and not consulting_palette
+        use_hatch = self.show_hatches
         return {
             code: get_lithology_style(
                 code,
@@ -220,7 +232,7 @@ class RendererGeometryMixin:
             consulting = getattr(self.profile, "use_consulting_palette", False)
             style = get_lithology_style(
                 code,
-                use_hatch=self.show_hatches and not consulting,
+                use_hatch=self.show_hatches,
                 consulting_palette=consulting,
             )
             style_cache[code] = style
@@ -277,6 +289,6 @@ class RendererGeometryMixin:
             edgecolors=TRACK_BORDER_COLOR,
             linewidths=0.6,
             zorder=9,
-            hatch="///",
+            hatch=SCREEN_INTERVAL_HATCH,
         )
 

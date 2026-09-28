@@ -29,10 +29,11 @@ from app_upload import (
     render_input_template_download,
 )
 from constants import USGS_LITHOLOGY_HATCHES, get_lithology_style, save_lithology_style_override
+from export_framing import ExportFramingConfig
 from ingestion import DATA_ENTRY_PROFILE_ID, NATIVE_PROFILE_ID, list_profiles
 from models import ConsultingTitleBlock
 from pipeline import DEFAULT_UNCERTAINTY_SPACING_M
-from ui_output_presets import OUTPUT_PRESET_LABELS, resolve_output_preset
+from ui_output_presets import OUTPUT_PRESET_LABELS, FIGURE_PRESET_IDS, resolve_output_preset
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class SidebarState:
     allow_pinch_outs: bool
     show_ground_surface: bool
     track_width_m: float
+    auto_fit_track_width: bool
     interpolate_water_table: bool
     show_water_elevation_labels: bool
     show_water_legend: bool
@@ -66,6 +68,102 @@ class SidebarState:
     override_id: str | None
     default_elevation_m: float
     target_crs: str | None
+    output_preset: str
+    sample_figure_profile: bool
+    prefer_chemistry: bool
+    show_parameter_labels_default: bool | None
+    parameter_interpolate_segments_default: bool | None
+    parameter_draw_markers_default: bool | None
+    elevation_mode_default: str | None
+    column_header_detail: str
+    show_scale_bar: bool
+    show_ve_annotation: bool
+    show_parameter_legend_text: bool
+    export_font_family: str
+    export_font_size: float
+    parameter_marker_size: float
+    connect_chemistry_values: bool
+    water_line_solid_default: bool | None
+    legend_ncol: int
+    export_framing: ExportFramingConfig
+
+
+def _render_borehole_column_controls() -> tuple[float, bool]:
+    """Schematic column width + optional auto-fit to hole spacing (always editable)."""
+    track_width_m = st.slider(
+        "Borehole column width (m)",
+        min_value=0.5,
+        max_value=8.0,
+        step=0.25,
+        key="track_width_m",
+        disabled=False,
+        help=(
+            "Schematic width of each borehole track on the section "
+            "(not casing diameter). Typical: section sheet ~3 m, consulting ~1.2 m."
+        ),
+    )
+    auto_fit_track_width = st.toggle(
+        "Auto-fit column width to hole spacing",
+        key="auto_fit_track_width",
+        disabled=False,
+        help=(
+            "When on, columns shrink so full width stays within 40% of the "
+            "closest hole spacing (avoids overlapping tracks)."
+        ),
+    )
+    return float(track_width_m), bool(auto_fit_track_width)
+
+
+def _render_export_framing_panel() -> ExportFramingConfig:
+    from ui_helpers import build_export_framing_from_mapping
+
+    st.markdown("**Export framing**")
+    st.selectbox(
+        "Page preset",
+        options=["auto", "tight_fence", "title_block", "letter_portrait", "letter_landscape", "tabloid_landscape"],
+        key="export_page_preset",
+        help="Controls PNG/PDF crop and page size for report deliverables.",
+    )
+    st.selectbox(
+        "Filename pattern",
+        options=["section_title", "project_figure_transect_rev"],
+        key="export_filename_pattern",
+    )
+    st.text_input("Revision / draft tag", key="export_revision", placeholder="Rev A or DRAFT")
+    st.number_input("Export DPI", min_value=150, max_value=600, step=50, key="export_dpi")
+    margin_cols = st.columns(4)
+    with margin_cols[0]:
+        st.number_input("Margin top (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_top_in")
+    with margin_cols[1]:
+        st.number_input("Margin bottom (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_bottom_in")
+    with margin_cols[2]:
+        st.number_input("Margin left (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_left_in")
+    with margin_cols[3]:
+        st.number_input("Margin right (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_right_in")
+    st.toggle("Fence only (hide title block / legend)", key="export_fence_only")
+    st.toggle("DRAFT watermark on PNG/PDF", key="export_show_draft_watermark")
+    st.toggle("CAD-friendly SVG layers", key="export_cad_svg_layers")
+    layer_cols = st.columns(2)
+    with layer_cols[0]:
+        st.toggle("Include title block", key="export_include_title_block")
+        st.toggle("Include lithology legend", key="export_include_legend")
+    with layer_cols[1]:
+        st.toggle("Include water table", key="export_include_water_table")
+        st.toggle("Include QA footer (PDF)", key="export_include_qa_footer")
+    with st.expander("Viewport crop (data coordinates)", expanded=False):
+        crop_cols = st.columns(2)
+        with crop_cols[0]:
+            st.text_input("X min", key="export_viewport_xmin", placeholder="optional")
+            st.text_input("Y min", key="export_viewport_ymin", placeholder="optional")
+        with crop_cols[1]:
+            st.text_input("X max", key="export_viewport_xmax", placeholder="optional")
+            st.text_input("Y max", key="export_viewport_ymax", placeholder="optional")
+    st.text_input(
+        "Save exports to folder (optional)",
+        key="export_output_dir",
+        placeholder=r"P:\Projects\Job\Figures",
+    )
+    return build_export_framing_from_mapping(dict(st.session_state))
 
 
 def render_sidebar() -> SidebarState:
@@ -118,22 +216,69 @@ def render_sidebar() -> SidebarState:
             options=tuple(OUTPUT_PRESET_LABELS.keys()),
             format_func=lambda key: OUTPUT_PRESET_LABELS[key],
             key="output_preset",
-            help="Consulting report includes footer title block and groundwater legend.",
+            help=(
+                "GWM fence: interpolated MASL section with groundwater. "
+                "P2 sticks: borehole-only mbgs columns with chloride labels. "
+                "Chemistry + groundwater: chlorides and water levels together. "
+                "Consulting report: generic title-block layout."
+            ),
         )
         preset_config = resolve_output_preset(output_preset)
         render_layout = preset_config.render_layout
         report_preset = preset_config.report_preset
         is_consulting_layout = render_layout == "consulting_section"
+        sample_figure = preset_config.sample_figure_profile
+        lock_interp = preset_config.interpretation_mode is not None
+        # Generic consulting forces GW chrome; sample presets use preset flags.
+        force_gw_chrome = is_consulting_layout and not sample_figure
         interpolate_water_table = preset_config.interpolate_water_table
-        show_water_elevation_labels = is_consulting_layout
-        show_water_legend = is_consulting_layout
-        show_dry_well_nm = is_consulting_layout
-        water_interpolate_across_gaps = False
+        show_water_elevation_labels = (
+            preset_config.show_water_elevation_labels
+            if preset_config.show_water_elevation_labels is not None
+            else force_gw_chrome
+        )
+        show_water_legend = (
+            preset_config.show_water_legend
+            if preset_config.show_water_legend is not None
+            else force_gw_chrome
+        )
+        show_dry_well_nm = (
+            preset_config.show_dry_well_nm
+            if preset_config.show_dry_well_nm is not None
+            else force_gw_chrome
+        )
+        water_interpolate_across_gaps = bool(
+            preset_config.water_interpolate_across_gaps
+            if preset_config.water_interpolate_across_gaps is not None
+            else False
+        )
         if st.session_state.get("_synced_output_preset") != output_preset:
             st.session_state.allow_pinch_outs = preset_config.allow_pinch_outs
             st.session_state.show_ground_surface = preset_config.show_ground_surface
             st.session_state.show_legend = preset_config.show_legend
+            if preset_config.show_scale_bar is not None:
+                st.session_state.show_scale_bar = preset_config.show_scale_bar
+            if preset_config.show_ve_annotation is not None:
+                st.session_state.show_ve_annotation = preset_config.show_ve_annotation
+            if preset_config.show_parameter_legend_text is not None:
+                st.session_state.show_parameter_legend_text = (
+                    preset_config.show_parameter_legend_text
+                )
+            if preset_config.interpretation_mode is not None:
+                st.session_state.interpretation_mode = preset_config.interpretation_mode
+            if preset_config.elevation_mode is not None:
+                st.session_state.elevation_mode = preset_config.elevation_mode
+            if preset_config.vertical_exaggeration is not None:
+                st.session_state.vertical_exaggeration = float(
+                    preset_config.vertical_exaggeration
+                )
             st.session_state._synced_output_preset = output_preset
+
+        if output_preset in FIGURE_PRESET_IDS:
+            st.caption(
+                "Sample-figure preset locks interpretation, elevation mode, VE, "
+                "and groundwater defaults to match client PDF style."
+            )
 
         interpretation_mode = st.radio(
             "Interpretation",
@@ -143,70 +288,100 @@ def render_sidebar() -> SidebarState:
                 "correlation_lines": "Contact lines only (no shading)",
                 "borehole_only": "Observed logs only (no inter-hole fill)",
             }[value],
+            key="interpretation_mode",
+            disabled=lock_interp,
             help=(
                 "Interpolated: correlate lithology between boreholes. "
                 "Contact lines: fence contacts without fill. "
                 "Observed only: stick logs without correlation."
             ),
         )
+        if lock_interp and preset_config.interpretation_mode is not None:
+            interpretation_mode = preset_config.interpretation_mode
         allow_pinch_outs = st.toggle(
             "Show layers that thin out between holes",
             key="allow_pinch_outs",
-            disabled=interpretation_mode == "borehole_only",
+            disabled=interpretation_mode == "borehole_only" or sample_figure,
             help="When off, units logged in only one hole are not inferred across the section (pinch-outs).",
         )
         show_ground_surface = st.toggle(
             "Show ground surface (collar RL)",
             key="show_ground_surface",
-            disabled=report_preset,
+            disabled=report_preset or sample_figure,
             help="Linear interpolation between collar elevations — not a DEM.",
         )
+        st.markdown("**Borehole columns**")
+        track_width_m, auto_fit_track_width = _render_borehole_column_controls()
         with st.expander("Groundwater", expanded=False):
-            if is_consulting_layout:
+            if force_gw_chrome:
                 st.caption("Consulting layout forces groundwater labels, legend, and interpolation on.")
+            elif sample_figure:
+                st.caption(
+                    "Sample-figure preset sets groundwater options "
+                    f"({'on' if interpolate_water_table else 'off'} for this style)."
+                )
+            gw_locked = force_gw_chrome or sample_figure
             interpolate_water_table = st.toggle(
                 "Interpolate water table between holes",
                 value=interpolate_water_table,
-                disabled=is_consulting_layout,
+                disabled=gw_locked,
                 help="When off, only measured water levels are shown as points.",
             )
             show_water_elevation_labels = st.toggle(
                 "Show water elevation labels",
                 value=show_water_elevation_labels,
-                disabled=is_consulting_layout,
+                disabled=gw_locked,
             )
             show_water_legend = st.toggle(
                 "Show groundwater legend",
                 value=show_water_legend,
-                disabled=is_consulting_layout,
+                disabled=gw_locked,
             )
             show_dry_well_nm = st.toggle(
                 "Show dry-well NM markers",
                 value=show_dry_well_nm,
-                disabled=is_consulting_layout,
+                disabled=gw_locked,
             )
             water_interpolate_across_gaps = st.toggle(
                 "Interpolate water across gaps",
                 value=water_interpolate_across_gaps,
-                disabled=is_consulting_layout,
+                disabled=gw_locked,
                 help="When off, dashed lines connect only consecutive measured holes.",
             )
+            if sample_figure:
+                interpolate_water_table = preset_config.interpolate_water_table
+                show_water_elevation_labels = bool(show_water_elevation_labels)
+                if preset_config.show_water_elevation_labels is not None:
+                    show_water_elevation_labels = preset_config.show_water_elevation_labels
+                if preset_config.show_water_legend is not None:
+                    show_water_legend = preset_config.show_water_legend
+                if preset_config.show_dry_well_nm is not None:
+                    show_dry_well_nm = preset_config.show_dry_well_nm
+                if preset_config.water_interpolate_across_gaps is not None:
+                    water_interpolate_across_gaps = (
+                        preset_config.water_interpolate_across_gaps
+                    )
         show_hatches = st.toggle(
             "Hatch patterns",
             key="show_hatches",
-            help="USGS-style hatch patterns on lithology fills.",
+            help="USGS-style hatch patterns on lithology fills. Off = solid BH-log colours.",
         )
         if "section_title" not in st.session_state:
             st.session_state.section_title = "Borehole Cross-Section"
         section_title = st.text_input("Section title", key="section_title")
+        ve_default = float(preset_config.vertical_exaggeration or 5.0)
+        if "vertical_exaggeration" not in st.session_state:
+            st.session_state.vertical_exaggeration = ve_default
         vertical_exaggeration = st.slider(
             "Vertical exaggeration",
             min_value=1.0,
             max_value=20.0,
-            value=5.0,
             step=0.5,
             key="vertical_exaggeration",
+            disabled=sample_figure and preset_config.vertical_exaggeration is not None,
         )
+        if sample_figure and preset_config.vertical_exaggeration is not None:
+            vertical_exaggeration = float(preset_config.vertical_exaggeration)
 
         st.markdown("**Transect thresholds**")
         if st.session_state.pop("pending_transect_mode", None):
@@ -225,7 +400,6 @@ def render_sidebar() -> SidebarState:
             help="Warn when a selected borehole is farther than this from the transect line",
         )
 
-    track_width_m = 3.0
     parameter_interpolate_across_gaps = False
     warn_on_correlation_gaps = False
     show_legend = preset_config.show_legend
@@ -239,14 +413,55 @@ def render_sidebar() -> SidebarState:
     consulting_title_block: ConsultingTitleBlock | None = None
 
     with st.expander("Advanced", expanded=False):
-        track_width_m = st.slider(
-            "Track width (m)",
-            min_value=1.5,
-            max_value=6.0,
-            value=3.0,
+        column_header_detail = st.selectbox(
+            "Borehole label detail",
+            options=["id_only", "id_rl_td"],
+            format_func=lambda value: (
+                "Hole ID only" if value == "id_only" else "Hole ID + RL + TD"
+            ),
+            key="column_header_detail",
+            help="Section-sheet column headers. Consulting layout always uses hole ID only.",
+        )
+        export_font_family = st.selectbox(
+            "Export font",
+            options=["Arial", "Calibri", "DejaVu Sans"],
+            key="export_font_family",
+            help="Prefer Arial so PDF edits match drafting templates.",
+        )
+        export_font_size = st.number_input(
+            "Export font size",
+            min_value=6.0,
+            max_value=14.0,
             step=0.5,
-            disabled=report_preset or is_consulting_layout,
-            help="Width of each borehole column on the section profile.",
+            key="export_font_size",
+        )
+        parameter_marker_size = st.number_input(
+            "Chemistry marker size",
+            min_value=4.0,
+            max_value=64.0,
+            step=2.0,
+            key="parameter_marker_size",
+            help="Matplotlib scatter size for chemistry sample dots.",
+        )
+        show_scale_bar = st.toggle(
+            "Show scale bar",
+            key="show_scale_bar",
+            help="In-plot scale (section sheet) or subtitle scale band (consulting).",
+        )
+        show_ve_annotation = st.toggle(
+            "Show V.E. annotation",
+            key="show_ve_annotation",
+            help="In-plot V.E. text on section sheet; also keeps consulting subtitle VE with scale.",
+        )
+        show_parameter_legend_text = st.toggle(
+            "Show Parameters text block",
+            key="show_parameter_legend_text",
+            help="Bottom-left 'Parameters: Chloride…' overlay on section sheet.",
+        )
+        connect_chemistry_values = st.toggle(
+            "Connect chemistry values",
+            key="connect_chemistry_values",
+            help="Draw dashed lines between chemistry samples on adjacent holes.",
         )
         parameter_interpolate_across_gaps = st.toggle(
             "Interpolate parameters across gaps",
@@ -264,6 +479,12 @@ def render_sidebar() -> SidebarState:
             key="show_legend",
             disabled=is_consulting_layout,
             help="Consulting layout places the legend in the footer title block.",
+        )
+        legend_two_columns = st.toggle(
+            "Two-column lithology legend",
+            key="legend_two_columns",
+            value=True,
+            help="Wrap long lithology code lists in two columns outside the plot.",
         )
         max_offset_for_interpolation_m = st.number_input(
             "Max offset for interpolation (m)",
@@ -300,6 +521,9 @@ def render_sidebar() -> SidebarState:
     else:
         consulting_title_block = None
 
+    with st.expander("Export framing & deliverables", expanded=False):
+        export_framing = _render_export_framing_panel()
+
     return SidebarState(
         uploaded=uploaded,
         interpretation_mode=interpretation_mode,
@@ -309,6 +533,7 @@ def render_sidebar() -> SidebarState:
         allow_pinch_outs=allow_pinch_outs,
         show_ground_surface=show_ground_surface,
         track_width_m=track_width_m,
+        auto_fit_track_width=auto_fit_track_width,
         interpolate_water_table=interpolate_water_table,
         show_water_elevation_labels=show_water_elevation_labels,
         show_water_legend=show_water_legend,
@@ -330,11 +555,33 @@ def render_sidebar() -> SidebarState:
         override_id=override_id,
         default_elevation_m=default_elevation_m,
         target_crs=target_crs,
+        output_preset=output_preset,
+        sample_figure_profile=sample_figure,
+        prefer_chemistry=preset_config.prefer_chemistry,
+        show_parameter_labels_default=preset_config.show_parameter_labels,
+        parameter_interpolate_segments_default=preset_config.parameter_interpolate_segments,
+        parameter_draw_markers_default=preset_config.parameter_draw_markers,
+        elevation_mode_default=preset_config.elevation_mode,
+        column_header_detail=str(st.session_state.get("column_header_detail", "id_only")),
+        show_scale_bar=bool(st.session_state.get("show_scale_bar", False)),
+        show_ve_annotation=bool(st.session_state.get("show_ve_annotation", False)),
+        show_parameter_legend_text=bool(
+            st.session_state.get("show_parameter_legend_text", False)
+        ),
+        export_font_family=str(st.session_state.get("export_font_family", "Arial")),
+        export_font_size=float(st.session_state.get("export_font_size", 8.0)),
+        parameter_marker_size=float(st.session_state.get("parameter_marker_size", 16.0)),
+        connect_chemistry_values=bool(
+            st.session_state.get("connect_chemistry_values", False)
+        ),
+        water_line_solid_default=preset_config.water_line_solid,
+        legend_ncol=2 if bool(st.session_state.get("legend_two_columns", True)) else 1,
+        export_framing=export_framing,
     )
 
 
 def _render_fill_style_editor() -> None:
-    st.caption("Override USGS fill color and hatch for a lithology code (saved locally).")
+    st.caption("Override BH-log fill color and hatch for a lithology code (saved locally).")
     style_codes = sorted(st.session_state.get("unique_lithology_codes") or [])
     if not style_codes:
         st.info("Parse data to edit lithology fill styles.")

@@ -152,7 +152,7 @@ def render_welcome_card() -> None:
     <li><strong>Enter</strong> — Download the multi-tab template and fill <em>Collars</em> + <em>Lithology</em> (optional Water, Screens, …).</li>
     <li><strong>Upload</strong> — Use <em>Upload Excel workbook</em> in the sidebar Data source section.</li>
     <li><strong>Validate &amp; Configure</strong> — Review Data Health, then pick transect holes and style.</li>
-    <li><strong>Generate</strong> — SVG is ready immediately; Prepare PNG/PDF for deliverables.</li>
+    <li><strong>Generate</strong> — SVG is ready immediately; Prepare deliverables for PNG/PDF/Word/package.</li>
   </ol>
 </div>
 """,
@@ -221,6 +221,15 @@ def _seed_consulting_fields_from_project_metadata(project: dict[str, str]) -> No
     ve = str(project.get("vertical_exaggeration", "")).strip()
     if ve:
         pending["_pending_vertical_exaggeration"] = ve
+    figure_raw = str(
+        project.get("figure_preset") or project.get("section_style") or ""
+    ).strip()
+    if figure_raw:
+        from ui_output_presets import normalize_figure_preset
+
+        resolved = normalize_figure_preset(figure_raw)
+        if resolved:
+            pending["output_preset"] = resolved
     if pending:
         st.session_state[_PENDING_PROJECT_SEED_KEY] = pending
 
@@ -231,6 +240,8 @@ def apply_pending_project_seed() -> None:
     if not isinstance(pending, dict):
         return
     ve_raw = pending.pop("_pending_vertical_exaggeration", None)
+    if "output_preset" in pending:
+        st.session_state.pop("_synced_output_preset", None)
     for key, value in pending.items():
         st.session_state[key] = value
     if ve_raw is not None:
@@ -294,8 +305,8 @@ def handle_workbook_upload(
         )
         if detection.profile_id != NATIVE_PROFILE_ID:
             st.info(
-                "Field Data sheet (if present) is not used for stratigraphy — "
-                "OVA overlay is planned for a future release."
+                "Field Data sheet (if present) is not used for stratigraphy. "
+                "OVA/EC columns map to environmental readings — select them on Configure."
             )
 
     profile_id = None if selected_profile_key == "auto" else selected_profile_key

@@ -10,6 +10,7 @@ root = Path(SPECPATH)
 
 datas: list[tuple[str, str]] = [
     (str(root / "app.py"), "."),
+    (str(root / "VERSION"), "."),
     (str(root / ".streamlit" / "config.toml"), ".streamlit"),
     (str(root / "docs" / "help"), "docs/help"),
 ]
@@ -33,6 +34,9 @@ for py_file in sorted(root.glob("*.py")):
 
 hiddenimports = [
     "paths",
+    "app_version",
+    "desktop_updater",
+    "update_url_policy",
     "section_build_request",
     "app_state",
     "app_services",
@@ -72,6 +76,7 @@ hiddenimports = [
     "transect_planner",
     "ai_quality",
     "ai_assistant",
+    "hydro_metrics",
     "lithology_codes",
     "pydantic",
     "pandas",

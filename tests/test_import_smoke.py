@@ -31,13 +31,17 @@ def test_import_models_parsing_reexports() -> None:
 def test_import_renderer_mixins() -> None:
     from renderer import CrossSectionRenderer
     from renderer_chart import ChartLayoutMixin
+    from renderer_chemistry import RendererChemistryMixin
     from renderer_common import RendererGeometryMixin
     from renderer_consulting import ConsultingLayoutMixin
     from renderer_section_sheet import SectionSheetLayoutMixin
+    from renderer_water import RendererWaterMixin
 
     assert issubclass(CrossSectionRenderer, ConsultingLayoutMixin)
     assert issubclass(CrossSectionRenderer, SectionSheetLayoutMixin)
     assert issubclass(CrossSectionRenderer, ChartLayoutMixin)
+    assert issubclass(CrossSectionRenderer, RendererWaterMixin)
+    assert issubclass(CrossSectionRenderer, RendererChemistryMixin)
     assert issubclass(CrossSectionRenderer, RendererGeometryMixin)
 
 
@@ -68,6 +72,9 @@ def test_import_app_modules() -> None:
     assert callable(app_services.cached_build_section_exports)
     assert callable(app_services.cached_build_section_png)
     assert callable(app_services.cached_build_section_pdf)
+    assert callable(app_services.cached_parse_subset)
+    assert callable(app_services.cached_parse_request)
+    assert callable(app_services.clear_service_memos)
     assert app_state.DEFAULT_SESSION
     assert "show_hatches" in app_state.DEFAULT_SESSION
     assert "enable_ai_suggestions" in app_state.DEFAULT_SESSION
@@ -75,7 +82,10 @@ def test_import_app_modules() -> None:
 
     try:
         import app_menubar
+        import app_version
     except ImportError:
         pass
     else:
         assert callable(app_menubar.render_menubar)
+        assert callable(app_version.get_version)
+        assert callable(app_version.check_for_updates)

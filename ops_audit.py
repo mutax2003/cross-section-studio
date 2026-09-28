@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ops_logging import redact_secrets
 from paths import audit_log_path, user_data_dir
 
 logger = logging.getLogger(__name__)
@@ -32,12 +33,18 @@ def _resolved_audit_path() -> Path:
     return resolved
 
 
+def _redact_field_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_secrets(value)
+    return value
+
+
 def audit_event(event: str, **fields: Any) -> None:
     """Record a JSON line audit event (best-effort)."""
     record = {
         "ts": datetime.now(UTC).isoformat(),
-        "event": event,
-        **fields,
+        "event": _redact_field_value(event),
+        **{key: _redact_field_value(value) for key, value in fields.items()},
     }
     try:
         path = _resolved_audit_path()

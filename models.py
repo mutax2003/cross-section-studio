@@ -12,9 +12,22 @@ LITHOLOGY_COLUMNS = {"hole_id", "from_depth", "to_depth", "lithology_code"}
 LITHOLOGY_OPTIONAL_COLUMNS = {"hatch_pattern", "unit_order"}
 WATER_COLUMNS = {"hole_id"}
 WATER_VALUE_COLUMNS = frozenset({"depth", "elevation_masl"})
-WATER_OPTIONAL_COLUMNS = frozenset({"series_id", "series_label", "color", "marker", "depth", "elevation_masl"})
+WATER_STATUS_COLUMNS = frozenset({"status"})
+WATER_OPTIONAL_COLUMNS = frozenset(
+    {
+        "series_id",
+        "series_label",
+        "color",
+        "marker",
+        "depth",
+        "elevation_masl",
+        "connect_group",
+        "status",
+    }
+)
 SCREEN_COLUMNS = {"hole_id", "from_depth", "to_depth"}
 GRADIENT_COLUMNS = {"hole_id", "direction"}
+MAX_WATER_SERIES = 4
 
 InterpretationMode = Literal["borehole_only", "interpolated", "correlation_lines"]
 
@@ -28,6 +41,7 @@ class Collar(BaseModel, frozen=True):
     elevation_datum: str | None = None
     inclination_deg: float | None = None
     azimuth_deg: float | None = None
+    stick_up_m: float | None = None
 
     @field_validator("hole_id", mode="before")
     @classmethod
@@ -41,6 +55,15 @@ class Collar(BaseModel, frozen=True):
     def validate_total_depth(cls, value: float) -> float:
         if value < 0:
             raise ValueError("total_depth must be non-negative")
+        return value
+
+    @field_validator("stick_up_m")
+    @classmethod
+    def validate_stick_up(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if value < 0:
+            raise ValueError("stick_up_m must be non-negative")
         return value
 
 
@@ -108,6 +131,8 @@ class WaterLevel(BaseModel, frozen=True):
     series_label: str = ""
     color: str | None = None
     marker: str | None = None
+    connect_group: str = ""
+    status: str = "measured"
 
     @field_validator("hole_id", mode="before")
     @classmethod
@@ -124,12 +149,30 @@ class WaterLevel(BaseModel, frozen=True):
         text = str(value).strip()
         return text or "default"
 
-    @field_validator("series_label", mode="before")
+    @field_validator("series_label", "connect_group", mode="before")
     @classmethod
     def strip_series_label(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return ""
         return str(value).strip()
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, value: object) -> str:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return "measured"
+        text = str(value).strip().lower()
+        if not text:
+            return "measured"
+        if text in {"dry", "d"}:
+            return "dry"
+        if text in {"nm", "n/m", "not measured", "not_measured", "ns", "not sampled", "not_sampled"}:
+            return "nm"
+        if text in {"measured", "meas", "m", "wet"}:
+            return "measured"
+        raise ValueError(
+            f"status must be measured, dry, or nm (got {value!r})"
+        )
 
     @field_validator("color", "marker", mode="before")
     @classmethod
@@ -187,7 +230,9 @@ class VerticalGradient(BaseModel, frozen=True):
             return "up"
         if text in {"down", "d", "↓"}:
             return "down"
-        return "up"
+        if not text:
+            return "up"
+        raise ValueError(f"direction must be up or down (got {value!r})")
 
 
 class DeviationReading(BaseModel, frozen=True):
@@ -347,6 +392,42 @@ class Transect(BaseModel, frozen=True):
         return value
 
 
+class WorkbookSectionSpec(BaseModel, frozen=True):
+    """Optional Sections sheet row: label + ordered holes for multi-transect batch."""
+
+    label: str
+    hole_ids: tuple[str, ...]
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def strip_label(cls, value: object) -> str:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            raise ValueError("section_label is required")
+        text = str(value).strip()
+        if not text:
+            raise ValueError("section_label is required")
+        if any(ch in text for ch in ("\n", "\r", "|")):
+            raise ValueError("section_label cannot contain newlines or '|'")
+        return text
+
+    @field_validator("hole_ids", mode="before")
+    @classmethod
+    def coerce_hole_ids(cls, value: object) -> tuple[str, ...]:
+        if value is None:
+            raise ValueError("hole_ids is required")
+        if isinstance(value, str):
+            raise ValueError("hole_ids must be a sequence of hole IDs")
+        holes = tuple(str(item).strip() for item in value if str(item).strip())
+        if len(holes) < 2:
+            raise ValueError("section requires at least two hole_ids")
+        for hole in holes:
+            if any(ch in hole for ch in (",", ";", "|", "\n", "\r")) or "→" in hole or "->" in hole:
+                raise ValueError(
+                    f"hole_id {hole!r} cannot contain separators (, ; | →) or newlines"
+                )
+        return holes
+
+
 class ParseResult(BaseModel, frozen=True):
     collars: tuple[Collar, ...]
     lithologies: tuple[Lithology, ...]
@@ -359,12 +440,14 @@ class ParseResult(BaseModel, frozen=True):
     faults: tuple[Fault, ...] = ()
     unconformities: tuple[Unconformity, ...] = ()
     environmental_readings: tuple[EnvironmentalReading, ...] = ()
+    section_specs: tuple[WorkbookSectionSpec, ...] = ()
 
 
 # Re-exports for backward-compatible imports
 from parse_ops import (  # noqa: E402
     apply_unit_order_fix,
     assign_missing_unit_orders,
+    format_section_specs_as_batch_text,
     geology_sheet_counts,
     holes_with_duplicate_lithology_codes,
     lithologies_by_hole,

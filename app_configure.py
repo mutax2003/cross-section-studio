@@ -38,6 +38,10 @@ class ConfigureState:
     environmental_parameters: tuple[str, ...] = ()
     show_parameter_labels: bool = True
     parameter_interpolate_segments: bool = True
+    selected_water_series_ids: tuple[str, ...] = ()
+    chemistry_color_mode: str = "black"
+    chemistry_threshold_green_max: float | None = None
+    chemistry_threshold_yellow_max: float | None = None
 
 
 def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], transect_mode: str) -> tuple[list[str], str]:
@@ -101,6 +105,10 @@ def render_configure_step(
     import_report,
     is_consulting_layout: bool = False,
     max_offset_for_interpolation_m: float | None = None,
+    prefer_chemistry: bool = False,
+    show_parameter_labels_default: bool | None = None,
+    parameter_interpolate_segments_default: bool | None = None,
+    elevation_mode_default: str | None = None,
 ) -> ConfigureState:
     st.subheader("Configure")
     st.caption("Choose elevation mode, transect readiness, and export gates before generating.")
@@ -110,8 +118,22 @@ def render_configure_step(
         _render_hole_sequence_order(all_hole_ids)
         selected_holes = list(st.session_state.get("hole_sequence_multiselect") or selected_holes)
     blocking = quality_report is not None and quality_report.has_blocking_errors
-    elevation_mode = st.session_state.get("elevation_mode", "absolute")
-    if import_report and import_report.uses_placeholder_elevation:
+    output_preset_key = st.session_state.get("output_preset")
+    if (
+        elevation_mode_default is not None
+        and st.session_state.get("_synced_elevation_preset") != output_preset_key
+    ):
+        st.session_state.elevation_mode = elevation_mode_default
+        st.session_state._synced_elevation_preset = output_preset_key
+    elevation_mode = st.session_state.get("elevation_mode", elevation_mode_default or "absolute")
+    if elevation_mode_default is not None:
+        st.caption(
+            "Elevation mode locked by output preset: "
+            f"**{'relative (mbgs)' if elevation_mode_default == 'relative' else 'absolute (MASL)'}**."
+        )
+        elevation_mode = elevation_mode_default
+        st.session_state.elevation_mode = elevation_mode_default
+    elif import_report and import_report.uses_placeholder_elevation:
         elevation_mode = st.radio(
             "Elevation mode",
             options=["absolute", "relative"],
@@ -128,10 +150,25 @@ def render_configure_step(
         and elevation_mode == "absolute"
         and interpretation_mode in {"interpolated", "correlation_lines"}
     )
+    placeholder_blocks_masl_water = False
+    if (
+        import_report is not None
+        and import_report.uses_placeholder_elevation
+        and elevation_mode == "absolute"
+        and parse_result.water_levels
+    ):
+        placeholder_blocks_masl_water = any(
+            level.elevation_masl is not None for level in parse_result.water_levels
+        )
     if placeholder_blocks_interp:
         st.error(
             "All collar elevations use the profile placeholder. Set site elevation in the sidebar "
             "or ingest survey RL before generating an interpreted section."
+        )
+    if placeholder_blocks_masl_water:
+        st.error(
+            "Water uses elevation_masl with placeholder collar RL. Switch elevation mode to "
+            "relative (mbgs), provide surveyed collar elevations, or store Water as depth."
         )
     has_warnings = quality_report is not None and quality_report.warning_count > 0
     warnings_default = not is_consulting_layout
@@ -154,6 +191,10 @@ def render_configure_step(
     environmental_parameters: tuple[str, ...] = ()
     show_parameter_labels = True
     parameter_interpolate_segments = True
+    selected_water_series_ids: tuple[str, ...] = ()
+    chemistry_color_mode: str = "black"
+    chemistry_threshold_green_max: float | None = None
+    chemistry_threshold_yellow_max: float | None = None
     subset_ready = False
     has_overlap_warnings = False
 
@@ -193,12 +234,36 @@ def render_configure_step(
             if available_params:
                 st.markdown("**Lab / environmental parameters**")
                 options_sig = tuple(available_params)
+                preset_chem_sig = (prefer_chemistry, options_sig)
                 if st.session_state.get("_env_params_options_sig") != options_sig:
                     previous = list(st.session_state.get("environmental_parameters_multiselect") or [])
-                    st.session_state.environmental_parameters_multiselect = [
-                        p for p in previous if p in available_params
-                    ] or list(available_params)
+                    kept = [p for p in previous if p in available_params]
+                    if prefer_chemistry:
+                        chloride_like = [
+                            p
+                            for p in available_params
+                            if "chlor" in p.lower() or p.lower() in {"cl", "cl-"}
+                        ]
+                        st.session_state.environmental_parameters_multiselect = (
+                            kept or chloride_like or list(available_params)
+                        )
+                    else:
+                        st.session_state.environmental_parameters_multiselect = (
+                            kept or list(available_params)
+                        )
                     st.session_state._env_params_options_sig = options_sig
+                elif (
+                    prefer_chemistry
+                    and st.session_state.get("_env_params_preset_sig") != preset_chem_sig
+                ):
+                    chloride_like = [
+                        p
+                        for p in available_params
+                        if "chlor" in p.lower() or p.lower() in {"cl", "cl-"}
+                    ]
+                    if chloride_like:
+                        st.session_state.environmental_parameters_multiselect = chloride_like
+                    st.session_state._env_params_preset_sig = preset_chem_sig
                 environmental_parameters = tuple(
                     st.multiselect(
                         "Parameters to plot on section",
@@ -209,20 +274,142 @@ def render_configure_step(
                 )
                 if not environmental_parameters:
                     st.caption("No parameters selected — environmental markers will not be plotted.")
+                label_default = (
+                    True
+                    if show_parameter_labels_default is None
+                    else show_parameter_labels_default
+                )
+                segments_default = (
+                    True
+                    if parameter_interpolate_segments_default is None
+                    else parameter_interpolate_segments_default
+                )
+                if prefer_chemistry:
+                    if "show_parameter_labels_toggle" not in st.session_state:
+                        st.session_state.show_parameter_labels_toggle = label_default
+                    if "parameter_interpolate_segments_toggle" not in st.session_state:
+                        st.session_state.parameter_interpolate_segments_toggle = (
+                            segments_default
+                        )
+                    if st.session_state.get("_chem_toggle_preset") != prefer_chemistry:
+                        st.session_state.show_parameter_labels_toggle = label_default
+                        st.session_state.parameter_interpolate_segments_toggle = (
+                            segments_default
+                        )
+                        st.session_state._chem_toggle_preset = prefer_chemistry
                 show_parameter_labels = st.toggle(
                     "Show parameter value labels",
-                    value=True,
+                    value=label_default,
                     key="show_parameter_labels_toggle",
+                    disabled=prefer_chemistry and show_parameter_labels_default is not None,
                 )
                 parameter_interpolate_segments = st.toggle(
                     "Interpolate parameter between adjacent holes",
-                    value=True,
+                    value=segments_default,
                     key="parameter_interpolate_segments_toggle",
+                    disabled=(
+                        prefer_chemistry and parameter_interpolate_segments_default is not None
+                    ),
                 )
+                if prefer_chemistry:
+                    if show_parameter_labels_default is not None:
+                        show_parameter_labels = show_parameter_labels_default
+                    if parameter_interpolate_segments_default is not None:
+                        parameter_interpolate_segments = (
+                            parameter_interpolate_segments_default
+                        )
+                st.markdown("**Parameter label colour**")
+                color_mode_choice = st.radio(
+                    "Chemistry value labels",
+                    options=["All black (default)", "Green / yellow / red thresholds"],
+                    index=0,
+                    key="chemistry_color_mode_radio",
+                    help=(
+                        "Black labels for data presentation. Threshold mode colours each "
+                        "value green, yellow, or red using site-specific limits set below."
+                    ),
+                )
+                chemistry_color_mode = (
+                    "threshold"
+                    if color_mode_choice == "Green / yellow / red thresholds"
+                    else "black"
+                )
+                chemistry_threshold_green_max = None
+                chemistry_threshold_yellow_max = None
+                if chemistry_color_mode == "threshold":
+                    threshold_cols = st.columns(2)
+                    with threshold_cols[0]:
+                        chemistry_threshold_green_max = float(
+                            st.number_input(
+                                "Green ≤",
+                                min_value=0.0,
+                                value=100.0,
+                                step=1.0,
+                                key="chemistry_threshold_green_max",
+                            )
+                        )
+                    with threshold_cols[1]:
+                        chemistry_threshold_yellow_max = float(
+                            st.number_input(
+                                "Yellow ≤",
+                                min_value=0.0,
+                                value=250.0,
+                                step=1.0,
+                                key="chemistry_threshold_yellow_max",
+                            )
+                        )
+                    if chemistry_threshold_yellow_max < chemistry_threshold_green_max:
+                        st.warning("Yellow threshold should be ≥ green threshold.")
             elif parse_result.environmental_readings:
                 st.caption(
                     "Environmental readings exist but none fall on the current transect holes."
                 )
+
+            water_levels = subset_preflight.water_levels
+            if water_levels:
+                from models import MAX_WATER_SERIES
+
+                series_options: list[str] = []
+                series_labels: dict[str, str] = {}
+                for level in water_levels:
+                    sid = level.series_id or "default"
+                    if sid not in series_labels:
+                        series_options.append(sid)
+                        series_labels[sid] = level.series_label or sid
+                if series_options:
+                    st.markdown("**Groundwater series**")
+                    options_sig = tuple(series_options)
+                    if st.session_state.get("_water_series_options_sig") != options_sig:
+                        previous = list(
+                            st.session_state.get("water_series_multiselect") or []
+                        )
+                        kept = [s for s in previous if s in series_options]
+                        st.session_state.water_series_multiselect = (
+                            kept or series_options[:MAX_WATER_SERIES]
+                        )
+                        st.session_state._water_series_options_sig = options_sig
+                    selected_water_series_ids = tuple(
+                        st.multiselect(
+                            "Water-level series to plot (max 4)",
+                            options=series_options,
+                            format_func=lambda sid: (
+                                f"{series_labels.get(sid, sid)} ({sid})"
+                                if series_labels.get(sid, sid) != sid
+                                else sid
+                            ),
+                            help=(
+                                "Each series uses a blue inverted triangle. "
+                                "Use Water.connect_group so shallow and deep nests "
+                                "are not joined by the same dashed line."
+                            ),
+                            key="water_series_multiselect",
+                            max_selections=MAX_WATER_SERIES,
+                        )
+                    )
+                    if not selected_water_series_ids:
+                        st.caption(
+                            "No water series selected — groundwater markers will not be plotted."
+                        )
             else:
                 st.caption(
                     "Add an **Environmental** sheet (`hole_id`, `parameter`, `value`, `depth` or "
@@ -270,24 +457,26 @@ def render_configure_step(
                 st.warning(message)
             has_overlap_warnings = any("Polygon overlap" in message for message in preflight_warnings)
             if pair_summaries:
-                with st.expander("Correlation health preview", expanded=False):
-                    for summary in pair_summaries:
-                        st.write(
-                            f"**{summary.left_hole_id} → {summary.right_hole_id}**: "
-                            f"{summary.matched_count} matched, "
-                            f"pinch-out candidates {summary.pinch_out_candidates}, "
-                            f"match rate {summary.match_rate:.0%}"
-                        )
-                        if summary.left_only_codes or summary.right_only_codes:
-                            st.caption(
-                                f"Left only: {', '.join(summary.left_only_codes) or '—'} · "
-                                f"Right only: {', '.join(summary.right_only_codes) or '—'}"
-                            )
+                with st.expander("Correlation health preview", expanded=True):
+                    table_rows = [
+                        {
+                            "Left": summary.left_hole_id,
+                            "Right": summary.right_hole_id,
+                            "Matched": summary.matched_count,
+                            "Left only": ", ".join(summary.left_only_codes) or "—",
+                            "Right only": ", ".join(summary.right_only_codes) or "—",
+                            "Pinch-outs": summary.pinch_out_candidates,
+                            "Match rate": f"{summary.match_rate:.0%}",
+                        }
+                        for summary in pair_summaries
+                    ]
+                    st.dataframe(pd.DataFrame(table_rows), width="stretch", hide_index=True)
                     low_match = [s for s in pair_summaries if s.match_rate < 0.5]
                     if low_match:
                         st.info(
                             "Low match rate — consider borehole-only or correlation-lines mode for review."
                         )
+                    _render_quick_correlation_links(pair_summaries, subset_preflight)
                     render_correlation_assist(pair_summaries, subset_preflight, active_ids)
 
             if len(active_ids) >= 2:
@@ -311,6 +500,7 @@ def render_configure_step(
         and subset_ready
         and not blocking
         and not placeholder_blocks_interp
+        and not placeholder_blocks_masl_water
         and (override_warnings or not has_warnings)
         and (not fail_on_overlaps or not has_overlap_warnings)
     )
@@ -320,6 +510,86 @@ def render_configure_step(
         st.error(
             "Polygon overlaps detected. Resolve correlation or disable "
             "'Block export on polygon overlaps' after manual review."
+        )
+
+    with st.expander("Multi-transect batch ZIP", expanded=False):
+        st.caption(
+            "One transect per line: ``Label | hole1, hole2, …``. "
+            "Generate rebuilds each line (not filename copies)."
+        )
+        workbook_specs = ()
+        report = st.session_state.get("import_report")
+        if report is not None:
+            workbook_specs = tuple(getattr(report, "section_specs", ()) or ())
+        if not workbook_specs:
+            parse_result = st.session_state.get("parse_result")
+            if parse_result is not None:
+                workbook_specs = tuple(getattr(parse_result, "section_specs", ()) or ())
+        if (
+            workbook_specs
+            and not str(st.session_state.get("batch_transect_specs", "")).strip()
+            and not st.session_state.get("_batch_specs_seeded_from_sections")
+        ):
+            from parse_ops import format_section_specs_as_batch_text
+
+            st.session_state["batch_transect_specs"] = format_section_specs_as_batch_text(
+                workbook_specs
+            )
+            st.session_state["_batch_specs_seeded_from_sections"] = True
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            if st.button("Add current transect", key="batch_add_current"):
+                selection = preflight_selection
+                if selection is None:
+                    st.warning("Pick a transect first.")
+                else:
+                    hole_ids, _pts = selection
+                    label = (
+                        str(st.session_state.get("consulting_section_label") or "").strip()
+                        or f"{hole_ids[0]}→{hole_ids[-1]}"
+                    )
+                    line = f"{label} | {', '.join(hole_ids)}"
+                    existing = str(st.session_state.get("batch_transect_specs", "")).rstrip()
+                    st.session_state["batch_transect_specs"] = (
+                        f"{existing}\n{line}".strip() if existing else line
+                    )
+                    st.rerun()
+        with col_b:
+            if st.button("Fill from recommended", key="batch_fill_recommended"):
+                candidates = st.session_state.get("transect_candidates") or []
+                if not candidates:
+                    st.warning("Switch to Recommended mode once to load candidates.")
+                else:
+                    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    lines: list[str] = []
+                    for idx, candidate in enumerate(candidates[:8]):
+                        letter = letters[idx] if idx < len(letters) else str(idx + 1)
+                        label = f"{letter}-{letter}'"
+                        lines.append(f"{label} | {', '.join(candidate.hole_ids)}")
+                    st.session_state["batch_transect_specs"] = "\n".join(lines)
+                    st.rerun()
+        with col_c:
+            if st.button("Load from workbook Sections", key="batch_load_sections"):
+                if not workbook_specs:
+                    st.warning("No Sections sheet rows in the uploaded workbook.")
+                else:
+                    from parse_ops import format_section_specs_as_batch_text
+
+                    st.session_state["batch_transect_specs"] = format_section_specs_as_batch_text(
+                        workbook_specs
+                    )
+                    st.session_state["_batch_specs_seeded_from_sections"] = True
+                    st.rerun()
+        st.text_area(
+            "Batch transects",
+            key="batch_transect_specs",
+            placeholder="A-A' | BH-01, BH-02, BH-03\nB-B' | BH-08, BH-09, BH-10",
+            height=120,
+            help=(
+                "Each line is rebuilt through the cross-section pipeline when you build "
+                "the multi-transect ZIP on Generate. An empty box is seeded once from the "
+                "workbook Sections sheet; use Load from workbook Sections to refresh."
+            ),
         )
 
     return ConfigureState(
@@ -337,6 +607,10 @@ def render_configure_step(
         environmental_parameters=environmental_parameters,
         show_parameter_labels=show_parameter_labels,
         parameter_interpolate_segments=parameter_interpolate_segments,
+        selected_water_series_ids=selected_water_series_ids,
+        chemistry_color_mode=chemistry_color_mode,
+        chemistry_threshold_green_max=chemistry_threshold_green_max,
+        chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
     )
 
 
@@ -406,6 +680,80 @@ def _render_hole_sequence_order(hole_ids: list[str]) -> None:
                 st.session_state.hole_sequence_multiselect = sequence
                 st.rerun()
     st.caption(f"Section A–A′: **{sequence[0]} → {sequence[-1]}**")
+
+
+def _unit_orders_for_code(subset: ParseResult, hole_id: str, code: str) -> list[int]:
+    return sorted(
+        {
+            lith.unit_order
+            for lith in subset.lithologies
+            if lith.hole_id == hole_id
+            and lith.lithology_code == code
+            and lith.unit_order is not None
+        }
+    )
+
+
+def _render_quick_correlation_links(pair_summaries: Sequence, subset: ParseResult) -> None:
+    """One-click session overrides for same-code left/right-only pairs."""
+    candidates: list[tuple[str, str, str, int, int]] = []
+    for summary in pair_summaries:
+        shared = set(summary.left_only_codes) & set(summary.right_only_codes)
+        # Also offer same-name codes that appear only on one side vs the other
+        # when both holes have that code with unit_order (manual re-link).
+        for code in sorted(set(summary.left_only_codes) | set(summary.right_only_codes)):
+            left_orders = _unit_orders_for_code(subset, summary.left_hole_id, code)
+            right_orders = _unit_orders_for_code(subset, summary.right_hole_id, code)
+            if left_orders and right_orders:
+                candidates.append(
+                    (
+                        summary.left_hole_id,
+                        summary.right_hole_id,
+                        code,
+                        left_orders[0],
+                        right_orders[0],
+                    )
+                )
+        for code in shared:
+            left_orders = _unit_orders_for_code(subset, summary.left_hole_id, code)
+            right_orders = _unit_orders_for_code(subset, summary.right_hole_id, code)
+            if left_orders and right_orders:
+                candidates.append(
+                    (
+                        summary.left_hole_id,
+                        summary.right_hole_id,
+                        code,
+                        left_orders[0],
+                        right_orders[0],
+                    )
+                )
+    # Dedupe while preserving order
+    seen: set[tuple[str, str, int, int]] = set()
+    unique: list[tuple[str, str, str, int, int]] = []
+    for item in candidates:
+        key = (item[0], item[1], item[3], item[4])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    if not unique:
+        return
+    st.markdown("**Quick-add correlation overrides**")
+    st.caption("Links same lithology code between adjacent holes into session overrides.")
+    session_overrides: list[CorrelationOverride] = list(_session_correlation_overrides())
+    for index, (left_id, right_id, code, left_order, right_order) in enumerate(unique[:12]):
+        label = f"{left_id}#{left_order} ↔ {right_id}#{right_order} ({code})"
+        if st.button(f"Add: {label}", key=f"quick_corr_{index}"):
+            session_overrides.append(
+                CorrelationOverride(
+                    left_hole_id=left_id,
+                    right_hole_id=right_id,
+                    left_unit_order=left_order,
+                    right_unit_order=right_order,
+                )
+            )
+            st.session_state.session_correlation_overrides = session_overrides
+            st.rerun()
 
 
 def render_manual_correlation_overrides(active_ids: Sequence[str], subset: ParseResult) -> None:

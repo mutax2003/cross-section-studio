@@ -39,8 +39,12 @@ PM/Architect prompts (`pm.md`, `architect.md`) are **IDE-only** — the SDK does
 
 | Intent | Scout scope | Implement scope | Verify focus |
 |--------|-------------|-----------------|--------------|
-| Optimize renderer | `renderer*.py`, `render_*.py` | One mixin or `renderer_common.py` | `tests/test_renderer_styles.py` |
-| PDF / report export | `report_export.py`, `pipeline.py` | `report_export.py` | `tests/test_pipeline.py`, `tests/test_renderer_styles.py` |
+| Optimize renderer | `renderer*.py`, `render_*.py` | One mixin or `renderer_common.py` / `renderer_water.py` / `renderer_chemistry.py` (or facade overlays in `renderer.py`) | `tests/test_renderer_styles.py` |
+| PDF / report export | `report_export.py`, `pipeline.py` | `report_export.py` only (two-page section PDF — not framing/ZIP/Word) | `tests/test_pipeline.py`, `tests/test_renderer_styles.py` |
+| Export framing / deliverable packaging | `export_framing.py` | `export_framing.py` only | `tests/test_export_framing.py` |
+| Batch / binder ZIP | `batch_export.py` | `batch_export.py` only (`BatchTransectSpec` rebuild + ZIP + binder) | `tests/test_batch_export.py` |
+| Word figure pack | `docx_export.py` | `docx_export.py` only | `tests/test_docx_export.py` |
+| Track width / auto-fit | `renderer.py`, `render_profiles.py` | One of `renderer.py` (`resolve_track_half_width`) or `render_profiles.py` per pass | `tests/test_track_width.py` |
 | Fix ingest | `ingestion.py`, `parsing.py`, `parse_ops.py` | One of ingest / parse / parse_ops per pass | `tests/test_ingestion.py` |
 | Schemas / ParseResult | `models.py` | `models.py` only | `tests/test_ingestion.py`, `tests/test_pipeline.py` |
 | Workbook template | `workbook_template.py` | `workbook_template.py` | `tests/test_workbook_template.py` |
@@ -49,21 +53,21 @@ PM/Architect prompts (`pm.md`, `architect.md`) are **IDE-only** — the SDK does
 | Transect planner | `transect_planner.py` | `transect_planner.py` | `tests/test_ai_assistant.py`, `tests/test_e2e_edge_cases.py` |
 | Lithology palette | `constants.py` | `constants.py` | `tests/test_renderer_styles.py`, `tests/test_advantage_p2_reference.py` |
 | Lithology codes helper | `lithology_codes.py` | `lithology_codes.py` | `tests/test_pipeline.py` |
-| Water / GW QA & UI | `ai_quality.py`, `app_validate.py` (scout may read both) | One of `ai_quality.py` or one `app_*.py` per pass — do not mix in `--modules` | `tests/test_water_quality.py`, `tests/test_streamlit_app.py` |
+| Water / GW QA & UI | `ai_quality.py`, `hydro_metrics.py`, `app_validate.py` (scout may read both) | One of `ai_quality.py`, `hydro_metrics.py`, or one `app_*.py` per pass — do not mix in `--modules` | `tests/test_water_quality.py`, `tests/test_streamlit_app.py` |
 | AI assistant (UI) | `ai_assistant.py` | `ai_assistant.py` only | `tests/test_ai_assistant.py` |
-| SVG-first / Generate cache | `app_services.py`, `section_build_request.py`, `pipeline.py` | Serialize preferred — one per pass (`section_build_request` → `pipeline` → `app_services`); kwargs/cache glue may need `app_services` after DTO/pipeline changes | `tests/test_pipeline.py`, `tests/test_section_build_request.py`, `tests/test_import_smoke.py` |
-| Pipeline / export | `pipeline.py`, `section_build_request.py`, `app_services.py` | Serialize preferred — one per pass; SVG-first triad allowlisted for cache/DTO glue (see `module_boundary_warnings`) | `tests/test_pipeline.py`, `tests/test_section_build_request.py` |
-| UI / sidebar / presets | `app_*.py`, `ui_helpers.py`, `ui_output_presets.py` | One `app_*.py` (or one UI helper) per pass | `tests/test_app_helpers.py`, `tests/test_ui_helpers.py`, `tests/test_ui_output_presets.py`, `tests/test_streamlit_app.py` |
-| Menubar / help | `app_menubar.py`, `docs/help/getting-started.md`, `paths.py` | `app_menubar.py` — accelerators use `st.iframe` with `height>0` (not `st.components.v1.html`) | `tests/test_menubar.py`, `tests/test_paths.py` |
+| SVG-first / Generate cache | `app_services.py`, `section_build_request.py`, `pipeline.py` | Serialize preferred — one per pass (`section_build_request` → `pipeline` → `app_services`); keep `geometry_cache_payload()` in sync with `compute_section_geometry` inputs (**exclude** cosmetics and QA flags — including `export_framing`, `track_width_m`, `auto_fit_track_width`; post-cache QA via `_apply_section_geometry_qa`; Configure preflight should warm geometry cache); kwargs/cache glue may need `app_services` after DTO/pipeline changes | `tests/test_pipeline.py`, `tests/test_section_build_request.py`, `tests/test_import_smoke.py` |
+| Pipeline / export | Same triad as SVG-first row (prefer that row for cache/DTO glue) | Serialize preferred — one per pass; SVG-first triad allowlisted (see `module_boundary_warnings`) | `tests/test_pipeline.py`, `tests/test_section_build_request.py` (import-smoke only on SVG-first row) |
+| UI / sidebar / presets | `app_*.py`, `ui_helpers.py`, `ui_output_presets.py` | One `app_*.py` (or one UI helper) per pass — sidebar Export framing & borehole column width; Generate deliverables UX in `app_generate.py` | `tests/test_app_helpers.py`, `tests/test_ui_helpers.py`, `tests/test_ui_output_presets.py`, `tests/test_streamlit_app.py` |
+| Menubar / help | `app_menubar.py`, `app_version.py`, docs/help/*, paths.py | One of `app_menubar.py` or `app_version.py` per pass — accelerators use `st.iframe` with `height>0` (not `st.components.v1.html`) | `tests/test_menubar.py`, `tests/test_paths.py`, `tests/test_app_version.py` |
 | Ops / auth / audit | `ops_*.py`, `paths.py` | One `ops_*.py` per pass | `tests/test_ops.py` |
-| Packaging / Docker | `Dockerfile`, `launcher.py`, `paths.py` | One packaging file | `tests/test_paths.py`, `tests/test_launcher_port.py` |
+| Packaging / Docker | Dockerfile, launcher.py, paths.py, scripts/build_windows.ps1, VERSION | One packaging file / script | `tests/test_paths.py`, `tests/test_launcher_port.py`, `tests/test_desktop_updater.py` |
 | Reference parity | `gwm_reference/`, `advantage_p2_reference/` | Same package only | `tests/test_ecoventure_gwm_figures.py`, `tests/test_advantage_p2_reference.py` |
 | Supervisor / prompts | `scripts/agent_supervisor.py`, `scripts/agent_prompts/*` | One boundary per pass | `tests/test_agent_supervisor.py`, `tests/test_agent_supervisor_edge_cases.py` |
 | Full refactor | Parallel scouts | One implementer per boundary, serialized | Full E2E gate |
 
 ## E2E quality gate
 
-**Naming:** the quality gate is **three shell commands** below (`VERIFY_COMMANDS`). That is separate from the Streamlit UI’s **four workflow steps** (Upload → Validate → Configure → Generate). **Prepare** PNG/PDF is a Generate-step export action, not a fifth workflow step.
+**Naming:** the quality gate is **three shell commands** below (`VERIFY_COMMANDS`). That is separate from the Streamlit UI’s **four workflow steps** (Upload → Validate → Configure → Generate). **Prepare deliverables** (PNG · PDF · Word · package) is a Generate-step export action, not a fifth workflow step.
 
 Canonical command list is also `VERIFY_COMMANDS` in `scripts/agent_supervisor.py`. Exit non-zero if any step fails. CI mirror: `.github/workflows/e2e.yml`. IDE: use the project skill [`.cursor/skills/e2e-verify/SKILL.md`](.cursor/skills/e2e-verify/SKILL.md) when the user asks to test end to end.
 
@@ -91,7 +95,7 @@ Batch wrapper: `powershell -File scripts/run_verify_batch.ps1` (writes under `or
 
 **Deps:** CI and local verify need `pip install -r requirements.txt -r requirements-dev.txt` (pytest + `cursor-sdk` for supervisor unit tests).
 
-**CI hygiene (not E2E):** `.github/workflows/quality.yml` (PR and push to `main`/`master`) runs scoped ruff, engine coverage ≥70, pip-audit, and figure parity (`--suite all --warn-only`: missing pairs hard-fail, MSE soft) — not a substitute for `VERIFY_COMMANDS`.
+**CI hygiene (not E2E):** `.github/workflows/quality.yml` (PR and push to `main`/`master`) runs scoped ruff, engine coverage ≥70, pip-audit, and figure parity (`--suite all`: suite MSE ceilings hard-fail — GWM 12000 / P2 4500 in `scripts/compare_figure_parity.py`; default letterbox resize, `--stretch` for legacy; `--warn-only` still available for local soft runs; aspirational visual target remains lower but is not the CI gate) — not a substitute for `VERIFY_COMMANDS`.
 
 ### IDE iteration verify
 

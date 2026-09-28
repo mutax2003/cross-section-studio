@@ -196,6 +196,7 @@ def test_e2e_field_export_with_field_data_sheet() -> None:
     _, report = ingest_workbook(BytesIO(raw), profile_id="field_export_v1")
     assert "Field Data" in report.optional_sheets_detected
     assert any("Field Data" in warning for warning in report.warnings)
+    assert not any("future work" in warning.lower() for warning in report.warnings)
 
 
 # --- Excel ingestion edge cases ---

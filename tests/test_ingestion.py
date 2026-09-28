@@ -240,6 +240,57 @@ def test_field_data_sheet_warning(simple_field_export: bytes) -> None:
     _, report = ingest_workbook(BytesIO(data), profile_id="field_export_v1")
     assert "Field Data" in report.optional_sheets_detected
     assert any("Field Data" in warning for warning in report.warnings)
+    assert not any("future work" in warning.lower() for warning in report.warnings)
+
+
+def test_field_data_ova_ec_readings_advantage_shape() -> None:
+    """Advantage-style Field Data (Label, Depth interval, OVA, EC) → environmental readings."""
+    data = _field_export_bytes(
+        [
+            {
+                "hole_id": "BH-01",
+                "depth": "0.00-2.00m",
+                "lithology": "clay",
+                "lat": 58.57,
+                "long": -119.19,
+            },
+        ],
+        extra_sheets={
+            "Field Data": pd.DataFrame(
+                [
+                    {
+                        "Label": "BH-01",
+                        "Depth": "0.00-0.15m",
+                        "OVA": 125.0,
+                        "EC": 0.42,
+                    },
+                    {
+                        "Label": "BH-01",
+                        "Depth": "0.15-0.30m",
+                        "OVA": 80.0,
+                        "EC": None,
+                    },
+                ]
+            )
+        },
+    )
+    result, report = ingest_workbook(BytesIO(data), profile_id="field_export_v1")
+    assert "Field Data" in report.optional_sheets_detected
+    assert any("parsed 3 OVA/EC reading(s)" in warning for warning in report.warnings)
+    assert not any("future work" in warning.lower() for warning in report.warnings)
+
+    ova = [r for r in result.environmental_readings if r.parameter == "OVA"]
+    ec = [r for r in result.environmental_readings if r.parameter == "EC"]
+    assert len(ova) == 2
+    assert len(ec) == 1
+    assert ova[0].from_depth == pytest.approx(0.0)
+    assert ova[0].to_depth == pytest.approx(0.15)
+    assert ova[0].value == pytest.approx(125.0)
+    assert ova[0].unit == "ppm"
+    assert ec[0].value == pytest.approx(0.42)
+    assert ec[0].unit == ""
+    # Interval Depth must not become collar total_depth (lithology max remains).
+    assert result.collars[0].total_depth == pytest.approx(2.0)
 
 
 def test_field_export_ingest_keeps_water_overlay() -> None:
@@ -414,6 +465,12 @@ def test_screens_and_gradients_sheets_parsed() -> None:
     assert len(result.vertical_gradients) == 1
     assert result.vertical_gradients[0].hole_id == "MW-02"
     assert result.vertical_gradients[0].direction == "up"
+
+
+def test_parse_file_reuses_open_excel_file() -> None:
+    result = DataParser().parse_file(pd.ExcelFile(SAMPLE_WORKBOOK))
+    assert result.collars
+    assert result.lithologies
 
 
 def test_screens_and_gradients_unknown_hole_surface_errors() -> None:
@@ -722,4 +779,46 @@ def test_data_entry_water_precedence_warns_when_native_ignored(tmp_path: Path) -
     assert result.water_levels[0].series_id == "data-entry"
     assert result.water_levels[0].depth == pytest.approx(1.5)
     assert any("Native Water sheet was ignored" in message for message in result.errors)
+
+
+def test_sections_sheet_parses_and_seeds_batch_lines(tmp_path: Path) -> None:
+    from batch_export import parse_batch_transect_lines
+    from parse_ops import format_section_specs_as_batch_text
+
+    workbook = tmp_path / "sections.xlsx"
+    collars = [
+        {"hole_id": "MW-01", "easting": 0.0, "northing": 0.0, "elevation": 100.0, "total_depth": 10.0},
+        {"hole_id": "MW-02", "easting": 10.0, "northing": 0.0, "elevation": 100.0, "total_depth": 10.0},
+        {"hole_id": "MW-03", "easting": 20.0, "northing": 0.0, "elevation": 100.0, "total_depth": 10.0},
+    ]
+    lithology = [
+        {"hole_id": hid, "from_depth": 0.0, "to_depth": 10.0, "lithology_code": "Clay"}
+        for hid in ("MW-01", "MW-02", "MW-03")
+    ]
+    sections = [
+        {"section_label": "A-A'", "hole_ids": "MW-01, MW-02, MW-03"},
+        {"section_label": "B-B'", "hole_ids": "MW-01→MW-03"},
+        {"section_label": "C-C'", "hole_ids": "MW-01; MW-02"},
+        {"section_label": "Bad", "hole_ids": "MW-01"},  # <2 holes — skip
+        {"section_label": "Orphan", "hole_ids": "MW-01, GHOST"},  # unknown collar — skip
+        {"section_label": "Inject|Bad", "hole_ids": "MW-01, MW-02"},  # label injection — skip
+    ]
+    with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
+        pd.DataFrame(collars).to_excel(writer, sheet_name="Collars", index=False)
+        pd.DataFrame(lithology).to_excel(writer, sheet_name="Lithology", index=False)
+        pd.DataFrame(sections).to_excel(writer, sheet_name="Sections", index=False)
+
+    result, report = ingest_workbook(workbook)
+    assert "Sections" in report.optional_sheets_detected
+    assert len(result.section_specs) == 3
+    assert result.section_specs[0].hole_ids == ("MW-01", "MW-02", "MW-03")
+    assert result.section_specs[1].hole_ids == ("MW-01", "MW-03")
+    assert result.section_specs[2].hole_ids == ("MW-01", "MW-02")
+    assert report.section_specs == list(result.section_specs)
+    assert any("Sections sheet: loaded 3" in warning for warning in report.warnings)
+
+    batch_text = format_section_specs_as_batch_text(result.section_specs)
+    specs = parse_batch_transect_lines(batch_text)
+    assert [spec.label for spec in specs] == ["A-A'", "B-B'", "C-C'"]
+    assert specs[0].hole_ids == ("MW-01", "MW-02", "MW-03")
 

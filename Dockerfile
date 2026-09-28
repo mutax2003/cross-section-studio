@@ -14,6 +14,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY *.py ./
+COPY VERSION ./
 COPY gwm_reference ./gwm_reference
 COPY advantage_p2_reference ./advantage_p2_reference
 COPY data ./data

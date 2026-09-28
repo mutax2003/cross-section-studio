@@ -55,6 +55,12 @@ def _run_streamlit(app_path: str, port: int) -> int:
 
 
 def main() -> int:
+    # Sidecar path: apply a downloaded zip after the main UI process exits.
+    if len(sys.argv) > 1 and sys.argv[1] == "--apply-update":
+        from desktop_updater import main as apply_main
+
+        return apply_main(sys.argv[1:])
+
     from paths import app_root
 
     base = app_root()

@@ -121,12 +121,13 @@ class SectionSheetLayoutMixin:
             collar_lookup,
             profile_lookup=profile_lookup,
         )
-        if self.parameter_series_legend:
+        if self.parameter_series_legend and self.profile.show_parameter_legend_text:
             self._draw_compact_parameter_legend(ax)
         if self.profile.show_eol_bar:
             self._draw_eol_bars(ax, hole_summary, collar_depths, collar_lookup, track_half)
 
-        self._draw_scale_bar(ax)
+        if self.profile.show_scale_bar:
+            self._draw_scale_bar(ax)
         if self.profile.show_ve_annotation:
             self._draw_ve_annotation(ax)
 
@@ -156,7 +157,7 @@ class SectionSheetLayoutMixin:
         if self.show_legend and lithology_codes:
             fig.subplots_adjust(right=0.78, bottom=bottom_margin)
         else:
-            fig.tight_layout(rect=(0, bottom_margin - 0.02, 1, 1))
+            fig.subplots_adjust(bottom=bottom_margin)
 
         if self.profile.show_column_headers:
             self._draw_column_headers(ax, hole_summary, collar_depths, collar_lookup)

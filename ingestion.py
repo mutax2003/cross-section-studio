@@ -29,6 +29,7 @@ from models import (
     LITHOLOGY_COLUMNS,
     DataParser,
     ParseResult,
+    WorkbookSectionSpec,
     assign_missing_unit_orders,
     geology_sheet_counts,
     lithology_has_unit_order_column,
@@ -103,6 +104,7 @@ class ImportReport:
     suggested_utm_crs: str | None = None
     profile_default_elevation_m: float | None = None
     project_metadata: dict[str, str] = field(default_factory=dict)
+    section_specs: list[WorkbookSectionSpec] = field(default_factory=list)
 
 
 def _as_workbook(source: str | Path | BinaryIO | BytesIO | pd.ExcelFile) -> pd.ExcelFile:
@@ -388,9 +390,11 @@ def _field_data_maps(workbook: pd.ExcelFile) -> tuple[dict[str, float], dict[str
     if field_key is None:
         cached = ({}, {})
         workbook._xs_field_data_maps = cached  # type: ignore[attr-defined]
+        workbook._xs_field_data_frame = None  # type: ignore[attr-defined]
         return cached
 
     frame = pd.read_excel(workbook, sheet_name=field_key)
+    workbook._xs_field_data_frame = frame  # type: ignore[attr-defined]
     if frame.empty:
         cached = ({}, {})
         workbook._xs_field_data_maps = cached  # type: ignore[attr-defined]
@@ -407,6 +411,9 @@ def _field_data_maps(workbook: pd.ExcelFile) -> tuple[dict[str, float], dict[str
         if candidate in columns:
             elev_col = columns[candidate]
             break
+    # Prefer explicit TD headers. A "Depth" column may be sample intervals
+    # (e.g. "0.00-0.15m"); pd.to_numeric(errors="coerce") yields NaN for those
+    # and must not populate collar total_depth.
     td_col = None
     for candidate in ("total_depth", "td", "max_depth", "depth"):
         if candidate in columns:
@@ -433,6 +440,7 @@ def _field_data_maps(workbook: pd.ExcelFile) -> tuple[dict[str, float], dict[str
         if td_col is not None:
             td_frame = frame.loc[valid_holes, [hole_col, td_col]].copy()
             td_frame["_hole_id"] = td_frame[hole_col].astype(str).str.strip()
+            # Interval strings / non-numeric Depth values coerce to NaN → skipped.
             td_frame["_td"] = pd.to_numeric(td_frame[td_col], errors="coerce")
             td_frame = td_frame.dropna(subset=["_td"])
             if not td_frame.empty:
@@ -446,6 +454,14 @@ def _field_data_maps(workbook: pd.ExcelFile) -> tuple[dict[str, float], dict[str
     cached = (elevations, total_depths)
     workbook._xs_field_data_maps = cached  # type: ignore[attr-defined]
     return cached
+
+
+def get_cached_field_data_frame(workbook: pd.ExcelFile) -> pd.DataFrame | None:
+    """Return the Field Data sheet frame, using the single-read cache when available."""
+    if hasattr(workbook, "_xs_field_data_frame"):
+        return workbook._xs_field_data_frame  # type: ignore[attr-defined]
+    _field_data_maps(workbook)
+    return getattr(workbook, "_xs_field_data_frame", None)
 
 
 def _read_field_data_collar_elevations(workbook: pd.ExcelFile) -> dict[str, float]:
@@ -598,6 +614,7 @@ def _detect_optional_workbook_sheets(workbook: pd.ExcelFile) -> list[str]:
         "instructions": "Instructions",
         "screens": "Screens",
         "gradients": "Gradients",
+        "sections": "Sections",
     }
     detected: list[str] = []
     for sheet_name in workbook.sheet_names:
@@ -649,10 +666,7 @@ def ingest_workbook(
                 warnings.append(
                     "Field Data sheet detected — no TD column mapped; total depth inferred from lithology."
                 )
-        else:
-            warnings.append(
-                "Field Data sheet detected — not used for stratigraphy (OVA overlay is future work)."
-            )
+        # Native: OVA/EC success info is appended after parse (no future-work warning).
 
     project_metadata: dict[str, str] = {}
     if resolved_profile_id == DATA_ENTRY_PROFILE_ID:
@@ -662,9 +676,9 @@ def ingest_workbook(
         if hasattr(source, "seek"):
             source.seek(0)
         project_metadata = load_project_metadata(source)
-        if hasattr(source, "seek"):
-            source.seek(0)
-        parse_result = DataParser().parse_file(source, lithology_aliases=aliases)
+        parse_result = DataParser().parse_file(
+            source, lithology_aliases=aliases, workbook=workbook
+        )
         if "Data Entry" not in optional_sheets:
             optional_sheets.append("Data Entry")
         if project_metadata and "Project" not in optional_sheets:
@@ -682,9 +696,9 @@ def ingest_workbook(
         # Avoid pre-supplying collars_df/lithology_df (that path skips overlay sheets).
         profile_label = "Native platform (Collars + Lithology)"
         mapping_proposal = propose_workbook_mapping(workbook)
-        if hasattr(source, "seek"):
-            source.seek(0)
-        parse_result = DataParser().parse_file(source, lithology_aliases=aliases)
+        parse_result = DataParser().parse_file(
+            source, lithology_aliases=aliases, workbook=workbook
+        )
     else:
         profile = load_override(override_id) if override_id else load_profile(resolved_profile_id)
         resolved_profile_id = profile.id
@@ -714,6 +728,7 @@ def ingest_workbook(
             collars_df=collars_df,
             lithology_df=lithology_df,
             lithology_aliases=aliases,
+            workbook=workbook,
         )
 
     placeholder_elevation = (
@@ -746,7 +761,25 @@ def ingest_workbook(
                 faults=parse_result.faults,
                 unconformities=parse_result.unconformities,
                 environmental_readings=parse_result.environmental_readings,
+                section_specs=parse_result.section_specs,
             )
+
+    if "Field Data" in optional_sheets:
+        ova_ec_count = sum(
+            1
+            for reading in parse_result.environmental_readings
+            if reading.parameter.upper() in {"OVA", "EC"}
+        )
+        if ova_ec_count:
+            warnings.append(
+                f"Field Data sheet: parsed {ova_ec_count} OVA/EC reading(s)."
+            )
+
+    if parse_result.section_specs:
+        warnings.append(
+            f"Sections sheet: loaded {len(parse_result.section_specs)} transect "
+            "spec(s) for Configure multi-transect batch."
+        )
 
     qa = analyze_parsed_data(
         parse_result.collars,
@@ -781,6 +814,7 @@ def ingest_workbook(
         suggested_utm_crs=suggested_utm_crs,
         profile_default_elevation_m=profile_default_elevation_m,
         project_metadata=project_metadata,
+        section_specs=list(parse_result.section_specs),
     )
     return parse_result, report
 
@@ -800,7 +834,7 @@ def export_platform_workbook(
     resolved_profile_id = profile_id or detection.profile_id
 
     if resolved_profile_id == DATA_ENTRY_PROFILE_ID:
-        parse_result = DataParser().parse_file(source)
+        parse_result = DataParser().parse_file(source, workbook=workbook)
         collars_df = pd.DataFrame(
             [
                 {

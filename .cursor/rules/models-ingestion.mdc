@@ -13,7 +13,7 @@ alwaysApply: false
 | `models.py` | Pydantic schemas (`Collar`, `Lithology`, `ParseResult`, `ConsultingTitleBlock`, …) + compat re-exports |
 | `parsing.py` | `DataParser` and Excel sheet parsers |
 | `parse_ops.py` | `subset_parse_result`, `apply_unit_order_fix`, `geology_sheet_counts`, lithology index helpers |
-| `ingestion.py` | `FormatDetector`, `FieldExportAdapter`, `ingest_workbook()` |
+| `ingestion.py` | `FormatDetector`, `FieldExportAdapter`, `ingest_workbook()`, `get_cached_field_data_frame()` |
 | `workbook_template.py` | Multi-tab input template builder + Data Entry helpers (no geometry) |
 
 Prefer `from models import DataParser, subset_parse_result` (re-exports) or import from `parsing` / `parse_ops` directly. New parse logic goes in `parsing` / `parse_ops`, not `models.py`.
@@ -32,12 +32,14 @@ Prefer `from models import DataParser, subset_parse_result` (re-exports) or impo
 #   environmental_readings, ...
 ```
 
-Optional sheets: Water, Screens, Gradients, Deviations, Correlations, Faults, Unconformities, Environmental, Data Entry (compat).
+Optional sheets: Water, Screens, Gradients, Deviations, Correlations, Faults, Unconformities, Environmental, **Field Data**, Data Entry (compat).
 See `docs/workbook-format.md`. Template: `python scripts/build_input_template.py`.
 
 `ImportReport.unit_order_auto_assigned` is set when ingest fills missing `unit_order` values — not a `QualityIssue` code.
 
 Field-export CRS helper: `ingestion.suggest_utm_crs(latitudes, longitudes)`.
+
+**Field Data:** optional sheet with collar/interval columns plus `OVA` / `EC`. Parsing maps OVA/EC into `EnvironmentalReading` (parameter names `OVA` / `EC`) via `_parse_field_data_environmental_*`. Ingest and parse share the Excel frame through `ingestion.get_cached_field_data_frame(workbook)` (avoids a second `pd.read_excel`). Success messaging reports parsed OVA/EC reading counts — not “future work”.
 
 ### Parse error policy
 

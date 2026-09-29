@@ -366,3 +366,13 @@ def test_fetch_release_manifest_rejects_oversized_file(
     manifest.write_text("{" + " " * (MAX_UPDATE_MANIFEST_BYTES + 8) + "}", encoding="utf-8")
     with pytest.raises(ValueError, match="too large"):
         fetch_release_manifest(manifest.as_uri())
+
+
+def test_is_newer_orders_prereleases_per_semver() -> None:
+    assert is_newer("0.2.0", "0.2.0-rc1")          # final beats its rc
+    assert is_newer("0.2.0-rc2", "0.2.0-rc1")
+    assert not is_newer("0.2.0-rc1", "0.2.0")      # rc is not newer than final
+    assert not is_newer("0.2.0+build5", "0.2.0")   # build metadata ignored
+    assert is_newer("0.2.0-rc1.2", "0.2.0-rc1.1")
+    assert is_newer("0.2.0-rc.b", "0.2.0-rc.1")    # numeric identifiers sort first
+    assert parse_semver("0.2.0-rc1") == (0, 2, 0)  # public 3-tuple unchanged

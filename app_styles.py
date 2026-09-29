@@ -80,7 +80,8 @@ APP_CSS = """
     .metric-card.ok { border-color: #86efac; background: linear-gradient(180deg, #f0fdf4 0%, #fff 100%); }
     .metric-card.warn { border-color: #fcd34d; background: linear-gradient(180deg, #fffbeb 0%, #fff 100%); }
     .metric-card.error { border-color: #fca5a5; background: linear-gradient(180deg, #fef2f2 0%, #fff 100%); }
-    .section-card {
+    .section-card,
+    .st-key-section_card {
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: 14px;
@@ -171,7 +172,8 @@ APP_CSS = """
         overflow: hidden;
         background: #fff;
     }
-    .app-menubar {
+    .app-menubar,
+    .st-key-app_menubar {
         background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
         border: 1px solid var(--border);
         border-radius: 10px;

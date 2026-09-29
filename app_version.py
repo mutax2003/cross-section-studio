@@ -23,7 +23,8 @@ DEFAULT_UPDATE_MANIFEST_URL = (
 
 _SEMVER_RE = re.compile(
     r"^\s*v?(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
-    r"(?:[-+][0-9A-Za-z.-]+)?\s*$"
+    r"(?:-(?P<prerelease>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    r"(?:\+[0-9A-Za-z.-]+)?\s*$"
 )
 
 
@@ -74,9 +75,25 @@ def parse_semver(version: str) -> tuple[int, int, int]:
     )
 
 
+def _semver_key(version: str) -> tuple:
+    """Full semver ordering key: pre-releases sort below their release (spec §11)."""
+    match = _SEMVER_RE.match(str(version or ""))
+    if not match:
+        raise ValueError(f"Invalid version string: {version!r}")
+    core = (int(match.group("major")), int(match.group("minor")), int(match.group("patch")))
+    prerelease = match.group("prerelease")
+    if prerelease is None:
+        return (core, (1,), ())
+    identifiers = tuple(
+        (0, int(part), "") if part.isdigit() else (1, 0, part)
+        for part in prerelease.split(".")
+    )
+    return (core, (0,), identifiers)
+
+
 def is_newer(remote: str, local: str) -> bool:
-    """True when ``remote`` is a higher semver than ``local``."""
-    return parse_semver(remote) > parse_semver(local)
+    """True when ``remote`` is a higher semver than ``local`` (pre-release aware)."""
+    return _semver_key(remote) > _semver_key(local)
 
 
 def update_manifest_url() -> str:

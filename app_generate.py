@@ -306,39 +306,40 @@ def render_profile_and_downloads(
     if st.session_state.svg_bytes is None:
         return
 
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("Cross-Section Profile")
-    png_ready = bool(st.session_state.get("png_bytes"))
-    pdf_ready = bool(st.session_state.get("pdf_bytes"))
-    rasters_ready = png_ready and pdf_ready
-    _render_profile_chips(
-        interpretation_mode=interpretation_mode,
-        vertical_exaggeration=vertical_exaggeration,
-        hole_count=st.session_state.section_hole_count,
-        polygon_count=st.session_state.section_polygon_count,
-        is_stale=is_stale,
-        preset_label=preset_label,
-        render_layout=render_layout,
-        transect_label=transect_label,
-        png_ready=png_ready,
-        pdf_ready=pdf_ready,
-    )
-    if is_stale:
-        st.markdown(
-            '<div class="stale-banner" tabindex="0">Settings changed since the last build — '
-            "click <strong>Generate Cross-Section</strong> to refresh before download.</div>",
-            unsafe_allow_html=True,
+    # Keyed container: a raw <div> via st.markdown is auto-closed and wraps
+    # nothing, so the .section-card chrome never applied to this section.
+    with st.container(key="section_card"):
+        st.subheader("Cross-Section Profile")
+        png_ready = bool(st.session_state.get("png_bytes"))
+        pdf_ready = bool(st.session_state.get("pdf_bytes"))
+        rasters_ready = png_ready and pdf_ready
+        _render_profile_chips(
+            interpretation_mode=interpretation_mode,
+            vertical_exaggeration=vertical_exaggeration,
+            hole_count=st.session_state.section_hole_count,
+            polygon_count=st.session_state.section_polygon_count,
+            is_stale=is_stale,
+            preset_label=preset_label,
+            render_layout=render_layout,
+            transect_label=transect_label,
+            png_ready=png_ready,
+            pdf_ready=pdf_ready,
         )
-        if parse_result_available and st.button(
-            "Generate Cross-Section",
-            type="primary",
-            key="regenerate_stale",
-        ):
-            st.session_state["_regenerate_requested"] = True
-            st.rerun()
-    _render_overlap_warnings(st.session_state.polygon_overlap_warnings)
-    _display_svg(st.session_state.svg_bytes)
-    st.markdown("</div>", unsafe_allow_html=True)
+        if is_stale:
+            st.markdown(
+                '<div class="stale-banner" tabindex="0">Settings changed since the last build — '
+                "click <strong>Generate Cross-Section</strong> to refresh before download.</div>",
+                unsafe_allow_html=True,
+            )
+            if parse_result_available and st.button(
+                "Generate Cross-Section",
+                type="primary",
+                key="regenerate_stale",
+            ):
+                st.session_state["_regenerate_requested"] = True
+                st.rerun()
+        _render_overlap_warnings(st.session_state.polygon_overlap_warnings)
+        _display_svg(st.session_state.svg_bytes)
 
     base = _export_stem(
         section_title=section_title,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 
@@ -18,6 +19,7 @@ from constants import (
 from export_framing import ExportFramingConfig, merge_framing_into_profile_updates
 from lithology_codes import collect_lithology_codes
 from models import (
+    _XML_ILLEGAL,
     MAX_WATER_SERIES,
     Collar,
     ConsultingTitleBlock,
@@ -203,8 +205,8 @@ def compute_section_geometry(
 ) -> SectionGeometry:
     """Project boreholes, build stratigraphy, and collect overlap/correlation QA."""
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
-    if offset_warning_m <= 0:
-        raise ValueError("offset_warning_m must be positive")
+    if not math.isfinite(offset_warning_m) or offset_warning_m <= 0:
+        raise ValueError("offset_warning_m must be a positive finite number")
     if len(transect_points) < 2:
         raise ValueError("At least two transect points are required")
     transect = Transect(points=list(transect_points))
@@ -358,12 +360,14 @@ def build_cross_section(
     """Project, build stratigraphy, render. Returns ``CrossSectionResult`` (also unpackable as a 7-tuple)."""
     export_formats = _normalize_export_formats(export_formats)
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
-    if vertical_exaggeration <= 0:
-        raise ValueError("vertical_exaggeration must be positive")
-    if uncertainty_spacing_m <= 0:
-        raise ValueError("uncertainty_spacing_m must be positive")
-    if uncertainty_offset_m <= 0:
-        raise ValueError("uncertainty_offset_m must be positive")
+    if not math.isfinite(vertical_exaggeration) or vertical_exaggeration <= 0:
+        raise ValueError("vertical_exaggeration must be a positive finite number")
+    if not math.isfinite(uncertainty_spacing_m) or uncertainty_spacing_m <= 0:
+        raise ValueError("uncertainty_spacing_m must be a positive finite number")
+    if not math.isfinite(uncertainty_offset_m) or uncertainty_offset_m <= 0:
+        raise ValueError("uncertainty_offset_m must be a positive finite number")
+    if not math.isfinite(track_width_m) or track_width_m <= 0:
+        raise ValueError("track_width_m must be a positive finite number")
     geometry = compute_section_geometry(
         collars,
         lithologies,
@@ -493,14 +497,14 @@ def render_cross_section_from_geometry(
     """
     export_formats = _normalize_export_formats(export_formats)
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
-    if vertical_exaggeration <= 0:
-        raise ValueError("vertical_exaggeration must be positive")
-    if uncertainty_spacing_m <= 0:
-        raise ValueError("uncertainty_spacing_m must be positive")
-    if uncertainty_offset_m <= 0:
-        raise ValueError("uncertainty_offset_m must be positive")
-    if track_width_m <= 0:
-        raise ValueError("track_width_m must be positive")
+    if not math.isfinite(vertical_exaggeration) or vertical_exaggeration <= 0:
+        raise ValueError("vertical_exaggeration must be a positive finite number")
+    if not math.isfinite(uncertainty_spacing_m) or uncertainty_spacing_m <= 0:
+        raise ValueError("uncertainty_spacing_m must be a positive finite number")
+    if not math.isfinite(uncertainty_offset_m) or uncertainty_offset_m <= 0:
+        raise ValueError("uncertainty_offset_m must be a positive finite number")
+    if not math.isfinite(track_width_m) or track_width_m <= 0:
+        raise ValueError("track_width_m must be a positive finite number")
 
     projected = geometry.projected
     polygons = geometry.polygons
@@ -603,6 +607,10 @@ def render_cross_section_from_geometry(
     qa_lines = overlap_warnings
     if export_framing is not None and not export_framing.include_qa_footer:
         qa_lines = ()
+    # Scrub XML-1.0-illegal control characters so the SVG backend cannot emit
+    # unparseable documents (hole_ids are scrubbed at model validation).
+    title = _XML_ILLEGAL.sub("", title)
+    disclaimer = _XML_ILLEGAL.sub("", disclaimer)
     renderer = CrossSectionRenderer(
         vertical_exaggeration=vertical_exaggeration,
         scale_bar_length_m=auto_scale_bar_m(x_span),

@@ -76,6 +76,7 @@ class DataParser:
         screens_frame = None
         gradients_frame = None
         data_entry_precedence_warnings: list[str] = []
+        data_entry = None
         supplied_geology = collars_df is not None and lithology_df is not None
         if workbook is None:
             try:
@@ -95,32 +96,13 @@ class DataParser:
                 self._find_sheet(workbook.sheet_names, collars_name) is not None
                 and self._find_sheet(workbook.sheet_names, lithology_name) is not None
             )
-            data_entry = None
             if data_entry_sheet:
                 from workbook_template import parse_data_entry_sheet
 
                 entry_frame = pd.read_excel(workbook, sheet_name=data_entry_sheet, header=None)
                 data_entry = parse_data_entry_sheet(entry_frame)
-                if not data_entry.water.empty:
-                    water_frame = _normalize_columns(data_entry.water)
-                    if self._native_optional_sheet_has_rows(workbook, self.WATER_SHEET):
-                        data_entry_precedence_warnings.append(
-                            "Native Water sheet was ignored because Data Entry supplied water rows."
-                        )
                 if not data_entry.environmental.empty:
                     environmental_frame = _normalize_columns(data_entry.environmental)
-                if not data_entry.screens.empty:
-                    screens_frame = _normalize_columns(data_entry.screens)
-                    if self._native_optional_sheet_has_rows(workbook, self.SCREENS_SHEET):
-                        data_entry_precedence_warnings.append(
-                            "Native Screens sheet was ignored because Data Entry supplied screen rows."
-                        )
-                if not data_entry.gradients.empty:
-                    gradients_frame = _normalize_columns(data_entry.gradients)
-                    if self._native_optional_sheet_has_rows(workbook, self.GRADIENTS_SHEET):
-                        data_entry_precedence_warnings.append(
-                            "Native Gradients sheet was ignored because Data Entry supplied gradient rows."
-                        )
 
             if data_entry is not None and not has_native:
                 collars_frame = _normalize_columns(data_entry.collars)
@@ -148,6 +130,45 @@ class DataParser:
 
         collars, collar_errors = self._parse_collars(collars_frame)
         lithologies, lithology_errors = self._parse_lithologies(lithology_frame, collars)
+
+        if data_entry is not None:
+            # Data Entry overlay rows win over native optional tabs, but only
+            # when they reference the winning collar universe — otherwise the
+            # native tabs stay in effect (and no misleading warning is emitted).
+            valid_ids = {collar.hole_id for collar in collars}
+
+            def _data_entry_matches(frame: pd.DataFrame) -> bool:
+                ids = {
+                    str(value).strip()
+                    for value in frame.get("hole_id", [])
+                    if not self._blank_hole_id(value)
+                }
+                return not valid_ids or bool(ids & valid_ids)
+
+            if not data_entry.water.empty:
+                candidate = _normalize_columns(data_entry.water)
+                if _data_entry_matches(candidate):
+                    water_frame = candidate
+                    if self._native_optional_sheet_has_rows(workbook, self.WATER_SHEET):
+                        data_entry_precedence_warnings.append(
+                            "Native Water sheet was ignored because Data Entry supplied water rows."
+                        )
+            if not data_entry.screens.empty:
+                candidate = _normalize_columns(data_entry.screens)
+                if _data_entry_matches(candidate):
+                    screens_frame = candidate
+                    if self._native_optional_sheet_has_rows(workbook, self.SCREENS_SHEET):
+                        data_entry_precedence_warnings.append(
+                            "Native Screens sheet was ignored because Data Entry supplied screen rows."
+                        )
+            if not data_entry.gradients.empty:
+                candidate = _normalize_columns(data_entry.gradients)
+                if _data_entry_matches(candidate):
+                    gradients_frame = candidate
+                    if self._native_optional_sheet_has_rows(workbook, self.GRADIENTS_SHEET):
+                        data_entry_precedence_warnings.append(
+                            "Native Gradients sheet was ignored because Data Entry supplied gradient rows."
+                        )
         water_levels: list[WaterLevel] = []
         water_errors: list[str] = []
         deviation_readings: list[DeviationReading] = []
@@ -631,6 +652,9 @@ class DataParser:
                     payload["depth"] = None
                 else:
                     raise ValueError("depth or from_depth and to_depth are required")
+                value_raw = payload.get("value")
+                if value_raw is None or pd.isna(value_raw) or str(value_raw).strip() == "":
+                    raise ValueError("value is required")
                 if payload.get("value_label") in ("", None) or pd.isna(payload.get("value_label")):
                     payload["value_label"] = ""
                 reading = EnvironmentalReading.model_validate(payload)
@@ -773,6 +797,10 @@ class DataParser:
             return []
         faults: dict[str, list[tuple[float, float]]] = {}
         for row in frame.itertuples(index=False):
+            if pd.isna(row.x_profile) or pd.isna(row.elevation):
+                raise ValueError(
+                    f"Faults sheet: blank x_profile/elevation for fault {row.name!r}"
+                )
             faults.setdefault(str(row.name), []).append((float(row.x_profile), float(row.elevation)))
         return [
             Fault(name=name, trace_points=points)
@@ -789,6 +817,10 @@ class DataParser:
             return []
         surfaces: dict[str, list[tuple[float, float]]] = {}
         for row in frame.itertuples(index=False):
+            if pd.isna(row.x_profile) or pd.isna(row.elevation):
+                raise ValueError(
+                    f"Unconformities sheet: blank x_profile/elevation for surface {row.name!r}"
+                )
             surfaces.setdefault(str(row.name), []).append(
                 (float(row.x_profile), float(row.elevation))
             )

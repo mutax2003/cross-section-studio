@@ -183,7 +183,7 @@ class RendererWaterMixin:
             lowered = str(raw_marker).lower()
             marker = _GW_MARKER_MAP.get(lowered, raw_marker)
             if marker not in MarkerStyle.markers:
-                marker = lowered
+                marker = lowered if lowered in MarkerStyle.markers else "v"
             label = first.series_label or default_label or series_id
             level_by_hole = {level.hole_id: level for level in levels}
             if label_series_gaps:

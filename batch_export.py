@@ -61,8 +61,10 @@ class BatchTransectSpec:
     transect_points: tuple[tuple[float, float], ...] | None = None
 
     def __post_init__(self) -> None:
-        if len(self.hole_ids) < 2:
-            raise ValueError(f"Batch transect {self.label!r}: requires at least two holes")
+        if len(set(self.hole_ids)) < 2:
+            raise ValueError(
+                f"Batch transect {self.label!r}: requires at least two distinct holes"
+            )
         if self.transect_points is not None and len(self.transect_points) < 2:
             raise ValueError(f"Batch transect {self.label!r}: transect_points needs ≥2 points")
 
@@ -135,7 +137,7 @@ def prepare_batch_section_request(
 ) -> tuple[ParseResult, SectionBuildRequest]:
     """Subset workbook data and clone the base request for one batch transect."""
     subset = subset_parse_result(parse_result, spec.hole_ids)
-    if len(subset.collars) < 2:
+    if len({collar.hole_id for collar in subset.collars}) < 2:
         raise ValueError(
             f"Batch transect {spec.label!r}: need ≥2 collars with data "
             f"(got {len(subset.collars)})"
@@ -377,16 +379,17 @@ def build_batch_zip(
             # Sanitize (labels may carry path separators) and uniquify — zipfile
             # writes duplicate names silently and extractors keep only one.
             safe = _sanitize_stem(str(stem))
-            count = used.get(safe, 0)
-            used[safe] = count + 1
+            key = safe.lower()
+            count = used.get(key, 0)
+            used[key] = count + 1
             if count:
                 base = safe
                 safe = f"{base}_{count + 1}"
-                while safe in used:
+                while safe.lower() in used:
                     count += 1
-                    used[base] = count + 1
+                    used[key] = count + 1
                     safe = f"{base}_{count + 1}"
-                used[safe] = 1
+                used[safe.lower()] = 1
             if svg_bytes:
                 archive.writestr(f"{safe}.svg", svg_bytes)
             if png_bytes:

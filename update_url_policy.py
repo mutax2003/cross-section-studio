@@ -35,7 +35,7 @@ def normalize_url_hostname(host: str | None) -> str:
     ``file://../…`` look like authority-less local paths.
     """
     text = (host or "").strip().lower()
-    if len(text) > 1 and text.endswith(".") and text.strip("."):
+    if len(text) > 1 and text.endswith(".") and not text.endswith("..") and text.strip("."):
         text = text[:-1]
     return text
 

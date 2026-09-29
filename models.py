@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import re
 from typing import Literal
 
 import pandas as pd
@@ -32,6 +34,15 @@ MAX_WATER_SERIES = 4
 InterpretationMode = Literal["borehole_only", "interpolated", "correlation_lines"]
 
 
+# XML 1.0 disallows these control characters; matplotlib's SVG backend would
+# emit them verbatim and produce unparseable documents.
+_XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _clean_text(value: object) -> str:
+    return _XML_ILLEGAL.sub("", str(value)).strip()
+
+
 class Collar(BaseModel, frozen=True):
     hole_id: str
     easting: float
@@ -48,7 +59,14 @@ class Collar(BaseModel, frozen=True):
     def strip_hole_id(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("hole_id is required")
-        return str(value).strip()
+        return _clean_text(value)
+
+    @field_validator("easting", "northing", "elevation", "total_depth")
+    @classmethod
+    def require_finite(cls, value: float, info) -> float:
+        if not math.isfinite(value):
+            raise ValueError(f"{info.field_name} must be a finite number")
+        return value
 
     @field_validator("total_depth")
     @classmethod
@@ -80,14 +98,21 @@ class Lithology(BaseModel, frozen=True):
     def strip_strings(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("required string field is missing")
-        return str(value).strip()
+        return _clean_text(value)
+
+    @field_validator("from_depth", "to_depth")
+    @classmethod
+    def require_finite(cls, value: float, info) -> float:
+        if not math.isfinite(value):
+            raise ValueError(f"{info.field_name} must be a finite number")
+        return value
 
     @field_validator("hatch_pattern", mode="before")
     @classmethod
     def optional_string(cls, value: object) -> str | None:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return None
-        text = str(value).strip()
+        text = _clean_text(value)
         return text or None
 
     @field_validator("unit_order", mode="before")
@@ -103,7 +128,7 @@ class Lithology(BaseModel, frozen=True):
             if not value.is_integer():
                 raise ValueError("unit_order must be a whole number")
             return int(value)
-        text = str(value).strip()
+        text = _clean_text(value)
         if not text:
             return None
         try:
@@ -139,14 +164,14 @@ class WaterLevel(BaseModel, frozen=True):
     def strip_hole_id(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("hole_id is required")
-        return str(value).strip()
+        return _clean_text(value)
 
     @field_validator("series_id", mode="before")
     @classmethod
     def default_series_id(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return "default"
-        text = str(value).strip()
+        text = _clean_text(value)
         return text or "default"
 
     @field_validator("series_label", "connect_group", mode="before")
@@ -154,14 +179,14 @@ class WaterLevel(BaseModel, frozen=True):
     def strip_series_label(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return ""
-        return str(value).strip()
+        return _clean_text(value)
 
     @field_validator("status", mode="before")
     @classmethod
     def normalize_status(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return "measured"
-        text = str(value).strip().lower()
+        text = _clean_text(value).lower()
         if not text:
             return "measured"
         if text in {"dry", "d"}:
@@ -179,12 +204,14 @@ class WaterLevel(BaseModel, frozen=True):
     def optional_string(cls, value: object) -> str | None:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return None
-        text = str(value).strip()
+        text = _clean_text(value)
         return text or None
 
     @field_validator("depth")
     @classmethod
     def validate_depth(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("depth must be a finite number")
         if value < 0:
             raise ValueError("depth must be non-negative")
         return value
@@ -200,7 +227,14 @@ class ScreenInterval(BaseModel, frozen=True):
     def strip_hole_id(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("hole_id is required")
-        return str(value).strip()
+        return _clean_text(value)
+
+    @field_validator("from_depth", "to_depth")
+    @classmethod
+    def require_finite(cls, value: float, info) -> float:
+        if not math.isfinite(value):
+            raise ValueError(f"{info.field_name} must be a finite number")
+        return value
 
     @model_validator(mode="after")
     def validate_depths(self) -> ScreenInterval:
@@ -218,14 +252,14 @@ class VerticalGradient(BaseModel, frozen=True):
     def strip_hole_id(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("hole_id is required")
-        return str(value).strip()
+        return _clean_text(value)
 
     @field_validator("direction", mode="before")
     @classmethod
     def normalize_direction(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return "up"
-        text = str(value).strip().lower()
+        text = _clean_text(value).lower()
         if text in {"up", "u", "↑"}:
             return "up"
         if text in {"down", "d", "↓"}:
@@ -246,7 +280,7 @@ class DeviationReading(BaseModel, frozen=True):
     def strip_hole_id(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("hole_id is required")
-        return str(value).strip()
+        return _clean_text(value)
 
 
 class CorrelationOverride(BaseModel, frozen=True):
@@ -260,7 +294,7 @@ class CorrelationOverride(BaseModel, frozen=True):
     @field_validator("left_hole_id", "right_hole_id", mode="before")
     @classmethod
     def strip_ids(cls, value: object) -> str:
-        return str(value).strip()
+        return _clean_text(value)
 
 
 class Fault(BaseModel, frozen=True):
@@ -292,7 +326,7 @@ class EnvironmentalReading(BaseModel, frozen=True):
     @field_validator("hole_id", "parameter", mode="before")
     @classmethod
     def strip_text(cls, value: object) -> str:
-        return str(value).strip()
+        return _clean_text(value)
 
     @model_validator(mode="after")
     def validate_depth_fields(self) -> EnvironmentalReading:
@@ -338,7 +372,7 @@ class RasterLogStrip(BaseModel, frozen=True):
     @field_validator("hole_id", mode="before")
     @classmethod
     def strip_hole_id(cls, value: object) -> str:
-        return str(value).strip()
+        return _clean_text(value)
 
 
 class ConsultingTitleBlock(BaseModel, frozen=True):
@@ -403,7 +437,7 @@ class WorkbookSectionSpec(BaseModel, frozen=True):
     def strip_label(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("section_label is required")
-        text = str(value).strip()
+        text = _clean_text(value)
         if not text:
             raise ValueError("section_label is required")
         if any(ch in text for ch in ("\n", "\r", "|")):

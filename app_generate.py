@@ -345,6 +345,7 @@ def render_profile_and_downloads(
         export_framing=export_framing,
         consulting_title_block=consulting_title_block,
         transect_label=transect_label,
+        include_transect_label=True,
     )
     svg_bytes, png_data, pdf_data = _session_export_triple()
     metadata = export_metadata_payload(
@@ -465,16 +466,20 @@ def render_profile_and_downloads(
             if output_dir:
                 if st.button("Save to project folder", key="save_exports_folder", width="stretch"):
                     svg_bytes, png_bytes, pdf_bytes = _session_export_triple()
-                    written = save_exports_to_directory(
-                        output_dir,
-                        stem=base,
-                        svg_bytes=svg_bytes,
-                        png_bytes=png_bytes,
-                        pdf_bytes=pdf_bytes,
-                        metadata=metadata,
-                        docx_bytes=docx_bytes or None,
-                    )
-                    st.success(f"Saved {len(written)} file(s) to {output_dir}")
+                    try:
+                        written = save_exports_to_directory(
+                            output_dir,
+                            stem=base,
+                            svg_bytes=svg_bytes,
+                            png_bytes=png_bytes,
+                            pdf_bytes=pdf_bytes,
+                            metadata=metadata,
+                            docx_bytes=docx_bytes or None,
+                        )
+                    except (OSError, ValueError) as exc:
+                        st.error(f"Could not save to {output_dir}: {exc}")
+                    else:
+                        st.success(f"Saved {len(written)} file(s) to {output_dir}")
             else:
                 st.caption("Set **Export output folder** in sidebar framing to save files.")
 

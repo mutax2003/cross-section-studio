@@ -177,3 +177,12 @@ def test_fixed_page_margins_adjust_subplots() -> None:
         assert fig.subplotpars.right < 0.98
     finally:
         plt.close(fig)
+
+
+def test_build_export_filename_transect_label_opt_in() -> None:
+    kwargs = dict(pattern="section_title", section_title="Site", transect_label="T1")
+    assert build_export_filename(**kwargs) == "Site"
+    assert build_export_filename(**kwargs, include_transect_label=True) == "Site_T1"
+    # label == title stays un-doubled even when opted in
+    same = dict(pattern="section_title", section_title="Site", transect_label="Site")
+    assert build_export_filename(**same, include_transect_label=True) == "Site"

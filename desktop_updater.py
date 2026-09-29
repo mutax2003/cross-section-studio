@@ -519,8 +519,15 @@ def _restore_backup_to_install(
 
 
 def _ps_quote(value: object) -> str:
-    """PowerShell single-quoted literal: inert (no ``$`` / backtick expansion; non-ASCII safe)."""
-    return "'" + str(value).replace("'", "''") + "'"
+    """PowerShell single-quoted literal: inert (no ``$`` / backtick expansion; non-ASCII safe).
+
+    PS grammar (spec 2.3.5.2) treats U+2018..U+201B as single-quote characters
+    too, so those must be doubled alongside the ASCII apostrophe.
+    """
+    text = str(value)
+    for quote in ("'", "\u2018", "\u2019", "\u201a", "\u201b"):
+        text = text.replace(quote, quote * 2)
+    return "'" + text + "'"
 
 
 def _write_apply_script(

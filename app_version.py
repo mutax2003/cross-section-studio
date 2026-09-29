@@ -27,6 +27,9 @@ _SEMVER_RE = re.compile(
 )
 
 
+MAX_UPDATE_MANIFEST_BYTES = 1024 * 1024  # manifest is a small JSON file
+
+
 def normalize_version_text(value: str | None) -> str:
     """Strip whitespace and a single optional leading ``v`` / ``V``.
 
@@ -166,6 +169,10 @@ def fetch_release_manifest(
         from urllib.request import url2pathname
 
         path = Path(url2pathname(unquote(parsed.path)))
+        if path.stat().st_size > MAX_UPDATE_MANIFEST_BYTES:
+            raise ValueError(
+                f"Update manifest too large (> {MAX_UPDATE_MANIFEST_BYTES} bytes)"
+            )
         text = path.read_text(encoding="utf-8")
         payload = json.loads(text)
     else:
@@ -175,7 +182,11 @@ def fetch_release_manifest(
             method="GET",
         )
         with _urlopen_manifest(request, timeout_s=timeout_s) as response:  # noqa: S310
-            raw = response.read()
+            raw = response.read(MAX_UPDATE_MANIFEST_BYTES + 1)
+        if len(raw) > MAX_UPDATE_MANIFEST_BYTES:
+            raise ValueError(
+                f"Update manifest too large (> {MAX_UPDATE_MANIFEST_BYTES} bytes)"
+            )
         payload = json.loads(raw.decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("manifest root must be a JSON object")
@@ -215,7 +226,7 @@ def check_for_updates(
             manifest_url=manifest_url,
             error=f"Network error: {exc.reason}",
         )
-    except (OSError, ValueError, json.JSONDecodeError, TypeError) as exc:
+    except (OSError, ValueError, json.JSONDecodeError, TypeError, RecursionError) as exc:
         return UpdateCheckResult(
             current_version=current,
             latest_version=None,

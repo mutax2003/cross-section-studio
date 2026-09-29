@@ -847,10 +847,14 @@ def apply_update_from_zip(
             expected_sha = expected_sha256.strip().lower()
             got_sha = _sha256_file(zip_path)
             if got_sha != expected_sha:
-                raise ValueError(
+                msg = (
                     f"SHA-256 mismatch for update zip at apply time "
                     f"(got {got_sha}, expected {expected_sha})"
                 )
+                # The detached fallback apply runs with stderr at DEVNULL —
+                # the log is the only diagnostic channel (PS sidecar parity).
+                _append_apply_log(f"FAILURE: {msg}")
+                raise ValueError(msg)
 
         parent = target_install_dir.parent
         staging = parent / f"{target_install_dir.name}.new"

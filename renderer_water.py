@@ -8,6 +8,7 @@ from typing import TypedDict
 import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
+from matplotlib.markers import MarkerStyle
 
 from hydro_metrics import (
     format_gradient_label,
@@ -179,7 +180,10 @@ class RendererWaterMixin:
                 raw_marker = first.marker or default_marker or profile_marker
             else:
                 raw_marker = first.marker or profile_marker or default_marker
-            marker = _GW_MARKER_MAP.get(str(raw_marker).lower(), raw_marker)
+            lowered = str(raw_marker).lower()
+            marker = _GW_MARKER_MAP.get(lowered, raw_marker)
+            if marker not in MarkerStyle.markers:
+                marker = lowered
             label = first.series_label or default_label or series_id
             level_by_hole = {level.hole_id: level for level in levels}
             if label_series_gaps:

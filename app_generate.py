@@ -176,6 +176,7 @@ def _export_stem(
     export_framing: ExportFramingConfig | None,
     consulting_title_block: ConsultingTitleBlock | None,
     transect_label: str | None,
+    include_transect_label: bool = False,
 ) -> str:
     framing = export_framing or ExportFramingConfig()
     figure_number = consulting_title_block.figure_number if consulting_title_block else ""
@@ -188,6 +189,7 @@ def _export_stem(
         transect_label=transect_label or section_title,
         revision=framing.export_revision,
         draft=framing.show_draft_watermark,
+        include_transect_label=include_transect_label,
     )
 
 
@@ -258,6 +260,7 @@ def _render_batch_export(
                             export_framing=export_framing,
                             consulting_title_block=consulting_title_block,
                             transect_label=label,
+                            include_transect_label=True,
                         )
                     ),
                     svg_bytes,

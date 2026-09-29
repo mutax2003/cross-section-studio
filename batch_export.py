@@ -380,7 +380,13 @@ def build_batch_zip(
             count = used.get(safe, 0)
             used[safe] = count + 1
             if count:
-                safe = f"{safe}_{count + 1}"
+                base = safe
+                safe = f"{base}_{count + 1}"
+                while safe in used:
+                    count += 1
+                    used[base] = count + 1
+                    safe = f"{base}_{count + 1}"
+                used[safe] = 1
             if svg_bytes:
                 archive.writestr(f"{safe}.svg", svg_bytes)
             if png_bytes:

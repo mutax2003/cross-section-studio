@@ -124,6 +124,7 @@ def build_export_filename(
     transect_label: str = "",
     revision: str = "",
     draft: bool = False,
+    include_transect_label: bool = False,
 ) -> str:
     """Return a sanitized filename stem for deliverables."""
     rev = revision.strip()
@@ -144,7 +145,11 @@ def build_export_filename(
         return stem[:120].strip("_") or "cross_section"
 
     stem = _sanitize_stem(section_title)
-    label = _sanitize_stem(transect_label, fallback="") if transect_label.strip() else ""
+    label = (
+        _sanitize_stem(transect_label, fallback="")
+        if (include_transect_label and transect_label.strip())
+        else ""
+    )
     if label and label != stem:
         stem = f"{stem}_{label}"
     if rev:

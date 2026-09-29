@@ -305,39 +305,44 @@ def render_menubar() -> None:
 
 
 def _render_accelerator_buttons() -> None:
-    """Hidden buttons targeted by the keyboard bridge (must stay in the DOM)."""
-    st.markdown('<div class="app-menu-accels" aria-hidden="true">', unsafe_allow_html=True)
-    b1, b2, b3, b4, b5, b6 = st.columns(6)
-    with b1:
-        if st.button(ACCEL_SAMPLE, key="menu_accel_sample"):
-            try:
-                load_sample_workbook()
-            except FileNotFoundError as exc:
-                st.session_state["_menu_accel_error"] = str(exc)
-            st.rerun()
-    with b2:
-        if st.button(ACCEL_GENERATE, key="menu_accel_generate"):
-            st.session_state["_regenerate_requested"] = True
-            st.rerun()
-    with b3:
-        if st.button(ACCEL_CLEAR, key="menu_accel_clear"):
-            clear_section_output_state()
-            st.rerun()
-    with b4:
-        if st.button(ACCEL_HATCHES, key="menu_accel_hatches"):
-            st.session_state["show_hatches"] = not bool(
-                st.session_state.get("show_hatches", False)
-            )
-            st.rerun()
-    with b5:
-        if st.button(ACCEL_HELP_KEYS, key="menu_accel_help_keys"):
-            _set_help_topic("keyboard-shortcuts")
-            st.rerun()
-    with b6:
-        if st.button(ACCEL_HELP_START, key="menu_accel_help_start"):
-            _set_help_topic("getting-started")
-            st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+    """Hidden buttons targeted by the keyboard bridge (must stay in the DOM).
+
+    A keyed container gets a stable ``st-key-menu_accels`` class that the CSS
+    visually hides (clip, not ``display:none``, so the bridge's text lookup
+    and ``click()`` keep working). A raw ``<div>`` via ``st.markdown`` cannot
+    wrap later elements — Streamlit auto-closes it immediately.
+    """
+    with st.container(key="menu_accels"):
+        b1, b2, b3, b4, b5, b6 = st.columns(6)
+        with b1:
+            if st.button(ACCEL_SAMPLE, key="menu_accel_sample"):
+                try:
+                    load_sample_workbook()
+                except FileNotFoundError as exc:
+                    st.session_state["_menu_accel_error"] = str(exc)
+                st.rerun()
+        with b2:
+            if st.button(ACCEL_GENERATE, key="menu_accel_generate"):
+                st.session_state["_regenerate_requested"] = True
+                st.rerun()
+        with b3:
+            if st.button(ACCEL_CLEAR, key="menu_accel_clear"):
+                clear_section_output_state()
+                st.rerun()
+        with b4:
+            if st.button(ACCEL_HATCHES, key="menu_accel_hatches"):
+                st.session_state["show_hatches"] = not bool(
+                    st.session_state.get("show_hatches", False)
+                )
+                st.rerun()
+        with b5:
+            if st.button(ACCEL_HELP_KEYS, key="menu_accel_help_keys"):
+                _set_help_topic("keyboard-shortcuts")
+                st.rerun()
+        with b6:
+            if st.button(ACCEL_HELP_START, key="menu_accel_help_start"):
+                _set_help_topic("getting-started")
+                st.rerun()
     err = st.session_state.pop("_menu_accel_error", None)
     if err:
         st.error(err)

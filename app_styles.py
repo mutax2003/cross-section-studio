@@ -207,7 +207,8 @@ APP_CSS = """
         font-weight: 500;
         margin-left: 0.75rem;
     }
-    .app-menu-accels {
+    .app-menu-accels,
+    .st-key-menu_accels {
         position: absolute !important;
         width: 1px !important;
         height: 1px !important;

@@ -257,17 +257,16 @@ def _display_svg(svg_bytes: bytes) -> None:
     if not cached.valid:
         st.error("Renderer produced invalid or empty SVG output.")
         return
+    # One markdown block: Streamlit auto-closes a lone <div>, so splitting this
+    # across calls renders an empty bordered frame with the image outside it.
     st.markdown(
         f'<div class="svg-frame" role="img" aria-label="Cross-section profile" '
-        f'style="min-height:{cached.height}px;">',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
+        f'style="min-height:{cached.height}px;">'
         f'<img src="data:image/svg+xml;base64,{cached.encoded}" '
-        'style="width:100%;height:auto;display:block;" alt="Cross-section profile" />',
+        'style="width:100%;height:auto;display:block;" alt="Cross-section profile" />'
+        "</div>",
         unsafe_allow_html=True,
     )
-    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _render_overlap_warnings(warnings: Sequence[str]) -> None:

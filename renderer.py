@@ -1026,12 +1026,12 @@ class CrossSectionRenderer(
 
     def _draw_footers(self, fig: Figure) -> None:
         if self.disclaimer:
-            fig.text(0.5, 0.01, self.disclaimer, ha="center", va="bottom", fontsize=8, color="#64748B", style="italic")
-        footer_y = 0.045 if self.disclaimer else 0.01
+            fig.text(0.5, 0.008, self.disclaimer, ha="center", va="bottom", fontsize=8, color="#64748B", style="italic")
+        footer_y = 0.03 if self.disclaimer else 0.008
         metadata_lines = self._metadata_footer_lines()
         if metadata_lines and self.profile.title_block:
             fig.text(0.5, footer_y, " | ".join(metadata_lines), ha="center", va="bottom", fontsize=7, color="#475569")
-            footer_y += 0.02
+            footer_y += 0.022
         if self.overlap_pairs and self.profile.show_overlap_footer:
             fig.text(
                 0.5,

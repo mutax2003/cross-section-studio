@@ -164,7 +164,7 @@ class SectionSheetLayoutMixin:
             fig.supxlabel(
                 "Distance along transect (m)",
                 fontsize=10,
-                y=0.03,
+                y=0.058,
                 color=LABEL_COLOR,
             )
         else:

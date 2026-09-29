@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import re
 import zipfile
+from collections.abc import Mapping
 from io import BytesIO
-from typing import Literal, Mapping
-
-_FILENAME_SAFE_RE = re.compile(r"[^\w\-]+")
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+_FILENAME_SAFE_RE = re.compile(r"[^\w\-]+")
 
 ExportPagePreset = Literal[
     "auto",
@@ -143,6 +144,9 @@ def build_export_filename(
         return stem[:120].strip("_") or "cross_section"
 
     stem = _sanitize_stem(section_title)
+    label = _sanitize_stem(transect_label, fallback="") if transect_label.strip() else ""
+    if label and label != stem:
+        stem = f"{stem}_{label}"
     if rev:
         stem = f"{stem}_{_sanitize_stem(rev, fallback='rev')}"
     return stem[:120].strip("_") or "cross_section"

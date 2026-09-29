@@ -493,7 +493,7 @@ def test_write_apply_script_has_rollback_and_log(
     assert "Expand-ZipConfined" in body
     assert "Unsafe zip member path" in body
     assert "expected_version is required" in body
-    assert f'$expectedVersion = "{TEST_VERSION}"' in body
+    assert f"$expectedVersion = '{TEST_VERSION}'" in body
     assert "VERSION mismatch after extract" in body
     # Segment-level .. rejection must stay in the PS sidecar (parity with Python).
     assert "$part -eq '..'" in body or '$part -eq ".."' in body
@@ -671,7 +671,7 @@ def test_download_update_zip_allows_github_https(
         def read(self, size: int = -1) -> bytes:
             return self._buf.read(size)
 
-        def __enter__(self) -> "_FakeResponse":
+        def __enter__(self) -> _FakeResponse:
             return self
 
         def __exit__(self, *args: object) -> None:
@@ -758,7 +758,7 @@ def test_download_update_zip_allowlist_env_replaces_defaults(
         def read(self, size: int = -1) -> bytes:
             return self._buf.read(size)
 
-        def __enter__(self) -> "_FakeResponse":
+        def __enter__(self) -> _FakeResponse:
             return self
 
         def __exit__(self, *args: object) -> None:

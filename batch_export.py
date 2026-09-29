@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
+import threading
 import zipfile
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Sequence
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
+from export_framing import _sanitize_stem
 from models import Collar, ConsultingTitleBlock, ParseResult
 from parse_ops import subset_parse_result
 from pipeline import (
-    ALL_EXPORT_FORMATS,
     SectionGeometry,
     compute_section_geometry,
     render_cross_section_from_geometry,
@@ -26,24 +28,28 @@ BATCH_DEFAULT_EXPORT_FORMATS = frozenset({"png", "pdf"})
 
 _GEOMETRY_MEMO_MAX = 8
 _geometry_memo: OrderedDict[str, SectionGeometry] = OrderedDict()
+_geometry_memo_lock = threading.Lock()
 
 
 def _memo_section_geometry(cache_key: str, factory) -> SectionGeometry:
     """Process-local LRU for multi-transect ZIP rebuilds (no Streamlit cache)."""
-    cached = _geometry_memo.get(cache_key)
-    if cached is not None:
-        _geometry_memo.move_to_end(cache_key)
-        return cached
+    with _geometry_memo_lock:
+        cached = _geometry_memo.get(cache_key)
+        if cached is not None:
+            _geometry_memo.move_to_end(cache_key)
+            return cached
     geometry = factory()
-    _geometry_memo[cache_key] = geometry
-    while len(_geometry_memo) > _GEOMETRY_MEMO_MAX:
-        _geometry_memo.popitem(last=False)
+    with _geometry_memo_lock:
+        _geometry_memo[cache_key] = geometry
+        while len(_geometry_memo) > _GEOMETRY_MEMO_MAX:
+            _geometry_memo.popitem(last=False)
     return geometry
 
 
 def clear_batch_geometry_memo() -> None:
     """Clear the process-local geometry memo (tests / long-running workers)."""
-    _geometry_memo.clear()
+    with _geometry_memo_lock:
+        _geometry_memo.clear()
 
 
 @dataclass(frozen=True)
@@ -140,7 +146,7 @@ def prepare_batch_section_request(
         parse_result.collars, spec.hole_ids
     )
     title = base_request.section_title
-    if spec.label and spec.label not in title:
+    if spec.label and not title.endswith(f"— {spec.label}"):
         title = f"{base_request.section_title} — {spec.label}"
     consulting = _consulting_for_spec(
         base_request.consulting_title_block,
@@ -177,7 +183,11 @@ def build_one_transect_exports(
     subset, request = prepare_batch_section_request(parse_result, base_request, spec)
     formats = export_formats or BATCH_DEFAULT_EXPORT_FORMATS
     hole_ids = tuple(collar.hole_id for collar in subset.collars)
-    geometry_key = request.geometry_cache_key(hole_ids)
+    # Key must cover the geology data too — geometry_cache_key hashes only the
+    # request (transect/mode/overrides), and a re-uploaded workbook must not
+    # serve stale polygons from the process-local memo.
+    subset_digest = hashlib.sha256(subset.model_dump_json().encode("utf-8")).hexdigest()
+    geometry_key = subset_digest + "|" + request.geometry_cache_key(hole_ids)
 
     def _compute() -> SectionGeometry:
         return compute_section_geometry(
@@ -361,14 +371,22 @@ def build_batch_zip(
 ) -> bytes:
     """Zip multiple transect exports. Each entry is (stem, svg, png, pdf)."""
     buffer = BytesIO()
+    used: dict[str, int] = {}
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for stem, svg_bytes, png_bytes, pdf_bytes in entries:
+            # Sanitize (labels may carry path separators) and uniquify — zipfile
+            # writes duplicate names silently and extractors keep only one.
+            safe = _sanitize_stem(str(stem))
+            count = used.get(safe, 0)
+            used[safe] = count + 1
+            if count:
+                safe = f"{safe}_{count + 1}"
             if svg_bytes:
-                archive.writestr(f"{stem}.svg", svg_bytes)
+                archive.writestr(f"{safe}.svg", svg_bytes)
             if png_bytes:
-                archive.writestr(f"{stem}.png", png_bytes)
+                archive.writestr(f"{safe}.png", png_bytes)
             if pdf_bytes:
-                archive.writestr(f"{stem}.pdf", pdf_bytes)
+                archive.writestr(f"{safe}.pdf", pdf_bytes)
         if binder_pdf:
             archive.writestr("report_binder.pdf", binder_pdf)
     buffer.seek(0)

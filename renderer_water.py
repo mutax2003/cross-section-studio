@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Sequence, TypedDict
+from collections.abc import Sequence
+from typing import TypedDict
 
 import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
 
-from models import WaterLevel
 from hydro_metrics import (
     format_gradient_label,
     horizontal_gradients_along_profile,
     water_head_masl,
     water_status,
 )
+from models import WaterLevel
 from render_theme import (
     CONSULTING_NM_COLOR,
     CONSULTING_WATER_COLOR,
@@ -174,8 +175,11 @@ class RendererWaterMixin:
                 series_index=series_index,
             )
             color = first.color or water_color or default_color or default_water_color
-            marker_key = (first.marker or default_marker or profile_marker).lower()
-            marker = _GW_MARKER_MAP.get(marker_key, marker_key)
+            if self.profile.layout == "consulting_section":
+                raw_marker = first.marker or default_marker or profile_marker
+            else:
+                raw_marker = first.marker or profile_marker or default_marker
+            marker = _GW_MARKER_MAP.get(str(raw_marker).lower(), raw_marker)
             label = first.series_label or default_label or series_id
             level_by_hole = {level.hole_id: level for level in levels}
             if label_series_gaps:
@@ -322,7 +326,19 @@ class RendererWaterMixin:
                         series_id=series_id,
                         connect_group=group_id,
                     )
+                    adjacent_pairs = set(
+                        zip(transect_hole_ids, transect_hole_ids[1:], strict=False)
+                    )
                     for segment in gradient_segments:
+                        if (
+                            use_segments
+                            and not across_gaps
+                            and (segment.left_hole_id, segment.right_hole_id)
+                            not in adjacent_pairs
+                        ):
+                            # Segments mode draws no water line across a dry/NM
+                            # gap — do not float an i= label over the open gap.
+                            continue
                         mid_collar = 0.5 * (
                             float(profile_lookup[segment.left_hole_id][1])
                             + float(profile_lookup[segment.right_hole_id][1])

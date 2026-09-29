@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from bisect import bisect_left
-from typing import Sequence, TypedDict
+from collections.abc import Sequence
+from typing import TypedDict
 
 import numpy as np
 import pandas as pd
@@ -106,6 +107,7 @@ def _resolve_parameter_label_offsets(
     marker_labels: list[tuple[float, float, str]],
     *,
     min_gap_pts: float = _PARAMETER_LABEL_MIN_GAP_PTS,
+    invert_y: bool = False,
 ) -> list[tuple[float, float, bool]]:
     """Return ``(dx, dy, draw_leader)`` offset-points for each parameter label.
 
@@ -120,6 +122,9 @@ def _resolve_parameter_label_offsets(
         groups.setdefault(round(float(x_profile), 4), []).append(index)
 
     y0, y1 = ax.get_ylim()
+    # Work in a screen-oriented space: larger value = higher on screen. In
+    # depth_below_collar mode (inverted axis) data-y grows downward, so flip.
+    sign = -1.0 if (invert_y or float(y0) > float(y1)) else 1.0
     data_span = abs(float(y1) - float(y0)) or 1.0
     pos = ax.get_position()
     height_pts = float(ax.figure.get_figheight()) * float(pos.height) * 72.0
@@ -131,19 +136,20 @@ def _resolve_parameter_label_offsets(
     ]
 
     for indices in groups.values():
-        indices_sorted = sorted(indices, key=lambda i: marker_labels[i][1], reverse=True)
+        indices_sorted = sorted(indices, key=lambda i: sign * marker_labels[i][1], reverse=True)
         last_text_y: float | None = None
         for label_index in indices_sorted:
             _x, y, _text = marker_labels[label_index]
-            marker_y_pts = float(y) * pts_per_data
+            marker_y_pts = sign * float(y) * pts_per_data
             dy = _PARAMETER_LABEL_BASE_DY
             text_y = marker_y_pts + dy
             if last_text_y is not None and text_y > last_text_y - min_gap_pts:
                 text_y = last_text_y - min_gap_pts
                 dy = text_y - marker_y_pts
             # Keep labels inside axes (inverted Y still has y0/y1 span).
-            y_lo_pts = min(float(y0), float(y1)) * pts_per_data
-            y_hi_pts = max(float(y0), float(y1)) * pts_per_data
+            bound_a = sign * float(y0) * pts_per_data
+            bound_b = sign * float(y1) * pts_per_data
+            y_lo_pts, y_hi_pts = min(bound_a, bound_b), max(bound_a, bound_b)
             text_y = min(max(text_y, y_lo_pts + min_gap_pts * 0.25), y_hi_pts - min_gap_pts * 0.25)
             dy = text_y - marker_y_pts
             draw_leader = abs(dy - _PARAMETER_LABEL_BASE_DY) > _PARAMETER_LABEL_LEADER_EPS_PTS
@@ -313,7 +319,9 @@ class RendererChemistryMixin:
                 )
                 continue
             label_offsets = _resolve_parameter_label_offsets(
-                ax, [(x, y, text) for x, y, text, _ in marker_labels]
+                ax,
+                [(x, y, text) for x, y, text, _ in marker_labels],
+                invert_y=self.profile.y_axis_mode == "depth_below_collar",
             )
             label_base_kwargs: dict[str, object] = {
                 "textcoords": "offset points",

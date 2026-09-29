@@ -15,9 +15,10 @@ import sys
 import time
 import urllib.request
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, TextIO
+from typing import TextIO
 
 from app_version import UpdateCheckResult
 from app_version import normalize_version_text as _normalize_version_text
@@ -34,6 +35,7 @@ APPLY_WAIT_PID_TIMEOUT_S = 180.0
 APPLY_POST_EXIT_SLEEP_S = 1.0
 APPLY_LOCK_NAME = "apply_update.lock"
 APPLY_LOCK_STALE_S = 3600.0
+MAX_UPDATE_ZIP_BYTES = 2 * 1024**3  # hard ceiling for the update zip download
 
 
 @dataclass(frozen=True)
@@ -165,6 +167,10 @@ def download_update_zip(
     with _urlopen_update(request, timeout_s=timeout_s) as response:  # noqa: S310
         total_header = response.headers.get("Content-Length")
         total = int(total_header) if total_header and total_header.isdigit() else None
+        if total is not None and total > MAX_UPDATE_ZIP_BYTES:
+            raise ValueError(
+                f"Update zip too large ({total} bytes; limit {MAX_UPDATE_ZIP_BYTES})"
+            )
         if total is not None:
             free = _disk_free_bytes(updates_dir())
             # Need room for zip + extracted tree + brief backup.
@@ -174,17 +180,25 @@ def download_update_zip(
                     f"(need ~{total * 2.5 / 1e6:.0f} MB, have {free / 1e6:.0f} MB)"
                 )
         written = 0
-        with dest.open("wb") as out:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                out.write(chunk)
-                written += len(chunk)
-                if progress and total:
-                    progress("Downloading…", min(1.0, written / total))
-                elif progress:
-                    progress(f"Downloading… ({written // (1024 * 1024)} MB)", None)
+        try:
+            with dest.open("wb") as out:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    written += len(chunk)
+                    if written > MAX_UPDATE_ZIP_BYTES:
+                        raise ValueError(
+                            f"Update download exceeded {MAX_UPDATE_ZIP_BYTES} bytes; aborting"
+                        )
+                    if progress and total:
+                        progress("Downloading…", min(1.0, written / total))
+                    elif progress:
+                        progress(f"Downloading… ({written // (1024 * 1024)} MB)", None)
+        except BaseException:
+            dest.unlink(missing_ok=True)
+            raise
 
     if progress:
         progress("Verifying SHA-256…", None)
@@ -504,6 +518,11 @@ def _restore_backup_to_install(
         ) from restore_exc
 
 
+def _ps_quote(value: object) -> str:
+    """PowerShell single-quoted literal: inert (no ``$`` / backtick expansion; non-ASCII safe)."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def _write_apply_script(
     *,
     zip_path: Path,
@@ -511,18 +530,18 @@ def _write_apply_script(
     wait_pid: int,
     relaunch: bool,
     expected_version: str,
+    expected_sha256: str | None = None,
 ) -> Path:
     """Write a PowerShell apply script outside the install tree (avoids self-replace locks)."""
-    import json
-
     script = updates_dir() / "apply_update.ps1"
     relaunch_exe = target_install_dir / "CrossSectionStudio.exe"
-    zip_lit = json.dumps(str(zip_path))
-    install_lit = json.dumps(str(target_install_dir))
-    exe_lit = json.dumps(str(relaunch_exe))
-    log_lit = json.dumps(str(apply_log_path()))
-    lock_lit = json.dumps(str(apply_lock_path()))
-    expected_version_lit = json.dumps(_require_expected_version(expected_version))
+    zip_lit = _ps_quote(zip_path)
+    install_lit = _ps_quote(target_install_dir)
+    exe_lit = _ps_quote(relaunch_exe)
+    log_lit = _ps_quote(apply_log_path())
+    lock_lit = _ps_quote(apply_lock_path())
+    expected_version_lit = _ps_quote(_require_expected_version(expected_version))
+    expected_sha_lit = _ps_quote((expected_sha256 or "").strip().lower())
     wait_timeout_s = int(APPLY_WAIT_PID_TIMEOUT_S)
     post_sleep_s = int(APPLY_POST_EXIT_SLEEP_S)
     stale_s = int(APPLY_LOCK_STALE_S)
@@ -534,6 +553,7 @@ $waitPid = {int(wait_pid)}
 $logFile = {log_lit}
 $lockFile = {lock_lit}
 $expectedVersion = {expected_version_lit}
+$expectedSha256 = {expected_sha_lit}
 $staging = Join-Path (Split-Path -Parent $installDir) ((Split-Path -Leaf $installDir) + ".new")
 $backup = Join-Path (Split-Path -Parent $installDir) ((Split-Path -Leaf $installDir) + ".bak-" + [int][double]::Parse((Get-Date -UFormat %s)))
 $relaunch = {relaunch_lit}
@@ -707,6 +727,13 @@ try {{
     Start-Sleep -Seconds $postSleepS
   }}
 
+  if (-not [string]::IsNullOrWhiteSpace($expectedSha256)) {{
+    $gotSha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($gotSha -ne $expectedSha256) {{
+      throw "SHA-256 mismatch for update zip at apply time (got $gotSha, expected $expectedSha256)"
+    }}
+  }}
+
   if (Test-Path -LiteralPath $staging) {{ Remove-Item -LiteralPath $staging -Recurse -Force }}
   New-Item -ItemType Directory -Path $staging | Out-Null
   Expand-ZipConfined $zip $staging
@@ -776,7 +803,7 @@ try {{
   }}
 }}
 """
-    script.write_text(body, encoding="utf-8")
+    script.write_text(body, encoding="utf-8-sig")
     return script
 
 
@@ -787,6 +814,7 @@ def apply_update_from_zip(
     expected_version: str,
     wait_pid: int = 0,
     relaunch: bool = True,
+    expected_sha256: str | None = None,
 ) -> Path:
     """Replace ``target_install_dir`` contents from ``zip_path`` after ``wait_pid`` exits.
 
@@ -814,6 +842,15 @@ def apply_update_from_zip(
         # Match PowerShell: only pause after a real parent-PID wait.
         if wait_pid > 0:
             time.sleep(APPLY_POST_EXIT_SLEEP_S)
+
+        if expected_sha256:
+            expected_sha = expected_sha256.strip().lower()
+            got_sha = _sha256_file(zip_path)
+            if got_sha != expected_sha:
+                raise ValueError(
+                    f"SHA-256 mismatch for update zip at apply time "
+                    f"(got {got_sha}, expected {expected_sha})"
+                )
 
         parent = target_install_dir.parent
         staging = parent / f"{target_install_dir.name}.new"
@@ -882,6 +919,7 @@ def schedule_sidecar_apply(
     zip_path: Path,
     *,
     expected_version: str,
+    expected_sha256: str | None = None,
     install_root: Path | None = None,
 ) -> int:
     """Spawn detached PowerShell that applies the zip after this process exits.
@@ -897,11 +935,12 @@ def schedule_sidecar_apply(
         wait_pid=wait_pid,
         relaunch=True,
         expected_version=expected_norm,
+        expected_sha256=expected_sha256,
     )
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         # Fallback for tests / non-Windows: run in-process apply via python module.
-        return _schedule_python_apply(zip_path, root, wait_pid, expected_norm)
+        return _schedule_python_apply(zip_path, root, wait_pid, expected_norm, expected_sha256)
 
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
         subprocess, "CREATE_NEW_PROCESS_GROUP", 0
@@ -939,7 +978,11 @@ def schedule_sidecar_apply(
 
 
 def _schedule_python_apply(
-    zip_path: Path, root: Path, wait_pid: int, expected_version: str
+    zip_path: Path,
+    root: Path,
+    wait_pid: int,
+    expected_version: str,
+    expected_sha256: str | None = None,
 ) -> int:
     cmd = [
         sys.executable,
@@ -954,6 +997,8 @@ def _schedule_python_apply(
         "--expected-version",
         _require_expected_version(expected_version),
     ]
+    if expected_sha256:
+        cmd += ["--expected-sha256", expected_sha256.strip().lower()]
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
         subprocess, "CREATE_NEW_PROCESS_GROUP", 0
     )
@@ -982,7 +1027,9 @@ def download_and_schedule_install(
         )
     downloaded = download_update_zip(result, progress=progress)
     schedule_sidecar_apply(
-        downloaded.zip_path, expected_version=downloaded.version
+        downloaded.zip_path,
+        expected_version=downloaded.version,
+        expected_sha256=downloaded.sha256,
     )
     return downloaded
 
@@ -998,6 +1045,7 @@ def parse_apply_argv(argv: list[str] | None = None) -> argparse.Namespace | None
     parser.add_argument("--install-dir", required=True, type=Path)
     parser.add_argument("--wait-pid", type=int, default=0)
     parser.add_argument("--expected-version", required=True)
+    parser.add_argument("--expected-sha256", default=None)
     parser.add_argument("--no-relaunch", action="store_true")
     return parser.parse_args(args)
 
@@ -1017,6 +1065,7 @@ def main(argv: list[str] | None = None) -> int:
         expected_version=parsed.expected_version,
         wait_pid=parsed.wait_pid,
         relaunch=not parsed.no_relaunch,
+        expected_sha256=parsed.expected_sha256,
     )
     return 0
 

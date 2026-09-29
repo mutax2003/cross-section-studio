@@ -28,7 +28,12 @@ from app_upload import (
     load_sample_workbook,
     render_input_template_download,
 )
-from constants import USGS_LITHOLOGY_HATCHES, get_lithology_style, save_lithology_style_override
+from constants import (
+    DEFAULT_PROFILE_ELEVATION_M,
+    USGS_LITHOLOGY_HATCHES,
+    get_lithology_style,
+    save_lithology_style_override,
+)
 from export_framing import ExportFramingConfig
 from ingestion import DATA_ENTRY_PROFILE_ID, NATIVE_PROFILE_ID, list_profiles
 from models import ConsultingTitleBlock
@@ -408,7 +413,7 @@ def render_sidebar() -> SidebarState:
     uncertainty_offset_m = float(st.session_state.get("uncertainty_offset_m", 50.0))
     selected_profile_key = "auto"
     override_id: str | None = None
-    default_elevation_m = 100.0
+    default_elevation_m = DEFAULT_PROFILE_ELEVATION_M
     target_crs: str | None = "EPSG:32611"
     consulting_title_block: ConsultingTitleBlock | None = None
 
@@ -714,7 +719,7 @@ def _render_import_settings(*, expanded: bool = False) -> tuple[str, str | None,
         default_elevation_m = st.number_input(
             "Default collar elevation (m)",
             min_value=0.0,
-            value=100.0,
+            value=DEFAULT_PROFILE_ELEVATION_M,
             step=1.0,
             help="Used for field exports without RL/elevation column",
         )

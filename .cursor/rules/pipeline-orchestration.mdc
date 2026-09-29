@@ -61,7 +61,7 @@ Note: pipeline defaults `allow_pinch_outs=True`; **`SectionBuildRequest.allow_pi
 | `_DEFAULT_EXPORT_FORMATS` | `{"svg"}` | Tests, smoke scripts (default when `export_formats` omitted) |
 | `SVG_PNG_EXPORT_FORMATS` | `{"svg", "png"}` | Scripts / callers that need raster without PDF |
 | `PDF_EXPORT_FORMATS` | `{"pdf"}` | PDF-only callers |
-| `ALL_EXPORT_FORMATS` | `{"svg", "png", "pdf"}` | `cached_build_section_bundle` / scripts; Generate uses SVG-only |
+| `ALL_EXPORT_FORMATS` | `{"svg", "png", "pdf"}` | `cached_build_section_bundle` (Prepare cold path); Generate uses SVG-only |
 
 Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes the same figure to requested formats. PDF uses `report_export.export_section_pdf()` with the existing figure (no second render when `section_figure` is passed). Consulting defaults to a fixed letter landscape canvas (`figsize=(11, 8.5)`, `bbox_inches=None`) so PNG at 300 dpi is ≈ 3300×2550; **`ExportFramingConfig` page presets / margins may override at export time**.
 
@@ -100,7 +100,7 @@ Single matplotlib render; `CrossSectionRenderer.export_figure_bytes()` encodes t
 - **Generate:** `cached_build_section()` builds **SVG only**; geometry via `cached_compute_section_geometry(subset_json, geometry_request_json)` → `SectionGeometry` (Streamlit `@st.cache_data` serializes; no manual pickle). Cache always computes with `fail_on_overlaps=False` / `warn_on_correlation_gaps=True`; `_apply_section_geometry_qa()` then applies the request’s real QA flags.
 - **Prepare deliverables:** UI builds PNG+PDF via `cached_build_section_exports()` — **one** matplotlib draw for both formats; reuses cached `SectionGeometry`. Optional DOCX (`docx_export`). **Multi-transect ZIP** (`batch_export.build_multi_transect_exports`) rebuilds each Configure batch line through the pipeline.
 - **Wrappers:** `cached_build_section_png()` / `cached_build_section_pdf()` delegate to exports (shared draw cache); UI `_ensure_png_export` / `_ensure_pdf_export` call `_ensure_both_exports()`
-- **One-shot:** `cached_build_section_bundle()` still offers SVG+PNG+PDF for scripts; not used by Generate
+- **One-shot:** `cached_build_section_bundle()` — full-export cold path: Prepare fallback in `app_generate._ensure_all_exports()` when no SVG is cached; not the routine Generate draw
 - **API:** `render_cross_section_from_geometry()` renders from precomputed geometry without re-projecting
 
 ## Overlap gating (production QA)

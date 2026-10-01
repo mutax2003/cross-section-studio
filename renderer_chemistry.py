@@ -9,13 +9,15 @@ from typing import TypedDict
 import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
+from matplotlib.patheffects import withStroke
 
 from models import EnvironmentalReading
 from render_theme import (
+    CHEMISTRY_FIXED_COLORS,
     CHEMISTRY_LABEL_BLACK,
     LABEL_COLOR,
-    PARAMETER_PALETTE,
     chemistry_label_color,
+    parameter_series_color,
 )
 from renderer_water import _GW_MARKER_MAP
 
@@ -39,6 +41,8 @@ _PARAMETER_LABEL_BBOX = {
     "edgecolor": "none",
     "alpha": 0.88,
 }
+# "box" readability style: fully opaque so hatch lines never show through.
+_PARAMETER_LABEL_BBOX_SOLID = {**_PARAMETER_LABEL_BBOX, "alpha": 1.0, "boxstyle": "square,pad=0.18"}
 
 
 def _nearest_unused_by_depth(
@@ -161,6 +165,18 @@ def _resolve_parameter_label_offsets(
 class RendererChemistryMixin:
     """Parameter markers, fence segments, and compact chemistry legend."""
 
+    def _register_chemistry_label(self, annotation, color: str, *, allow_leader: bool) -> None:
+        """Hand a value label to the shared collision pass (renderer_water).
+
+        The base position is beside the reading (not the stacked offset), so
+        a leader appears only when a label ends up away from its value.
+        """
+        annotation._water_base_xyann = (_PARAMETER_LABEL_DX, _PARAMETER_LABEL_BASE_DY)
+        annotation._leader_allowed = allow_leader
+        if not hasattr(self, "_water_labels"):
+            self._water_labels = []
+        self._water_labels.append(("chem", annotation, color))
+
     def _draw_parameter_readings(
         self,
         ax,
@@ -204,9 +220,11 @@ class RendererChemistryMixin:
             _PARAMETER_LABEL_FONTSIZE_CONSULTING if consulting else _PARAMETER_LABEL_FONTSIZE
         )
         self.parameter_series_legend = []
-        for index, (parameter, readings) in enumerate(sorted(by_parameter.items())):
+        for parameter, readings in sorted(by_parameter.items()):
             if draw_markers:
-                color = PARAMETER_PALETTE[index % len(PARAMETER_PALETTE)]
+                # Stable per parameter name: chloride is the same colour on
+                # every section of a project, not whatever order it appeared.
+                color = parameter_series_color(parameter)
             else:
                 color = CHEMISTRY_LABEL_BLACK
             readings_by_hole: dict[str, list[EnvironmentalReading]] = {}
@@ -268,7 +286,11 @@ class RendererChemistryMixin:
                             label_text = reading.display_label
                         else:
                             label_text = f"{reading.value:g}"
-                        label_color = chemistry_label_color(
+                        # A colour picked in the workbook wins over the
+                        # Configure threshold / black setting.
+                        label_color = CHEMISTRY_FIXED_COLORS.get(
+                            reading.label_color
+                        ) or chemistry_label_color(
                             reading.value,
                             self.profile.chemistry_color_mode,
                             green_max=self.profile.chemistry_threshold_green_max,
@@ -324,31 +346,38 @@ class RendererChemistryMixin:
                 [(x, y, text) for x, y, text, _ in marker_labels],
                 invert_y=self.profile.y_axis_mode == "depth_below_collar",
             )
+            label_style = str(self.profile.chemistry_label_style or "plain")
             label_base_kwargs: dict[str, object] = {
                 "textcoords": "offset points",
                 "fontsize": font_size,
-                "color": color,
                 "zorder": 9,
                 "clip_on": False,
                 "ha": "left",
                 "va": "center",
             }
-            if draw_markers:
-                label_base_kwargs["bbox"] = _PARAMETER_LABEL_BBOX
+            if draw_markers or label_style == "box":
+                label_base_kwargs["bbox"] = (
+                    _PARAMETER_LABEL_BBOX_SOLID if label_style == "box" else _PARAMETER_LABEL_BBOX
+                )
+            if label_style == "stroke":
+                label_base_kwargs["path_effects"] = [withStroke(linewidth=2.2, foreground="white")]
             draw_leaders = self.profile.parameter_draw_leaders
-            for (x_profile, y, label_text, label_color), (dx, dy, draw_leader) in zip(
+            for (x_profile, y, label_text, label_color), (dx, dy, _draw_leader) in zip(
                 marker_labels, label_offsets, strict=True
             ):
-                annotate_kwargs = {
+                anchor = (x_profile + column_half_m, y)
+                text_color = CHEMISTRY_LABEL_BLACK if label_style == "dot" else label_color
+                annotation = ax.annotate(
+                    label_text,
                     **label_base_kwargs,
                     # Anchor at the column's right edge: anchored at its centre,
                     # labels started inside wider (auto-fit) columns.
-                    "xy": (x_profile + column_half_m, y),
-                    "xytext": (dx, dy),
-                    "color": label_color,
-                }
-                if draw_leaders and draw_leader:
-                    leader_props = {
+                    xy=anchor,
+                    xytext=(dx, dy),
+                    color=text_color,
+                    # Leader exists from the start, hidden until the collision
+                    # pass moves the label away from its reading.
+                    arrowprops={
                         "arrowstyle": "-",
                         "color": label_color,
                         "lw": 0.55,
@@ -356,9 +385,22 @@ class RendererChemistryMixin:
                         "shrinkA": 2,
                         "shrinkB": 1,
                         "alpha": 0.7,
-                    }
-                    annotate_kwargs["arrowprops"] = leader_props
-                ax.annotate(label_text, **annotate_kwargs)
+                    },
+                )
+                annotation.arrow_patch.set_visible(False)
+                if label_style == "dot":
+                    # Colour travels on a dot beside the value; text stays black.
+                    ax.plot(
+                        [anchor[0]],
+                        [y],
+                        marker="o",
+                        markersize=3.6,
+                        color=label_color,
+                        linestyle="none",
+                        zorder=9,
+                        clip_on=False,
+                    )
+                self._register_chemistry_label(annotation, label_color, allow_leader=draw_leaders)
 
             if draw_markers and (
                 use_segments or across_gaps

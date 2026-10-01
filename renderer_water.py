@@ -59,8 +59,23 @@ _LABEL_CANDIDATES: dict[str, list[tuple[float, float, str]]] = {
         [(dx, dy, "center") for dx in (0.0, 20.0, -20.0, 40.0, -40.0, 60.0, -60.0) for dy in _DY_GRID],
     ),
 }
-# Placement order: RL values matter most, gradients least.
-_LABEL_PRIORITY = {"rl": 0, "nm": 1, "gradient": 2}
+# Chemistry values: start beside the reading, then step along the column
+# and sideways; offsets are relative to each label's own base position.
+_CHEM_RELATIVE_OFFSETS = [
+    (dx, dy, "left" if dx >= 0 else "right")
+    for dx in (0.0, 14.0, 28.0, -22.0, -40.0)
+    for dy in _DY_GRID
+]
+# Placement order: RL values matter most, then chemistry, gradients least.
+_LABEL_PRIORITY = {"rl": 0, "nm": 1, "chem": 2, "gradient": 3}
+
+
+def _candidates_for(kind: str, base: tuple[float, float]) -> list[tuple[float, float, str]]:
+    fixed = _LABEL_CANDIDATES.get(kind)
+    if fixed is not None:
+        return fixed
+    relative = [(base[0] + dx, base[1] + dy, ha) for dx, dy, ha in _CHEM_RELATIVE_OFFSETS]
+    return _nearest_first(base, relative)
 _LEADER_THRESHOLD_PT = 14.0
 
 
@@ -354,7 +369,7 @@ class RendererWaterMixin:
                 annotation._water_base_xyann = tuple(annotation.xyann)
             base = annotation._water_base_xyann
             best: tuple[float, tuple[float, float, str]] | None = None
-            for index, (dx, dy, ha) in enumerate(_LABEL_CANDIDATES.get(kind, [(*base, "left")])):
+            for index, (dx, dy, ha) in enumerate(_candidates_for(kind, base)):
                 annotation.xyann = (dx, dy)
                 annotation.set_horizontalalignment(ha)
                 box = _text_box(annotation, renderer).padded(pad)
@@ -371,7 +386,7 @@ class RendererWaterMixin:
             annotation.set_horizontalalignment(ha)
             placed.append(_text_box(annotation, renderer).padded(pad))
             moved = abs(dy - base[1]) > _LEADER_THRESHOLD_PT or abs(dx - base[0]) > _LEADER_THRESHOLD_PT
-            annotation.arrow_patch.set_visible(moved)
+            annotation.arrow_patch.set_visible(moved and getattr(annotation, "_leader_allowed", True))
 
     def _draw_water_table(
         self,

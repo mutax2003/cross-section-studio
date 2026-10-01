@@ -349,6 +349,7 @@ def build_cross_section(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
+    chemistry_label_style: str | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
     auto_fit_track_width: bool = True,
@@ -426,6 +427,7 @@ def build_cross_section(
         chemistry_color_mode=chemistry_color_mode,
         chemistry_threshold_green_max=chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
+        chemistry_label_style=chemistry_label_style,
         render_layout=render_layout,
         track_width_m=track_width_m,
         auto_fit_track_width=auto_fit_track_width,
@@ -481,6 +483,7 @@ def render_cross_section_from_geometry(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
+    chemistry_label_style: str | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
     auto_fit_track_width: bool = True,
@@ -564,6 +567,7 @@ def render_cross_section_from_geometry(
         ("chemistry_color_mode", chemistry_color_mode),
         ("chemistry_threshold_green_max", chemistry_threshold_green_max),
         ("chemistry_threshold_yellow_max", chemistry_threshold_yellow_max),
+        ("chemistry_label_style", chemistry_label_style),
     )
     if environmental_parameters:
         profile_updates["show_parameter_markers"] = True

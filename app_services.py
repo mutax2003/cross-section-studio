@@ -566,6 +566,7 @@ def _run_build_cross_section(
         chemistry_color_mode=request.chemistry_color_mode,
         chemistry_threshold_green_max=request.chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=request.chemistry_threshold_yellow_max,
+        chemistry_label_style=request.chemistry_label_style,
         render_layout=request.render_layout,
         track_width_m=request.track_width_m,
         auto_fit_track_width=request.auto_fit_track_width,

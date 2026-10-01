@@ -22,7 +22,7 @@ from models import (
     VerticalGradient,
     WaterLevel,
 )
-from render_profiles import ChemistryColorMode, ColumnHeaderDetail, LayoutMode
+from render_profiles import ChemistryColorMode, ChemistryLabelStyle, ColumnHeaderDetail, LayoutMode
 
 ElevationMode = Literal["absolute", "relative"]
 
@@ -67,6 +67,7 @@ class SectionBuildRequest(BaseModel, frozen=True):
     chemistry_color_mode: ChemistryColorMode | None = None
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
+    chemistry_label_style: ChemistryLabelStyle | None = None
     render_layout: LayoutMode = "section_sheet"
     track_width_m: float = 3.0
     auto_fit_track_width: bool = True

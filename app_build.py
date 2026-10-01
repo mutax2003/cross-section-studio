@@ -106,6 +106,7 @@ def build_section_request(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
+    chemistry_label_style: str | None = None,
     render_layout: str,
     track_width_m: float,
     auto_fit_track_width: bool = True,
@@ -155,6 +156,7 @@ def build_section_request(
         chemistry_color_mode=chemistry_color_mode,  # type: ignore[arg-type]
         chemistry_threshold_green_max=chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
+        chemistry_label_style=chemistry_label_style,
         render_layout=render_layout,  # type: ignore[arg-type]
         track_width_m=track_width_m,
         auto_fit_track_width=auto_fit_track_width,
@@ -211,6 +213,7 @@ def collect_section_build_request(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
+    chemistry_label_style: str | None = None,
     render_layout: str,
     track_width_m: float,
     auto_fit_track_width: bool = True,
@@ -288,6 +291,7 @@ def collect_section_build_request(
         chemistry_color_mode=chemistry_color_mode,  # type: ignore[arg-type]
         chemistry_threshold_green_max=chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
+        chemistry_label_style=chemistry_label_style,
         render_layout=effective.layout,
         track_width_m=effective.track_width_m,
         auto_fit_track_width=effective.auto_fit_track_width,

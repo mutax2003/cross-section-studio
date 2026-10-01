@@ -42,6 +42,7 @@ class ConfigureState:
     chemistry_color_mode: str = "black"
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
+    chemistry_label_style: str = "plain"
 
     @property
     def blocked_reason(self) -> str | None:
@@ -74,6 +75,9 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
     _render_lithology_legend(legend_codes)
 
     _sidebar_heading("Transect selection")
+    specs = tuple(getattr(parse_result, "section_specs", ()) or ())
+    if specs:
+        _render_workbook_section_picker(specs)
     render_nl_transect_input(hole_ids)
     selected_holes: list[str] = []
     coordinate_text = ""
@@ -96,7 +100,12 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
             st.info("Not enough holes for recommendations.")
     elif transect_mode == "By hole sequence":
         if "hole_sequence_multiselect" not in st.session_state:
-            st.session_state.hole_sequence_multiselect = hole_ids[: min(4, len(hole_ids))]
+            # A workbook with a Sections tab starts on its first section.
+            st.session_state.hole_sequence_multiselect = (
+                [h for h in specs[0].hole_ids if h in hole_ids]
+                if specs
+                else hole_ids[: min(4, len(hole_ids))]
+            )
         selected_holes = st.multiselect(
             "Hole sequence",
             options=hole_ids,
@@ -113,6 +122,48 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
             height=160,
         )
     return selected_holes, coordinate_text
+
+
+def section_choice_to_sequence(specs, choice: str, known_hole_ids: Sequence[str]) -> tuple[str, list[str]] | None:
+    """(label, ordered holes) for a Sections-tab label, or None for 'Custom'."""
+    for spec in specs:
+        if spec.label == choice:
+            holes = [h for h in spec.hole_ids if h in set(known_hole_ids)]
+            return spec.label, holes
+    return None
+
+
+def _render_workbook_section_picker(specs) -> None:
+    """Drive the on-screen preview from the workbook's Sections tab.
+
+    One drop-down per named section line: choosing one sets the hole order,
+    switches to "By hole sequence" and labels the sheet, so a moved line only
+    needs its row in the Sections tab changed. "Custom" leaves the manual
+    controls as they are.
+    """
+    labels = ["Custom", *[spec.label for spec in specs]]
+    choice = st.selectbox(
+        "Section (from workbook Sections tab)",
+        options=labels,
+        index=0,
+        key="workbook_section_choice",
+        help=(
+            "Each row of the Sections tab is one section line. Pick one to preview it; "
+            "use Multi-transect batch ZIP under Configure to export every section."
+        ),
+    )
+    if choice == "Custom" or st.session_state.get("_workbook_section_applied") == choice:
+        return
+    resolved = section_choice_to_sequence(specs, choice, st.session_state.get("hole_ids") or [])
+    if resolved is None or len(resolved[1]) < 2:
+        st.warning(f"Section {choice!r} needs at least two holes that exist in Collars.")
+        return
+    label, holes = resolved
+    st.session_state.hole_sequence_multiselect = holes
+    st.session_state.pending_transect_mode = "By hole sequence"
+    st.session_state.consulting_section_label = label
+    st.session_state["_workbook_section_applied"] = choice
+    st.rerun()
 
 
 def render_configure_step(
@@ -220,6 +271,7 @@ def render_configure_step(
     chemistry_color_mode: str = "black"
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
+    chemistry_label_style = "plain"
     subset_ready = False
     has_overlap_warnings = False
 
@@ -385,6 +437,26 @@ def render_configure_step(
                         )
                     if chemistry_threshold_yellow_max < chemistry_threshold_green_max:
                         st.warning("Yellow threshold should be ≥ green threshold.")
+                if any(r.label_color for r in parse_result.environmental_readings):
+                    st.caption(
+                        "Rows with a **label_color** (green / red / black / orange) in the "
+                        "Environmental sheet keep that colour; the setting above applies to the rest."
+                    )
+                style_labels = {
+                    "plain": "Plain coloured text",
+                    "box": "White box behind the label",
+                    "dot": "Coloured dot, black text",
+                    "stroke": "Outlined (white halo) text",
+                }
+                style_choice = st.selectbox(
+                    "Label readability over hatched fills",
+                    options=list(style_labels),
+                    format_func=lambda key: style_labels[key],
+                    index=0,
+                    key="chemistry_label_style_select",
+                    help="Keeps coloured values legible over hatched lithology fills.",
+                )
+                chemistry_label_style = str(style_choice)
             elif parse_result.environmental_readings:
                 st.caption(
                     "Environmental readings exist but none fall on the current transect holes."
@@ -637,13 +709,15 @@ def render_configure_step(
         chemistry_color_mode=chemistry_color_mode,
         chemistry_threshold_green_max=chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
+        chemistry_label_style=chemistry_label_style,
     )
 
 
 def _transect_section_caption(hole_ids: Sequence[str]) -> str:
     if len(hole_ids) < 2:
         return ""
-    return f"A–A′ ({hole_ids[0]} → {hole_ids[-1]})"
+    label = st.session_state.get("consulting_section_label") or "A–A′"
+    return f"{label} ({hole_ids[0]} → {hole_ids[-1]})"
 
 
 def _render_plan_minimap(
@@ -727,7 +801,8 @@ def _render_hole_sequence_order(hole_ids: list[str]) -> None:
                 sequence[index + 1], sequence[index] = sequence[index], sequence[index + 1]
                 st.session_state.hole_sequence_multiselect = sequence
                 st.rerun()
-    st.caption(f"Section A–A′: **{sequence[0]} → {sequence[-1]}**")
+    section_label = st.session_state.get("consulting_section_label") or "A–A′"
+    st.caption(f"Section {section_label}: **{sequence[0]} → {sequence[-1]}**")
 
 
 def _unit_orders_for_code(subset: ParseResult, hole_id: str, code: str) -> list[int]:

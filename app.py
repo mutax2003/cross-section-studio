@@ -131,7 +131,8 @@ else:
             if configure_state and configure_state.transect_selection is not None:
                 active_ids, _ = configure_state.transect_selection
                 if len(active_ids) >= 2:
-                    transect_label = f"A–A′ {active_ids[0]}→{active_ids[-1]}"
+                    section_label = st.session_state.get("consulting_section_label") or "A–A′"
+                    transect_label = f"{section_label} {active_ids[0]}→{active_ids[-1]}"
                     import_report = st.session_state.import_report
                     coordinate_reference = sidebar.target_crs or (
                         import_report.suggested_utm_crs if import_report else ""
@@ -182,6 +183,7 @@ else:
                         chemistry_color_mode=configure_state.chemistry_color_mode,
                         chemistry_threshold_green_max=configure_state.chemistry_threshold_green_max,
                         chemistry_threshold_yellow_max=configure_state.chemistry_threshold_yellow_max,
+                        chemistry_label_style=configure_state.chemistry_label_style,
                         render_layout=sidebar.render_layout,
                         track_width_m=sidebar.track_width_m,
                         auto_fit_track_width=sidebar.auto_fit_track_width,
@@ -384,6 +386,7 @@ else:
                     chemistry_color_mode=configure_state.chemistry_color_mode,
                     chemistry_threshold_green_max=configure_state.chemistry_threshold_green_max,
                     chemistry_threshold_yellow_max=configure_state.chemistry_threshold_yellow_max,
+                        chemistry_label_style=configure_state.chemistry_label_style,
                     render_layout=sidebar.render_layout,
                     track_width_m=sidebar.track_width_m,
                     auto_fit_track_width=sidebar.auto_fit_track_width,

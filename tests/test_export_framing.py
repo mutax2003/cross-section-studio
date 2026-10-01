@@ -186,3 +186,33 @@ def test_build_export_filename_transect_label_opt_in() -> None:
     # label == title stays un-doubled even when opted in
     same = dict(pattern="section_title", section_title="Site", transect_label="Site")
     assert build_export_filename(**same, include_transect_label=True) == "Site"
+
+
+def test_viewport_crop_rejects_non_finite_and_clamps_to_the_data() -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import pytest
+
+    from export_framing import apply_viewport_crop
+
+    for bad in (float("nan"), float("inf"), 1e308):
+        with pytest.raises(ValueError, match="finite"):
+            ExportFramingConfig(viewport_xmin=bad)
+
+    fig, ax = plt.subplots()
+    ax.set_xlim(0, 100)
+    ax.set_ylim(110, 90)  # depth-style inverted axis
+    # A box partly outside the data is clamped, keeping the axis direction.
+    apply_viewport_crop(
+        fig, ExportFramingConfig(viewport_xmin=50, viewport_xmax=500, viewport_ymin=80, viewport_ymax=100)
+    )
+    assert ax.get_xlim() == (50.0, 100.0)
+    assert ax.get_ylim() == (100.0, 90.0)
+    # A box entirely outside the data would export a blank sheet: ignored.
+    apply_viewport_crop(
+        fig, ExportFramingConfig(viewport_xmin=5000, viewport_xmax=6000, viewport_ymin=-900, viewport_ymax=-800)
+    )
+    assert ax.get_xlim() == (50.0, 100.0)
+    plt.close(fig)

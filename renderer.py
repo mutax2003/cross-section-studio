@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import textwrap
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -157,7 +158,8 @@ class CrossSectionRenderer(
         self.scale_bar_length_m = scale_bar_length_m
         self.show_hatches = show_hatches
         self.show_legend = show_legend
-        self.title = title or "Borehole Cross-Section"
+        # Very long titles otherwise stretch tight-bbox exports to the title width.
+        self.title = textwrap.shorten(title, width=120, placeholder="…") if title else "Borehole Cross-Section"
         self.disclaimer = disclaimer
         self.interpretation_mode = interpretation_mode
         self.uncertainty_spacing_m = uncertainty_spacing_m

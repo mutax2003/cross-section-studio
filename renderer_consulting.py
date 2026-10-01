@@ -78,7 +78,9 @@ class ConsultingLayoutMixin:
         # Lock letter landscape (11×8.5 in) so PNG/PDF match client page extracts.
         fig = plt.figure(figsize=(11.0, 8.5))
         fig.patch.set_facecolor(CONSULTING_FIGURE_BG)
-        fig.subplots_adjust(left=0.06, right=0.97, top=0.97, bottom=0.04)
+        # right=0.95 leaves room for the twin RL axis label; at 0.97 it fell
+        # off the fixed letter page and was silently dropped from PNG/PDF.
+        fig.subplots_adjust(left=0.06, right=0.95, top=0.97, bottom=0.04)
         grid = GridSpec(3, 1, figure=fig, height_ratios=[58, 12, 22], hspace=0.12)
         ax = fig.add_subplot(grid[0, 0])
         sub_gs = grid[1, 0].subgridspec(1, 3, width_ratios=[32, 36, 32], wspace=0.14)

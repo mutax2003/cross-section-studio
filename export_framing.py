@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import zipfile
 from collections.abc import Mapping
 from io import BytesIO
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 _FILENAME_SAFE_RE = re.compile(r"[^\w\-]+")
 
@@ -56,6 +57,14 @@ class ExportFramingConfig(BaseModel, frozen=True):
     viewport_ymin: float | None = None
     viewport_ymax: float | None = None
     cad_svg_layers: bool = False
+
+    @field_validator("viewport_xmin", "viewport_xmax", "viewport_ymin", "viewport_ymax")
+    @classmethod
+    def viewport_must_be_finite(cls, value: float | None, info) -> float | None:
+        # NaN/inf/1e308 otherwise surface as opaque matplotlib errors at export.
+        if value is not None and (not math.isfinite(value) or abs(value) > 1e7):
+            raise ValueError(f"{info.field_name} must be a finite coordinate (|v| <= 1e7 m)")
+        return value
 
     def effective_page_preset(self, layout: str) -> ExportPagePreset:
         if self.fence_only:
@@ -300,8 +309,17 @@ def apply_viewport_crop(fig, framing: ExportFramingConfig | None) -> None:
     if xmin >= xmax or ymin >= ymax:
         return
     for axis in fig.axes:
-        axis.set_xlim(xmin, xmax)
-        axis.set_ylim(ymin, ymax)
+        # Clamp to what the axes already show: a box outside the data would
+        # export a blank sheet.
+        x0, x1 = sorted(axis.get_xlim())
+        y0, y1 = sorted(axis.get_ylim())
+        cx0, cx1 = max(xmin, x0), min(xmax, x1)
+        cy0, cy1 = max(ymin, y0), min(ymax, y1)
+        if cx0 >= cx1 or cy0 >= cy1:
+            continue
+        inverted_y = axis.get_ylim()[0] > axis.get_ylim()[1]
+        axis.set_xlim(cx0, cx1)
+        axis.set_ylim((cy1, cy0) if inverted_y else (cy0, cy1))
 
 
 def apply_fixed_page_margins(

@@ -888,3 +888,27 @@ def test_depth_mode_title_sits_clear_of_hole_headers() -> None:
     assert len({round(box.y0) for box in header_boxes}) == 1
     assert title_box.y0 > max(box.y1 for box in header_boxes)
     assert title_box.y1 <= figure.bbox.y1  # still on the page
+
+
+def test_consulting_right_axis_label_stays_on_the_fixed_page() -> None:
+    """The twin RL axis label sat 6 px past the letter page edge, so PNG and
+    PDF exports silently dropped it."""
+    ids, projected, polygons = _dense_header_section(3, 40.0)
+    renderer = CrossSectionRenderer(show_legend=True, render_profile=CONSULTING_SECTION_PROFILE)
+    figure = renderer.render(polygons, projected, collar_depths={hole: 8.0 for hole in ids})
+    figure.draw_without_rendering()
+    mpl_renderer = figure.canvas.get_renderer()
+    right_labels = [
+        ax.yaxis.label
+        for ax in figure.axes
+        if ax.yaxis.get_label_position() == "right" and ax.yaxis.label.get_text().strip()
+    ]
+    assert right_labels, "consulting profile draws a right-hand RL axis label"
+    for label in right_labels:
+        assert label.get_window_extent(mpl_renderer).x1 <= figure.bbox.x1
+
+
+def test_very_long_titles_are_shortened_for_export() -> None:
+    renderer = CrossSectionRenderer(title="T" * 300)
+    assert len(renderer.title) <= 120 and renderer.title.endswith("…")
+    assert CrossSectionRenderer(title="Section A-A'").title == "Section A-A'"

@@ -842,3 +842,63 @@ def test_converted_field_export_keeps_placeholder_elevation_flag(tmp_path: Path)
     export_platform_workbook(source, surveyed, elevation_m=612.5)
     _s, surveyed_report = ingest_workbook(surveyed)
     assert not surveyed_report.uses_placeholder_elevation
+
+
+def _edit_converted_collars(converted: Path, out: Path, edit) -> Path:
+    import openpyxl
+
+    book = openpyxl.load_workbook(converted)
+    sheet = book["Collars"]
+    header = [cell.value for cell in sheet[1]]
+    for row in range(2, sheet.max_row + 1):
+        edit(sheet, row, header)
+    book.save(out)
+    return out
+
+
+def test_placeholder_tag_edited_in_excel_never_drops_or_misflags_collars(tmp_path: Path) -> None:
+    """Users fix converter placeholders by clearing the tag or typing surveyed
+    RLs; neither may drop collars, keep a stale flag, or print a stale datum."""
+    from io import BytesIO
+
+    from ingestion import export_platform_workbook
+    from workbook_template import export_cleaned_workbook_bytes
+
+    source = ROOT / "data" / "fixtures" / "advantage_phase2_source.xlsx"
+    converted = tmp_path / "converted.xlsx"
+    export_platform_workbook(source, converted)
+    base, _ = ingest_workbook(converted)
+
+    def clear_tag(sheet, row, header):
+        sheet.cell(row, header.index("elevation_datum") + 1).value = None
+
+    cleared, cleared_report = ingest_workbook(
+        _edit_converted_collars(converted, tmp_path / "cleared.xlsx", clear_tag)
+    )
+    assert len(cleared.collars) == len(base.collars)
+    assert not cleared_report.uses_placeholder_elevation
+
+    def flat_survey(sheet, row, header):
+        sheet.cell(row, header.index("elevation") + 1).value = 612.5
+
+    flat, flat_report = ingest_workbook(
+        _edit_converted_collars(converted, tmp_path / "flat.xlsx", flat_survey)
+    )
+    assert not flat_report.uses_placeholder_elevation
+    assert all(collar.elevation_datum is None for collar in flat.collars)
+
+    def own_datum(sheet, row, header):
+        sheet.cell(row, header.index("elevation_datum") + 1).value = "Placeholders removed - CGVD2013"
+        sheet.cell(row, header.index("elevation") + 1).value = 100.0
+
+    own, own_report = ingest_workbook(
+        _edit_converted_collars(converted, tmp_path / "own.xlsx", own_datum)
+    )
+    assert not own_report.uses_placeholder_elevation
+    assert own.collars[0].elevation_datum == "Placeholders removed - CGVD2013"
+
+    # Validate's cleaned export must carry the tag through a re-import.
+    _, base_report = ingest_workbook(converted)
+    cleaned = export_cleaned_workbook_bytes(base, project_metadata=base_report.project_metadata)
+    _again, again_report = ingest_workbook(BytesIO(cleaned))
+    assert again_report.uses_placeholder_elevation

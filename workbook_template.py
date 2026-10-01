@@ -1016,6 +1016,11 @@ def export_cleaned_workbook_bytes(
         }
         for collar in parse_result.collars
     ]
+    # Keep datum text (incl. converter placeholder tags) only when present, so
+    # plain cleaned exports keep the template's column layout.
+    if any(collar.elevation_datum for collar in parse_result.collars):
+        for row, collar in zip(collars, parse_result.collars):
+            row["elevation_datum"] = collar.elevation_datum or ""
     lithology = []
     for interval in parse_result.lithologies:
         code = normalize_lithology_code(interval.lithology_code, aliases) if aliases else interval.lithology_code

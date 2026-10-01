@@ -61,6 +61,15 @@ class Collar(BaseModel, frozen=True):
             raise ValueError("hole_id is required")
         return _clean_text(value)
 
+    @field_validator("elevation_datum", mode="before")
+    @classmethod
+    def blank_datum_to_none(cls, value: object) -> str | None:
+        # Excel hands back NaN for a cleared cell and int for e.g. "2013".
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        text = _clean_text(value)
+        return text or None
+
     @field_validator("easting", "northing", "elevation", "total_depth")
     @classmethod
     def require_finite(cls, value: float, info) -> float:

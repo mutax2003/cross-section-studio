@@ -758,7 +758,17 @@ def ingest_workbook(
     )
     if elevation_m is not None:
         placeholder_elevation = None
-    if placeholder_elevation is None and resolved_profile_id == NATIVE_PROFILE_ID:
+    cleaned_collars, stale_tags = _drop_stale_placeholder_datums(parse_result.collars)
+    if stale_tags:
+        parse_result = parse_result.model_copy(update={"collars": tuple(cleaned_collars)})
+        warnings.append(
+            f"Ignored the converter placeholder datum on {stale_tags} collar(s) whose "
+            "elevation was since edited (treated as surveyed RL)."
+        )
+    if placeholder_elevation is None and resolved_profile_id in {
+        NATIVE_PROFILE_ID,
+        DATA_ENTRY_PROFILE_ID,
+    }:
         placeholder_elevation = _uniform_placeholder_elevation(parse_result.collars)
         if placeholder_elevation is not None:
             warnings.append(
@@ -853,19 +863,60 @@ def _placeholder_datum(elevation_m: float) -> str:
     return f"{PLACEHOLDER_DATUM_PREFIX} (profile default {elevation_m:.1f} m, not surveyed RL)"
 
 
-def _uniform_placeholder_elevation(collars) -> float | None:
-    """Collar RL shared by every collar tagged as a converter placeholder, else None."""
-    if not collars:
+_PLACEHOLDER_DEFAULT_RE = re.compile(r"profile default\s+(-?[0-9]+(?:\.[0-9]+)?)\s*m", re.IGNORECASE)
+
+
+def _placeholder_default(datum: str | None) -> float | None:
+    """RL recorded in a converter placeholder tag; None for any other datum text.
+
+    Requires the full tag form so user datums that merely start with
+    "Placeholder" are neither flagged nor cleared.
+    """
+    text = (datum or "").strip()
+    if not text.lower().startswith(PLACEHOLDER_DATUM_PREFIX.lower()):
         return None
-    if not all(
-        (collar.elevation_datum or "").strip().lower().startswith(PLACEHOLDER_DATUM_PREFIX.lower())
-        for collar in collars
-    ):
+    match = _PLACEHOLDER_DEFAULT_RE.search(text)
+    return float(match.group(1)) if match else None
+
+
+def _is_placeholder_datum(datum: str | None) -> bool:
+    return _placeholder_default(datum) is not None
+
+
+def _placeholder_still_applies(collar) -> bool:
+    """True while a tagged collar still sits at the RL its converter tag recorded.
+
+    Once a user types a surveyed RL over the placeholder the tag is stale.
+    """
+    default = _placeholder_default(collar.elevation_datum)
+    return default is not None and abs(collar.elevation - default) < 0.01
+
+
+def _uniform_placeholder_elevation(collars) -> float | None:
+    """Collar RL shared by every collar still at its converter placeholder, else None."""
+    if not collars or not all(_placeholder_still_applies(collar) for collar in collars):
         return None
     first = collars[0].elevation
     if all(abs(collar.elevation - first) < 0.01 for collar in collars):
         return float(first)
     return None
+
+
+def _drop_stale_placeholder_datums(collars):
+    """Clear placeholder tags on collars whose RL was since surveyed.
+
+    Returns (collars, n_cleared) so the figure never prints "Datum: Placeholder"
+    on a surveyed section.
+    """
+    cleaned = []
+    cleared = 0
+    for collar in collars:
+        if _is_placeholder_datum(collar.elevation_datum) and not _placeholder_still_applies(collar):
+            cleaned.append(collar.model_copy(update={"elevation_datum": None}))
+            cleared += 1
+        else:
+            cleaned.append(collar)
+    return cleaned, cleared
 
 
 def export_platform_workbook(

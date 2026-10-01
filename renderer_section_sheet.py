@@ -144,7 +144,9 @@ class SectionSheetLayoutMixin:
         ax.set_ylabel(y_label, fontsize=10, labelpad=8)
         # Data are plotted at value*VE; label the axis with the true values.
         apply_true_value_y_axis(ax, ve)
-        ax.set_title(self.title, fontsize=14, fontweight="bold", pad=14, color=LABEL_COLOR)
+        # Depth mode draws the hole headers above the axes; lift the title clear.
+        title_pad = 14 if self.profile.y_axis_mode == "elevation_rl" else 48
+        ax.set_title(self.title, fontsize=14, fontweight="bold", pad=title_pad, color=LABEL_COLOR)
         ax.set_aspect("auto")
         if self.profile.show_grid:
             ax.grid(True, linestyle="--", alpha=0.35, color=GRID_COLOR, zorder=0)

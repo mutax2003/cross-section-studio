@@ -855,3 +855,36 @@ def test_header_and_water_passes_are_idempotent_and_rerun_for_export_pages() -> 
     renderer.to_png_bytes(figure)
     np.testing.assert_allclose(figure.get_size_inches(), (8.5, 11.0))
     assert _header_hits(figure, renderer)[0] == 0
+
+
+def test_depth_mode_title_sits_clear_of_hole_headers() -> None:
+    """Depth (mbgs) sections draw hole headers above the axes, where the
+    title also sits; they used to share one line ("BH-02 Title BH-03")."""
+    from matplotlib.text import Text
+
+    from renderer_water import _figure_renderer, _overlap_area
+
+    ids = [f"BH26-{index:02d}" for index in range(10)]
+    collars = [
+        Collar(hole_id=hole, easting=index * 20.0, northing=0.0, elevation=100.0, total_depth=8.0)
+        for index, hole in enumerate(ids)
+    ]
+    lithologies = [
+        Lithology(hole_id=hole, from_depth=0.0, to_depth=8.0, lithology_code="Clay") for hole in ids
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (200.0, 0.0)])
+    profile = SECTION_SHEET_PROFILE.model_copy(update={"y_axis_mode": "depth_below_collar"})
+    renderer = CrossSectionRenderer(
+        show_legend=True, render_profile=profile, title="Borehole Cross-Section"
+    )
+    figure = renderer.render(polygons, projected, collar_depths={hole: 8.0 for hole in ids})
+    mpl_renderer = _figure_renderer(figure)
+    figure.draw_without_rendering()
+    title_box = figure.axes[0].title.get_window_extent(mpl_renderer)
+    header_boxes = [Text.get_window_extent(t, mpl_renderer) for t in renderer._header_labels]
+    assert header_boxes
+    assert all(_overlap_area(box, title_box) == 0 for box in header_boxes)
+    # With the title lifted clear, no header needs to stagger around it: one row.
+    assert len({round(box.y0) for box in header_boxes}) == 1
+    assert title_box.y0 > max(box.y1 for box in header_boxes)
+    assert title_box.y1 <= figure.bbox.y1  # still on the page

@@ -10,7 +10,7 @@ import pandas as pd
 from matplotlib.collections import LineCollection
 from matplotlib.markers import MarkerStyle
 from matplotlib.text import Text
-from matplotlib.transforms import offset_copy
+from matplotlib.transforms import Bbox, offset_copy
 
 from hydro_metrics import (
     format_gradient_label,
@@ -61,13 +61,24 @@ _LABEL_CANDIDATES: dict[str, list[tuple[float, float, str]]] = {
 }
 # Chemistry values: start beside the reading, then step along the column
 # and sideways; offsets are relative to each label's own base position.
-_CHEM_RELATIVE_OFFSETS = [
-    (dx, dy, "left" if dx >= 0 else "right")
-    for dx in (0.0, 14.0, 28.0, -22.0, -40.0)
-    for dy in _DY_GRID
-]
+# Right of the label's own column only: a leftward move could print a value
+# over the neighbouring borehole with nothing tying it back.
+_CHEM_RELATIVE_OFFSETS = [(dx, dy, "left") for dx in (0.0, 10.0, 22.0) for dy in _DY_GRID]
 # Placement order: RL values matter most, then chemistry, gradients least.
 _LABEL_PRIORITY = {"rl": 0, "nm": 1, "chem": 2, "gradient": 3}
+
+
+def _sync_label_companions(annotation, fig, dx: float, dy: float, ha: str) -> None:
+    """Keep a label's halo twin and colour dot on the label after it moves."""
+    halo = getattr(annotation, "_halo", None)
+    if halo is not None:
+        halo.xyann = (dx, dy)
+        halo.set_horizontalalignment(ha)
+    dot = getattr(annotation, "_chem_dot", None)
+    if dot is not None:
+        dot.set_transform(
+            offset_copy(annotation.axes.transData, fig=fig, x=dx - 4.5, y=dy, units="points")
+        )
 
 
 def _candidates_for(kind: str, base: tuple[float, float]) -> list[tuple[float, float, str]]:
@@ -357,23 +368,31 @@ class RendererWaterMixin:
         renderer = _figure_renderer(fig)
         pad = renderer.points_to_pixels(1.5)
         water_artists = {id(annotation) for _kind, annotation, _color in labels}
+        water_artists |= {
+            id(annotation._halo) for _k, annotation, _c in labels if hasattr(annotation, "_halo")
+        }
         placed: list = []
         for ax in {annotation.axes for _kind, annotation, _color in labels}:
             for text in ax.texts:
                 if id(text) not in water_artists and text.get_visible() and text.get_text().strip():
                     placed.append(text.get_window_extent(renderer).padded(pad))
+        # Borehole columns are obstacles for value labels: a label over a
+        # column hides the stick/markers, and over a neighbour's column it
+        # misattributes the value.
+        column_boxes = self._column_obstacle_boxes(fig)
         ordered = sorted(labels, key=lambda item: _LABEL_PRIORITY.get(item[0], 9))
         for kind, annotation, _color in ordered:
             frame = annotation.axes.get_window_extent(renderer)
             if not hasattr(annotation, "_water_base_xyann"):
                 annotation._water_base_xyann = tuple(annotation.xyann)
             base = annotation._water_base_xyann
+            obstacles = placed + column_boxes if kind == "chem" else placed
             best: tuple[float, tuple[float, float, str]] | None = None
             for index, (dx, dy, ha) in enumerate(_candidates_for(kind, base)):
                 annotation.xyann = (dx, dy)
                 annotation.set_horizontalalignment(ha)
                 box = _text_box(annotation, renderer).padded(pad)
-                collision = sum(_overlap_area(box, other) for other in placed)
+                collision = sum(_overlap_area(box, other) for other in obstacles)
                 outside = _outside_area(box, frame)
                 score = (collision + 4.0 * outside) * 1000.0 + index
                 if best is None or score < best[0]:
@@ -384,9 +403,21 @@ class RendererWaterMixin:
             dx, dy, ha = best[1]
             annotation.xyann = (dx, dy)
             annotation.set_horizontalalignment(ha)
+            _sync_label_companions(annotation, fig, dx, dy, ha)
             placed.append(_text_box(annotation, renderer).padded(pad))
             moved = abs(dy - base[1]) > _LEADER_THRESHOLD_PT or abs(dx - base[0]) > _LEADER_THRESHOLD_PT
             annotation.arrow_patch.set_visible(moved and getattr(annotation, "_leader_allowed", True))
+
+    def _column_obstacle_boxes(self, fig) -> list:
+        """Display-space boxes of every borehole column on the section."""
+        spans = getattr(self, "_column_spans", None) or []
+        boxes = []
+        for ax, x0, x1 in spans:
+            y0, y1 = ax.get_ylim()
+            lo, hi = min(y0, y1), max(y0, y1)
+            corners = ax.transData.transform([[x0, lo], [x1, hi]])
+            boxes.append(Bbox(corners))
+        return boxes
 
     def _draw_water_table(
         self,

@@ -316,7 +316,9 @@ def apply_viewport_crop(fig, framing: ExportFramingConfig | None) -> None:
         # export a blank sheet.
         x0, x1 = sorted(axis.get_xlim())
         y0, y1 = sorted(axis.get_ylim())
-        cx0, cx1 = max(xmin, x0), min(xmax, x1)
+        # 0 means "from the start": keep the small negative margin that
+        # shows the first borehole in full.
+        cx0, cx1 = (x0 if xmin <= 0.0 else max(xmin, x0)), min(xmax, x1)
         cy0, cy1 = max(ymin, y0), min(ymax, y1)
         if cx0 >= cx1 or cy0 >= cy1:
             continue

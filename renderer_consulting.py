@@ -803,7 +803,7 @@ class ConsultingLayoutMixin:
         swatch_w = 0.03
 
         entries: list[tuple[str, str, dict[str, object]]] = []
-        for code in lithology_codes[:12]:
+        for code in lithology_codes:
             style = self._resolve_style(code, style_cache)
             entries.append(
                 (
@@ -816,6 +816,7 @@ class ConsultingLayoutMixin:
                     },
                 )
             )
+        n_code_entries = len(entries)
         if self.screen_intervals:
             entries.append(
                 (
@@ -908,11 +909,24 @@ class ConsultingLayoutMixin:
         usable_width = width - 2 * pad_x
         col_width_single = usable_width
         col_width_two = (usable_width - 0.02) / 2
-        use_two_cols = (
-            ncol >= 2
-            and len(entries) > 6
-            and col_width_two >= _LEGEND_MIN_COL_WIDTH
-        )
+        # Two columns when asked for, or whenever a single stack would need
+        # more than eight rows (entries past the panel were silently dropped).
+        header_h = 0.14  # "LEGEND" at 8.5 pt plus a gap above the first row
+        two_col_possible = col_width_two >= _LEGEND_MIN_COL_WIDTH
+        rows_available = max(1, int((content_top - header_h - content_bottom) // 0.055))
+        capacity = rows_available * (2 if two_col_possible else 1)
+        if len(entries) > capacity:
+            # Trim lithology swatches (never the water/screen/parameter keys)
+            # and say how many units are not listed.
+            overflow = len(entries) - capacity + 1
+            keep_codes = max(0, n_code_entries - overflow)
+            hidden = n_code_entries - keep_codes
+            entries = (
+                entries[:keep_codes]
+                + [("text", f"+{hidden} MORE UNITS (SEE LOG)", {"color": LABEL_COLOR})]
+                + entries[n_code_entries:]
+            )
+        use_two_cols = two_col_possible and ((ncol >= 2 and len(entries) > 6) or len(entries) > 8)
         if use_two_cols:
             mid = (len(entries) + 1) // 2
             column_groups: list[list[tuple[str, str, dict[str, object]]]] = [
@@ -935,8 +949,8 @@ class ConsultingLayoutMixin:
 
         clip_rect = self._legend_panel_clip(ax, panel)
 
-        n_rows = 1 + max(len(group) for group in column_groups)
-        step = min(0.10, max(0.055, (content_top - content_bottom) / max(n_rows, 1)))
+        n_rows = max(len(group) for group in column_groups)
+        step = min(0.10, max(0.055, (content_top - header_h - content_bottom) / max(n_rows, 1)))
         font_size = 7.5 if step >= 0.08 else 6.5
         y_header = content_top
         header = ax.text(
@@ -951,7 +965,7 @@ class ConsultingLayoutMixin:
             clip_on=True,
         )
         header.set_clip_path(clip_rect)
-        entry_top = y_header - step
+        entry_top = y_header - max(step, header_h)
 
         for group, (col_left, col_text_x) in zip(column_groups, column_layouts, strict=True):
             y = entry_top

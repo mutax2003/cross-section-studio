@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
 from matplotlib.patheffects import withStroke
+from matplotlib.transforms import offset_copy
 
 from models import EnvironmentalReading
 from render_theme import (
@@ -17,7 +18,7 @@ from render_theme import (
     CHEMISTRY_LABEL_BLACK,
     LABEL_COLOR,
     chemistry_label_color,
-    parameter_series_color,
+    parameter_series_colors,
 )
 from renderer_water import _GW_MARKER_MAP
 
@@ -219,12 +220,19 @@ class RendererChemistryMixin:
         font_size = (
             _PARAMETER_LABEL_FONTSIZE_CONSULTING if consulting else _PARAMETER_LABEL_FONTSIZE
         )
+        # Column spans the collision pass must keep value labels off.
+        self._column_spans = [
+            (ax, float(profile_lookup[h][0]) - column_half_m, float(profile_lookup[h][0]) + column_half_m)
+            for h in transect_hole_ids
+            if h in profile_lookup
+        ]
         self.parameter_series_legend = []
+        # Stable per parameter name (chloride keeps its colour on every
+        # section), with collisions on one sheet resolved to distinct colours.
+        series_colors = parameter_series_colors(by_parameter)
         for parameter, readings in sorted(by_parameter.items()):
             if draw_markers:
-                # Stable per parameter name: chloride is the same colour on
-                # every section of a project, not whatever order it appeared.
-                color = parameter_series_color(parameter)
+                color = series_colors[parameter]
             else:
                 color = CHEMISTRY_LABEL_BLACK
             readings_by_hole: dict[str, list[EnvironmentalReading]] = {}
@@ -359,13 +367,13 @@ class RendererChemistryMixin:
                 label_base_kwargs["bbox"] = (
                     _PARAMETER_LABEL_BBOX_SOLID if label_style == "box" else _PARAMETER_LABEL_BBOX
                 )
-            if label_style == "stroke":
-                label_base_kwargs["path_effects"] = [withStroke(linewidth=2.2, foreground="white")]
             draw_leaders = self.profile.parameter_draw_leaders
             for (x_profile, y, label_text, label_color), (dx, dy, _draw_leader) in zip(
                 marker_labels, label_offsets, strict=True
             ):
                 anchor = (x_profile + column_half_m, y)
+                if label_style == "dot":
+                    dx += 5.0
                 text_color = CHEMISTRY_LABEL_BLACK if label_style == "dot" else label_color
                 annotation = ax.annotate(
                     label_text,
@@ -388,9 +396,29 @@ class RendererChemistryMixin:
                     },
                 )
                 annotation.arrow_patch.set_visible(False)
+                if label_style == "stroke":
+                    # The halo is a white twin drawn as outlines beneath the
+                    # label; the label itself stays real text so PDF values
+                    # remain searchable (a path effect on the label would not).
+                    halo = ax.annotate(
+                        label_text,
+                        xy=anchor,
+                        xytext=(dx, dy),
+                        textcoords="offset points",
+                        fontsize=font_size,
+                        ha="left",
+                        va="center",
+                        color="white",
+                        zorder=8.9,
+                        clip_on=False,
+                        path_effects=[withStroke(linewidth=2.6, foreground="white")],
+                    )
+                    annotation._halo = halo
                 if label_style == "dot":
-                    # Colour travels on a dot beside the value; text stays black.
-                    ax.plot(
+                    # Colour travels on a dot just left of the value; the dot is
+                    # positioned in points off the anchor so it follows the
+                    # label when the collision pass moves it.
+                    (dot,) = ax.plot(
                         [anchor[0]],
                         [y],
                         marker="o",
@@ -399,7 +427,9 @@ class RendererChemistryMixin:
                         linestyle="none",
                         zorder=9,
                         clip_on=False,
+                        transform=offset_copy(ax.transData, fig=ax.figure, x=dx - 4.5, y=dy, units="points"),
                     )
+                    annotation._chem_dot = dot
                 self._register_chemistry_label(annotation, label_color, allow_leader=draw_leaders)
 
             if draw_markers and (

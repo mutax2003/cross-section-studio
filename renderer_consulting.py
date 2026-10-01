@@ -806,7 +806,7 @@ class ConsultingLayoutMixin:
                     {
                         "facecolor": style.color,
                         "edgecolor": style.edge_color,
-                        "hatch": None,
+                        "hatch": style.hatch or None,
                     },
                 )
             )

@@ -51,10 +51,9 @@ def test_every_canonical_lithology_has_color_and_hatch() -> None:
         assert code in USGS_LITHOLOGY_HATCHES
         style = get_lithology_style(code)
         assert style.color.startswith("#")
-        if code == "No Recovery":
-            assert style.hatch == ""
-        else:
-            assert len(style.hatch) >= 2
+        # Plain units (Clay, Sand, Topsoil, Coal...) carry no hatch by design;
+        # a hatch, when present, repeats its character for density.
+        assert style.hatch == "" or len(style.hatch) >= 2
 
 
 def test_renderer_applies_hatches_to_svg() -> None:
@@ -944,3 +943,35 @@ def test_dense_consulting_headers_go_vertical_instead_of_overlapping() -> None:
     assert pairs == 0 and tick_hits == 0
     assert all(t.get_rotation() == 90 for t in renderer._header_labels)
     assert all(t.get_window_extent(figure.canvas.get_renderer()).y1 <= figure.bbox.y1 for t in renderer._header_labels)
+
+
+def test_agreed_lithology_scheme_groups_and_hatches() -> None:
+    """Meeting 1 Oct 2026: one base colour per soil group, hatch marks the
+    secondary component, Coal is the only black unit, Topsoil sits between
+    clay/silt and organics in darkness with no hatch."""
+    from constants import HATCH_GRAVEL, HATCH_PLUS, HATCH_SANDY, HATCH_SILTY
+
+    def colour(code):
+        return get_lithology_style(code).color.upper()
+
+    def hatch(code):
+        return get_lithology_style(code).hatch
+
+    assert {colour(c) for c in ("Clay", "Sandy Clay", "Silty Clay", "Silty Clay Loam")} == {"#967259"}
+    assert {colour(c) for c in ("Sandy Clay Loam", "Clay Loam", "Loam", "Silty Loam")} == {"#C68642"}
+    assert {colour(c) for c in ("Sand", "Loamy Sand", "Silty Sand", "Sand and Gravel")} == {"#FFE39F"}
+    assert {colour(c) for c in ("Siltstone", "Sandstone", "Mudstone")} == {"#4C516D"}
+    assert hatch("Sandy Clay") == HATCH_SANDY and hatch("Silty Clay") == HATCH_SILTY
+    assert hatch("Silty Clay Loam") == hatch("Clay Loam") == HATCH_PLUS
+    assert hatch("Sand and Gravel") == hatch("Gravel") == HATCH_GRAVEL
+    assert hatch("Silty Sand") == hatch("Loamy Sand") == HATCH_SILTY
+    assert hatch("Clay") == hatch("Silt") == hatch("Sand") == hatch("Topsoil") == ""
+
+    def luminance(code):
+        r, g, b = (int(colour(code)[i : i + 2], 16) for i in (1, 3, 5))
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    assert colour("Coal") == "#000000"
+    # Only Coal is black; Organics is the darkest *brown* (#38220F), not black.
+    assert all(colour(c) != "#000000" and luminance(c) > 25 for c in USGS_LITHOLOGY_COLORS if c != "Coal")
+    assert luminance("Organics") < luminance("Topsoil") < min(luminance("Clay"), luminance("Silt"))

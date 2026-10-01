@@ -25,47 +25,65 @@ _BASE_LITHOLOGY_COLORS: dict[str, str] = {
     "Limestone": "#E0E4E8",
     "Shale": "#5C6B7A",
     "Flare Pit Material": "#6D4C41",
-    "Topsoil": "#8B6914",
+    "Topsoil": "#70500F",
     "Sand and Clay": "#E8B84A",
 }
 
 DEFAULT_LITHOLOGY_COLOR = "#B8B8B8"
-DEFAULT_LITHOLOGY_HATCH = ".."
+DEFAULT_LITHOLOGY_HATCH = "++"  # "+" covers any remaining type
 HATCH_LINE_COLOR = "#3D3D3D"
 POLYGON_EDGE_COLOR = "#2C2C2C"
 
+# Agreed display scheme (meeting 1 Oct 2026): each soil group shares one base
+# colour and a hatch marks the secondary component only —
+#   sandy = dots, silty = 45° lines, gravel = stone/cobble, "+" = loam mixes;
+# the dominant units (Clay, Silt, Sand, Loam, Topsoil, Organics, Coal) stay
+# plain so boreholes and well screens read clearly over them.
 # Matplotlib hatch strings (repeat chars for density): / \ | - + x o O . *
+HATCH_SANDY = "..."
+HATCH_SILTY = "///"
+HATCH_GRAVEL = "OO"  # large circles: closest built-in to a stone/cobble pattern
+HATCH_PLUS = "++"
+
 _BASE_LITHOLOGY_HATCHES: dict[str, str] = {
-    "Sandstone": "...",
-    "Sand": "...",
-    "Clay": "---",
-    "Silt": "///",
-    "Gravel": "+++",
+    # Clay group (#967259)
+    "Clay": "",
+    "Sandy Clay": HATCH_SANDY,
+    "Silty Clay": HATCH_SILTY,
+    "Silty Clay Loam": HATCH_PLUS,
+    # Silt (#8D5524)
+    "Silt": "",
+    # Loam group (#C68642)
+    "Sandy Clay Loam": HATCH_SANDY,
+    "Clay Loam": HATCH_PLUS,
+    "Loam": "",
+    "Silty Loam": HATCH_SILTY,
+    # Sand group (#FFE39F)
+    "Sand": "",
+    "Loamy Sand": HATCH_SILTY,
+    "Silty Sand": HATCH_SILTY,
+    "Sand and Gravel": HATCH_GRAVEL,
+    # Rock group (#4C516D)
+    "Siltstone": HATCH_SILTY,
+    "Sandstone": HATCH_SANDY,
+    "Mudstone": "",
+    # Singles
+    "Gravel": HATCH_GRAVEL,
+    "Topsoil": "",
+    "Organics": "",
+    "Coal": "",
+    "Fill": "",
+    "Bentonite": "",
+    "Drilling Waste": "",
+    "Other": "",
+    "Refuse": "",
+    "No Recovery": "",
+    # Not on the agreed sheet: keep their distinguishing patterns.
     "Bedrock": "xxx",
     "Limestone": "..",
     "Shale": "\\\\",
-    "Silty Clay": "ooo",
-    "Sandy Clay": "/.",
-    "Sandy Clay Loam": "/.",
-    "Clay Loam": "---",
-    "Silty Clay Loam": "ooo",
-    "Loamy Sand": "...",
-    "Loam": "..",
-    "Silty Loam": "///",
-    "Sand and Gravel": "+++",
-    "Organics": "|||",
-    "Drilling Waste": "xx",
     "Flare Pit Material": "**",
-    "Topsoil": "...",
     "Sand and Clay": "/.",
-    "Siltstone": "\\\\",
-    "Mudstone": "xx",
-    "Fill": "..",
-    "Bentonite": "--",
-    "Coal": "xxx",
-    "Refuse": "|||",
-    "Other": "..",
-    "No Recovery": "",
 }
 
 

@@ -21,7 +21,6 @@ from app_services import cached_ingest_workbook
 from app_state import clear_section_output_state
 from constants import (
     DEFAULT_LITHOLOGY_COLOR,
-    USGS_LITHOLOGY_HATCHES,
     get_lithology_style,
     normalize_hex_colour,
 )
@@ -245,8 +244,7 @@ def _render_lithology_legend(codes: list[str]) -> None:
     rows = []
     for code in sorted(codes):
         style = get_lithology_style(code)
-        hatch = style.hatch or USGS_LITHOLOGY_HATCHES.get(code, "..")
-        hatch_bg = legend_hatch_background(hatch)
+        hatch_bg = legend_hatch_background(style.hatch)
         color = normalize_hex_colour(style.color) or DEFAULT_LITHOLOGY_COLOR
         rows.append(
             f'<div class="legend-row">'

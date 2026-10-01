@@ -175,7 +175,11 @@ def legend_hatch_background(hatch: str) -> str:
         return backslash
     if token in {"-", "_"}:
         return line
-    if token in {".", "o", "O", "*", "+", "x"}:
+    if token in {"o", "O"}:  # gravel / cobble
+        return "radial-gradient(circle, transparent 1.6px, #334155 1.7px 2.4px, transparent 2.5px)"
+    if token in {"+", "x"}:
+        return f"{line}, repeating-linear-gradient(90deg, #334155 0 1px, transparent 1px 5px)"
+    if token in {".", "*"}:
         return (
             f"{dot}, "
             f"radial-gradient(circle, #334155 0.6px, transparent 0.7px)"

@@ -29,10 +29,10 @@ from tests.conftest import assert_valid_svg
 
 
 def test_bh_log_legend_colors_loaded() -> None:
-    assert CONSULTING_LITHOLOGY_COLORS["Clay"] == "#38220F"
-    assert USGS_LITHOLOGY_COLORS["Sand"] == "#EAC086"
-    assert get_lithology_style("Clay Loam", consulting_palette=True).color == "#DBC1AC"
-    assert get_lithology_style("clay loam").color == "#DBC1AC"
+    assert CONSULTING_LITHOLOGY_COLORS["Clay"] == "#967259"
+    assert USGS_LITHOLOGY_COLORS["Sand"] == "#FFE39F"
+    assert get_lithology_style("Clay Loam", consulting_palette=True).color == "#C68642"
+    assert get_lithology_style("clay loam").color == "#C68642"
 
 
 def test_bh_log_legend_excel_is_runtime_source() -> None:

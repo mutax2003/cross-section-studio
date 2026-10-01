@@ -90,6 +90,7 @@ class ChartLayoutMixin:
                 hole_summary,
                 collar_lookup,
                 profile_lookup=profile_lookup,
+                column_half_m=track_half,
             )
 
             collar_depths = collar_depths or {}

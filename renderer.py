@@ -64,7 +64,7 @@ from renderer_chemistry import (
 from renderer_common import RendererGeometryMixin
 from renderer_consulting import ConsultingLayoutMixin
 from renderer_section_sheet import SectionSheetLayoutMixin
-from renderer_water import RendererWaterMixin, WaterSeriesLegendEntry
+from renderer_water import RendererWaterMixin, WaterSeriesLegendEntry, resolve_header_collisions
 from stratigraphy import GeologicalPolygon, PolygonOverlap
 
 logger = logging.getLogger(__name__)
@@ -263,6 +263,7 @@ class CrossSectionRenderer(
     ) -> Figure:
         self.water_series_legend = []
         self._water_labels = []
+        self._header_labels = []
         if self.profile.layout == "section_sheet":
             render_layout = self._render_section_sheet
         elif self.profile.layout == "consulting_section":
@@ -277,6 +278,8 @@ class CrossSectionRenderer(
             lithology_codes=lithology_codes,
         )
         # Positions in points are only final once limits and margins are set.
+        # Headers first: the water pass treats every axes text as an obstacle.
+        resolve_header_collisions(fig, self._header_labels)
         self._resolve_water_label_collisions(fig)
         return fig
 
@@ -685,6 +688,7 @@ class CrossSectionRenderer(
                 clip_on=False,
                 zorder=10,
             )
+            self._header_labels.append(text_artist)
             if self._cad_svg_layers_enabled():
                 self._set_cad_gid(text_artist, "headers")
 

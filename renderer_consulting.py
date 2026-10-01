@@ -196,6 +196,7 @@ class ConsultingLayoutMixin:
                 hole_summary,
                 collar_lookup,
                 profile_lookup=profile_lookup,
+                column_half_m=track_half,
             )
 
             ax_right: plt.Axes | None = None
@@ -415,7 +416,7 @@ class ConsultingLayoutMixin:
     def _draw_well_id_labels(self, ax, hole_summary: pd.DataFrame) -> None:
         header_transform = ax.get_xaxis_transform()
         for row in hole_summary.itertuples(index=False):
-            ax.text(
+            header = ax.text(
                 float(row.x_profile),
                 1.02,
                 str(row.hole_id),
@@ -428,6 +429,7 @@ class ConsultingLayoutMixin:
                 clip_on=False,
                 zorder=10,
             )
+            self._header_labels.append(header)
 
     def _transect_endpoint_lines(self, title_block: ConsultingTitleBlock) -> tuple[tuple[str, str], tuple[str, str]]:
         start_primary = title_block.transect_start_primary or title_block.transect_start_label

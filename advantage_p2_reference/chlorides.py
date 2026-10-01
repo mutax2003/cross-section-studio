@@ -74,8 +74,11 @@ def _reading_from_dict(row: dict[str, object]) -> EnvironmentalReading:
         "hole_id": str(row["hole_id"]),
         "parameter": str(row.get("parameter") or _PARAMETER),
         "value": float(row["value"]),
-        "unit": str(row.get("unit") or _UNIT),
-        "value_label": str(row.get("value_label") or ""),
+        # Client Fig 6/7: soil chloride in mg/kg, compact labels with the unit in
+        # the legend only. Normalise so a stale fixture cannot reintroduce
+        # per-label "mg/L" suffixes or the wrong unit.
+        "unit": _UNIT,
+        "value_label": parse_chloride_value(row.get("value_label") or row["value"])[1],
     }
     if from_depth is not None and to_depth is not None and depth is None:
         kwargs["from_depth"] = float(from_depth)

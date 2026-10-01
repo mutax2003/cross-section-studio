@@ -10,6 +10,7 @@ import pandas as pd
 from matplotlib.collections import LineCollection
 from matplotlib.markers import MarkerStyle
 from matplotlib.text import Text
+from matplotlib.transforms import offset_copy
 
 from hydro_metrics import (
     format_gradient_label,
@@ -80,6 +81,61 @@ def _text_box(annotation, renderer):
     # which would make a moved label block the whole strip back to its point.
     annotation.update_positions(renderer)
     return Text.get_window_extent(annotation, renderer)
+
+
+# Hole-ID header candidates as (dx_pt, tier, ha): first shift alignment away
+# from the neighbour, then stagger outward one or two text heights; negative
+# tiers step inward for headers already at the page edge (consulting top row).
+_HEADER_CANDIDATES = (
+    (0.0, 0, "center"),
+    (2.0, 0, "left"),
+    (-2.0, 0, "right"),
+    (0.0, 1, "center"),
+    (2.0, 1, "left"),
+    (-2.0, 1, "right"),
+    (0.0, -1, "center"),
+    (2.0, -1, "left"),
+    (-2.0, -1, "right"),
+    (0.0, 2, "center"),
+)
+
+
+def resolve_header_collisions(fig, headers) -> None:
+    """Keep hole-ID column headers from fusing when holes are close together.
+
+    Headers sit outside the plot, so they are never leadered: each stays above
+    (or below) its own column, only shifting alignment or stepping one tier out.
+    """
+    headers = [text for text in headers if text.get_visible() and text.get_text().strip()]
+    if len(headers) < 2:
+        return
+    renderer = _figure_renderer(fig)
+    pad = renderer.points_to_pixels(2.0)
+    placed: list = []
+    for text in sorted(headers, key=lambda item: item.get_window_extent(renderer).x0):
+        base_transform = text.get_transform()
+        height_pt = text.get_window_extent(renderer).height * 72.0 / fig.dpi + 1.0
+        outward = 1.0 if text.get_verticalalignment() == "bottom" else -1.0
+        best: tuple[float, float, int, str] | None = None
+        for index, (dx, tier, ha) in enumerate(_HEADER_CANDIDATES):
+            text.set_transform(
+                offset_copy(base_transform, fig=fig, x=dx, y=outward * tier * height_pt, units="points")
+            )
+            text.set_horizontalalignment(ha)
+            box = text.get_window_extent(renderer).padded(pad)
+            collision = sum(_overlap_area(box, other) for other in placed)
+            score = (collision + 4.0 * _outside_area(box, fig.bbox)) * 1000.0 + index
+            if best is None or score < best[0]:
+                best = (score, dx, tier, ha)
+            if collision == 0.0 and _outside_area(box, fig.bbox) == 0.0:
+                break
+        assert best is not None
+        _score, dx, tier, ha = best
+        text.set_transform(
+            offset_copy(base_transform, fig=fig, x=dx, y=outward * tier * height_pt, units="points")
+        )
+        text.set_horizontalalignment(ha)
+        placed.append(text.get_window_extent(renderer).padded(pad))
 
 
 def _figure_renderer(fig):

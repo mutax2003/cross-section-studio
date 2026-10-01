@@ -71,7 +71,9 @@ def test_load_chloride_readings_for_transects() -> None:
     assert len(aa_readings) >= 10
     assert aa_readings[0].parameter == "Chloride"
     assert aa_readings[0].value_label
-    assert aa_readings[0].unit in ("mg/kg", "mg/L")
+    # Client Fig 6/7 contract: soil chloride in mg/kg, unit in the legend only.
+    assert {reading.unit for reading in aa_readings} == {"mg/kg"}
+    assert not any("mg" in reading.value_label for reading in aa_readings)
     # Prefer From–To intervals when the chloride workbook is present.
     if any(reading.from_depth is not None for reading in aa_readings):
         assert all(

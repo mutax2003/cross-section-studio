@@ -168,6 +168,7 @@ class RendererChemistryMixin:
         collar_lookup: dict[str, float],
         *,
         profile_lookup: dict[str, tuple[float, float]] | None = None,
+        column_half_m: float = 0.0,
     ) -> None:
         if hole_summary.empty or not self.environmental_readings:
             return
@@ -340,7 +341,9 @@ class RendererChemistryMixin:
             ):
                 annotate_kwargs = {
                     **label_base_kwargs,
-                    "xy": (x_profile, y),
+                    # Anchor at the column's right edge: anchored at its centre,
+                    # labels started inside wider (auto-fit) columns.
+                    "xy": (x_profile + column_half_m, y),
                     "xytext": (dx, dy),
                     "color": label_color,
                 }

@@ -749,3 +749,35 @@ def test_consulting_water_labels_do_not_overlap_and_series_get_own_colours() -> 
         assert frame.x0 - 1 <= box.x0 and box.x1 <= frame.x1 + 1, "water label clipped"
     series_colours = {entry["series_id"]: entry["color"] for entry in renderer.water_series_legend}
     assert len(set(series_colours.values())) == 2
+
+
+def test_close_hole_id_headers_do_not_overlap() -> None:
+    """Holes 2 m apart with long IDs (like BH18-03 / BH18-02 on GWM B-B'):
+    the header pass must keep every column header readable."""
+    import itertools
+
+    from matplotlib.text import Text
+
+    from renderer_water import _figure_renderer
+
+    # Two close holes inside a long section, so they sit near each other on paper.
+    eastings = {"2017-BH09-LONG": 0.0, "2017-BH10-LONG": 2.0, "2017-BH11-LONG": 200.0}
+    ids = list(eastings)
+    collars = [
+        Collar(hole_id=hole, easting=x, northing=0.0, elevation=100.0, total_depth=8.0)
+        for hole, x in eastings.items()
+    ]
+    lithologies = [
+        Lithology(hole_id=hole, from_depth=0.0, to_depth=8.0, lithology_code="Clay") for hole in ids
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (200.0, 0.0)])
+    for profile in (CONSULTING_SECTION_PROFILE, SECTION_SHEET_PROFILE):
+        renderer = CrossSectionRenderer(show_legend=False, render_profile=profile)
+        figure = renderer.render(polygons, projected, collar_depths={hole: 8.0 for hole in ids})
+        mpl_renderer = _figure_renderer(figure)
+        boxes = [Text.get_window_extent(text, mpl_renderer) for text in renderer._header_labels]
+        assert len(boxes) == 3
+        for a, b in itertools.combinations(boxes, 2):
+            width = min(a.x1, b.x1) - max(a.x0, b.x0)
+            height = min(a.y1, b.y1) - max(a.y0, b.y0)
+            assert not (width > 0 and height > 0), f"{profile.layout}: hole-ID headers overlap"

@@ -259,8 +259,14 @@ class ConsultingLayoutMixin:
             return
         ve = self.vertical_exaggeration
         x_max = float(hole_summary["x_profile"].max())
+        x_min = float(hole_summary["x_profile"].min())
         x_pad = max(track_half, 5.0)
-        ax.set_xlim(0.0, x_max + x_pad)
+        # The first hole sits at x = 0; an axis starting at exactly 0 cut its
+        # left half off. Start slightly negative (column half width + margin)
+        # and keep the tick labels non-negative.
+        left = min(0.0, x_min - (track_half + max(0.25 * track_half, 0.3)))
+        ax.set_xlim(left, x_max + x_pad)
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _pos: "" if value < 0 else f"{value:g}"))
         y_min, y_max = self._uncertainty_y_bounds(hole_summary)
         y_pad = max(ve * 0.5, 1.0)
         collar_lookup = {

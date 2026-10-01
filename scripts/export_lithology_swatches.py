@@ -1,0 +1,118 @@
+"""Write one PNG swatch per lithology for the Survey123 borehole-log export.
+
+Survey123 renders each lithology from a fixed-size PNG in a zip; this script
+draws every canonical code with the app's own colour and hatch so field logs
+and cross-sections match. Size is a parameter because the required pixel
+dimensions are set by the form, not by this program.
+
+    python scripts/export_lithology_swatches.py --width 64 --height 64 --out dist/swatches
+    python scripts/export_lithology_swatches.py --zip dist/lithology_swatches.zip
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import matplotlib  # noqa: E402
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.patches import Rectangle  # noqa: E402
+
+from constants import (  # noqa: E402
+    HATCH_LINE_COLOR,
+    POLYGON_EDGE_COLOR,
+    USGS_LITHOLOGY_COLORS,
+    get_lithology_style,
+)
+
+_DPI = 100
+
+
+def swatch_filename(code: str) -> str:
+    """Filesystem-safe, stable name: 'Sand and Gravel' -> 'sand_and_gravel.png'."""
+    return re.sub(r"[^a-z0-9]+", "_", code.lower()).strip("_") + ".png"
+
+
+def render_swatch_png(code: str, *, width_px: int, height_px: int, border: bool = True) -> bytes:
+    """PNG bytes for one lithology at exactly width_px x height_px."""
+    from io import BytesIO
+
+    style = get_lithology_style(code)
+    with plt.rc_context({"hatch.color": HATCH_LINE_COLOR, "hatch.linewidth": 0.65}):
+        fig = plt.figure(figsize=(width_px / _DPI, height_px / _DPI), dpi=_DPI)
+        ax = fig.add_axes((0, 0, 1, 1))
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis("off")
+        ax.add_patch(
+            Rectangle(
+                (0, 0),
+                1,
+                1,
+                facecolor=style.color,
+                hatch=style.hatch or None,
+                edgecolor=POLYGON_EDGE_COLOR if border else "none",
+                linewidth=1.0 if border else 0.0,
+            )
+        )
+        buffer = BytesIO()
+        fig.savefig(buffer, format="png", dpi=_DPI, facecolor=style.color)
+        plt.close(fig)
+    return buffer.getvalue()
+
+
+def export_swatches(
+    out_dir: Path | None,
+    *,
+    width_px: int,
+    height_px: int,
+    zip_path: Path | None = None,
+    codes: list[str] | None = None,
+) -> list[str]:
+    names: list[str] = []
+    selected = codes or sorted(USGS_LITHOLOGY_COLORS)
+    archive = zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) if zip_path else None
+    try:
+        if out_dir is not None:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        for code in selected:
+            name = swatch_filename(code)
+            payload = render_swatch_png(code, width_px=width_px, height_px=height_px)
+            if out_dir is not None:
+                (out_dir / name).write_bytes(payload)
+            if archive is not None:
+                archive.writestr(name, payload)
+            names.append(name)
+    finally:
+        if archive is not None:
+            archive.close()
+    return names
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--width", type=int, default=64, help="swatch width in pixels (default 64)")
+    parser.add_argument("--height", type=int, default=64, help="swatch height in pixels (default 64)")
+    parser.add_argument("--out", type=Path, default=ROOT / "dist" / "lithology_swatches")
+    parser.add_argument("--zip", type=Path, default=None, help="also write all swatches to this zip")
+    parser.add_argument("--code", action="append", help="export only this code (repeatable)")
+    args = parser.parse_args()
+    names = export_swatches(
+        args.out, width_px=args.width, height_px=args.height, zip_path=args.zip, codes=args.code
+    )
+    print(f"Wrote {len(names)} swatch(es) at {args.width}x{args.height} px to {args.out}")
+    if args.zip:
+        print(f"Zip: {args.zip}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

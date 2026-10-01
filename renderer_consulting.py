@@ -146,7 +146,9 @@ class ConsultingLayoutMixin:
                     label_elevations=self.profile.show_water_elevation_labels,
                     label_dry_wells=show_nm and not multi_series,
                     label_series_gaps=show_nm,
-                    water_color=CONSULTING_WATER_COLOR,
+                    # One blue for a single series; several series keep their
+                    # own shades (client reference: cyan vs dark blue).
+                    water_color=None if multi_series else CONSULTING_WATER_COLOR,
                     profile_lookup=profile_lookup,
                 )
             if self.vertical_gradients:

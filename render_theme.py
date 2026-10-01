@@ -61,6 +61,9 @@ CONSULTING_GW_BLUE_SHADES: tuple[str, ...] = (
     "#003399",  # deep
 )
 
+# Consecutive series alternate light/deep so neighbours are easy to tell apart.
+_GW_CONTRAST_ORDER: tuple[int, ...] = (0, 3, 1, 2)
+
 CONSULTING_GW_SERIES_STYLES: dict[str, tuple[str, str, str]] = {
     "2024-05": (CONSULTING_GW_BLUE_SHADES[0], "v", "May 2024"),
     "2024-06": (CONSULTING_GW_BLUE_SHADES[2], "v", "June 2024"),
@@ -84,7 +87,9 @@ def consulting_gw_series_style(
         color, marker, label = CONSULTING_GW_SERIES_STYLES[series_id]
         return color, marker, level_label or label
     if series_index is not None:
-        shade = CONSULTING_GW_BLUE_SHADES[int(series_index) % len(CONSULTING_GW_BLUE_SHADES)]
+        shade = CONSULTING_GW_BLUE_SHADES[
+            _GW_CONTRAST_ORDER[int(series_index) % len(_GW_CONTRAST_ORDER)]
+        ]
         return shade, "v", level_label or series_id
     return CONSULTING_WATER_COLOR, "v", level_label or series_id
 

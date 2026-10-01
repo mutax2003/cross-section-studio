@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
 from matplotlib.markers import MarkerStyle
+from matplotlib.text import Text
 
 from hydro_metrics import (
     format_gradient_label,
@@ -32,6 +33,62 @@ _GW_MARKER_MAP = {
     "plus": "P",
     "x": "x",
 }
+
+
+# Candidate label offsets (points) as (dx, dy, ha), sorted nearest-first from
+# the default spot so a label takes the closest free position in any direction.
+def _nearest_first(
+    base: tuple[float, float],
+    offsets: Sequence[tuple[float, float, str]],
+) -> list[tuple[float, float, str]]:
+    return sorted(offsets, key=lambda item: ((item[0] - base[0]) ** 2 + (item[1] - base[1]) ** 2))
+
+
+_DY_GRID = (0.0, -8.0, 8.0, -16.0, 16.0, -26.0, 26.0, -38.0, 38.0, -52.0, 52.0)
+_SIDE_OFFSETS = [
+    (dx, dy, "left" if dx > 0 else "right")
+    for dx in (5.0, -5.0, 22.0, -22.0, 40.0, -40.0)
+    for dy in _DY_GRID
+]
+_LABEL_CANDIDATES: dict[str, list[tuple[float, float, str]]] = {
+    "rl": _nearest_first((5.0, -8.0), _SIDE_OFFSETS),
+    "nm": _nearest_first((5.0, 0.0), _SIDE_OFFSETS),
+    "gradient": _nearest_first(
+        (0.0, 6.0),
+        [(dx, dy, "center") for dx in (0.0, 20.0, -20.0, 40.0, -40.0, 60.0, -60.0) for dy in _DY_GRID],
+    ),
+}
+# Placement order: RL values matter most, gradients least.
+_LABEL_PRIORITY = {"rl": 0, "nm": 1, "gradient": 2}
+_LEADER_THRESHOLD_PT = 14.0
+
+
+def _overlap_area(a, b) -> float:
+    width = min(a.x1, b.x1) - max(a.x0, b.x0)
+    height = min(a.y1, b.y1) - max(a.y0, b.y0)
+    return width * height if width > 0 and height > 0 else 0.0
+
+
+def _outside_area(box, frame) -> float:
+    inside_w = max(0.0, min(box.x1, frame.x1) - max(box.x0, frame.x0))
+    inside_h = max(0.0, min(box.y1, frame.y1) - max(box.y0, frame.y0))
+    return box.width * box.height - inside_w * inside_h
+
+
+def _text_box(annotation, renderer):
+    # Text-only extent: Annotation.get_window_extent includes a visible leader,
+    # which would make a moved label block the whole strip back to its point.
+    annotation.update_positions(renderer)
+    return Text.get_window_extent(annotation, renderer)
+
+
+def _figure_renderer(fig):
+    try:
+        return fig.canvas.get_renderer()
+    except AttributeError:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        return FigureCanvasAgg(fig).get_renderer()
 
 
 class WaterSeriesLegendEntry(TypedDict):
@@ -105,6 +162,83 @@ class RendererWaterMixin:
             f"GROUNDWATER ELEVATION masl ({display_label})",
         )
 
+    def _water_annotate(
+        self,
+        ax,
+        text: str,
+        xy: tuple[float, float],
+        *,
+        kind: str,
+        color: str,
+        fontsize: float,
+        xytext: tuple[float, float],
+        ha: str = "left",
+    ):
+        """Draw a water number and register it for collision avoidance."""
+        annotation = ax.annotate(
+            text,
+            xy=xy,
+            xytext=xytext,
+            textcoords="offset points",
+            fontsize=fontsize,
+            color=color,
+            ha=ha,
+            va="center",
+            zorder=9,
+            bbox={"boxstyle": "square,pad=0.12", "fc": "white", "ec": "none", "alpha": 0.85},
+            # Leader exists from the start but stays hidden unless the label
+            # is moved away from its point by the collision pass.
+            arrowprops={"arrowstyle": "-", "color": color, "lw": 0.5, "shrinkA": 0, "shrinkB": 2},
+        )
+        annotation.arrow_patch.set_visible(False)
+        if not hasattr(self, "_water_labels"):
+            self._water_labels = []
+        self._water_labels.append((kind, annotation, color))
+        return annotation
+
+    def _resolve_water_label_collisions(self, fig) -> None:
+        """Move water numbers apart once the figure layout is final.
+
+        Greedy placement: each label takes the nearest candidate offset that
+        stays inside its axes and clears every label placed so far plus other
+        axes text (chemistry values, annotations). Labels moved away from their
+        point get a thin leader line, as on the client CAD figures.
+        """
+        labels = getattr(self, "_water_labels", None) or []
+        if not labels:
+            return
+        renderer = _figure_renderer(fig)
+        pad = renderer.points_to_pixels(1.5)
+        water_artists = {id(annotation) for _kind, annotation, _color in labels}
+        placed: list = []
+        for ax in {annotation.axes for _kind, annotation, _color in labels}:
+            for text in ax.texts:
+                if id(text) not in water_artists and text.get_visible() and text.get_text().strip():
+                    placed.append(text.get_window_extent(renderer).padded(pad))
+        ordered = sorted(labels, key=lambda item: _LABEL_PRIORITY.get(item[0], 9))
+        for kind, annotation, _color in ordered:
+            frame = annotation.axes.get_window_extent(renderer)
+            base = tuple(annotation.xyann)
+            best: tuple[float, tuple[float, float, str]] | None = None
+            for index, (dx, dy, ha) in enumerate(_LABEL_CANDIDATES.get(kind, [(*base, "left")])):
+                annotation.xyann = (dx, dy)
+                annotation.set_horizontalalignment(ha)
+                box = _text_box(annotation, renderer).padded(pad)
+                collision = sum(_overlap_area(box, other) for other in placed)
+                outside = _outside_area(box, frame)
+                score = (collision + 4.0 * outside) * 1000.0 + index
+                if best is None or score < best[0]:
+                    best = (score, (dx, dy, ha))
+                if collision == 0.0 and outside == 0.0:
+                    break
+            assert best is not None
+            dx, dy, ha = best[1]
+            annotation.xyann = (dx, dy)
+            annotation.set_horizontalalignment(ha)
+            placed.append(_text_box(annotation, renderer).padded(pad))
+            moved = abs(dy - base[1]) > _LEADER_THRESHOLD_PT or abs(dx - base[0]) > _LEADER_THRESHOLD_PT
+            annotation.arrow_patch.set_visible(moved)
+
     def _draw_water_table(
         self,
         ax,
@@ -144,14 +278,14 @@ class RendererWaterMixin:
                 dry_y = self._plot_y_values(dry_collars - 1.0, dry_collars)
                 for hole_id, x_profile, y in zip(dry_lookup.keys(), dry_x, dry_y, strict=True):
                     fully_dry_nm_drawn.add(str(hole_id))
-                    ax.annotate(
+                    self._water_annotate(
+                        ax,
                         "NM",
-                        xy=(float(x_profile), float(y)),
-                        xytext=(4, 0),
-                        textcoords="offset points",
-                        fontsize=8,
+                        (float(x_profile), float(y)),
+                        kind="nm",
                         color=CONSULTING_NM_COLOR,
-                        zorder=8,
+                        fontsize=8,
+                        xytext=(4, 0),
                     )
         if not series_groups:
             return
@@ -203,14 +337,14 @@ class RendererWaterMixin:
                         continue
                     x_profile, collar_rl = profile
                     y = self._plot_y(collar_rl - 1.0, collar_rl)
-                    ax.annotate(
+                    self._water_annotate(
+                        ax,
                         "NM",
-                        xy=(float(x_profile), float(y)),
-                        xytext=(4, 0),
-                        textcoords="offset points",
-                        fontsize=8,
+                        (float(x_profile), float(y)),
+                        kind="nm",
                         color=CONSULTING_NM_COLOR,
-                        zorder=8,
+                        fontsize=8,
+                        xytext=(4, 0),
                     )
             # Draw each connect_group nest separately so shallow/deep do not join.
             for group_id, group_levels in _connect_subgroups(levels).items():
@@ -230,14 +364,14 @@ class RendererWaterMixin:
                     status = water_status(level)
                     if status in {"dry", "nm"}:
                         y_nm = self._plot_y(collar_rl - 1.0, collar_rl)
-                        ax.annotate(
+                        self._water_annotate(
+                            ax,
                             "NM" if status == "nm" else "DRY",
-                            xy=(float(x_profile), float(y_nm)),
-                            xytext=(4, 0),
-                            textcoords="offset points",
-                            fontsize=8,
+                            (float(x_profile), float(y_nm)),
+                            kind="nm",
                             color=CONSULTING_NM_COLOR,
-                            zorder=8,
+                            fontsize=8,
+                            xytext=(4, 0),
                         )
                         continue
                     xs.append(x_profile)
@@ -255,14 +389,14 @@ class RendererWaterMixin:
                     for x_profile, water_rl, y, level, collar_rl in zip(
                         xs_arr, water_arr, ys, measured_levels, collars, strict=True
                     ):
-                        ax.annotate(
+                        self._water_annotate(
+                            ax,
                             self._water_elevation_label(level, collar_rl),
-                            xy=(float(x_profile), float(y)),
-                            xytext=(4, -8),
-                            textcoords="offset points",
-                            fontsize=7,
+                            (float(x_profile), float(y)),
+                            kind="rl",
                             color=color,
-                            zorder=8,
+                            fontsize=7,
+                            xytext=(4, -8),
                         )
                 if len(xs_arr) >= 2 and interpolate:
                     gw_linestyle = "-" if self.profile.water_line_solid else "--"
@@ -350,15 +484,15 @@ class RendererWaterMixin:
                             + float(profile_lookup[segment.right_hole_id][1])
                         )
                         mid_y = self._plot_y(segment.mid_head_masl, mid_collar)
-                        ax.annotate(
+                        self._water_annotate(
+                            ax,
                             format_gradient_label(segment),
-                            xy=(segment.mid_x, float(mid_y)),
-                            xytext=(0, 6),
-                            textcoords="offset points",
-                            fontsize=6,
+                            (segment.mid_x, float(mid_y)),
+                            kind="gradient",
                             color=color,
+                            fontsize=6,
+                            xytext=(0, 6),
                             ha="center",
-                            zorder=9,
                         )
             level_label_text, elevation_label_text = self._water_legend_captions(
                 series_id, label, default_label

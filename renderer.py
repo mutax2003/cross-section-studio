@@ -262,29 +262,23 @@ class CrossSectionRenderer(
         lithology_codes: Sequence[str] | None = None,
     ) -> Figure:
         self.water_series_legend = []
+        self._water_labels = []
         if self.profile.layout == "section_sheet":
-            return self._render_section_sheet(
-                polygons,
-                projected_df,
-                collar_depths,
-                water_levels=water_levels,
-                lithology_codes=lithology_codes,
-            )
-        if self.profile.layout == "consulting_section":
-            return self._render_consulting_section(
-                polygons,
-                projected_df,
-                collar_depths,
-                water_levels=water_levels,
-                lithology_codes=lithology_codes,
-            )
-        return self._render_chart_layout(
+            render_layout = self._render_section_sheet
+        elif self.profile.layout == "consulting_section":
+            render_layout = self._render_consulting_section
+        else:
+            render_layout = self._render_chart_layout
+        fig = render_layout(
             polygons,
             projected_df,
             collar_depths,
             water_levels=water_levels,
             lithology_codes=lithology_codes,
         )
+        # Positions in points are only final once limits and margins are set.
+        self._resolve_water_label_collisions(fig)
+        return fig
 
     def _hole_context(self, projected_df: pd.DataFrame) -> _HoleContext:
         summary = (

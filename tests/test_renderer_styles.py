@@ -696,3 +696,56 @@ def test_lithology_style_override_is_case_insensitive(tmp_path, monkeypatch) -> 
     assert style.hatch == ".."
     constants_mod._load_lithology_style_overrides.cache_clear()
     get_lithology_style.cache_clear()
+
+
+def test_consulting_water_labels_do_not_overlap_and_series_get_own_colours() -> None:
+    """Two series with near-identical heads at every hole: the label pass must
+    separate every number and keep it inside the plot; each series keeps its
+    own colour instead of one flat blue."""
+    import itertools
+
+    from matplotlib.text import Text
+
+    from renderer_water import _figure_renderer
+
+    collars = [
+        Collar(hole_id=f"MW-0{i}", easting=40.0 * i, northing=0.0, elevation=100.0, total_depth=10.0)
+        for i in range(1, 5)
+    ]
+    lithologies = [
+        Lithology(hole_id=collar.hole_id, from_depth=0.0, to_depth=10.0, lithology_code="Clay")
+        for collar in collars
+    ]
+    water = [
+        WaterLevel(hole_id=collar.hole_id, depth=2.0 + 0.03 * i, series_id=series)
+        for i, collar in enumerate(collars)
+        for series in ("2024-05", "2025-06")
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(40.0, 0.0), (160.0, 0.0)])
+    renderer = CrossSectionRenderer(
+        show_legend=False,
+        render_profile=CONSULTING_SECTION_PROFILE,
+        consulting_title_block=ConsultingTitleBlock(section_label="A-A'"),
+    )
+    figure = renderer.render(
+        polygons,
+        projected,
+        collar_depths={collar.hole_id: 10.0 for collar in collars},
+        water_levels=water,
+    )
+    mpl_renderer = _figure_renderer(figure)
+    labels = [annotation for _kind, annotation, _color in renderer._water_labels]
+    assert len(labels) >= 8
+    boxes = []
+    for annotation in labels:
+        annotation.update_positions(mpl_renderer)
+        boxes.append(Text.get_window_extent(annotation, mpl_renderer))
+    frame = labels[0].axes.get_window_extent(mpl_renderer)
+    for a, b in itertools.combinations(boxes, 2):
+        width = min(a.x1, b.x1) - max(a.x0, b.x0)
+        height = min(a.y1, b.y1) - max(a.y0, b.y0)
+        assert not (width > 0 and height > 0), "water labels overlap"
+    for box in boxes:
+        assert frame.x0 - 1 <= box.x0 and box.x1 <= frame.x1 + 1, "water label clipped"
+    series_colours = {entry["series_id"]: entry["color"] for entry in renderer.water_series_legend}
+    assert len(set(series_colours.values())) == 2

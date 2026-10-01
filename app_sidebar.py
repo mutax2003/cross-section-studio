@@ -23,10 +23,11 @@ from app_common import (
     llm_disabled_by_deployment,
 )
 from app_upload import (
+    DESTRUCTIVE_PROMPTS,
     apply_pending_project_seed,
-    clear_workbook_session,
-    load_sample_workbook,
     render_input_template_download,
+    request_destructive,
+    run_destructive,
 )
 from constants import (
     DEFAULT_PROFILE_ELEVATION_M,
@@ -40,42 +41,23 @@ from models import ConsultingTitleBlock
 from pipeline import DEFAULT_UNCERTAINTY_SPACING_M
 from ui_output_presets import FIGURE_PRESET_IDS, OUTPUT_PRESET_LABELS, resolve_output_preset
 
-_DESTRUCTIVE_PROMPTS = {
-    "clear": ("Clear workbook", "Clear the workbook and discard the generated section?"),
-    "sample": ("Load sample", "Load the sample project and discard the generated section?"),
-}
-
-
-def _run_destructive(action: str) -> None:
-    if action == "clear":
-        clear_workbook_session()
-        st.rerun()
-    try:
-        load_sample_workbook()
-        st.rerun()
-    except FileNotFoundError as exc:
-        st.error(str(exc))
-
-
-def _request_destructive(action: str) -> None:
-    """Act immediately unless it would discard a generated section; then confirm."""
-    if st.session_state.get("svg_bytes") is None:
-        _run_destructive(action)
-        return
-    st.session_state["_pending_destructive"] = action
-
 
 def _render_pending_destructive() -> None:
     action = st.session_state.get("_pending_destructive")
-    if action not in _DESTRUCTIVE_PROMPTS:
+    if action not in DESTRUCTIVE_PROMPTS:
         return
-    confirm_label, question = _DESTRUCTIVE_PROMPTS[action]
+    if st.session_state.get("svg_bytes") is None:
+        # The section the prompt protected is gone (new upload, clear, ...):
+        # a leftover Confirm must never wipe whatever is generated next.
+        st.session_state.pop("_pending_destructive", None)
+        return
+    confirm_label, question = DESTRUCTIVE_PROMPTS[action]
     st.warning(question + " Download anything you need first.")
     confirm_col, cancel_col = st.columns(2)
     with confirm_col:
         if st.button(confirm_label, key="confirm_destructive", type="primary", width="stretch"):
             st.session_state.pop("_pending_destructive", None)
-            _run_destructive(action)
+            run_destructive(action)
     with cancel_col:
         if st.button("Cancel", key="cancel_destructive", width="stretch"):
             st.session_state.pop("_pending_destructive", None)
@@ -244,14 +226,14 @@ def render_sidebar() -> SidebarState:
             width="stretch",
             icon=":material/science:",
         ):
-            _request_destructive("sample")
+            request_destructive("sample")
         if st.button(
             "Clear workbook",
             key="sidebar_clear_workbook",
             width="stretch",
             icon=":material/delete:",
         ):
-            _request_destructive("clear")
+            request_destructive("clear")
         _render_pending_destructive()
         uploaded = st.file_uploader(
             "Upload Excel workbook",

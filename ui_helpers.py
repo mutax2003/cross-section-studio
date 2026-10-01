@@ -17,8 +17,13 @@ from projection import (
 
 _SVG_HEIGHT_RE = re.compile(r'height="([0-9.]+)', re.IGNORECASE)
 _SVG_VIEWBOX_RE = re.compile(r'viewBox="[^"]*\s+[^"]*\s+[^"]*\s+([0-9.]+)"', re.IGNORECASE)
-_SVG_WIDTH_RE = re.compile(r'<svg\b[^>]*?\swidth="([0-9.]+)\s*(pt|px)?"', re.IGNORECASE)
-_SVG_VIEWBOX_WIDTH_RE = re.compile(r'<svg\b[^>]*?\sviewBox="[^"\s]+\s+[^"\s]+\s+([0-9.]+)', re.IGNORECASE)
+_SVG_WIDTH_RE = re.compile(r'<svg\b[^>]*?\swidth=["\']([0-9.]+)\s*(pt|px)?["\']', re.IGNORECASE)
+_SVG_VIEWBOX_WIDTH_RE = re.compile(
+    r'<svg\b[^>]*?\sviewBox=["\'][^"\'\s,]+[\s,]+[^"\'\s,]+[\s,]+([0-9.]+)', re.IGNORECASE
+)
+_SVG_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+# Cap zoomed previews so a bogus SVG width cannot request a gigapixel <img>.
+_MAX_PREVIEW_WIDTH_PX = 12000
 _PT_TO_PX = 96.0 / 72.0
 
 # Preview zoom choices -> scale of the SVG's natural CSS-pixel width (None = fit).
@@ -92,13 +97,28 @@ def svg_display_meta(
 
 
 def _svg_natural_width_px(text: str) -> int:
-    """CSS-pixel width the browser gives the SVG at 100% (matplotlib writes pt)."""
+    """CSS-pixel width the browser gives the SVG at 100% (matplotlib writes pt).
+
+    Returns 0 (fit-to-width) when no usable width can be read.
+    """
+    text = _SVG_COMMENT_RE.sub("", text)
     match = _SVG_WIDTH_RE.search(text)
     if match:
         scale = _PT_TO_PX if (match.group(2) or "").lower() == "pt" else 1.0
-        return int(round(float(match.group(1)) * scale))
+        width = _safe_float(match.group(1))
+        if width:
+            return min(int(round(width * scale)), _MAX_PREVIEW_WIDTH_PX)
     match = _SVG_VIEWBOX_WIDTH_RE.search(text)
-    return int(round(float(match.group(1)))) if match else 0
+    width = _safe_float(match.group(1)) if match else None
+    return min(int(round(width)), _MAX_PREVIEW_WIDTH_PX) if width else 0
+
+
+def _safe_float(raw: str) -> float | None:
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) and value > 0 else None
 
 
 def preview_img_style(zoom: str | None, natural_width_px: int) -> tuple[str, bool]:

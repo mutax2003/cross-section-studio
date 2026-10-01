@@ -44,3 +44,15 @@ def test_preview_img_style_scales_from_natural_width_and_falls_back_to_fit() -> 
     for zoom, width in (("Fit width", 800), (None, 800), ("bogus", 800), ("150%", 0)):
         style, zoomed = preview_img_style(zoom, width)
         assert not zoomed and style.startswith("width:100%")
+
+
+def test_svg_natural_width_tolerates_malformed_and_hostile_widths() -> None:
+    def width(svg: bytes) -> int:
+        return svg_display_meta(svg).natural_width_px
+
+    assert width(b'<svg width="." height="10"></svg>') == 0  # used to raise ValueError
+    assert width(b'<svg width="1.2.3" viewBox="0 0 300 1"></svg>') == 300
+    assert width(b"<svg width='750pt'></svg>") == 1000
+    assert width(b'<svg viewBox="0,0,640,480"></svg>') == 640
+    assert width(b'<!-- <svg width="5"> --><svg width="720pt"></svg>') == 960
+    assert width(b'<svg width="99999999pt"></svg>') == 12000

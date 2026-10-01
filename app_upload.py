@@ -170,6 +170,36 @@ def load_sample_workbook() -> None:
     )
 
 
+
+DESTRUCTIVE_PROMPTS = {
+    "clear": ("Clear workbook", "Clear the workbook and discard the generated section?"),
+    "sample": ("Load sample", "Load the sample project and discard the generated section?"),
+}
+
+
+def run_destructive(action: str) -> None:
+    if action == "clear":
+        clear_workbook_session()
+        st.rerun()
+    try:
+        load_sample_workbook()
+        st.rerun()
+    except FileNotFoundError as exc:
+        st.error(str(exc))
+
+
+def request_destructive(action: str) -> None:
+    """Act immediately unless it would discard a generated section; then confirm.
+
+    Shared by the sidebar, File menu and Ctrl+Shift+O so no entry point can
+    discard a section silently; the sidebar renders the pending prompt.
+    """
+    if st.session_state.get("svg_bytes") is None:
+        run_destructive(action)
+        return
+    st.session_state["_pending_destructive"] = action
+
+
 def render_welcome_card() -> None:
     st.markdown(
         """

@@ -268,7 +268,8 @@ def _display_svg(svg_bytes: bytes, alt_text: str = "Cross-section profile") -> N
     if not cached.valid:
         st.error("Renderer produced invalid or empty SVG output.")
         return
-    zoom = st.segmented_control(
+    # Without a readable natural width every choice would render fit-to-width.
+    zoom = cached.natural_width_px and st.segmented_control(
         "Preview size",
         list(PREVIEW_ZOOM_OPTIONS),
         default="Fit width",

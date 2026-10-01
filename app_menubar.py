@@ -8,7 +8,7 @@ import time
 import streamlit as st
 
 from app_state import clear_ai_session_state, clear_section_output_state
-from app_upload import load_sample_workbook
+from app_upload import request_destructive
 from paths import cross_section_input_template, help_topic_path
 from ui_output_presets import resolve_output_preset
 
@@ -187,11 +187,9 @@ def render_menubar() -> None:
                     "**Upload Excel workbook** in the sidebar. Load sample skips prep."
                 )
                 if _menu_item("Load sample project", key="menu_file_sample", shortcut="Ctrl+Shift+O"):
-                    try:
-                        load_sample_workbook()
-                        st.rerun()
-                    except FileNotFoundError as exc:
-                        st.error(str(exc))
+                    # Asks in the sidebar first when it would discard a section.
+                    request_destructive("sample")
+                    st.rerun()
                 template_path = cross_section_input_template()
                 if template_path.is_file():
                     st.download_button(
@@ -318,7 +316,7 @@ def _render_accelerator_buttons() -> None:
         with b1:
             if st.button(ACCEL_SAMPLE, key="menu_accel_sample"):
                 try:
-                    load_sample_workbook()
+                    request_destructive("sample")
                 except FileNotFoundError as exc:
                     st.session_state["_menu_accel_error"] = str(exc)
                 st.rerun()

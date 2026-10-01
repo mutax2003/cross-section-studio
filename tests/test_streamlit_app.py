@@ -214,3 +214,25 @@ def test_preview_zoom_switches_to_scrollable_native_size_frame(sample_workbook: 
     natural = at.session_state["svg_display_meta"].natural_width_px
     assert natural > 0
     assert f"width:{round(natural * 1.5)}px" in html_150
+
+
+def test_menu_load_sample_asks_before_discarding_a_generated_section(sample_workbook: Path) -> None:
+    at = _generated_app(sample_workbook)
+    for key in ("menu_file_sample", "menu_accel_sample"):
+        at.button(key=key).click().run()
+        assert not at.exception
+        assert at.session_state["svg_bytes"], f"{key} discarded the section without asking"
+        assert at.session_state["_pending_destructive"] == "sample"
+        at.button(key="cancel_destructive").click().run()
+
+
+def test_stale_destructive_prompt_is_dropped_once_its_section_is_gone(sample_workbook: Path) -> None:
+    at = _generated_app(sample_workbook)
+    [btn for btn in at.button if btn.label == "Clear workbook"][0].click().run()
+    assert at.session_state["_pending_destructive"] == "clear"
+    # Section disappears another way (new upload, menu clear...): the old
+    # Confirm must not linger to wipe whatever is generated next.
+    at.session_state["svg_bytes"] = None
+    at.run()
+    assert "_pending_destructive" not in at.session_state
+    assert not [btn for btn in at.button if btn.key == "confirm_destructive"]

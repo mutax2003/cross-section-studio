@@ -182,7 +182,9 @@ def test_export_cleaned_workbook_bytes_roundtrip() -> None:
     )
     assert isinstance(payload, (bytes, bytearray))
     assert len(payload) > 500
-    cleaned, _report2 = ingest_workbook(BytesIO(payload))
+    cleaned, report2 = ingest_workbook(BytesIO(payload))
+    # Project metadata must come back on re-import (it seeds the title block).
+    assert report2.project_metadata.get("client_name") == "TEST CLIENT"
     assert len(cleaned.collars) == len(result.collars)
     assert len(cleaned.lithologies) >= 1
     # Every water row must survive (elevation_masl rows used to be rejected on

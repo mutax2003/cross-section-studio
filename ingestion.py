@@ -738,6 +738,19 @@ def ingest_workbook(
             workbook=workbook,
         )
 
+    if (
+        not project_metadata
+        and workbook is not None
+        and any(name.strip().lower() == "project" for name in workbook.sheet_names)
+    ):
+        from workbook_template import load_project_metadata
+
+        if hasattr(source, "seek"):
+            source.seek(0)
+        project_metadata = load_project_metadata(source)
+        if project_metadata and "Project" not in optional_sheets:
+            optional_sheets.append("Project")
+
     placeholder_elevation = (
         profile_default_elevation_m
         if resolved_profile_id not in {NATIVE_PROFILE_ID, DATA_ENTRY_PROFILE_ID}
@@ -745,6 +758,13 @@ def ingest_workbook(
     )
     if elevation_m is not None:
         placeholder_elevation = None
+    if placeholder_elevation is None and resolved_profile_id == NATIVE_PROFILE_ID:
+        placeholder_elevation = _uniform_placeholder_elevation(parse_result.collars)
+        if placeholder_elevation is not None:
+            warnings.append(
+                f"Collar elevations are converter placeholders ({placeholder_elevation:.1f} m, "
+                "not surveyed RL) — set surveyed elevations for absolute RL sections."
+            )
 
     had_unit_order_column = lithology_has_unit_order_column(parse_result.lithologies)
     unit_order_auto_assigned = False
@@ -826,6 +846,28 @@ def ingest_workbook(
     return parse_result, report
 
 
+PLACEHOLDER_DATUM_PREFIX = "Placeholder"
+
+
+def _placeholder_datum(elevation_m: float) -> str:
+    return f"{PLACEHOLDER_DATUM_PREFIX} (profile default {elevation_m:.1f} m, not surveyed RL)"
+
+
+def _uniform_placeholder_elevation(collars) -> float | None:
+    """Collar RL shared by every collar tagged as a converter placeholder, else None."""
+    if not collars:
+        return None
+    if not all(
+        (collar.elevation_datum or "").strip().lower().startswith(PLACEHOLDER_DATUM_PREFIX.lower())
+        for collar in collars
+    ):
+        return None
+    first = collars[0].elevation
+    if all(abs(collar.elevation - first) < 0.01 for collar in collars):
+        return float(first)
+    return None
+
+
 def export_platform_workbook(
     source: str | Path | BinaryIO | BytesIO,
     output: Path,
@@ -876,6 +918,9 @@ def export_platform_workbook(
             target_crs=target_crs,
             workbook=workbook,
         )
+        if elevation_m is None:
+            # Not a surveyed RL: tag it so a re-import still flags placeholders.
+            collars_df["elevation_datum"] = _placeholder_datum(profile.defaults.elevation_m)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(output, engine="openpyxl") as writer:

@@ -821,3 +821,24 @@ def test_sections_sheet_parses_and_seeds_batch_lines(tmp_path: Path) -> None:
     assert [spec.label for spec in specs] == ["A-A'", "B-B'", "C-C'"]
     assert specs[0].hole_ids == ("MW-01", "MW-02", "MW-03")
 
+
+
+def test_converted_field_export_keeps_placeholder_elevation_flag(tmp_path: Path) -> None:
+    """convert_workbook writes the profile placeholder RL; a re-import must
+    still flag it (it used to come back as if surveyed, silently)."""
+    from ingestion import export_platform_workbook
+
+    source = ROOT / "data" / "fixtures" / "advantage_phase2_source.xlsx"
+    first, first_report = ingest_workbook(source)
+    assert first_report.uses_placeholder_elevation
+
+    converted = tmp_path / "converted.xlsx"
+    export_platform_workbook(source, converted)
+    _again, again_report = ingest_workbook(converted)
+    assert again_report.uses_placeholder_elevation
+    assert any("placeholder" in warning.lower() for warning in again_report.warnings)
+
+    surveyed = tmp_path / "surveyed.xlsx"
+    export_platform_workbook(source, surveyed, elevation_m=612.5)
+    _s, surveyed_report = ingest_workbook(surveyed)
+    assert not surveyed_report.uses_placeholder_elevation

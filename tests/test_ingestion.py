@@ -902,3 +902,104 @@ def test_placeholder_tag_edited_in_excel_never_drops_or_misflags_collars(tmp_pat
     cleaned = export_cleaned_workbook_bytes(base, project_metadata=base_report.project_metadata)
     _again, again_report = ingest_workbook(BytesIO(cleaned))
     assert again_report.uses_placeholder_elevation
+
+
+def _hostile_workbook(collars, lithology, extra: dict | None = None, **names) -> BytesIO:
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        pd.DataFrame(collars).to_excel(
+            writer, sheet_name=names.get("collars_sheet", "Collars"), index=False
+        )
+        pd.DataFrame(lithology).to_excel(
+            writer, sheet_name=names.get("lithology_sheet", "Lithology"), index=False
+        )
+        for sheet, rows in (extra or {}).items():
+            pd.DataFrame(rows).to_excel(writer, sheet_name=sheet, index=False)
+    buffer.seek(0)
+    return buffer
+
+
+_TWO_COLLARS = [
+    {"hole_id": "BH1", "easting": 0, "northing": 0, "elevation": 100, "total_depth": 10},
+    {"hole_id": "BH2", "easting": 50, "northing": 0, "elevation": 100, "total_depth": 10},
+]
+_TWO_LITH = [
+    {"hole_id": hole, "from_depth": 0, "to_depth": 10, "lithology_code": "Clay"}
+    for hole in ("BH1", "BH2")
+]
+
+
+def test_lowercase_tab_names_and_whitespace_headers_parse_like_the_canonical_ones() -> None:
+    """Detection is case/whitespace-insensitive; the parser must read the same
+    sheet and header it detected instead of failing on the literal name."""
+    result, _ = ingest_workbook(
+        _hostile_workbook(
+            _TWO_COLLARS, _TWO_LITH, collars_sheet="collars", lithology_sheet="lithology"
+        )
+    )
+    assert len(result.collars) == 2 and len(result.lithologies) == 2
+
+    collars = [
+        {**row, "Hole  ID": row.pop("hole_id"), "Total\tDepth": row.pop("total_depth")}
+        for row in [dict(r) for r in _TWO_COLLARS]
+    ]
+    lith = [{**row, "To  Depth": row.pop("to_depth")} for row in [dict(r) for r in _TWO_LITH]]
+    result, _ = ingest_workbook(_hostile_workbook(collars, lith))
+    assert len(result.collars) == 2 and len(result.lithologies) == 2
+
+
+def test_numeric_hole_ids_survive_a_blank_row_in_lithology() -> None:
+    """pandas reads 1, <blank>, 2 as floats; "1.0" must not fail to match "1"."""
+    collars = [{**row, "hole_id": index + 1} for index, row in enumerate(_TWO_COLLARS)]
+    lith = [
+        {"hole_id": 1, "from_depth": 0, "to_depth": 10, "lithology_code": "Clay"},
+        {"hole_id": None, "from_depth": None, "to_depth": None, "lithology_code": None},
+        {"hole_id": 2, "from_depth": 0, "to_depth": 10, "lithology_code": "Clay"},
+    ]
+    result, _ = ingest_workbook(_hostile_workbook(collars, lith))
+    assert [c.hole_id for c in result.collars] == ["1", "2"]
+    assert len(result.lithologies) == 2 and not result.errors
+
+
+def test_spreadsheet_formulas_are_rejected_and_never_written_back_live() -> None:
+    from openpyxl import load_workbook
+
+    from workbook_template import export_cleaned_workbook_bytes
+
+    hostile = [dict(_TWO_COLLARS[0], hole_id='=HYPERLINK("http://evil","BH1")'), _TWO_COLLARS[1]]
+    result, _ = ingest_workbook(_hostile_workbook(hostile, _TWO_LITH))
+    # Written by openpyxl as a formula with no cached value -> reads back blank:
+    # the row must be reported, not silently dropped.
+    assert len(result.collars) == 1
+    assert any("Collars row 2" in error and "blank" in error for error in result.errors)
+
+    # Text that merely starts with "=" (typed into Excel as a string).
+    from models import Collar
+
+    with pytest.raises(ValueError, match="formula"):
+        Collar(hole_id="=1+1", easting=0, northing=0, elevation=1, total_depth=1)
+
+    clean, report = ingest_workbook(_hostile_workbook(_TWO_COLLARS, _TWO_LITH))
+    exported = export_cleaned_workbook_bytes(
+        clean, project_metadata={"client_name": "=cmd|' /C calc'!A0"}
+    )
+    project = load_workbook(BytesIO(exported))["Project"]
+    formula_cells = [c for row in project.iter_rows() for c in row if str(c.value).startswith("=")]
+    assert formula_cells and all(c.data_type == "s" for c in formula_cells)
+
+
+def test_structure_and_survey_row_problems_are_row_errors_not_aborts() -> None:
+    extra = {
+        "Faults": [
+            {"name": "F1", "x_profile": None, "elevation": 5},
+            {"name": "F1", "x_profile": 10, "elevation": 5},
+        ],
+        "Unconformities": [{"name": "U1", "x_profile": 1, "elevation": None}],
+        "Deviations": [{"hole_id": "BH1", "depth": 5, "inclination_deg": None, "azimuth_deg": 0}],
+    }
+    result, _ = ingest_workbook(_hostile_workbook(_TWO_COLLARS, _TWO_LITH, extra))
+    assert len(result.collars) == 2  # workbook still loads
+    assert not result.deviation_readings  # NaN survey would NaN the hole geometry
+    joined = "\n".join(result.errors)
+    assert "Faults sheet" in joined and "Unconformities sheet" in joined
+    assert "Deviations row for 'BH1': inclination_deg" in joined

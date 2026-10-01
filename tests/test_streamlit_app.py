@@ -236,3 +236,25 @@ def test_stale_destructive_prompt_is_dropped_once_its_section_is_gone(sample_wor
     at.run()
     assert "_pending_destructive" not in at.session_state
     assert not [btn for btn in at.button if btn.key == "confirm_destructive"]
+
+
+def test_parse_failure_is_shown_on_screen_with_technical_details() -> None:
+    """A workbook the parser rejects used to leave the page silent: the error
+    was stored and the function returned before the banner block rendered."""
+    from streamlit.testing.v1 import AppTest
+
+    from tests.conftest import make_workbook_bytes
+
+    broken = make_workbook_bytes(
+        [{"hole_id": "BH1", "easting": 0, "northing": 0, "elevation": 100}],  # no total_depth
+        [{"hole_id": "BH1", "from_depth": 0, "to_depth": 5, "lithology_code": "Clay"}],
+    )
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("broken.xlsx", broken).run()
+    assert not at.exception
+    assert at.session_state["parse_result"] is None
+    assert any("total_depth" in e.value or "Collars" in e.value for e in at.error), [
+        e.value for e in at.error
+    ]
+    assert any("Technical details" in x.label for x in at.expander)

@@ -956,7 +956,7 @@ def _load_project_sheet_metadata(source: str | Path | BinaryIO | BytesIO) -> dic
         key = _normalize_key(row[field_col])
         if key in project_fields:
             value = str(row[value_col]).strip()
-            if value and value.lower() != "nan":
+            if value and value.lower() != "nan" and not value.startswith("="):
                 result[key] = value
     if "figure_preset" not in result and "section_style" in result:
         result["figure_preset"] = result["section_style"]
@@ -982,6 +982,16 @@ def load_project_metadata(source: str | Path | BinaryIO | BytesIO) -> dict[str, 
     merged = dict(from_data_entry)
     merged.update(from_project)
     return merged
+
+
+def _neutralise_formula_cells(book) -> None:
+    """Store any '=...' text as a literal string so a re-opened export never
+    executes user-supplied formulas (openpyxl treats such strings as formulas)."""
+    for sheet in book.worksheets:
+        for row in sheet.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    cell.data_type = "s"
 
 
 def export_cleaned_workbook_bytes(
@@ -1130,4 +1140,5 @@ def export_cleaned_workbook_bytes(
             pd.DataFrame(gradients).to_excel(writer, sheet_name=GRADIENTS_SHEET, index=False)
         if sections:
             pd.DataFrame(sections).to_excel(writer, sheet_name=SECTIONS_SHEET, index=False)
+        _neutralise_formula_cells(writer.book)
     return buffer.getvalue()

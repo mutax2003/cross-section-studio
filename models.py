@@ -40,7 +40,12 @@ _XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def _clean_text(value: object) -> str:
-    return _XML_ILLEGAL.sub("", str(value)).strip()
+    text = _XML_ILLEGAL.sub("", str(value)).strip()
+    if text.startswith("="):
+        # A leading '=' is a spreadsheet formula; written back out by the
+        # cleaned export it would execute in Excel.
+        raise ValueError(f"text cannot start with '=' (formula): {text[:40]!r}")
+    return text
 
 
 class Collar(BaseModel, frozen=True):
@@ -116,10 +121,13 @@ class Lithology(BaseModel, frozen=True):
 
     @field_validator("hole_id", "lithology_code", mode="before")
     @classmethod
-    def strip_strings(cls, value: object) -> str:
+    def strip_strings(cls, value: object, info) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("required string field is missing")
-        return _clean_text(value)
+        text = _clean_text(value)
+        if not text:
+            raise ValueError(f"{info.field_name} is blank")
+        return text
 
     @field_validator("from_depth", "to_depth")
     @classmethod
@@ -295,6 +303,14 @@ class DeviationReading(BaseModel, frozen=True):
     depth: float
     inclination_deg: float
     azimuth_deg: float
+
+    @field_validator("depth", "inclination_deg", "azimuth_deg")
+    @classmethod
+    def require_finite(cls, value: float, info) -> float:
+        # A blank survey cell would otherwise NaN the whole hole's geometry.
+        if not math.isfinite(value):
+            raise ValueError(f"{info.field_name} must be a finite number")
+        return value
 
     @field_validator("hole_id", mode="before")
     @classmethod

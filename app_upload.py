@@ -459,7 +459,7 @@ def handle_workbook_upload(
             st.session_state.pop("upload_banner_success", None)
             st.session_state.pop("upload_banner_info", None)
             st.session_state.pop("upload_banner_caption", None)
-            return None
+            # Fall through: the banner block below is what shows the error.
 
     error_banner = st.session_state.pop("upload_banner_error", None)
     if error_banner:

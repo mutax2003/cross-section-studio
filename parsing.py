@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO
@@ -45,9 +46,35 @@ def _as_excel(source: WorkbookSource) -> pd.ExcelFile:
     return pd.ExcelFile(source)
 
 
+def _short_error(exc: Exception) -> str:
+    """First useful line of a pydantic ValidationError, else str(exc)."""
+    errors = getattr(exc, "errors", None)
+    if callable(errors):
+        try:
+            first = errors()[0]
+            field = ".".join(str(part) for part in first.get("loc", ()))
+            message = str(first.get("msg", "")).removeprefix("Value error, ")
+            return f"{field}: {message}" if field else message
+        except Exception:  # pragma: no cover - defensive
+            pass
+    return str(exc)
+
+
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    renamed = {col: str(col).strip().lower().replace(" ", "_") for col in df.columns}
-    return df.rename(columns=renamed)
+    # Same collapse as FormatDetector, so a header it accepts cannot fail here.
+    renamed = {col: re.sub(r"\s+", "_", str(col).strip().lower()) for col in df.columns}
+    df = df.rename(columns=renamed)
+    if "hole_id" in df.columns:
+        # A blank cell makes pandas read numeric IDs as float: 1 -> 1.0 -> "1.0",
+        # which then matches nothing in Collars.
+        df["hole_id"] = df["hole_id"].map(_integral_id_to_text)
+    return df
+
+
+def _integral_id_to_text(value: object) -> object:
+    if isinstance(value, float) and not pd.isna(value) and value.is_integer():
+        return str(int(value))
+    return value
 
 
 class DataParser:
@@ -117,8 +144,17 @@ class DataParser:
                 if missing:
                     raise ValueError(f"Missing required sheet(s): {', '.join(missing)}")
 
-                collars_frame = _normalize_columns(pd.read_excel(workbook, sheet_name=collars_name))
-                lithology_frame = _normalize_columns(pd.read_excel(workbook, sheet_name=lithology_name))
+                # Read by the sheet's actual name: detection is case-insensitive.
+                collars_frame = _normalize_columns(
+                    pd.read_excel(
+                        workbook, sheet_name=self._find_sheet(workbook.sheet_names, collars_name)
+                    )
+                )
+                lithology_frame = _normalize_columns(
+                    pd.read_excel(
+                        workbook, sheet_name=self._find_sheet(workbook.sheet_names, lithology_name)
+                    )
+                )
                 # Empty header-only native tabs: fall back to Data Entry geology when present.
                 if (
                     data_entry is not None
@@ -188,6 +224,7 @@ class DataParser:
         vertical_gradients: list[VerticalGradient] = []
         screen_errors: list[str] = []
         gradient_errors: list[str] = []
+        structure_errors: list[str] = []
         section_specs: list[WorkbookSectionSpec] = []
         if water_df is not None:
             water_levels, water_errors = self._parse_water_levels(
@@ -223,10 +260,10 @@ class DataParser:
                 )
             else:
                 vertical_gradients, gradient_errors = self._parse_gradients_sheet(workbook, collars)
-            deviation_readings = self._parse_deviation_sheet(workbook)
+            deviation_readings = self._parse_deviation_sheet(workbook, structure_errors)
             correlation_overrides = self._parse_correlation_sheet(workbook)
-            faults = self._parse_fault_sheet(workbook)
-            unconformities = self._parse_unconformity_sheet(workbook)
+            faults = self._parse_fault_sheet(workbook, structure_errors)
+            unconformities = self._parse_unconformity_sheet(workbook, structure_errors)
 
         if workbook is not None:
             section_specs = self._parse_sections_sheet(workbook, collars)
@@ -241,6 +278,7 @@ class DataParser:
             + screen_errors
             + gradient_errors
             + environmental_errors
+            + structure_errors
             + data_entry_precedence_warnings
         )
         if errors:
@@ -318,6 +356,17 @@ class DataParser:
         return None
 
     @staticmethod
+    def _row_has_values(row: object, fields: tuple[str, ...]) -> bool:
+        """True when any named cell holds data (so the row is not just padding)."""
+        for field in fields:
+            value = getattr(row, field, None)
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                continue
+            if str(value).strip():
+                return True
+        return False
+
+    @staticmethod
     def _blank_hole_id(value: object) -> bool:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return True
@@ -342,6 +391,11 @@ class DataParser:
         for index, row in enumerate(df.itertuples(index=True)):
             row_num = int(row.Index) + 2
             if self._blank_hole_id(row.hole_id):
+                if self._row_has_values(row, ("easting", "northing", "elevation", "total_depth")):
+                    errors.append(
+                        f"Collars row {row_num}: hole_id is blank (a formula without a "
+                        "saved value reads as blank)"
+                    )
                 continue
             try:
                 payload: dict[str, object] = {
@@ -390,6 +444,8 @@ class DataParser:
         for index, row in enumerate(df.itertuples(index=True)):
             row_num = int(row.Index) + 2
             if self._blank_hole_id(row.hole_id):
+                if self._row_has_values(row, ("from_depth", "to_depth", "lithology_code")):
+                    errors.append(f"Lithology row {row_num}: hole_id is blank")
                 continue
             try:
                 payload: dict[str, object] = {
@@ -570,7 +626,9 @@ class DataParser:
             gradients.append(gradient)
         return gradients, errors
 
-    def _parse_deviation_sheet(self, workbook: pd.ExcelFile) -> list[DeviationReading]:
+    def _parse_deviation_sheet(
+        self, workbook: pd.ExcelFile, errors: list[str]
+    ) -> list[DeviationReading]:
         sheet = self._find_sheet(workbook.sheet_names, "Deviations")
         if not sheet:
             return []
@@ -592,7 +650,7 @@ class DataParser:
                     )
                 )
             except Exception as exc:
-                logger.warning("Skipping deviation row: %s", exc)
+                errors.append(f"Deviations row for {row.hole_id!r}: {_short_error(exc)}")
         return readings
 
     def _parse_correlation_sheet(self, workbook: pd.ExcelFile) -> list[CorrelationOverride]:
@@ -795,7 +853,7 @@ class DataParser:
             return [], []
         return self._parse_field_data_environmental_dataframe(_normalize_columns(frame), collars)
 
-    def _parse_fault_sheet(self, workbook: pd.ExcelFile) -> list[Fault]:
+    def _parse_fault_sheet(self, workbook: pd.ExcelFile, errors: list[str]) -> list[Fault]:
         sheet = self._find_sheet(workbook.sheet_names, "Faults")
         if not sheet:
             return []
@@ -806,9 +864,8 @@ class DataParser:
         faults: dict[str, list[tuple[float, float]]] = {}
         for row in frame.itertuples(index=False):
             if pd.isna(row.x_profile) or pd.isna(row.elevation):
-                raise ValueError(
-                    f"Faults sheet: blank x_profile/elevation for fault {row.name!r}"
-                )
+                errors.append(f"Faults sheet: blank x_profile/elevation for fault {row.name!r}")
+                continue
             faults.setdefault(str(row.name), []).append((float(row.x_profile), float(row.elevation)))
         return [
             Fault(name=name, trace_points=points)
@@ -816,7 +873,9 @@ class DataParser:
             if len(points) >= 2
         ]
 
-    def _parse_unconformity_sheet(self, workbook: pd.ExcelFile) -> list[Unconformity]:
+    def _parse_unconformity_sheet(
+        self, workbook: pd.ExcelFile, errors: list[str]
+    ) -> list[Unconformity]:
         sheet = self._find_sheet(workbook.sheet_names, "Unconformities")
         if not sheet:
             return []
@@ -827,9 +886,10 @@ class DataParser:
         surfaces: dict[str, list[tuple[float, float]]] = {}
         for row in frame.itertuples(index=False):
             if pd.isna(row.x_profile) or pd.isna(row.elevation):
-                raise ValueError(
+                errors.append(
                     f"Unconformities sheet: blank x_profile/elevation for surface {row.name!r}"
                 )
+                continue
             surfaces.setdefault(str(row.name), []).append(
                 (float(row.x_profile), float(row.elevation))
             )

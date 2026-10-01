@@ -72,7 +72,8 @@ def test_report_package_zip_contains_formats() -> None:
     assert "README_deliverable.txt" in names
 
 
-def test_save_exports_to_directory_writes_docx(tmp_path) -> None:
+def test_save_exports_to_directory_writes_docx(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CROSS_SECTION_EXPORT_ROOTS", str(tmp_path))
     from export_framing import save_exports_to_directory
 
     written = save_exports_to_directory(
@@ -216,3 +217,27 @@ def test_viewport_crop_rejects_non_finite_and_clamps_to_the_data() -> None:
     )
     assert ax.get_xlim() == (50.0, 100.0)
     plt.close(fig)
+
+
+def test_save_exports_confined_to_allowed_roots(tmp_path, monkeypatch) -> None:
+    import pytest
+
+    from export_framing import save_exports_to_directory
+
+    monkeypatch.setenv("CROSS_SECTION_EXPORT_ROOTS", str(tmp_path / "allowed"))
+    inside = tmp_path / "allowed" / "job" / "figures"
+    written = save_exports_to_directory(
+        str(inside), stem="s", svg_bytes=b"<svg/>", png_bytes=b"", pdf_bytes=b"", metadata={}
+    )
+    assert written and Path(written[0]).parent == inside.resolve()
+
+    with pytest.raises(ValueError, match="must be under"):
+        save_exports_to_directory(
+            str(tmp_path / "elsewhere"), stem="s", svg_bytes=b"<svg/>", png_bytes=b"", pdf_bytes=b"", metadata={}
+        )
+    # Traversal back out of the allowed root is caught after resolution.
+    with pytest.raises(ValueError, match="must be under"):
+        save_exports_to_directory(
+            str(tmp_path / "allowed" / ".." / "elsewhere"),
+            stem="s", svg_bytes=b"<svg/>", png_bytes=b"", pdf_bytes=b"", metadata={},
+        )

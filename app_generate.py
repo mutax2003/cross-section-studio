@@ -526,7 +526,9 @@ def render_profile_and_downloads(
                             )
                     except PermissionError:
                         st.error(f"No permission to write to {target}. Choose a folder you can write to.")
-                    except (OSError, ValueError):
+                    except ValueError as exc:
+                        st.error(str(exc))
+                    except OSError:
                         st.error(
                             f"Couldn't create or write to {target}. Check that the drive or network "
                             "share is connected and the path is spelled correctly."

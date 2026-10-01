@@ -218,9 +218,9 @@ def save_exports_to_directory(
     docx_bytes: bytes | None = None,
 ) -> list[str]:
     """Write export bytes to a project folder; returns written paths."""
-    from pathlib import Path
+    from paths import export_target_within_roots
 
-    root = Path(directory).expanduser()
+    root = export_target_within_roots(directory)
     root.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
     mapping = {

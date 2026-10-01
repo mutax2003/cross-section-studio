@@ -168,3 +168,38 @@ def help_topic_path(topic: str) -> Path | None:
     except ValueError:
         return None
     return path
+
+
+def allowed_export_roots() -> tuple[Path, ...]:
+    """Folders 'Save to project folder' may write under.
+
+    ``CROSS_SECTION_EXPORT_ROOTS`` (os.pathsep-separated) overrides; otherwise
+    the user's home folder and the app's data folder. Keeps a shared server
+    deployment from writing anywhere the process can reach.
+    """
+    raw = os.environ.get("CROSS_SECTION_EXPORT_ROOTS", "").strip()
+    if raw:
+        roots = [Path(part).expanduser() for part in raw.split(os.pathsep) if part.strip()]
+    else:
+        roots = [Path.home(), user_data_dir()]
+    resolved = []
+    for root in roots:
+        try:
+            resolved.append(root.resolve())
+        except OSError:
+            continue
+    return tuple(resolved)
+
+
+def export_target_within_roots(directory: str | Path) -> Path:
+    """Resolve ``directory`` and require it to sit under an allowed export root."""
+    target = Path(directory).expanduser()
+    try:
+        resolved = target.resolve()
+    except OSError as exc:
+        raise ValueError(f"Cannot resolve folder {target}: {exc}") from exc
+    for root in allowed_export_roots():
+        if resolved == root or root in resolved.parents:
+            return resolved
+    allowed = " or ".join(str(root) for root in allowed_export_roots())
+    raise ValueError(f"Export folder must be under {allowed} (got {resolved}).")

@@ -123,3 +123,76 @@ def test_render_hero_compact_after_upload() -> None:
 
     # Smoke: compact class applied for stage >= 1 (no Streamlit run required for logic)
     assert callable(_render_hero)
+
+
+def _generated_app(sample_workbook: Path):
+    """AppTest with the sample uploaded and one section generated."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("sample.xlsx", sample_workbook.read_bytes()).run()
+    hole_ids = list(at.session_state["hole_ids"])
+    at.session_state["hole_sequence_multiselect"] = hole_ids[: min(4, len(hole_ids))]
+    for box in at.checkbox:
+        if "Allow generate with warnings" in (box.label or ""):
+            box.set_value(True)
+            break
+    at.run()
+    [btn for btn in at.button if btn.label == "Generate Cross-Section"][0].click().run()
+    assert at.session_state["svg_bytes"]
+    return at
+
+
+def test_clear_workbook_asks_before_discarding_a_generated_section(sample_workbook: Path) -> None:
+    at = _generated_app(sample_workbook)
+    [btn for btn in at.button if btn.label == "Clear workbook"][0].click().run()
+    assert not at.exception
+    # Nothing discarded yet: a confirmation is shown instead.
+    assert at.session_state["svg_bytes"]
+    assert any("discard the generated section" in w.value for w in at.warning)
+
+    [btn for btn in at.button if btn.key == "cancel_destructive"][0].click().run()
+    assert at.session_state["svg_bytes"], "Cancel must keep the section"
+    assert not any(btn.key == "confirm_destructive" for btn in at.button)
+
+    [btn for btn in at.button if btn.label == "Clear workbook"][0].click().run()
+    [btn for btn in at.button if btn.key == "confirm_destructive"][0].click().run()
+    assert not at.exception
+    assert at.session_state["parse_result"] is None
+    assert at.session_state["svg_bytes"] is None
+
+
+def test_generate_action_and_state_aware_coach_sit_above_validate(sample_workbook: Path) -> None:
+    """UX regressions: Generate is at the top of the page (not ~2.5 screens
+    down), the 'Next:' hint reflects the picked transect, and the stepper is
+    inside the hero (it rendered outside, white-on-white)."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("sample.xlsx", sample_workbook.read_bytes()).run()
+    at.run()
+    assert not at.exception
+    markdown = [m.value for m in at.markdown]
+    hero = next(value for value in markdown if "<h1>Cross Section Studio</h1>" in value)
+    assert "workflow-step" in hero, "stepper must render inside the hero"
+    assert "✓ Upload" in hero
+    coach = next(value for value in markdown if 'class="next-step-coach"' in value)
+    assert "is selected" in coach and "Generate Cross-Section" in coach
+
+    def walk(node):
+        yield node
+        for child in getattr(node, "children", {}).values():
+            yield from walk(child)
+
+    flat = list(walk(at.main))
+    generate_index = next(
+        i for i, node in enumerate(flat)
+        if getattr(node, "type", "") == "button" and node.label == "Generate Cross-Section"
+    )
+    health_index = next(
+        i for i, node in enumerate(flat)
+        if getattr(node, "type", "") in {"subheader", "heading"} and "Data Health" in str(node.value)
+    )
+    assert generate_index < health_index, "Generate must render above Validate's Data Health"

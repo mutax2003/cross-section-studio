@@ -40,6 +40,47 @@ from models import ConsultingTitleBlock
 from pipeline import DEFAULT_UNCERTAINTY_SPACING_M
 from ui_output_presets import FIGURE_PRESET_IDS, OUTPUT_PRESET_LABELS, resolve_output_preset
 
+_DESTRUCTIVE_PROMPTS = {
+    "clear": ("Clear workbook", "Clear the workbook and discard the generated section?"),
+    "sample": ("Load sample", "Load the sample project and discard the generated section?"),
+}
+
+
+def _run_destructive(action: str) -> None:
+    if action == "clear":
+        clear_workbook_session()
+        st.rerun()
+    try:
+        load_sample_workbook()
+        st.rerun()
+    except FileNotFoundError as exc:
+        st.error(str(exc))
+
+
+def _request_destructive(action: str) -> None:
+    """Act immediately unless it would discard a generated section; then confirm."""
+    if st.session_state.get("svg_bytes") is None:
+        _run_destructive(action)
+        return
+    st.session_state["_pending_destructive"] = action
+
+
+def _render_pending_destructive() -> None:
+    action = st.session_state.get("_pending_destructive")
+    if action not in _DESTRUCTIVE_PROMPTS:
+        return
+    confirm_label, question = _DESTRUCTIVE_PROMPTS[action]
+    st.warning(question + " Download anything you need first.")
+    confirm_col, cancel_col = st.columns(2)
+    with confirm_col:
+        if st.button(confirm_label, key="confirm_destructive", type="primary", width="stretch"):
+            st.session_state.pop("_pending_destructive", None)
+            _run_destructive(action)
+    with cancel_col:
+        if st.button("Cancel", key="cancel_destructive", width="stretch"):
+            st.session_state.pop("_pending_destructive", None)
+            st.rerun()
+
 _OUTPUT_STYLE_HELP: dict[str, str] = {
     "section_sheet": "Strater-style sheet: RL axis, hole headers, side legend. Default for general use.",
     "consulting_report": "Client figure with footer title block, scale bar and notes; groundwater labels on.",
@@ -203,19 +244,15 @@ def render_sidebar() -> SidebarState:
             width="stretch",
             icon=":material/science:",
         ):
-            try:
-                load_sample_workbook()
-                st.rerun()
-            except FileNotFoundError as exc:
-                st.error(str(exc))
+            _request_destructive("sample")
         if st.button(
             "Clear workbook",
             key="sidebar_clear_workbook",
             width="stretch",
             icon=":material/delete:",
         ):
-            clear_workbook_session()
-            st.rerun()
+            _request_destructive("clear")
+        _render_pending_destructive()
         uploaded = st.file_uploader(
             "Upload Excel workbook",
             type=["xlsx"],

@@ -258,3 +258,23 @@ def test_parse_failure_is_shown_on_screen_with_technical_details() -> None:
         e.value for e in at.error
     ]
     assert any("Technical details" in x.label for x in at.expander)
+
+
+def test_stale_generate_button_is_disabled_with_the_reason_when_blocked(sample_workbook: Path) -> None:
+    """After a section exists, a settings change marks it stale; if Generate
+    is blocked the stale button used to stay enabled and silently do nothing."""
+    at = _generated_app(sample_workbook)
+    # Pinch-outs on the sample produce polygon overlaps; blocking on them
+    # disables Generate. Changing VE then marks the existing section stale.
+    at.session_state["allow_pinch_outs"] = True
+    at.session_state["fail_on_overlaps_checkbox"] = True
+    at.session_state["vertical_exaggeration"] = 3.0
+    at.run()
+    assert not at.exception
+    stale_button = next(b for b in at.button if b.key == "regenerate_stale")
+    assert stale_button.disabled
+    banner = next(m.value for m in at.markdown if m.value.startswith("<div class=\"stale-banner\""))
+    assert "polygon overlaps" in banner
+    at.session_state["_regenerate_requested"] = True  # Ctrl+G / menu path
+    at.run()
+    assert any("Regenerate skipped" in w.value and "overlaps" in w.value for w in at.warning)

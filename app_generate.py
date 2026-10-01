@@ -31,7 +31,7 @@ from export_framing import (
 )
 from models import ConsultingTitleBlock
 from pipeline import ALL_EXPORT_FORMATS
-from ui_helpers import export_metadata_payload, sanitize_filename
+from ui_helpers import escape_html, export_metadata_payload, sanitize_filename
 
 try:
     from ops_audit import audit_event as _audit_event
@@ -316,6 +316,8 @@ def render_profile_and_downloads(
     transect_label: str | None = None,
     export_framing: ExportFramingConfig | None = None,
     consulting_title_block: ConsultingTitleBlock | None = None,
+    can_generate: bool = True,
+    blocked_reason: str | None = None,
 ) -> None:
     """Render profile chips, SVG, and SVG/PNG/PDF downloads."""
     if st.session_state.svg_bytes is None:
@@ -364,15 +366,22 @@ def render_profile_and_downloads(
             pdf_ready=pdf_ready,
         )
         if is_stale:
+            if can_generate:
+                hint = "click <strong>Generate Cross-Section</strong> to refresh before download."
+            else:
+                hint = f"to refresh, {escape_html(blocked_reason or 'resolve the Configure issues')}."
             st.markdown(
-                '<div class="stale-banner" role="status">Settings changed since the last build — '
-                "click <strong>Generate Cross-Section</strong> to refresh before download.</div>",
+                f'<div class="stale-banner" role="status">Settings changed since the last build — '
+                f"{hint}</div>",
                 unsafe_allow_html=True,
             )
+            # An enabled button that silently does nothing is worse than a
+            # disabled one with the reason in the banner above.
             if parse_result_available and st.button(
                 "Generate Cross-Section",
                 type="secondary",
                 key="regenerate_stale",
+                disabled=not can_generate,
             ):
                 st.session_state["_regenerate_requested"] = True
                 st.rerun()

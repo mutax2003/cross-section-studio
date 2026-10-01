@@ -494,22 +494,33 @@ def _render_validate_details(
         st.warning(message)
 
 
-def render_next_step_coach() -> None:
+def render_next_step_coach(
+    *,
+    selection: tuple | None = None,
+    blocked_reason: str | None = None,
+) -> None:
     """'Next:' hint that matches the current state.
 
-    Call after the Configure step has run: it reads this run's transect
-    selection, which Configure stores (rendering earlier lags one rerun behind).
+    Call after the Configure step has run and pass its transect selection:
+    the session's ``transect_selection`` is the last *generated* one, which
+    can differ from what Configure currently shows.
     """
     quality_report = st.session_state.get("quality_report")
     if quality_report is None or quality_report.has_blocking_errors:
         return
-    selection = st.session_state.get("transect_selection")
     if selection and selection[0]:
         holes = " → ".join(escape(str(hole)) for hole in selection[0])
-        coach = (
-            f"<strong>Next:</strong> transect {holes} is selected — click "
-            "<strong>Generate Cross-Section</strong> above."
-        )
+        if blocked_reason:
+            coach = (
+                f"<strong>Next:</strong> transect {holes} is selected — "
+                f"{escape(blocked_reason)}, then click "
+                "<strong>Generate Cross-Section</strong>."
+            )
+        else:
+            coach = (
+                f"<strong>Next:</strong> transect {holes} is selected — click "
+                "<strong>Generate Cross-Section</strong> above."
+            )
     else:
         coach = (
             "<strong>Next:</strong> choose holes under <strong>Transect selection</strong> "
@@ -582,10 +593,13 @@ def render_validate_step(*, show_coach: bool = True) -> None:
             ][:3]
             for issue in top_warnings:
                 st.warning(f"**{issue.severity}** — {issue.message}")
-            st.caption(
-                "Enable **Allow generate with warnings** in Configure to proceed, "
-                "or open Data Health details below to review all issues."
-            )
+            if st.session_state.get("override_warnings_checkbox", True):
+                st.caption("Open Data Health details below to review all issues.")
+            else:
+                st.caption(
+                    "Enable **Allow generate with warnings** in Configure to proceed, "
+                    "or open Data Health details below to review all issues."
+                )
 
     assistant: AIAssistant | None = None
     if quality_report.has_blocking_errors:

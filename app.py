@@ -219,6 +219,8 @@ else:
                 transect_label=transect_label,
                 export_framing=sidebar.export_framing,
                 consulting_title_block=sidebar.consulting_title_block,
+                can_generate=bool(configure_state and configure_state.can_generate),
+                blocked_reason=configure_state.blocked_reason if configure_state else None,
             )
         else:
             # Reserve the slot above Validate/Configure; filled below once
@@ -250,7 +252,10 @@ else:
         if not has_svg:
             regenerate_requested = bool(st.session_state.pop("_regenerate_requested", False))
             with coach_slot:
-                render_next_step_coach()
+                render_next_step_coach(
+                    selection=configure_state.transect_selection if configure_state else None,
+                    blocked_reason=configure_state.blocked_reason if configure_state else None,
+                )
             with generate_slot:
                 gen_col1, gen_col2 = st.columns([1, 3])
                 with gen_col1:
@@ -302,7 +307,7 @@ else:
             regenerate_requested = bool(st.session_state.pop("_regenerate_requested", False))
             generate_clicked = regenerate_requested and configure_state is not None and configure_state.can_generate
             if regenerate_requested and configure_state and not configure_state.can_generate:
-                st.caption("Regenerate ignored — open **Setup — Validate & Configure** to resolve issues.")
+                st.warning(f"Regenerate skipped — {configure_state.blocked_reason}.")
 
         if (not has_svg and generate_clicked) or (has_svg and generate_clicked):
             try:

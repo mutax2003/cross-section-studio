@@ -194,11 +194,10 @@ def _render_profile_chips(
     png_ready: bool = False,
     pdf_ready: bool = False,
 ) -> None:
-    mode_label = (
-        "Observed only"
-        if interpretation_mode == "borehole_only"
-        else "Interpolated fence"
-    )
+    mode_label = {
+        "borehole_only": "Observed only",
+        "correlation_lines": "Contact lines only",
+    }.get(interpretation_mode, "Interpolated fence")
     chips = [
         f'<span class="chip brand">{escape_html(mode_label)}</span>',
         f'<span class="chip">VE {escape_html(vertical_exaggeration)}×</span>',

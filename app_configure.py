@@ -43,6 +43,29 @@ class ConfigureState:
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
 
+    @property
+    def blocked_reason(self) -> str | None:
+        """Why Generate is disabled, in the user's terms; None when it can run."""
+        if self.can_generate:
+            return None
+        if self.blocking:
+            return "fix the blocking data errors in Validate"
+        if self.placeholder_blocks_interp:
+            return (
+                "collar elevations are placeholders — switch to relative depth "
+                "or borehole-only mode"
+            )
+        if self.fail_on_overlaps and self.has_overlap_warnings:
+            return (
+                "polygon overlaps are blocking export — resolve the correlation "
+                "or untick 'Block export on polygon overlaps' in Configure"
+            )
+        if self.has_warnings and not self.override_warnings:
+            return "tick 'Allow generate with warnings' in Configure"
+        if self.transect_selection is None:
+            return "choose a transect in Configure"
+        return "resolve the Configure / Validate issues"
+
 
 def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], transect_mode: str) -> tuple[list[str], str]:
     st.divider()
@@ -175,6 +198,7 @@ def render_configure_step(
     override_warnings = st.checkbox(
         "Allow generate with warnings",
         value=warnings_default,
+        key="override_warnings_checkbox",
         help="Consulting report preset defaults to blocking export when QA warnings are present.",
     )
     if has_warnings and not override_warnings:
@@ -185,6 +209,7 @@ def render_configure_step(
     fail_on_overlaps = st.checkbox(
         "Block export on polygon overlaps",
         value=is_consulting_layout,
+        key="fail_on_overlaps_checkbox",
         help="When enabled, generation fails if inter-hole fence polygons overlap.",
     )
 
@@ -644,16 +669,38 @@ def _render_plan_minimap(
     st.markdown("**Plan view (collar locations)**")
     chart_df = df.rename(columns={"easting": "Easting", "northing": "Northing"})
     color_col = "selected" if transect_mode != "Recommended" else None
-    if color_col and chart_df["selected"].any():
-        st.scatter_chart(
-            chart_df,
-            x="Easting",
-            y="Northing",
-            color="selected",
-        )
-    else:
-        st.scatter_chart(chart_df, x="Easting", y="Northing")
+    st.altair_chart(
+        _plan_view_chart(chart_df, color_col if color_col and chart_df["selected"].any() else None),
+        width="stretch",
+    )
     st.caption("Collar positions from workbook — transect follows hole order or line geometry.")
+
+
+def _plan_view_chart(chart_df: pd.DataFrame, color_col: str | None):
+    """Scatter of collars on axes fitted to the data.
+
+    st.scatter_chart anchors both axes at zero, so UTM collars (500000 E,
+    4500000 N) collapse into one dot in a corner.
+    """
+    import altair as alt
+
+    def _domain(column: str) -> list[float]:
+        low, high = float(chart_df[column].min()), float(chart_df[column].max())
+        pad = max((high - low) * 0.08, 5.0)
+        return [low - pad, high + pad]
+
+    chart = (
+        alt.Chart(chart_df)
+        .mark_circle(size=90)
+        .encode(
+            x=alt.X("Easting:Q", scale=alt.Scale(domain=_domain("Easting"), nice=False)),
+            y=alt.Y("Northing:Q", scale=alt.Scale(domain=_domain("Northing"), nice=False)),
+            tooltip=["hole_id", "Easting", "Northing"],
+        )
+    )
+    if color_col:
+        chart = chart.encode(color=alt.Color(f"{color_col}:N", title="In transect"))
+    return chart.properties(height=300)
 
 
 def _render_hole_sequence_order(hole_ids: list[str]) -> None:

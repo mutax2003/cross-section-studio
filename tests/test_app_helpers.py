@@ -235,3 +235,27 @@ def test_init_session_defaults_skips_clear_when_schema_current() -> None:
     init_session_defaults(session)
     assert session["parse_result"] == "keep-me"
     assert session["svg_bytes"] == b"<svg/>"
+
+
+def test_plan_view_chart_fits_axes_to_utm_collars() -> None:
+    """st.scatter_chart anchored axes at zero, collapsing UTM collars into a
+    single dot; the Altair chart must bracket the data instead."""
+    import pandas as pd
+
+    from app_configure import _plan_view_chart
+
+    frame = pd.DataFrame(
+        {
+            "hole_id": ["A", "B", "C"],
+            "Easting": [500000.0, 500040.0, 500080.0],
+            "Northing": [4500000.0, 4500010.0, 4500020.0],
+            "selected": [True, False, True],
+        }
+    )
+    spec = _plan_view_chart(frame, "selected").to_dict()
+    x_domain = spec["encoding"]["x"]["scale"]["domain"]
+    y_domain = spec["encoding"]["y"]["scale"]["domain"]
+    assert 499990 < x_domain[0] < 500000 and 500080 < x_domain[1] < 500100
+    assert 4499990 < y_domain[0] < 4500000 and 4500020 < y_domain[1] < 4500040
+    assert spec["encoding"]["color"]["field"] == "selected"
+    assert "color" not in _plan_view_chart(frame, None).to_dict()["encoding"]

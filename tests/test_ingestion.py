@@ -1015,3 +1015,18 @@ def test_oversized_formatted_workbook_is_rejected_before_parsing(tmp_path: Path)
 
     with pytest.raises(WorkbookTooLargeError, match="rows \\(limit 10\\)"):
         check_workbook_row_counts(_hostile_workbook(_TWO_COLLARS * 6, _TWO_LITH), limit=10)
+
+
+def test_sections_rows_naming_unknown_holes_are_reported_not_silently_dropped() -> None:
+    """A Sections row with a misspelt hole used to vanish with only a log line,
+    which read as 'the program did not read that tab'."""
+    sections = [
+        {"section_label": "A-A'", "hole_ids": "BH1, BH2"},
+        {"section_label": "B-B'", "hole_ids": "BH1, BH-99"},
+        {"section_label": "C-C'", "hole_ids": "BH1"},
+    ]
+    result, report = ingest_workbook(_hostile_workbook(_TWO_COLLARS, _TWO_LITH, {"Sections": sections}))
+    assert [spec.label for spec in result.section_specs] == ["A-A'"]
+    joined = "\n".join(result.errors)
+    assert "Sections row 3 (B-B'): unknown collar(s) BH-99" in joined
+    assert "Sections row 4" in joined

@@ -278,3 +278,39 @@ def test_stale_generate_button_is_disabled_with_the_reason_when_blocked(sample_w
     at.session_state["_regenerate_requested"] = True  # Ctrl+G / menu path
     at.run()
     assert any("Regenerate skipped" in w.value and "overlaps" in w.value for w in at.warning)
+
+
+def test_sections_tab_drop_down_drives_the_preview(tmp_path: Path) -> None:
+    """Pick a named section from the workbook's Sections tab: the hole order,
+    mode and sheet label follow, so a moved line only needs the tab edited."""
+    import pandas as pd
+    from streamlit.testing.v1 import AppTest
+
+    collars = pd.DataFrame(
+        [{"hole_id": f"BH-0{i}", "easting": i * 10.0, "northing": 0.0, "elevation": 100.0, "total_depth": 8.0} for i in range(1, 6)]
+    )
+    lith = pd.DataFrame(
+        [{"hole_id": f"BH-0{i}", "from_depth": 0.0, "to_depth": 8.0, "lithology_code": "Clay"} for i in range(1, 6)]
+    )
+    sections = pd.DataFrame(
+        [{"section_label": "A-A'", "hole_ids": "BH-01, BH-02, BH-03"}, {"section_label": "B-B'", "hole_ids": "BH-03 → BH-04 → BH-05"}]
+    )
+    workbook = tmp_path / "sections.xlsx"
+    with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
+        collars.to_excel(writer, sheet_name="Collars", index=False)
+        lith.to_excel(writer, sheet_name="Lithology", index=False)
+        sections.to_excel(writer, sheet_name="Sections", index=False)
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("sections.xlsx", workbook.read_bytes()).run()
+    assert not at.exception
+    picker = at.selectbox(key="workbook_section_choice")
+    assert picker.options == ["Custom", "A-A'", "B-B'"]
+    # First section is the default preview.
+    assert at.session_state["hole_sequence_multiselect"] == ["BH-01", "BH-02", "BH-03"]
+    picker.select("B-B'").run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["hole_sequence_multiselect"] == ["BH-03", "BH-04", "BH-05"]
+    assert at.session_state["consulting_section_label"] == "B-B'"

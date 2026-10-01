@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 from constants import CONSULTING_LITHOLOGY_COLORS, USGS_LITHOLOGY_COLORS, USGS_LITHOLOGY_HATCHES, get_lithology_style
 from models import Collar, ConsultingTitleBlock, EnvironmentalReading, Lithology, ScreenInterval, VerticalGradient, WaterLevel
 from render_profiles import CHART_PROFILE, CONSULTING_SECTION_PROFILE, SECTION_SHEET_PROFILE
-from render_theme import PARAMETER_READING_COLOR, SCREEN_INTERVAL_HATCH
+from render_theme import SCREEN_INTERVAL_HATCH, parameter_series_color
 from pipeline import build_cross_section
 from renderer import CrossSectionRenderer, _resolve_parameter_label_offsets
 from stratigraphy import build_stratigraphy
@@ -586,7 +586,8 @@ def test_parameter_segment_mode_skips_unmeasured_gap() -> None:
     across_svg = across_renderer.to_svg_bytes(across_figure)
     assert_valid_svg(segment_svg)
     assert_valid_svg(across_svg)
-    assert PARAMETER_READING_COLOR.lower() in segment_svg.decode("utf-8", errors="ignore").lower()
+    # Series colour is fixed per parameter name, the same on every section.
+    assert parameter_series_color("Chloride").lower() in segment_svg.decode("utf-8", errors="ignore").lower()
     assert len(across_svg) > len(segment_svg)
 
 
@@ -975,3 +976,19 @@ def test_agreed_lithology_scheme_groups_and_hatches() -> None:
     # Only Coal is black; Organics is the darkest *brown* (#38220F), not black.
     assert all(colour(c) != "#000000" and luminance(c) > 25 for c in USGS_LITHOLOGY_COLORS if c != "Coal")
     assert luminance("Organics") < luminance("Topsoil") < min(luminance("Clay"), luminance("Silt"))
+
+
+def test_consulting_first_borehole_is_drawn_in_full() -> None:
+    """The first hole projects to x = 0; the axis used to start at 0 and clip
+    the left half of its column. The axis now starts slightly negative, with
+    no negative tick labels."""
+    ids, projected, polygons = _dense_header_section(3, 40.0)
+    renderer = CrossSectionRenderer(show_legend=True, render_profile=CONSULTING_SECTION_PROFILE)
+    figure = renderer.render(polygons, projected, collar_depths={hole: 8.0 for hole in ids})
+    figure.canvas.draw()
+    ax = figure.axes[0]
+    half = renderer._track_half_width(projected["x_profile"].to_numpy(dtype=float))
+    assert ax.get_xlim()[0] <= -half  # whole first column inside the axes
+    labels = [t.get_text() for t in ax.get_xticklabels() if t.get_text()]
+    assert labels and not any(label.lstrip().startswith(("-", "−")) for label in labels)
+    assert "0" in labels

@@ -39,7 +39,7 @@ Optional: `hatch_pattern`, `unit_order` (1 = shallowest; when the same code repe
 | **Faults** | `name`, `x_profile`, `elevation` | Profile-plane fault traces |
 | **Unconformities** | `name`, `x_profile`, `elevation` | Profile-plane surfaces |
 | **Environmental** | `hole_id`, `parameter`, `value`, `depth` **or** `from_depth`+`to_depth` | Lab/screening samples (e.g. chloride at 3.5 m). Optional: `unit` (e.g. `mg/L`), `value_label` (figure text). Select parameters on **Configure**; optional green/yellow/red threshold colouring is set there (not in the workbook). |
-| **Sections** | `section_label`, `hole_ids` | Named transects for Configure **Multi-transect batch ZIP**. `hole_ids` are ordered holes separated by comma, semicolon, or `→` (e.g. `MW-01, MW-02, MW-03` or `MW-01→MW-02→MW-03`). Each valid row (≥2 known collars) seeds a line `Label \| h1, h2, …`. |
+| **Sections** | `section_label`, `hole_ids` | Named section lines. Configure shows a **Section (from workbook Sections tab)** drop-down that previews any row; the rows also seed **Multi-transect batch ZIP** for exporting every section. Rows that name unknown holes are reported on upload. `hole_ids` are ordered holes separated by comma, semicolon, or `→` (e.g. `MW-01, MW-02, MW-03` or `MW-01→MW-02→MW-03`). Each valid row (≥2 known collars) seeds a line `Label \| h1, h2, …`. |
 
 Sheet names are matched case-insensitively.
 

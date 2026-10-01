@@ -170,6 +170,8 @@ def load_sample_workbook() -> None:
     st.session_state.file_hash = hashlib.sha256(data).hexdigest()[:24]
     st.session_state.batch_transect_specs = ""
     st.session_state._batch_specs_seeded_from_sections = False
+    st.session_state.pop("workbook_section_choice", None)
+    st.session_state.pop("_workbook_section_applied", None)
     st.session_state.parse_result = None
     st.session_state.parse_signature = None
     st.session_state.detection_result = None
@@ -338,6 +340,8 @@ def handle_workbook_upload(
         st.session_state.file_hash = hashlib.sha256(file_bytes).hexdigest()[:24]
         st.session_state.batch_transect_specs = ""
         st.session_state._batch_specs_seeded_from_sections = False
+        st.session_state.pop("workbook_section_choice", None)
+        st.session_state.pop("_workbook_section_applied", None)
         st.session_state.parse_result = None
         st.session_state.quality_report = None
         st.session_state.transect_candidates = None

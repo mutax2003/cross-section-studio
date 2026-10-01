@@ -16,6 +16,9 @@ from models import Collar, DeviationReading, Lithology, Transect
 logger = logging.getLogger(__name__)
 
 DEFAULT_OFFSET_WARNING_M = 50.0
+# Rotated transects give offsets like 50.00000000000019 for a hole exactly on
+# the limit; compare with a tolerance so the threshold means what it says.
+_OFFSET_EPSILON_M = 1e-6
 
 _PROJECTED_COLUMNS = [
     "hole_id",
@@ -324,7 +327,7 @@ def select_and_order_holes_near_transect(
         [collar.easting for collar in collars],
         [collar.northing for collar in collars],
     )
-    mask = offsets <= offset_threshold_m
+    mask = offsets <= offset_threshold_m + _OFFSET_EPSILON_M
     if np.count_nonzero(mask) < 2:
         return ()
     selected_ids = [hole_ids[index] for index in np.flatnonzero(mask)]
@@ -352,7 +355,7 @@ def select_holes_near_transect(
     return tuple(
         hole_id
         for hole_id, offset in zip(hole_ids, offsets, strict=True)
-        if offset <= offset_threshold_m
+        if offset <= offset_threshold_m + _OFFSET_EPSILON_M
     )
 
 
@@ -395,7 +398,7 @@ def off_transect_warnings(
     messages: list[str] = []
     threshold_text = f"{offset_threshold_m:.1f}"
     for hole_id, offset in zip(hole_ids, offsets, strict=True):
-        if offset > offset_threshold_m:
+        if offset > offset_threshold_m + _OFFSET_EPSILON_M:
             messages.append(
                 f"{hole_id} is {offset:.1f} m from transect (threshold {threshold_text} m)"
             )

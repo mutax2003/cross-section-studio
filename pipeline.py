@@ -220,9 +220,12 @@ def compute_section_geometry(
     if projected.empty:
         raise ValueError("No lithology intervals were projected for the selected transect")
 
-    interpolation_df = _filter_projected_for_interpolation(
-        projected,
-        max_offset_for_interpolation_m,
+    # Borehole-only sections draw every projected log: the interpolation offset
+    # limit must not reject them (it used to fail with "fewer than two holes").
+    interpolation_df = (
+        projected
+        if interpretation_mode == "borehole_only"
+        else _filter_projected_for_interpolation(projected, max_offset_for_interpolation_m)
     )
 
     correlation_summaries: list[CorrelationPairSummary] = []

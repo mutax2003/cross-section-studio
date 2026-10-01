@@ -404,3 +404,36 @@ def test_warn_on_correlation_gaps_adds_warning_text() -> None:
     )
     assert any("Correlation gap" in warning for warning in warnings)
 
+
+
+def test_borehole_only_draws_logs_beyond_the_interpolation_offset() -> None:
+    """The sidebar sets max_offset_for_interpolation_m = offset_warning_m; a
+    borehole-only section must not fail 'fewer than two boreholes' because
+    one log is past that limit (no interpolation is requested)."""
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=80.0, elevation=100.0, total_depth=10.0),
+    ]
+    lithologies = [
+        Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+        Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Silt"),
+    ]
+    projected, polygons, svg_bytes, _, _, _, _ = build_cross_section(
+        collars,
+        lithologies,
+        [(0.0, 0.0), (50.0, 0.0)],
+        interpretation_mode="borehole_only",
+        max_offset_for_interpolation_m=50.0,
+    )
+    assert polygons == []
+    assert set(projected["hole_id"]) == {"BH-01", "BH-02"}
+    assert_valid_svg(svg_bytes)
+    # A single hole is likewise fine in borehole-only mode.
+    _, polygons, svg_bytes, _, _, _, _ = build_cross_section(
+        collars[:1],
+        lithologies[:1],
+        [(0.0, 0.0), (50.0, 0.0)],
+        interpretation_mode="borehole_only",
+        max_offset_for_interpolation_m=50.0,
+    )
+    assert polygons == [] and assert_valid_svg(svg_bytes) is None

@@ -13,3 +13,8 @@ Inter-hole fills are a **rule-based 2D fence diagram** (linear contacts between 
 Free LLM assist can polish **Validate** and **Configure** guidance in the UI only. Assist never replaces the section-building engine and never invents borehole data.
 
 Windows desktop builds show the product version under **Help → About** (injected at runtime). Use **Help → Check for updates** to compare against the published release manifest; on the desktop build you can download and install a full zip (SHA-256 verified) with an automatic restart.
+
+
+---
+
+Created by Andrew Liu, Ecoventure, 2026. Copyright © 2026 Andrew Liu, Ecoventure. All rights reserved.

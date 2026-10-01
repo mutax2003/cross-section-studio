@@ -10,6 +10,7 @@ import pandas as pd
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 
+from app_identity import APP_NAME, AUTHOR, COPYRIGHT_NOTICE, ORGANIZATION
 from renderer import CrossSectionRenderer
 from stratigraphy import GeologicalPolygon
 
@@ -34,6 +35,14 @@ def _merge_pdf_pages(page_pdfs: Sequence[bytes]) -> bytes:
     writer = PdfWriter()
     for payload in valid:
         writer.append(PdfReader(BytesIO(payload)))
+    # Merging replaces the document info written by matplotlib; restore it.
+    writer.add_metadata(
+        {
+            "/Author": f"{AUTHOR}, {ORGANIZATION}",
+            "/Creator": APP_NAME,
+            "/Subject": COPYRIGHT_NOTICE,
+        }
+    )
     out = BytesIO()
     writer.write(out)
     return out.getvalue()

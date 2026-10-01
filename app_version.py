@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from app_identity import COPYRIGHT_NOTICE, CREATED_BY
 from update_url_policy import validate_manifest_fetch_url as _validate_manifest_fetch_url
 from update_url_policy import validate_update_download_url as _validate_update_download_url
 
@@ -264,5 +265,6 @@ def about_version_markdown() -> str:
         f"Running **{version}**.\n\n"
         "Use **Help → Check for updates** to compare against the published release "
         "manifest. On the Windows desktop build you can open the download page or use "
-        "**Download and install (restart)** (full zip, SHA-256 verified, sidecar replace).\n"
+        "**Download and install (restart)** (full zip, SHA-256 verified, sidecar replace).\n\n"
+        f"{CREATED_BY}. {COPYRIGHT_NOTICE}\n"
     )

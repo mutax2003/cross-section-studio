@@ -12,6 +12,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from app_identity import COPYRIGHT_NOTICE, CREATED_BY
+
 _FILENAME_SAFE_RE = re.compile(r"[^\w\-]+")
 
 ExportPagePreset = Literal[
@@ -204,6 +206,7 @@ def _default_readme(stem: str) -> str:
         f"Cross Section Studio deliverable package: {stem}\n"
         "Contents: SVG (CAD), PNG (reports), PDF (print), metadata JSON.\n"
         "Import SVG into CAD; paste PNG into Word; file PDF for client binders.\n"
+        f"{CREATED_BY}. {COPYRIGHT_NOTICE}\n"
     )
 
 

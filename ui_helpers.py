@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Sequence
 
+from app_identity import APP_NAME, COPYRIGHT_NOTICE, CREATED_BY
 from models import Collar, Lithology, ScreenInterval, Transect
 from projection import (
     DEFAULT_OFFSET_WARNING_M,
@@ -335,6 +336,9 @@ def export_metadata_payload(
         "hole_count": hole_count,
         "transect_label": transect_label,
         "qa_notes": list(overlap_warnings[:20]),
+        "generated_by": APP_NAME,
+        "created_by": CREATED_BY,
+        "copyright": COPYRIGHT_NOTICE,
     }
     if consulting_fields:
         payload.update(consulting_fields)

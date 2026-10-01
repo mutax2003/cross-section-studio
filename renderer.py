@@ -18,6 +18,7 @@ from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 
+from app_identity import APP_NAME, AUTHOR, COPYRIGHT_NOTICE, ORGANIZATION
 from constants import HATCH_LINE_COLOR, POLYGON_EDGE_COLOR
 from export_framing import (
     ExportFramingConfig,
@@ -113,6 +114,22 @@ class _HoleContext:
     profile_lookup: dict[str, tuple[float, float]]
     x_span: float
     track_half: float
+
+
+def _export_file_metadata(fmt: str) -> dict[str, str]:
+    """Attribution written into each export's own metadata block.
+
+    matplotlib accepts different keys per backend: Dublin Core for SVG, the
+    PDF document-info dictionary, and free tEXt chunks for PNG.
+    """
+    author = f"{AUTHOR}, {ORGANIZATION}"
+    if fmt == "svg":
+        return {"Creator": APP_NAME, "Publisher": ORGANIZATION, "Rights": COPYRIGHT_NOTICE}
+    if fmt == "pdf":
+        return {"Creator": APP_NAME, "Author": author}
+    if fmt == "png":
+        return {"Software": APP_NAME, "Author": author, "Copyright": COPYRIGHT_NOTICE}
+    return {}
 
 
 class CrossSectionRenderer(
@@ -1114,8 +1131,7 @@ class CrossSectionRenderer(
             "facecolor": fig.get_facecolor(),
             **self._savefig_kwargs(),
         }
-        if fmt == "svg":
-            kwargs["metadata"] = {"Creator": "Cross Section Studio"}
+        kwargs["metadata"] = _export_file_metadata(fmt)
         if fmt == "png":
             kwargs["dpi"] = dpi if dpi is not None else self._export_dpi()
         fig.savefig(buffer, **kwargs)

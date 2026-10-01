@@ -17,6 +17,7 @@ from app_common import (
 )
 from app_configure import render_configure_step, render_transect_sidebar
 from app_generate import render_profile_and_downloads
+from app_identity import COPYRIGHT_NOTICE, CREATED_BY
 from app_menubar import render_menubar
 from app_sidebar import render_sidebar
 from app_state import init_session_defaults
@@ -45,6 +46,7 @@ st.set_page_config(
     page_icon="🪨",
     layout="wide",
     initial_sidebar_state="expanded",
+    menu_items={"About": f"**Cross Section Studio**\n\n{CREATED_BY}.\n\n{COPYRIGHT_NOTICE}"},
 )
 
 st.markdown(APP_CSS, unsafe_allow_html=True)

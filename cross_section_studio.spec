@@ -143,6 +143,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="CrossSectionStudio",
+    version="windows_version_info.txt",  # CompanyName / LegalCopyright in exe properties
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

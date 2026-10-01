@@ -1,5 +1,11 @@
 FROM python:3.12-slim
 
+LABEL org.opencontainers.image.title="Cross Section Studio" \
+      org.opencontainers.image.authors="Andrew Liu, Ecoventure" \
+      org.opencontainers.image.vendor="Ecoventure" \
+      org.opencontainers.image.licenses="LicenseRef-Proprietary" \
+      org.opencontainers.image.description="Created by Andrew Liu, Ecoventure, 2026. Copyright (c) 2026 Andrew Liu, Ecoventure. All rights reserved."
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1

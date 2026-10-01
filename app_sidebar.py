@@ -22,6 +22,7 @@ from app_common import (
     _report_context_from_selection,
     llm_disabled_by_deployment,
 )
+from app_identity import COPYRIGHT_SHORT, CREATED_BY
 from app_upload import (
     DESTRUCTIVE_PROMPTS,
     apply_pending_project_seed,
@@ -570,6 +571,8 @@ def render_sidebar() -> SidebarState:
 
     with st.expander("Export framing & deliverables", expanded=False):
         export_framing = _render_export_framing_panel()
+
+    st.caption(f"{CREATED_BY} · {COPYRIGHT_SHORT}")
 
     return SidebarState(
         uploaded=uploaded,

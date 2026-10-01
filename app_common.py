@@ -521,12 +521,11 @@ def _llm_api_key_for_provider(provider_kind: str) -> str:
     try:
         secrets = getattr(st, "secrets", None)
         if secrets is not None:
+            # Only this provider's key: a generic fallback once sent an
+            # OPENAI_API_KEY from secrets to Groq as its bearer token.
             for secret_key in (
                 f"{provider_kind}_api_key",
                 f"{str(provider_kind).upper()}_API_KEY",
-                "GROQ_API_KEY",
-                "GEMINI_API_KEY",
-                "OPENAI_API_KEY",
             ):
                 try:
                     value = str(secrets.get(secret_key, "") or "").strip()

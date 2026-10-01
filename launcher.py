@@ -48,6 +48,8 @@ def _run_streamlit(app_path: str, port: int) -> int:
         app_path,
         "--global.developmentMode=false",
         "--server.headless=true",
+        # Desktop build has no password: never expose it to the LAN.
+        "--server.address=127.0.0.1",
         "--browser.gatherUsageStats=false",
         f"--server.port={port}",
     ]

@@ -781,3 +781,77 @@ def test_close_hole_id_headers_do_not_overlap() -> None:
             width = min(a.x1, b.x1) - max(a.x0, b.x0)
             height = min(a.y1, b.y1) - max(a.y0, b.y0)
             assert not (width > 0 and height > 0), f"{profile.layout}: hole-ID headers overlap"
+
+
+def _dense_header_section(n: int, spacing_m: float):
+    ids = [f"2017-BH{i:02d}-LONG" for i in range(n)]
+    collars = [
+        Collar(hole_id=hole, easting=i * spacing_m, northing=0.0, elevation=100.0, total_depth=8.0)
+        for i, hole in enumerate(ids)
+    ]
+    lithologies = [
+        Lithology(hole_id=hole, from_depth=0.0, to_depth=8.0, lithology_code="Clay") for hole in ids
+    ]
+    total = max(200.0, (n - 1) * spacing_m + 1.0)
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (total, 0.0)])
+    return ids, projected, polygons
+
+
+def _header_hits(figure, renderer) -> tuple[int, int]:
+    """(header/header overlaps, header/tick-label overlaps) in display space."""
+    import itertools
+
+    from matplotlib.text import Text
+
+    from renderer_water import _figure_renderer, _overlap_area
+
+    mpl_renderer = _figure_renderer(figure)
+    figure.draw_without_rendering()
+    boxes = [Text.get_window_extent(text, mpl_renderer) for text in renderer._header_labels]
+    ticks = [
+        label.get_window_extent(mpl_renderer)
+        for ax in figure.axes
+        for label in ax.get_xticklabels() + ax.get_yticklabels()
+        if label.get_visible() and label.get_text()
+    ]
+    pairs = sum(1 for a, b in itertools.combinations(boxes, 2) if _overlap_area(a, b) > 0)
+    tick_hits = sum(1 for box in boxes for tick in ticks if _overlap_area(box, tick) > 0)
+    return pairs, tick_hits
+
+
+def test_dense_section_sheet_headers_clear_each_other_and_tick_labels() -> None:
+    """30 long IDs 6 m apart: no horizontal stagger fits, so headers go
+    vertical rather than fusing or sitting on the distance tick labels."""
+    ids, projected, polygons = _dense_header_section(30, 6.0)
+    renderer = CrossSectionRenderer(show_legend=False, render_profile=SECTION_SHEET_PROFILE)
+    figure = renderer.render(polygons, projected, collar_depths={hole: 8.0 for hole in ids})
+    assert _header_hits(figure, renderer) == (0, 0)
+
+
+def test_header_and_water_passes_are_idempotent_and_rerun_for_export_pages() -> None:
+    """Export resizes the page after render; the label passes must re-run from
+    the drawn positions (not stack offsets) and leave the page clean."""
+    import numpy as np
+
+    from export_framing import ExportFramingConfig
+    from renderer_water import resolve_header_collisions
+
+    ids, projected, polygons = _dense_header_section(12, 8.0)
+    renderer = CrossSectionRenderer(show_legend=False, render_profile=SECTION_SHEET_PROFILE)
+    figure = renderer.render(polygons, projected, collar_depths={hole: 8.0 for hole in ids})
+
+    def positions():
+        from renderer_water import _figure_renderer
+
+        mpl_renderer = _figure_renderer(figure)
+        return np.array([t.get_window_extent(mpl_renderer).bounds for t in renderer._header_labels])
+
+    first = positions()
+    for _ in range(3):
+        resolve_header_collisions(figure, renderer._header_labels)
+    np.testing.assert_allclose(positions(), first, atol=0.5)
+
+    renderer.export_framing = ExportFramingConfig(page_preset="letter_portrait", export_dpi=72)
+    renderer.to_png_bytes(figure)
+    np.testing.assert_allclose(figure.get_size_inches(), (8.5, 11.0))
+    assert _header_hits(figure, renderer)[0] == 0

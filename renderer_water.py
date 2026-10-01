@@ -111,9 +111,54 @@ def resolve_header_collisions(fig, headers) -> None:
         return
     renderer = _figure_renderer(fig)
     pad = renderer.points_to_pixels(2.0)
-    placed: list = []
+    for text in headers:
+        # Re-runs (export resizes the page) must start from the drawn position,
+        # not stack another offset on the previous pass's choice.
+        if not hasattr(text, "_header_base"):
+            text._header_base = (
+                text.get_transform(),
+                text.get_horizontalalignment(),
+                text.get_rotation(),
+            )
+        base_transform, base_ha, base_rotation = text._header_base
+        text.set_transform(base_transform)
+        text.set_horizontalalignment(base_ha)
+        text.set_rotation(base_rotation)
+    page = fig.bbox
+    obstacles = _header_obstacles(fig, renderer, 0.0, exclude={id(text) for text in headers})
+    _stagger_headers(fig, renderer, headers, obstacles, page, pad)
+    staggered_cost = _header_layout_cost(renderer, headers, obstacles, page, pad)
+    if staggered_cost == 0.0:
+        return
+    # Dense well fields: no horizontal stagger fits, so try vertical headers
+    # (CAD convention) and keep whichever layout overlaps less.
+    staggered = [(t.get_transform(), t.get_horizontalalignment()) for t in headers]
+    for text in headers:
+        text.set_transform(text._header_base[0])
+        text.set_horizontalalignment("center")
+        text.set_rotation(90)
+    if _header_layout_cost(renderer, headers, obstacles, page, pad) >= staggered_cost:
+        for text, (transform, ha) in zip(headers, staggered):
+            text.set_rotation(text._header_base[2])
+            text.set_transform(transform)
+            text.set_horizontalalignment(ha)
+
+
+def _header_layout_cost(renderer, headers, obstacles, page, pad) -> float:
+    boxes = [text.get_window_extent(renderer).padded(pad) for text in headers]
+    cost = 0.0
+    for index, box in enumerate(boxes):
+        cost += sum(_overlap_area(box, other) for other in boxes[index + 1 :])
+        cost += sum(_overlap_area(box, other) for other in obstacles)
+        cost += 4.0 * _outside_area(box, page)
+    return cost
+
+
+def _stagger_headers(fig, renderer, headers, obstacles, page, pad) -> None:
+    """Greedy pass: nudge alignment, then step headers outward by text-height tiers."""
+    placed = list(obstacles)
     for text in sorted(headers, key=lambda item: item.get_window_extent(renderer).x0):
-        base_transform = text.get_transform()
+        base_transform = text._header_base[0]
         height_pt = text.get_window_extent(renderer).height * 72.0 / fig.dpi + 1.0
         outward = 1.0 if text.get_verticalalignment() == "bottom" else -1.0
         best: tuple[float, float, int, str] | None = None
@@ -124,10 +169,11 @@ def resolve_header_collisions(fig, headers) -> None:
             text.set_horizontalalignment(ha)
             box = text.get_window_extent(renderer).padded(pad)
             collision = sum(_overlap_area(box, other) for other in placed)
-            score = (collision + 4.0 * _outside_area(box, fig.bbox)) * 1000.0 + index
+            outside = _outside_area(box, page)
+            score = (collision + 4.0 * outside) * 1000.0 + index
             if best is None or score < best[0]:
                 best = (score, dx, tier, ha)
-            if collision == 0.0 and _outside_area(box, fig.bbox) == 0.0:
+            if collision == 0.0 and outside == 0.0:
                 break
         assert best is not None
         _score, dx, tier, ha = best
@@ -137,6 +183,36 @@ def resolve_header_collisions(fig, headers) -> None:
         text.set_horizontalalignment(ha)
         placed.append(text.get_window_extent(renderer).padded(pad))
 
+
+def _drawn_tick_labels(axis, limits) -> list:
+    """Major tick labels inside the view limits (matplotlib keeps but never
+    draws labels for ticks past the axis ends)."""
+    low, high = sorted(limits)
+    span = (high - low) * 1e-9
+    locs = axis.get_majorticklocs()
+    labels = []
+    for tick, loc in zip(axis.get_major_ticks(len(locs)), locs):
+        if low - span <= loc <= high + span:
+            labels.extend((tick.label1, tick.label2))
+    return labels
+
+
+def _header_obstacles(fig, renderer, pad, *, exclude: set[int]) -> list:
+    """Tick labels, axis labels, titles and figure text a header must not cover."""
+    fig.draw_without_rendering()  # settle tick label positions for this page size
+    artists: list = list(fig.texts)
+    for ax in fig.axes:
+        if not ax.get_visible():
+            continue
+        artists.extend(_drawn_tick_labels(ax.xaxis, ax.get_xlim()))
+        artists.extend(_drawn_tick_labels(ax.yaxis, ax.get_ylim()))
+        artists.extend((ax.xaxis.label, ax.yaxis.label, ax.title, ax._left_title, ax._right_title))
+    boxes = []
+    for artist in artists:
+        if id(artist) in exclude or not artist.get_visible() or not artist.get_text().strip():
+            continue
+        boxes.append(artist.get_window_extent(renderer).padded(pad))
+    return boxes
 
 def _figure_renderer(fig):
     try:
@@ -274,7 +350,9 @@ class RendererWaterMixin:
         ordered = sorted(labels, key=lambda item: _LABEL_PRIORITY.get(item[0], 9))
         for kind, annotation, _color in ordered:
             frame = annotation.axes.get_window_extent(renderer)
-            base = tuple(annotation.xyann)
+            if not hasattr(annotation, "_water_base_xyann"):
+                annotation._water_base_xyann = tuple(annotation.xyann)
+            base = annotation._water_base_xyann
             best: tuple[float, tuple[float, float, str]] | None = None
             for index, (dx, dy, ha) in enumerate(_LABEL_CANDIDATES.get(kind, [(*base, "left")])):
                 annotation.xyann = (dx, dy)

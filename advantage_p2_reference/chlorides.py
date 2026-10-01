@@ -24,7 +24,11 @@ _ND_PATTERN = re.compile(
     r"^<\s*([0-9]+(?:\.[0-9]+)?)\s*(?:mg/?[Lk]g?)?(?:\s*\(ND\))?$",
     flags=re.IGNORECASE,
 )
-_NUMERIC_PATTERN = re.compile(r"^([0-9]+(?:\.[0-9]+)?)")
+# Whole-cell match (optional trailing unit) so "1,110" or "1.2E3" can never
+# be cut to a label that disagrees with the plotted value.
+_NUMERIC_PATTERN = re.compile(
+    r"^([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*(?:[a-zA-Zµ/]+)?$"
+)
 # Point-average columns (legacy). Prefer From/To intervals when present.
 _TRANSECT_POINT_COLUMNS: dict[str, tuple[str, str, str]] = {
     "A_A": ("Borehole", "Avg", "Cl"),
@@ -53,7 +57,7 @@ def parse_chloride_value(raw: object) -> tuple[float, str]:
     if nd_match:
         limit = float(nd_match.group(1))
         return limit, f"<{limit:g}"
-    numeric_match = _NUMERIC_PATTERN.match(text)
+    numeric_match = _NUMERIC_PATTERN.match(text.replace(",", ""))
     if numeric_match:
         value = float(numeric_match.group(1))
         return value, f"{value:g}"
@@ -64,6 +68,17 @@ def parse_chloride_value(raw: object) -> tuple[float, str]:
 def _load_chloride_frame(path_str: str, mtime_ns: int) -> pd.DataFrame:
     del mtime_ns
     return pd.read_excel(path_str, sheet_name="Chloride", header=1)
+
+
+def _fixture_label(row: dict[str, object]) -> str:
+    """Compact label; an unparseable stored label falls back to the value."""
+    raw = row.get("value_label")
+    if raw is not None and str(raw).strip():
+        try:
+            return parse_chloride_value(raw)[1]
+        except ValueError:
+            pass
+    return f"{float(row['value']):g}"
 
 
 def _reading_from_dict(row: dict[str, object]) -> EnvironmentalReading:
@@ -78,7 +93,7 @@ def _reading_from_dict(row: dict[str, object]) -> EnvironmentalReading:
         # the legend only. Normalise so a stale fixture cannot reintroduce
         # per-label "mg/L" suffixes or the wrong unit.
         "unit": _UNIT,
-        "value_label": parse_chloride_value(row.get("value_label") or row["value"])[1],
+        "value_label": _fixture_label(row),
     }
     if from_depth is not None and to_depth is not None and depth is None:
         kwargs["from_depth"] = float(from_depth)

@@ -1086,6 +1086,12 @@ class CrossSectionRenderer(
             self.export_framing,
             layout=str(getattr(self.profile, "layout", "")),
         )
+        # Page sizing moves every artist; redo label placement for the new page.
+        headers = [t for t in getattr(self, "_header_labels", None) or [] if t.figure is figure]
+        resolve_header_collisions(figure, headers)
+        water = getattr(self, "_water_labels", None) or []
+        if water and all(annotation.figure is figure for _kind, annotation, _c in water):
+            self._resolve_water_label_collisions(figure)
         return figure
 
     def _export_dpi(self, default: int = 300) -> int:

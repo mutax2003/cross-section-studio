@@ -38,9 +38,45 @@ logger = logging.getLogger(__name__)
 WorkbookSource = str | Path | BinaryIO | BytesIO | pd.ExcelFile
 
 
+# A 5 MB sheet of a million empty-but-formatted rows takes ~18 s to read and
+# scales linearly; real projects are a few thousand rows.
+MAX_WORKBOOK_ROWS = 200_000
+
+
+class WorkbookTooLargeError(ValueError):
+    """A sheet exceeds MAX_WORKBOOK_ROWS (usually blank formatted rows)."""
+
+
+def check_workbook_row_counts(source: WorkbookSource, *, limit: int = MAX_WORKBOOK_ROWS) -> None:
+    """Reject oversized sheets cheaply (openpyxl read-only) before pandas loads them."""
+    if isinstance(source, pd.ExcelFile):
+        return
+    import openpyxl
+
+    if hasattr(source, "seek"):
+        source.seek(0)
+    try:
+        book = openpyxl.load_workbook(source, read_only=True, data_only=True)
+    except Exception:
+        return  # let the real reader report format problems
+    try:
+        for sheet in book.worksheets:
+            rows = sheet.max_row or 0
+            if rows > limit:
+                raise WorkbookTooLargeError(
+                    f"Sheet '{sheet.title}' has {rows:,} rows (limit {limit:,}). "
+                    "Delete the empty formatted rows below the data and upload again."
+                )
+    finally:
+        book.close()
+        if hasattr(source, "seek"):
+            source.seek(0)
+
+
 def _as_excel(source: WorkbookSource) -> pd.ExcelFile:
     if isinstance(source, pd.ExcelFile):
         return source
+    check_workbook_row_counts(source)
     if hasattr(source, "seek"):
         source.seek(0)
     return pd.ExcelFile(source)

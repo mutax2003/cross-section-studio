@@ -118,6 +118,18 @@ def _friendly_workbook_error(exc: Exception) -> str:
         )
     if "Missing required sheet" in text:
         return f"{text}. Add the missing sheet(s), or start from **Download template**."
+    if "rows (limit" in text:
+        return f"The workbook is too large to read: {text}"
+    if "xlrd" in lowered or "ole2" in lowered or "encrypted" in lowered:
+        return (
+            "This looks like an old .xls or a password-protected workbook. Open it in Excel, "
+            "remove the password if any, and **Save As → Excel Workbook (.xlsx)**."
+        )
+    if "io.excel." in lowered:
+        return (
+            "This file isn't an Excel workbook (it may be a ZIP or another format renamed to "
+            ".xlsx). Save it from Excel as an .xlsx workbook and upload again."
+        )
     return (
         "The workbook couldn't be read. Check that Collars and Lithology use the template "
         "headers, then upload it again."

@@ -1003,3 +1003,15 @@ def test_structure_and_survey_row_problems_are_row_errors_not_aborts() -> None:
     joined = "\n".join(result.errors)
     assert "Faults sheet" in joined and "Unconformities sheet" in joined
     assert "Deviations row for 'BH1': inclination_deg" in joined
+
+
+def test_oversized_formatted_workbook_is_rejected_before_parsing(tmp_path: Path) -> None:
+    """A million empty-but-styled rows used to tie the parser up for ~18 s."""
+    from parsing import WorkbookTooLargeError, check_workbook_row_counts
+
+    buffer = _hostile_workbook(_TWO_COLLARS, _TWO_LITH)
+    check_workbook_row_counts(buffer)  # normal workbook passes
+    assert buffer.tell() == 0  # stream rewound for the real reader
+
+    with pytest.raises(WorkbookTooLargeError, match="rows \\(limit 10\\)"):
+        check_workbook_row_counts(_hostile_workbook(_TWO_COLLARS * 6, _TWO_LITH), limit=10)

@@ -107,6 +107,9 @@ class ImportReport:
 
 
 def _as_workbook(source: str | Path | BinaryIO | BytesIO | pd.ExcelFile) -> pd.ExcelFile:
+    from parsing import check_workbook_row_counts
+
+    check_workbook_row_counts(source)
     if isinstance(source, pd.ExcelFile):
         return source
     if hasattr(source, "seek"):

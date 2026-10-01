@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ui_helpers import SvgDisplayMeta, svg_display_meta, svg_display_height, svg_is_valid
+from ui_helpers import SvgDisplayMeta, svg_display_height, svg_display_meta, svg_is_valid
 
 
 def test_svg_display_meta_valid_svg() -> None:
@@ -56,3 +56,11 @@ def test_svg_natural_width_tolerates_malformed_and_hostile_widths() -> None:
     assert width(b'<svg viewBox="0,0,640,480"></svg>') == 640
     assert width(b'<!-- <svg width="5"> --><svg width="720pt"></svg>') == 960
     assert width(b'<svg width="99999999pt"></svg>') == 12000
+
+
+def test_legend_hatch_background_tolerates_whitespace_hatches() -> None:
+    from ui_helpers import legend_hatch_background
+
+    assert legend_hatch_background(" ") == "none"
+    assert legend_hatch_background("") == "none"
+    assert "gradient" in legend_hatch_background("OO")

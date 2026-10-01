@@ -33,7 +33,9 @@ from app_upload import (
 from constants import (
     DEFAULT_PROFILE_ELEVATION_M,
     USGS_LITHOLOGY_HATCHES,
+    clear_lithology_style_override,
     get_lithology_style,
+    has_lithology_style_override,
     save_lithology_style_override,
 )
 from export_framing import ExportFramingConfig
@@ -643,14 +645,28 @@ def _render_fill_style_editor() -> None:
     style_hatch = st.selectbox(
         "Hatch pattern",
         options=style_hatch_options,
+        format_func=lambda hatch: hatch or "none (plain)",
         index=style_hatch_options.index(current_style.hatch)
         if current_style.hatch in style_hatch_options
         else 0,
         key="style_editor_hatch",
     )
-    if st.button("Save fill style", key="save_fill_style"):
-        save_lithology_style_override(style_code, style_color, style_hatch)
-        st.success(f"Saved style for {style_code}. Use Generate Cross-Section to preview.")
+    save_col, reset_col = st.columns(2)
+    with save_col:
+        if st.button("Save fill style", key="save_fill_style", width="stretch"):
+            save_lithology_style_override(style_code, style_color, style_hatch)
+            st.success(f"Saved style for {style_code}. Use Generate Cross-Section to preview.")
+    with reset_col:
+        if st.button(
+            "Reset to scheme",
+            key="reset_fill_style",
+            width="stretch",
+            disabled=not has_lithology_style_override(style_code),
+            help="Remove the saved override so this code uses the agreed colour and hatch.",
+        ):
+            clear_lithology_style_override(style_code)
+            st.success(f"{style_code} uses the agreed scheme again.")
+            st.rerun()
 
 
 def _seed_free_llm_defaults() -> None:

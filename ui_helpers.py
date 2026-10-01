@@ -162,9 +162,9 @@ def workflow_stage(
 
 def legend_hatch_background(hatch: str) -> str:
     """Return a CSS background-image stack approximating matplotlib hatch chars."""
-    if not hatch:
+    token = (hatch or "").strip()[:1]
+    if not token:
         return "none"
-    token = hatch.strip()[0]
     line = "repeating-linear-gradient(0deg, #334155 0 1px, transparent 1px 5px)"
     slash = "repeating-linear-gradient(45deg, #334155 0 1px, transparent 1px 5px)"
     backslash = "repeating-linear-gradient(-45deg, #334155 0 1px, transparent 1px 5px)"

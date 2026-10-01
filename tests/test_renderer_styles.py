@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import sys
 from pathlib import Path
 
@@ -12,13 +13,25 @@ matplotlib.use("Agg")
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from constants import CONSULTING_LITHOLOGY_COLORS, USGS_LITHOLOGY_COLORS, USGS_LITHOLOGY_HATCHES, get_lithology_style
-from models import Collar, ConsultingTitleBlock, EnvironmentalReading, Lithology, ScreenInterval, VerticalGradient, WaterLevel
+from constants import (
+    CONSULTING_LITHOLOGY_COLORS,
+    USGS_LITHOLOGY_COLORS,
+    USGS_LITHOLOGY_HATCHES,
+    get_lithology_style,
+)
+from models import (
+    Collar,
+    ConsultingTitleBlock,
+    EnvironmentalReading,
+    Lithology,
+    ScreenInterval,
+    VerticalGradient,
+    WaterLevel,
+)
+from pipeline import build_cross_section
 from render_profiles import CHART_PROFILE, CONSULTING_SECTION_PROFILE, SECTION_SHEET_PROFILE
 from render_theme import SCREEN_INTERVAL_HATCH, parameter_series_color
-from pipeline import build_cross_section
 from renderer import CrossSectionRenderer, _resolve_parameter_label_offsets
-from stratigraphy import build_stratigraphy
 from tests.conftest import assert_valid_svg, run_pipeline
 
 
@@ -51,9 +64,9 @@ def test_every_canonical_lithology_has_color_and_hatch() -> None:
         assert code in USGS_LITHOLOGY_HATCHES
         style = get_lithology_style(code)
         assert style.color.startswith("#")
-        # Plain units (Clay, Sand, Topsoil, Coal...) carry no hatch by design;
-        # a hatch, when present, repeats its character for density.
-        assert style.hatch == "" or len(style.hatch) >= 2
+        # Plain units (Clay, Silt, Topsoil, Coal...) carry no hatch by design;
+        # hatches are sparse single marks, as in the CAD template.
+        assert style.hatch == "" or (1 <= len(style.hatch) <= 3)
 
 
 def test_renderer_applies_hatches_to_svg() -> None:
@@ -966,7 +979,8 @@ def test_agreed_lithology_scheme_groups_and_hatches() -> None:
     assert hatch("Silty Clay Loam") == hatch("Clay Loam") == HATCH_PLUS
     assert hatch("Sand and Gravel") == hatch("Gravel") == HATCH_GRAVEL
     assert hatch("Silty Sand") == hatch("Loamy Sand") == HATCH_SILTY
-    assert hatch("Clay") == hatch("Silt") == hatch("Sand") == hatch("Topsoil") == ""
+    assert hatch("Sand") == HATCH_SANDY  # Sand is dotted (requested 1 Oct 2026)
+    assert hatch("Clay") == hatch("Silt") == hatch("Loam") == hatch("Topsoil") == ""
 
     def luminance(code):
         r, g, b = (int(colour(code)[i : i + 2], 16) for i in (1, 3, 5))
@@ -992,3 +1006,99 @@ def test_consulting_first_borehole_is_drawn_in_full() -> None:
     labels = [t.get_text() for t in ax.get_xticklabels() if t.get_text()]
     assert labels and not any(label.lstrip().startswith(("-", "−")) for label in labels)
     assert "0" in labels
+
+
+def test_stale_excel_legend_only_overrides_listed_codes(tmp_path, monkeypatch, caplog) -> None:
+    """A leftover BH Log Lithology Legend.xlsx used to replace the whole agreed
+    scheme (dropping codes to grey); now it only overrides the codes it lists,
+    and says so."""
+    import logging
+
+    import openpyxl
+
+    import constants
+    import paths
+
+    legend = tmp_path / "BH Log Lithology Legend.xlsx"
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.append(["BH Log Lithology Legend"])  # title row; the parser reads header=1
+    sheet.append(["Colour", "", "Lithology", "RGB"])
+    sheet.append(["#38220F", "", "Clay", ""])
+    book.save(legend)
+    monkeypatch.setattr(paths, "bh_log_lithology_legend_xlsx_path", lambda: legend)
+    monkeypatch.setattr(constants, "bh_log_lithology_legend_xlsx_path", lambda: legend)
+    constants._load_bh_log_lithology_colors.cache_clear()
+    try:
+        with caplog.at_level(logging.WARNING):
+            palette = constants._build_lithology_palette()
+        assert palette["Clay"] == "#38220F"  # the listed code is overridden...
+        assert palette["Coal"] == "#000000" and palette["Silty Sand"] == "#FFE39F"  # ...the rest keep the scheme
+        assert len(palette) == len(constants.USGS_LITHOLOGY_COLORS)
+        assert any("overrides the agreed scheme" in r.message for r in caplog.records)
+    finally:
+        constants._load_bh_log_lithology_colors.cache_clear()
+
+
+def test_style_override_can_be_cleared(tmp_path, monkeypatch) -> None:
+    import constants
+    import paths
+
+    override_file = tmp_path / "lithology_styles.json"
+    monkeypatch.setattr(paths, "lithology_styles_path", lambda: override_file)
+    monkeypatch.setattr(constants, "lithology_styles_path", lambda: override_file)
+    constants._load_lithology_style_overrides.cache_clear()
+    constants.get_lithology_style.cache_clear()
+    try:
+        constants.save_lithology_style_override("topsoil", "#8B6914", "..")
+        assert constants.get_lithology_style("Topsoil").hatch == ".."
+        assert constants.has_lithology_style_override("Topsoil")
+        assert constants.clear_lithology_style_override("TOPSOIL")
+        assert not constants.has_lithology_style_override("Topsoil")
+        assert constants.get_lithology_style("Topsoil").hatch == ""  # back to the scheme
+        assert not constants.clear_lithology_style_override("Topsoil")
+    finally:
+        constants._load_lithology_style_overrides.cache_clear()
+        constants.get_lithology_style.cache_clear()
+
+
+def test_consulting_legend_holds_many_units_without_overlap_or_silent_loss() -> None:
+    """31 codes used to overrun the panel: the header overlapped the first row
+    and everything past twelve entries vanished with no indication."""
+    from matplotlib.text import Text
+
+    from renderer_water import _overlap_area
+
+    codes = sorted(USGS_LITHOLOGY_COLORS)
+    ids = [f"BH-{i:02d}" for i in range(4)]
+    collars = [
+        Collar(hole_id=h, easting=i * 25.0, northing=0.0, elevation=100.0, total_depth=float(len(codes)))
+        for i, h in enumerate(ids)
+    ]
+    lithologies = [
+        Lithology(hole_id=h, from_depth=float(k), to_depth=float(k + 1), lithology_code=code)
+        for h in ids
+        for k, code in enumerate(codes)
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (75.0, 0.0)])
+    renderer = CrossSectionRenderer(show_legend=True, render_profile=CONSULTING_SECTION_PROFILE)
+    figure = renderer.render(polygons, projected, collar_depths={h: float(len(codes)) for h in ids}, lithology_codes=codes)
+    figure.draw_without_rendering()
+    mpl_renderer = figure.canvas.get_renderer()
+    legend_ax = next(ax for ax in figure.axes if any(t.get_text() == "LEGEND" for t in ax.texts))
+    texts = [t for t in legend_ax.texts if t.get_text().strip()]
+    labels = {t.get_text() for t in texts}
+    header = next(t for t in texts if t.get_text() == "LEGEND")
+    header_box = Text.get_window_extent(header, mpl_renderer)
+    entry_boxes = [Text.get_window_extent(t, mpl_renderer) for t in texts if t is not header]
+    assert all(_overlap_area(header_box, box) == 0 for box in entry_boxes)
+    note = next(label for label in labels if label.startswith("+") and "MORE UNITS" in label)
+    shown_codes = [c for c in codes if c.upper() in labels]
+    hidden = int(note.split()[0].lstrip("+"))
+    # Every unit is either listed or counted in the note; the panel is full.
+    assert len(shown_codes) + hidden == len(codes)
+    assert len(shown_codes) >= 10
+    panel = legend_ax.get_window_extent(mpl_renderer)
+    assert all(box.y0 >= panel.y0 - 1 and box.y1 <= panel.y1 + 1 for box in entry_boxes)
+    for a, b in itertools.combinations(entry_boxes, 2):
+        assert _overlap_area(a, b) == 0

@@ -46,6 +46,8 @@ def render_swatch_png(code: str, *, width_px: int, height_px: int, border: bool 
     from io import BytesIO
 
     style = get_lithology_style(code)
+    # A border on a tiny swatch is all border: drop it below 8 px.
+    border = border and min(width_px, height_px) >= 8
     with plt.rc_context({"hatch.color": HATCH_LINE_COLOR, "hatch.linewidth": 0.65}):
         fig = plt.figure(figsize=(width_px / _DPI, height_px / _DPI), dpi=_DPI)
         ax = fig.add_axes((0, 0, 1, 1))
@@ -79,6 +81,8 @@ def export_swatches(
 ) -> list[str]:
     names: list[str] = []
     selected = codes or sorted(USGS_LITHOLOGY_COLORS)
+    if zip_path is not None:
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
     archive = zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) if zip_path else None
     try:
         if out_dir is not None:
@@ -97,16 +101,41 @@ def export_swatches(
     return names
 
 
+def resolve_codes(requested: list[str] | None) -> list[str]:
+    """Canonical codes for --code values (case-insensitive); unknown names are an error."""
+    if not requested:
+        return sorted(USGS_LITHOLOGY_COLORS)
+    lookup = {code.casefold(): code for code in USGS_LITHOLOGY_COLORS}
+    unknown = [name for name in requested if name.strip().casefold() not in lookup]
+    if unknown:
+        raise SystemExit(
+            f"Unknown lithology code(s): {', '.join(unknown)}. "
+            f"Known codes: {', '.join(sorted(USGS_LITHOLOGY_COLORS))}"
+        )
+    return [lookup[name.strip().casefold()] for name in requested]
+
+
+def _positive_int(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be a positive pixel size")
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--width", type=int, default=64, help="swatch width in pixels (default 64)")
-    parser.add_argument("--height", type=int, default=64, help="swatch height in pixels (default 64)")
+    parser.add_argument("--width", type=_positive_int, default=64, help="swatch width in pixels (default 64)")
+    parser.add_argument("--height", type=_positive_int, default=64, help="swatch height in pixels (default 64)")
     parser.add_argument("--out", type=Path, default=ROOT / "dist" / "lithology_swatches")
     parser.add_argument("--zip", type=Path, default=None, help="also write all swatches to this zip")
     parser.add_argument("--code", action="append", help="export only this code (repeatable)")
     args = parser.parse_args()
     names = export_swatches(
-        args.out, width_px=args.width, height_px=args.height, zip_path=args.zip, codes=args.code
+        args.out,
+        width_px=args.width,
+        height_px=args.height,
+        zip_path=args.zip,
+        codes=resolve_codes(args.code),
     )
     print(f"Wrote {len(names)} swatch(es) at {args.width}x{args.height} px to {args.out}")
     if args.zip:

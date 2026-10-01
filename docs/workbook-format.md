@@ -23,7 +23,7 @@ Optional: `elevation_datum`, `inclination_deg`, `azimuth_deg`, `stick_up_m` (met
 | `to_depth` | float | Metres below collar |
 | `lithology_code` | text | Prefer USGS-style codes (Sand, Clay, Topsoil, …) |
 
-Lithology colours and hatches follow the scheme agreed on 1 Oct 2026: one base colour per soil group (clay `#967259`, loam `#C68642`, sand `#FFE39F`, rock `#4C516D`) with a hatch for the secondary component only (sandy = dots, silty = 45° lines, gravel = cobbles, `+` = loam mixes); Topsoil, Organics and Coal are plain (Coal is the only black unit). Full table: `data/bh_log_lithology_legend.json` + `constants.py`. Survey123 swatches: `python scripts/export_lithology_swatches.py --width W --height H --zip out.zip`.
+Lithology colours and hatches follow the scheme agreed on 1 Oct 2026: one base colour per soil group (clay `#967259`, loam `#C68642`, sand `#FFE39F`, rock `#4C516D`) with a hatch for the secondary component only (sandy = dots — including Sand itself — silty = 45° lines, gravel = cobbles, `+` = the clay-loam mixes Clay Loam and Silty Clay Loam), at the sparse densities of Sheryl's CAD template; Clay, Silt, Loam, Topsoil, Organics and Coal are plain (Coal is the only black unit). Full table: `data/bh_log_lithology_legend.json` + `constants.py`. Survey123 swatches: `python scripts/export_lithology_swatches.py --width W --height H --zip out.zip`.
 
 Optional: `hatch_pattern`, `unit_order` (1 = shallowest; when the same code repeats in one hole, blank values are auto-assigned from depth order by default — required only if auto-assign is disabled).
 
@@ -38,7 +38,7 @@ Optional: `hatch_pattern`, `unit_order` (1 = shallowest; when the same code repe
 | **Correlations** | `left_hole_id`, `right_hole_id`, `left_unit_order`, `right_unit_order` | Manual unit pairing |
 | **Faults** | `name`, `x_profile`, `elevation` | Profile-plane fault traces |
 | **Unconformities** | `name`, `x_profile`, `elevation` | Profile-plane surfaces |
-| **Environmental** | `hole_id`, `parameter`, `value`, `depth` **or** `from_depth`+`to_depth` | Lab/screening samples (e.g. chloride at 3.5 m). Optional: `unit` (e.g. `mg/L`), `value_label` (figure text). Select parameters on **Configure**; optional green/yellow/red threshold colouring is set there (not in the workbook). |
+| **Environmental** | `hole_id`, `parameter`, `value`, `depth` **or** `from_depth`+`to_depth` | Lab/screening samples (e.g. chloride at 3.5 m). Optional: `unit` (e.g. `mg/L`), `value_label` (figure text), `label_color` — drop-down `green` / `red` / `black` / `orange`, one fixed colour each (blue is reserved for groundwater). Select parameters on **Configure**; rows without a `label_color` use the Configure setting (black, or green/orange/red thresholds). |
 | **Sections** | `section_label`, `hole_ids` | Named section lines. Configure shows a **Section (from workbook Sections tab)** drop-down that previews any row; the rows also seed **Multi-transect batch ZIP** for exporting every section. Rows that name unknown holes are reported on upload. `hole_ids` are ordered holes separated by comma, semicolon, or `→` (e.g. `MW-01, MW-02, MW-03` or `MW-01→MW-02→MW-03`). Each valid row (≥2 known collars) seeds a line `Label \| h1, h2, …`. |
 
 Sheet names are matched case-insensitively.

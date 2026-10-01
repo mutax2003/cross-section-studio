@@ -25,13 +25,13 @@ _BASE_LITHOLOGY_COLORS: dict[str, str] = {
     "Limestone": "#E0E4E8",
     "Shale": "#5C6B7A",
     "Flare Pit Material": "#6D4C41",
-    "Topsoil": "#70500F",
+    "Topsoil": "#534230",
     "Sand and Clay": "#E8B84A",
 }
 
 DEFAULT_LITHOLOGY_COLOR = "#B8B8B8"
 DEFAULT_LITHOLOGY_HATCH = "++"  # "+" covers any remaining type
-HATCH_LINE_COLOR = "#3D3D3D"
+HATCH_LINE_COLOR = "#323232"  # mark colour in the CAD template
 POLYGON_EDGE_COLOR = "#2C2C2C"
 
 # Agreed display scheme (meeting 1 Oct 2026): each soil group shares one base
@@ -40,10 +40,13 @@ POLYGON_EDGE_COLOR = "#2C2C2C"
 # the dominant units (Clay, Silt, Sand, Loam, Topsoil, Organics, Coal) stay
 # plain so boreholes and well screens read clearly over them.
 # Matplotlib hatch strings (repeat chars for density): / \ | - + x o O . *
-HATCH_SANDY = "..."
-HATCH_SILTY = "///"
-HATCH_GRAVEL = "OO"  # large circles: closest built-in to a stone/cobble pattern
-HATCH_PLUS = "++"
+# Densities follow Sheryl's CAD template (Cross_Section_Litho_Legend_261001):
+# sparse marks, not dense hatching. matplotlib has no isolated plus mark, so
+# "+" draws its sparsest grid.
+HATCH_SANDY = "."
+HATCH_SILTY = "/"
+HATCH_GRAVEL = "O"  # large circles: closest built-in to the template's cobbles
+HATCH_PLUS = "+"
 
 _BASE_LITHOLOGY_HATCHES: dict[str, str] = {
     # Clay group (#967259)
@@ -58,8 +61,8 @@ _BASE_LITHOLOGY_HATCHES: dict[str, str] = {
     "Clay Loam": HATCH_PLUS,
     "Loam": "",
     "Silty Loam": HATCH_SILTY,
-    # Sand group (#FFE39F)
-    "Sand": "",
+    # Sand group (#FFE39F) — Sand itself is dotted (A. Liu, 1 Oct 2026)
+    "Sand": HATCH_SANDY,
     "Loamy Sand": HATCH_SILTY,
     "Silty Sand": HATCH_SILTY,
     "Sand and Gravel": HATCH_GRAVEL,
@@ -154,11 +157,28 @@ def parse_bh_log_legend_json(path: Path) -> dict[str, str]:
 
 @lru_cache(maxsize=1)
 def _load_bh_log_lithology_colors() -> dict[str, str]:
-    """Prefer live Excel legend; fall back to bundled JSON cache."""
+    """Agreed scheme (bundled JSON) with any live Excel legend merged on top.
+
+    An Excel legend used to replace the JSON wholesale, so a stale copy left
+    in data/ silently dropped codes and restored the old colours. Codes the
+    Excel file does not list keep the scheme; differences are logged.
+    """
+    scheme = parse_bh_log_legend_json(bh_log_lithology_legend_path())
     xlsx_colors = parse_bh_log_legend_xlsx(bh_log_lithology_legend_xlsx_path())
-    if xlsx_colors:
-        return xlsx_colors
-    return parse_bh_log_legend_json(bh_log_lithology_legend_path())
+    if not xlsx_colors:
+        return scheme
+    changed = sorted(
+        code for code, colour in xlsx_colors.items()
+        if scheme.get(code, "").upper() != colour.upper()
+    )
+    if changed:
+        logger.warning(
+            "BH Log Lithology Legend.xlsx overrides the agreed scheme for %d code(s): %s "
+            "(delete or update the Excel legend to use the scheme colours)",
+            len(changed),
+            ", ".join(changed[:8]),
+        )
+    return {**scheme, **xlsx_colors}
 
 
 def _build_lithology_palette() -> dict[str, str]:
@@ -255,6 +275,31 @@ def _load_lithology_style_overrides() -> dict[str, LithologyStyle]:
         hatch = str(entry.get("hatch", DEFAULT_LITHOLOGY_HATCH))
         styles[str(code)] = LithologyStyle(color=color, hatch=hatch)
     return styles
+
+
+def clear_lithology_style_override(lithology_code: str) -> bool:
+    """Drop a saved override (any key case) so the code falls back to the scheme."""
+    path = lithology_styles_path()
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    keys = [key for key in payload if key.casefold() == lithology_code.casefold()]
+    if not keys:
+        return False
+    for key in keys:
+        payload.pop(key, None)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    _load_lithology_style_overrides.cache_clear()
+    get_lithology_style.cache_clear()
+    return True
+
+
+def has_lithology_style_override(lithology_code: str) -> bool:
+    overrides = _load_lithology_style_overrides()
+    return any(key.casefold() == lithology_code.casefold() for key in overrides)
 
 
 def save_lithology_style_override(lithology_code: str, color: str, hatch: str) -> None:

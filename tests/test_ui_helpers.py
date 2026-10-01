@@ -20,3 +20,27 @@ def test_svg_display_meta_invalid_payload() -> None:
     meta = svg_display_meta(b"not svg")
     assert meta.valid is False
     assert meta.encoded == ""
+
+
+def test_svg_natural_width_converts_matplotlib_points_to_css_pixels() -> None:
+    svg = b'<svg width="720pt" height="360pt" viewBox="0 0 720 360"></svg>'
+    assert svg_display_meta(svg).natural_width_px == 960
+    assert svg_display_meta(b'<svg width="500px" height="1"></svg>').natural_width_px == 500
+    assert svg_display_meta(b'<svg viewBox="0 0 640 480"></svg>').natural_width_px == 640
+    assert svg_display_meta(b"not svg").natural_width_px == 0
+
+
+def test_preview_img_style_scales_from_natural_width_and_falls_back_to_fit() -> None:
+    from ui_helpers import preview_img_style
+
+    style, zoomed = preview_img_style("150%", 800)
+    assert zoomed and "width:1200px" in style and "max-width:none" in style
+    # Streamlit markdown images default to scale-down, which would not enlarge.
+    assert "object-fit:contain" in style
+    assert preview_img_style("100%", 800) == (
+        "width:800px;max-width:none;height:auto;display:block;object-fit:contain;",
+        True,
+    )
+    for zoom, width in (("Fit width", 800), (None, 800), ("bogus", 800), ("150%", 0)):
+        style, zoomed = preview_img_style(zoom, width)
+        assert not zoomed and style.startswith("width:100%")

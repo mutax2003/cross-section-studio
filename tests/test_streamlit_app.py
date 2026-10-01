@@ -196,3 +196,21 @@ def test_generate_action_and_state_aware_coach_sit_above_validate(sample_workboo
         if getattr(node, "type", "") in {"subheader", "heading"} and "Data Health" in str(node.value)
     )
     assert generate_index < health_index, "Generate must render above Validate's Data Health"
+
+
+def test_preview_zoom_switches_to_scrollable_native_size_frame(sample_workbook: Path) -> None:
+    at = _generated_app(sample_workbook)
+
+    def frame_html() -> str:
+        return next(md.value for md in at.markdown if "<img src=\"data:image/svg" in md.value)
+
+    assert 'class="svg-frame"' in frame_html()
+    assert "width:100%" in frame_html()
+    at.session_state["svg_preview_zoom"] = "150%"
+    at.run()
+    assert not at.exception
+    html_150 = frame_html()
+    assert "svg-frame--zoomed" in html_150 and 'tabindex="0"' in html_150
+    natural = at.session_state["svg_display_meta"].natural_width_px
+    assert natural > 0
+    assert f"width:{round(natural * 1.5)}px" in html_150

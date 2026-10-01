@@ -17,6 +17,12 @@ from projection import (
 
 _SVG_HEIGHT_RE = re.compile(r'height="([0-9.]+)', re.IGNORECASE)
 _SVG_VIEWBOX_RE = re.compile(r'viewBox="[^"]*\s+[^"]*\s+[^"]*\s+([0-9.]+)"', re.IGNORECASE)
+_SVG_WIDTH_RE = re.compile(r'<svg\b[^>]*?\swidth="([0-9.]+)\s*(pt|px)?"', re.IGNORECASE)
+_SVG_VIEWBOX_WIDTH_RE = re.compile(r'<svg\b[^>]*?\sviewBox="[^"\s]+\s+[^"\s]+\s+([0-9.]+)', re.IGNORECASE)
+_PT_TO_PX = 96.0 / 72.0
+
+# Preview zoom choices -> scale of the SVG's natural CSS-pixel width (None = fit).
+PREVIEW_ZOOM_OPTIONS: dict[str, float | None] = {"Fit width": None, "100%": 1.0, "150%": 1.5}
 
 
 @dataclass(frozen=True)
@@ -24,6 +30,7 @@ class SvgDisplayMeta:
     valid: bool
     height: int
     encoded: str
+    natural_width_px: int = 0
 
 
 def escape_html(text: str | int | float) -> str:
@@ -76,7 +83,37 @@ def svg_display_meta(
             height = max(min_height, min(max_height, scaled))
             break
     encoded = base64.b64encode(svg_bytes).decode("ascii") if valid else ""
-    return SvgDisplayMeta(valid=valid, height=height, encoded=encoded)
+    return SvgDisplayMeta(
+        valid=valid,
+        height=height,
+        encoded=encoded,
+        natural_width_px=_svg_natural_width_px(text) if valid else 0,
+    )
+
+
+def _svg_natural_width_px(text: str) -> int:
+    """CSS-pixel width the browser gives the SVG at 100% (matplotlib writes pt)."""
+    match = _SVG_WIDTH_RE.search(text)
+    if match:
+        scale = _PT_TO_PX if (match.group(2) or "").lower() == "pt" else 1.0
+        return int(round(float(match.group(1)) * scale))
+    match = _SVG_VIEWBOX_WIDTH_RE.search(text)
+    return int(round(float(match.group(1)))) if match else 0
+
+
+def preview_img_style(zoom: str | None, natural_width_px: int) -> tuple[str, bool]:
+    """Return (img inline style, zoomed?) for a preview zoom choice.
+
+    Unknown choices or an unknown natural width fall back to fit-to-width.
+    ``object-fit:contain`` overrides Streamlit's markdown ``scale-down`` default,
+    which would otherwise draw the SVG at natural size centred inside the
+    enlarged box instead of scaling it up.
+    """
+    scale = PREVIEW_ZOOM_OPTIONS.get(zoom or "")
+    if scale is None or natural_width_px <= 0:
+        return "width:100%;height:auto;display:block;object-fit:contain;", False
+    width = int(round(natural_width_px * scale))
+    return f"width:{width}px;max-width:none;height:auto;display:block;object-fit:contain;", True
 
 
 def workflow_stage(

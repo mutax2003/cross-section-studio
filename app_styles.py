@@ -172,6 +172,14 @@ APP_CSS = """
         overflow: hidden;
         background: #fff;
     }
+    .svg-frame--zoomed {
+        overflow: auto;
+        max-height: 80vh;
+    }
+    .svg-frame--zoomed:focus-visible {
+        outline: 2px solid var(--brand-mid);
+        outline-offset: 2px;
+    }
     .app-menubar,
     .st-key-app_menubar {
         background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);

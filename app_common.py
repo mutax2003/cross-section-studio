@@ -36,10 +36,12 @@ from models import (
 )
 from section_build_request import SectionBuildRequest
 from ui_helpers import (
+    PREVIEW_ZOOM_OPTIONS,
     active_transect_selection,
     dedupe_messages,
     escape_html,
     legend_hatch_background,
+    preview_img_style,
     svg_display_meta,
 )
 
@@ -266,12 +268,28 @@ def _display_svg(svg_bytes: bytes, alt_text: str = "Cross-section profile") -> N
     if not cached.valid:
         st.error("Renderer produced invalid or empty SVG output.")
         return
+    zoom = st.segmented_control(
+        "Preview size",
+        list(PREVIEW_ZOOM_OPTIONS),
+        default="Fit width",
+        key="svg_preview_zoom",
+        label_visibility="collapsed",
+        help="Fit width shows the whole sheet; 100% / 150% show the figure at "
+        "native size or larger so small labels can be checked before export.",
+    )
+    img_style, zoomed = preview_img_style(zoom, cached.natural_width_px)
+    frame_attrs = (
+        'class="svg-frame svg-frame--zoomed" tabindex="0" '
+        'role="region" aria-label="Zoomed figure preview, scrollable"'
+        if zoomed
+        else 'class="svg-frame"'
+    )
     # One markdown block: Streamlit auto-closes a lone <div>, so splitting this
     # across calls renders an empty bordered frame with the image outside it.
     st.markdown(
-        '<div class="svg-frame">'
+        f"<div {frame_attrs}>"
         f'<img src="data:image/svg+xml;base64,{cached.encoded}" '
-        f'style="width:100%;height:auto;display:block;" alt="{escape_html(alt_text)}" />'
+        f'style="{img_style}" alt="{escape_html(alt_text)}" />'
         "</div>",
         unsafe_allow_html=True,
     )

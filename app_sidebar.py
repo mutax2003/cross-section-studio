@@ -809,7 +809,10 @@ def _render_import_settings(*, expanded: bool = False) -> tuple[str, str | None,
 def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
     st.markdown("**Report sheet (consulting)**")
     # Init keyed widgets only when absent so Project metadata seeding is not overwritten.
-    if "consulting_section_label" not in st.session_state:
+    if (
+        st.session_state.pop("_reset_consulting_section_label", False)
+        or "consulting_section_label" not in st.session_state
+    ):
         st.session_state.consulting_section_label = section_title or "Borehole Cross-Section"
     if "consulting_map_scale" not in st.session_state:
         st.session_state.consulting_map_scale = "1:1000"

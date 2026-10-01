@@ -306,11 +306,33 @@ def test_sections_tab_drop_down_drives_the_preview(tmp_path: Path) -> None:
     at.file_uploader[0].upload("sections.xlsx", workbook.read_bytes()).run()
     assert not at.exception
     picker = at.selectbox(key="workbook_section_choice")
-    assert picker.options == ["Custom", "A-A'", "B-B'"]
+    assert len(picker.options) == 3  # Custom + two rows (options are row indices)
     # First section is the default preview.
     assert at.session_state["hole_sequence_multiselect"] == ["BH-01", "BH-02", "BH-03"]
-    picker.select("B-B'").run()
+    picker.select(1).run()  # row index 1 = B-B'
     at.run()
     assert not at.exception
     assert at.session_state["hole_sequence_multiselect"] == ["BH-03", "BH-04", "BH-05"]
     assert at.session_state["consulting_section_label"] == "B-B'"
+
+    # Picking a section while the Consulting layout (with its "Section label"
+    # text box) is active used to raise StreamlitWidgetAlreadyInstantiatedError.
+    at.session_state["output_preset"] = "consulting_report"
+    at.run()
+    at.selectbox(key="workbook_section_choice").select(0).run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["hole_sequence_multiselect"] == ["BH-01", "BH-02", "BH-03"]
+    assert at.session_state["consulting_section_label"] == "A-A'"
+
+    # A new workbook must not inherit the previous one's hole order or label.
+    plain = tmp_path / "plain.xlsx"
+    with pd.ExcelWriter(plain, engine="openpyxl") as writer:
+        collars.to_excel(writer, sheet_name="Collars", index=False)
+        lith.to_excel(writer, sheet_name="Lithology", index=False)
+    at.file_uploader[0].upload("plain.xlsx", plain.read_bytes()).run()
+    at.run()
+    assert not at.exception
+    assert not [sb for sb in at.selectbox if sb.key == "workbook_section_choice"]
+    assert at.session_state["consulting_section_label"] != "A-A'"
+    assert at.session_state.get("hole_sequence_multiselect") == ["BH-01", "BH-02", "BH-03", "BH-04"]

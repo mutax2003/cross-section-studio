@@ -141,29 +141,63 @@ def _render_workbook_section_picker(specs) -> None:
     needs its row in the Sections tab changed. "Custom" leaves the manual
     controls as they are.
     """
-    labels = ["Custom", *[spec.label for spec in specs]]
+    # Options are row indices (None = Custom) so a row labelled "Custom" or a
+    # duplicate label can still be chosen; duplicates show their row number.
+    seen: dict[str, int] = {}
+    display: dict[int | None, str] = {None: "Custom"}
+    for index, spec in enumerate(specs):
+        seen[spec.label] = seen.get(spec.label, 0) + 1
+        display[index] = spec.label if seen[spec.label] == 1 else f"{spec.label} (row {index + 2})"
     choice = st.selectbox(
         "Section (from workbook Sections tab)",
-        options=labels,
+        options=list(display),
         index=0,
+        format_func=lambda key: display[key],
         key="workbook_section_choice",
         help=(
             "Each row of the Sections tab is one section line. Pick one to preview it; "
             "use Multi-transect batch ZIP under Configure to export every section."
         ),
     )
-    if choice == "Custom" or st.session_state.get("_workbook_section_applied") == choice:
+    if choice is None:
+        st.session_state.pop("_workbook_section_applied", None)
         return
-    resolved = section_choice_to_sequence(specs, choice, st.session_state.get("hole_ids") or [])
-    if resolved is None or len(resolved[1]) < 2:
-        st.warning(f"Section {choice!r} needs at least two holes that exist in Collars.")
+    spec = specs[choice]
+    known = set(st.session_state.get("hole_ids") or [])
+    holes = [hole for hole in spec.hole_ids if hole in known]
+    if len(holes) < 2:
+        st.warning(f"Section {spec.label!r} needs at least two holes that exist in Collars.")
         return
-    label, holes = resolved
+    already = st.session_state.get("_workbook_section_applied") == choice
+    if already and list(st.session_state.get("hole_sequence_multiselect") or []) == holes:
+        return  # applied and untouched
+    if already:
+        # The user edited the hole list after picking this section: say so
+        # rather than pretending the caption still describes the row.
+        st.caption(f"Hole order edited by hand; re-select {display[choice]!r} to restore the row.")
+        return
     st.session_state.hole_sequence_multiselect = holes
     st.session_state.pending_transect_mode = "By hole sequence"
-    st.session_state.consulting_section_label = label
+    queue_consulting_section_label(spec.label)
     st.session_state["_workbook_section_applied"] = choice
     st.rerun()
+
+
+def queue_consulting_section_label(label: str | None) -> None:
+    """Set the sheet label on the NEXT run, before its text_input exists.
+
+    Assigning the widget key directly raises once the sidebar has drawn the
+    "Section label" box (consulting layouts), so it goes through the pending
+    project seed that the sidebar applies first. None restores the default.
+    """
+    if label is None:
+        st.session_state["_reset_consulting_section_label"] = True
+        return
+    pending = st.session_state.get("_pending_project_seed")
+    if not isinstance(pending, dict):
+        pending = {}
+    pending["consulting_section_label"] = label
+    st.session_state["_pending_project_seed"] = pending
 
 
 def render_configure_step(
@@ -951,7 +985,7 @@ def render_nl_transect_input(hole_ids: list[str]) -> None:
             st.session_state.hole_sequence_multiselect = list(parsed.hole_ids)
             st.session_state.pending_transect_mode = "By hole sequence"
             if parsed.section_label:
-                st.session_state.consulting_section_label = parsed.section_label
+                queue_consulting_section_label(parsed.section_label)
             st.success(
                 f"Transect: {' → '.join(parsed.hole_ids)}"
                 + (f" ({parsed.section_label})" if parsed.section_label else "")

@@ -504,6 +504,9 @@ class WorkbookSectionSpec(BaseModel, frozen=True):
         holes = tuple(_clean_text(item) for item in value if _clean_text(item))
         if len(holes) < 2:
             raise ValueError("section requires at least two hole_ids")
+        duplicates = sorted({h for h in holes if holes.count(h) > 1})
+        if duplicates:
+            raise ValueError(f"hole_id listed more than once: {', '.join(duplicates)}")
         for hole in holes:
             if any(ch in hole for ch in (",", ";", "|", "\n", "\r")) or "→" in hole or "->" in hole:
                 raise ValueError(

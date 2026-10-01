@@ -39,8 +39,17 @@ class _BytesUpload:
         return self._data
 
 
+def _forget_previous_transect() -> None:
+    """A new workbook must not inherit the last one's hole order or sheet label."""
+    st.session_state.pop("hole_sequence_multiselect", None)
+    st.session_state.pop("workbook_section_choice", None)
+    st.session_state.pop("_workbook_section_applied", None)
+    st.session_state["_reset_consulting_section_label"] = True
+
+
 def clear_workbook_session() -> None:
     """Clear parse/session workbook state and any leftover section SVG/PNG/PDF."""
+    _forget_previous_transect()
     for key in SESSION_PARSE_KEYS:
         if key in DEFAULT_SESSION:
             st.session_state[key] = DEFAULT_SESSION[key]
@@ -172,6 +181,7 @@ def load_sample_workbook() -> None:
     st.session_state._batch_specs_seeded_from_sections = False
     st.session_state.pop("workbook_section_choice", None)
     st.session_state.pop("_workbook_section_applied", None)
+    _forget_previous_transect()
     st.session_state.parse_result = None
     st.session_state.parse_signature = None
     st.session_state.detection_result = None
@@ -342,6 +352,7 @@ def handle_workbook_upload(
         st.session_state._batch_specs_seeded_from_sections = False
         st.session_state.pop("workbook_section_choice", None)
         st.session_state.pop("_workbook_section_applied", None)
+        _forget_previous_transect()
         st.session_state.parse_result = None
         st.session_state.quality_report = None
         st.session_state.transect_candidates = None

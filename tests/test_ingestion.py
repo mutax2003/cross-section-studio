@@ -1024,9 +1024,12 @@ def test_sections_rows_naming_unknown_holes_are_reported_not_silently_dropped() 
         {"section_label": "A-A'", "hole_ids": "BH1, BH2"},
         {"section_label": "B-B'", "hole_ids": "BH1, BH-99"},
         {"section_label": "C-C'", "hole_ids": "BH1"},
+        {"section_label": "D-D'", "hole_ids": "BH1, BH2, BH1"},
+        {"section_label": "Custom", "hole_ids": "BH2, BH1"},
     ]
     result, report = ingest_workbook(_hostile_workbook(_TWO_COLLARS, _TWO_LITH, {"Sections": sections}))
-    assert [spec.label for spec in result.section_specs] == ["A-A'"]
+    assert [spec.label for spec in result.section_specs] == ["A-A'", "Custom"]  # "Custom" is a valid label
     joined = "\n".join(result.errors)
     assert "Sections row 3 (B-B'): unknown collar(s) BH-99" in joined
     assert "Sections row 4" in joined
+    assert "Sections row 5" in joined and "listed more than once: BH1" in joined

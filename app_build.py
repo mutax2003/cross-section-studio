@@ -377,6 +377,10 @@ def generate_cross_section(
             "transect_points": transect_points_tuple,
             "correlation_overrides": _session_correlation_overrides()
             + tuple(subset.correlation_overrides),
+            # Geometry trusts only the request payload — without this the
+            # workbook's Deviations sheet is silently ignored on Generate.
+            "deviation_readings": tuple(request.deviation_readings)
+            or tuple(subset.deviation_readings),
         }
     )
     # Reuse Configure-warmed subset JSON when hole set + workbook signature match

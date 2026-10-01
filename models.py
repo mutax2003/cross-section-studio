@@ -75,6 +75,18 @@ class Collar(BaseModel, frozen=True):
             raise ValueError("total_depth must be non-negative")
         return value
 
+    @field_validator("inclination_deg", "azimuth_deg", "stick_up_m", mode="before")
+    @classmethod
+    def blank_optional_to_none(cls, value: object, info) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if math.isnan(float(value)):
+                return None
+            if math.isinf(float(value)):
+                raise ValueError(f"{info.field_name} must be a finite number")
+        return value
+
     @field_validator("stick_up_m")
     @classmethod
     def validate_stick_up(cls, value: float | None) -> float | None:
@@ -451,7 +463,7 @@ class WorkbookSectionSpec(BaseModel, frozen=True):
             raise ValueError("hole_ids is required")
         if isinstance(value, str):
             raise ValueError("hole_ids must be a sequence of hole IDs")
-        holes = tuple(str(item).strip() for item in value if str(item).strip())
+        holes = tuple(_clean_text(item) for item in value if _clean_text(item))
         if len(holes) < 2:
             raise ValueError("section requires at least two hole_ids")
         for hole in holes:

@@ -120,7 +120,9 @@ class RendererWaterMixin:
     ) -> None:
         if hole_summary.empty:
             return
-        if not water_levels and not label_dry_wells and not label_series_gaps:
+        if not water_levels:
+            # No water data at all: 'NM' would just label every hole (documented:
+            # NM only when dry-well labeling is on AND water data exist).
             self.water_series_legend = []
             return
         if profile_lookup is None:

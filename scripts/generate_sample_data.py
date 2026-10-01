@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -13,6 +14,7 @@ OUTPUT = ROOT / "data" / "sample_boreholes.xlsx"
 
 
 def main() -> None:
+    argparse.ArgumentParser(description=__doc__).parse_args()
     collars = pd.DataFrame(
         [
             {"hole_id": "BH-01", "easting": 500000.0, "northing": 4500000.0, "elevation": 102.5, "total_depth": 25.0},

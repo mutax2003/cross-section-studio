@@ -14,8 +14,8 @@ from ingestion import FormatDetector, export_platform_workbook, list_profiles
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert field export to platform Collars/Lithology workbook")
-    parser.add_argument("--source", type=Path, required=True, help="Source .xlsx workbook")
-    parser.add_argument("--output", type=Path, required=True, help="Output .xlsx path")
+    parser.add_argument("--source", type=Path, default=None, help="Source .xlsx workbook")
+    parser.add_argument("--output", type=Path, default=None, help="Output .xlsx path")
     parser.add_argument(
         "--profile",
         type=str,
@@ -38,8 +38,10 @@ def main() -> None:
             print(f"{profile.id}: {profile.label}")
         return
 
+    if args.source is None or args.output is None:
+        parser.error("--source and --output are required unless --list-profiles is given")
     if not args.source.exists():
-        raise FileNotFoundError(f"Source workbook not found: {args.source}")
+        parser.error(f"Source workbook not found: {args.source}")
 
     profile_id = args.profile
     if profile_id is None:

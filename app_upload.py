@@ -129,6 +129,8 @@ def load_sample_workbook() -> None:
     st.session_state.file_bytes = data
     st.session_state.uploaded_name = sample_path.name
     st.session_state.file_hash = hashlib.sha256(data).hexdigest()[:24]
+    st.session_state.batch_transect_specs = ""
+    st.session_state._batch_specs_seeded_from_sections = False
     st.session_state.parse_result = None
     st.session_state.parse_signature = None
     st.session_state.detection_result = None
@@ -256,7 +258,7 @@ def handle_workbook_upload(
     *,
     selected_profile_key: str,
     override_id: str | None,
-    default_elevation_m: float,
+    default_elevation_m: float | None,
     target_crs: str | None,
 ) -> ParseResult | None:
     """Detect format, parse workbook when needed, return current parse result."""
@@ -265,6 +267,8 @@ def handle_workbook_upload(
     if bytes_changed:
         st.session_state.file_bytes = file_bytes
         st.session_state.file_hash = hashlib.sha256(file_bytes).hexdigest()[:24]
+        st.session_state.batch_transect_specs = ""
+        st.session_state._batch_specs_seeded_from_sections = False
         st.session_state.parse_result = None
         st.session_state.quality_report = None
         st.session_state.transect_candidates = None

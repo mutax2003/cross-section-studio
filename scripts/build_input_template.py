@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from workbook_template import build_input_template
 
 
 def main() -> None:
+    argparse.ArgumentParser(description=__doc__).parse_args()
     path = build_input_template()
     print(f"Wrote {path}")
 

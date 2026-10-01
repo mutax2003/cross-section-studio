@@ -11,6 +11,7 @@ from matplotlib.figure import Figure
 from lithology_codes import collect_lithology_codes
 from models import WaterLevel
 from render_theme import AXES_BG, FIGURE_BG, GRID_COLOR, LABEL_COLOR
+from renderer_common import apply_true_value_y_axis
 from stratigraphy import GeologicalPolygon
 
 
@@ -140,6 +141,8 @@ class SectionSheetLayoutMixin:
             else "Elevation (m RL)"
         )
         ax.set_ylabel(y_label, fontsize=10, labelpad=8)
+        # Data are plotted at value*VE; label the axis with the true values.
+        apply_true_value_y_axis(ax, ve)
         ax.set_title(self.title, fontsize=14, fontweight="bold", pad=14, color=LABEL_COLOR)
         ax.set_aspect("auto")
         if self.profile.show_grid:

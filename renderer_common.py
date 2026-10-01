@@ -7,10 +7,35 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 from matplotlib.collections import PolyCollection
+from matplotlib.ticker import FuncFormatter, Locator, MaxNLocator
 
 from constants import get_lithology_style
 from models import ScreenInterval
 from render_theme import SCREEN_INTERVAL_HATCH, TRACK_BORDER_COLOR, TRACK_FILL_COLOR
+
+
+class _ExaggeratedAxisLocator(Locator):
+    """Place ticks on round TRUE values of a vertically exaggerated axis."""
+
+    def __init__(self, ve: float) -> None:
+        self._ve = ve
+        self._nice = MaxNLocator(nbins="auto", steps=[1, 2, 2.5, 5, 10])
+
+    def __call__(self):
+        vmin, vmax = self.axis.get_view_interval()
+        return self.tick_values(vmin, vmax)
+
+    def tick_values(self, vmin, vmax):
+        self._nice.set_axis(self.axis)
+        return np.asarray(self._nice.tick_values(vmin / self._ve, vmax / self._ve)) * self._ve
+
+
+def apply_true_value_y_axis(ax, ve: float) -> None:
+    """Label a y axis plotted at value*VE with the true (unexaggerated) values."""
+    if not ve or ve == 1.0:
+        return
+    ax.yaxis.set_major_locator(_ExaggeratedAxisLocator(ve))
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _pos, v=ve: f"{value / v:.6g}"))
 
 
 class RendererGeometryMixin:

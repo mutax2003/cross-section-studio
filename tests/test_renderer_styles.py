@@ -247,13 +247,30 @@ def test_consulting_depth_mode_well_columns_render() -> None:
         polygons,
         projected,
         collar_depths={"MW-01": 10.0, "MW-02": 10.0},
-        water_levels=[],
+        # Water at MW-01 only: MW-02 is then a genuinely unmeasured hole -> NM.
+        water_levels=[WaterLevel(hole_id="MW-01", depth=3.0)],
     )
     svg_bytes = renderer.to_svg_bytes(figure)
     assert_valid_svg(svg_bytes)
     text = svg_bytes.decode("utf-8", errors="ignore")
     assert "NM" in text
     assert "#d0d5dd" in text.lower() or "#ffffff" in text.lower()
+
+    # Documented contract: no water data at all -> no NM labels anywhere.
+    dry_renderer = CrossSectionRenderer(
+        show_legend=False,
+        render_profile=depth_profile,
+        consulting_title_block=ConsultingTitleBlock(section_label="A-A'"),
+    )
+    dry_svg = dry_renderer.to_svg_bytes(
+        dry_renderer.render(
+            polygons,
+            projected,
+            collar_depths={"MW-01": 10.0, "MW-02": 10.0},
+            water_levels=[],
+        )
+    ).decode("utf-8", errors="ignore")
+    assert "NM" not in dry_svg
 
 
 def test_consulting_relative_mode_water_labels_use_mbgs() -> None:

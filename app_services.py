@@ -896,6 +896,7 @@ def cached_configure_preflight(
         correlation_overrides=overrides,
         offset_warning_m=offset_warning_m,
         max_offset_for_interpolation_m=max_offset_for_interpolation_m,
+        deviation_readings=tuple(subset.deviation_readings),
     )
     geometry_json = json.dumps(
         preflight_request.geometry_cache_payload(),

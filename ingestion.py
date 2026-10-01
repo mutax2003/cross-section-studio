@@ -711,9 +711,17 @@ def ingest_workbook(
             target_crs=target_crs,
             workbook=workbook,
         )
+        effective_crs = target_crs or profile.coordinates.target_crs
         if suggested_from_adapt and target_crs is None:
             suggested_utm_crs = suggested_from_adapt
             warnings.append(f"Suggested target CRS from coordinates: {suggested_utm_crs}")
+        elif suggested_from_adapt and str(suggested_from_adapt).upper() != str(effective_crs).upper():
+            suggested_utm_crs = suggested_from_adapt
+            warnings.append(
+                f"Coordinates fall in {suggested_from_adapt} but were projected to "
+                f"{effective_crs} — horizontal distances may be distorted; set Target CRS "
+                "to the suggested zone."
+            )
         for hole_id, offset in profile.coordinate_offsets_m.items():
             if len(offset) == 2:
                 offsets_applied[hole_id] = (float(offset[0]), float(offset[1]))

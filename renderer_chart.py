@@ -15,6 +15,7 @@ from lithology_codes import collect_lithology_codes
 from models import WaterLevel
 from render_profiles import CHART_PROFILE
 from render_theme import AXES_BG, FIGURE_BG, GRID_COLOR, LABEL_COLOR, STICK_COLOR, SURFACE_COLOR
+from renderer_common import apply_true_value_y_axis
 from stratigraphy import GeologicalPolygon
 
 
@@ -137,6 +138,7 @@ class ChartLayoutMixin:
 
             ax.set_xlabel("Distance along transect (m)", fontsize=10, labelpad=8)
             ax.set_ylabel("Elevation (m)", fontsize=10, labelpad=8)
+            apply_true_value_y_axis(ax, ve)
             ax.set_title(self.title, fontsize=13, fontweight="bold", pad=12, color=LABEL_COLOR)
             ax.set_aspect("auto")
             ax.grid(True, linestyle="--", alpha=0.35, color=GRID_COLOR, zorder=0)

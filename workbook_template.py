@@ -1045,10 +1045,14 @@ def export_cleaned_workbook_bytes(
         water_rows.append(
             {
                 "hole_id": level.hole_id,
+                # Depth XOR elevation on re-ingest: the parser derives depth for
+                # elevation_masl rows, so writing both would reject the row.
                 "depth": (
                     ""
-                    if (level.status or "measured") in {"dry", "nm"} and level.depth == 0.0
-                    and level.elevation_masl is None
+                    if level.elevation_masl is not None
+                    or (
+                        (level.status or "measured") in {"dry", "nm"} and level.depth == 0.0
+                    )
                     else level.depth
                 ),
                 "elevation_masl": (
@@ -1092,6 +1096,15 @@ def export_cleaned_workbook_bytes(
         for item in parse_result.correlation_overrides
     ]
 
+    gradients = [
+        {"hole_id": item.hole_id, "direction": item.direction}
+        for item in parse_result.vertical_gradients
+    ]
+    sections = [
+        {"section_label": spec.label, "hole_ids": ", ".join(spec.hole_ids)}
+        for spec in parse_result.section_specs
+    ]
+
     project_rows = [{"field": key, "value": value} for key, value in project.items() if value]
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -1108,4 +1121,8 @@ def export_cleaned_workbook_bytes(
             pd.DataFrame(screens).to_excel(writer, sheet_name=SCREENS_SHEET, index=False)
         if correlations:
             pd.DataFrame(correlations).to_excel(writer, sheet_name="Correlations", index=False)
+        if gradients:
+            pd.DataFrame(gradients).to_excel(writer, sheet_name=GRADIENTS_SHEET, index=False)
+        if sections:
+            pd.DataFrame(sections).to_excel(writer, sheet_name=SECTIONS_SHEET, index=False)
     return buffer.getvalue()

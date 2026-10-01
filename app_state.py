@@ -43,6 +43,10 @@ SESSION_SECTION_KEYS = (
     "report_package_bytes",
     "figure_docx_bytes",
     "batch_package_bytes",
+    "_batch_package_token",
+    "_preflight_json_key",
+    "_preflight_subset_json",
+    "_preflight_overrides_json",
 )
 
 SESSION_AI_KEYS = (

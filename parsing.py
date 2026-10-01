@@ -29,6 +29,7 @@ from models import (
     VerticalGradient,
     WaterLevel,
     WorkbookSectionSpec,
+    _clean_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -137,17 +138,23 @@ class DataParser:
             # native tabs stay in effect (and no misleading warning is emitted).
             valid_ids = {collar.hole_id for collar in collars}
 
-            def _data_entry_matches(frame: pd.DataFrame) -> bool:
+            def _data_entry_matches(frame: pd.DataFrame, label: str) -> bool:
                 ids = {
-                    str(value).strip()
+                    _clean_text(value)
                     for value in frame.get("hole_id", [])
                     if not self._blank_hole_id(value)
                 }
-                return not valid_ids or bool(ids & valid_ids)
+                if not valid_ids or bool(ids & valid_ids):
+                    return True
+                data_entry_precedence_warnings.append(
+                    f"Data Entry {label} rows ignored: hole_ids do not match Collars "
+                    f"({', '.join(sorted(ids)) or 'blank'})."
+                )
+                return False
 
             if not data_entry.water.empty:
                 candidate = _normalize_columns(data_entry.water)
-                if _data_entry_matches(candidate):
+                if _data_entry_matches(candidate, "water"):
                     water_frame = candidate
                     if self._native_optional_sheet_has_rows(workbook, self.WATER_SHEET):
                         data_entry_precedence_warnings.append(
@@ -155,7 +162,7 @@ class DataParser:
                         )
             if not data_entry.screens.empty:
                 candidate = _normalize_columns(data_entry.screens)
-                if _data_entry_matches(candidate):
+                if _data_entry_matches(candidate, "screen"):
                     screens_frame = candidate
                     if self._native_optional_sheet_has_rows(workbook, self.SCREENS_SHEET):
                         data_entry_precedence_warnings.append(
@@ -163,7 +170,7 @@ class DataParser:
                         )
             if not data_entry.gradients.empty:
                 candidate = _normalize_columns(data_entry.gradients)
-                if _data_entry_matches(candidate):
+                if _data_entry_matches(candidate, "gradient"):
                     gradients_frame = candidate
                     if self._native_optional_sheet_has_rows(workbook, self.GRADIENTS_SHEET):
                         data_entry_precedence_warnings.append(
@@ -432,7 +439,7 @@ class DataParser:
             if self._blank_hole_id(row.hole_id):
                 continue
             try:
-                hole_id = str(row.hole_id).strip()
+                hole_id = _clean_text(row.hole_id)
                 status_raw = getattr(row, "status", None)
                 status_text = (
                     ""
@@ -712,7 +719,7 @@ class DataParser:
             hole_raw = payload.get(hole_col)
             if self._blank_hole_id(hole_raw):
                 continue
-            hole_id = str(hole_raw).strip()
+            hole_id = _clean_text(hole_raw)
 
             ova_value: float | None = None
             ec_value: float | None = None
@@ -795,6 +802,7 @@ class DataParser:
         frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
         if not {"name", "x_profile", "elevation"}.issubset(frame.columns):
             return []
+        frame = frame.dropna(how="all", subset=["name", "x_profile", "elevation"])
         faults: dict[str, list[tuple[float, float]]] = {}
         for row in frame.itertuples(index=False):
             if pd.isna(row.x_profile) or pd.isna(row.elevation):
@@ -815,6 +823,7 @@ class DataParser:
         frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
         if not {"name", "x_profile", "elevation"}.issubset(frame.columns):
             return []
+        frame = frame.dropna(how="all", subset=["name", "x_profile", "elevation"])
         surfaces: dict[str, list[tuple[float, float]]] = {}
         for row in frame.itertuples(index=False):
             if pd.isna(row.x_profile) or pd.isna(row.elevation):

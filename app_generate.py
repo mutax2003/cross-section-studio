@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -241,6 +243,9 @@ def _render_batch_export(
     if parse_result is None or not request_json:
         st.info("Generate at least one section before building the multi-transect ZIP.")
         return
+    batch_token = hashlib.sha256(
+        f"{request_json}\x00{specs_raw}\x00{include_svg}\x00{section_title}".encode()
+    ).hexdigest()
     if st.button("Build multi-transect ZIP", key="prepare_batch_zip"):
         try:
             base_request = cached_parse_request(request_json)
@@ -274,11 +279,17 @@ def _render_batch_export(
                 entries,
                 binder_pdf=export_binder_pdf(pdfs, cover_title=section_title) or None,
             )
+            st.session_state["_batch_package_token"] = batch_token
             st.success(f"Packaged {len(entries)} rebuilt transect(s).")
         except Exception as exc:  # noqa: BLE001 — surface any rebuild failure in UI
             st.error(f"Multi-transect export failed: {exc}")
             return
     batch_payload = st.session_state.get("batch_package_bytes")
+    if batch_payload and st.session_state.get("_batch_package_token") != batch_token:
+        # Specs, output style, or title changed since this ZIP was built.
+        st.session_state.pop("batch_package_bytes", None)
+        st.session_state.pop("_batch_package_token", None)
+        batch_payload = None
     if batch_payload:
         st.download_button(
             "Download multi-transect ZIP",

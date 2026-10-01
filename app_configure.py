@@ -408,7 +408,8 @@ def render_configure_step(
                     )
                     if not selected_water_series_ids:
                         st.caption(
-                            "No water series selected — groundwater markers will not be plotted."
+                            "No water series selected — all groundwater series will be plotted. "
+                            "Select specific series to limit the markers."
                         )
             else:
                 st.caption(

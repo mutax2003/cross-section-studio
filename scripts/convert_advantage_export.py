@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ingestion import export_platform_workbook, parse_depth_interval
+from ingestion import export_platform_workbook
 
 DEFAULT_SOURCE = Path(
     r"C:\Users\Andrew Liu\Downloads"
@@ -48,7 +48,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if not args.source.exists():
-        raise FileNotFoundError(f"Source workbook not found: {args.source}")
+        parser.error(f"Source workbook not found: {args.source}")
 
     collars, lithology = convert_advantage_export(
         args.source,

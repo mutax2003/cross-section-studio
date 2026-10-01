@@ -71,7 +71,7 @@ class SidebarState:
     uncertainty_offset_m: float
     selected_profile_key: str
     override_id: str | None
-    default_elevation_m: float
+    default_elevation_m: float | None
     target_crs: str | None
     output_preset: str
     sample_figure_profile: bool
@@ -413,7 +413,7 @@ def render_sidebar() -> SidebarState:
     uncertainty_offset_m = float(st.session_state.get("uncertainty_offset_m", 50.0))
     selected_profile_key = "auto"
     override_id: str | None = None
-    default_elevation_m = DEFAULT_PROFILE_ELEVATION_M
+    default_elevation_m: float | None = None
     target_crs: str | None = "EPSG:32611"
     consulting_title_block: ConsultingTitleBlock | None = None
 
@@ -719,9 +719,14 @@ def _render_import_settings(*, expanded: bool = False) -> tuple[str, str | None,
         default_elevation_m = st.number_input(
             "Default collar elevation (m)",
             min_value=0.0,
-            value=DEFAULT_PROFILE_ELEVATION_M,
+            value=None,
             step=1.0,
-            help="Used for field exports without RL/elevation column",
+            placeholder=f"Blank = placeholder ({DEFAULT_PROFILE_ELEVATION_M:.0f} m, flagged)",
+            help=(
+                "For field exports without an RL/elevation column. Leave blank to use the "
+                "profile placeholder (flagged as unsurveyed); enter the surveyed site "
+                "elevation for absolute (MASL) sections."
+            ),
         )
         target_crs = st.text_input(
             "Target CRS (EPSG)",

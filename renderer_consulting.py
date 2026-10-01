@@ -50,6 +50,30 @@ _LEGEND_MIN_COL_WIDTH = 0.14
 _LEGEND_CHAR_WIDTH = 0.0065  # approx. axes fraction per character at 7.5 pt
 
 
+_HEADER_FONT_PT = 8.0
+_HEADER_CHAR_WIDTH_IN = _HEADER_FONT_PT * 0.62 / 72.0
+
+
+def _vertical_header_reserve_fraction(
+    hole_summary: pd.DataFrame, *, page_height_in: float, axes_width_in: float = 11.0 * 0.89
+) -> float:
+    """Page-height fraction to keep free above the plot for vertical hole IDs.
+
+    The plot starts at the page top, so the header pass cannot stagger
+    outward. When two horizontal rows cannot hold every ID (dense well
+    fields), the headers are drawn vertically and need the longest ID's
+    length above the axes; otherwise nothing is reserved.
+    """
+    if hole_summary is None or hole_summary.empty:
+        return 0.0
+    ids = [str(h) for h in hole_summary["hole_id"]]
+    widths_in = [len(h) * _HEADER_CHAR_WIDTH_IN + 0.08 for h in ids]
+    if sum(widths_in) <= 2.0 * axes_width_in:
+        return 0.0
+    longest_in = max(widths_in) + 0.15
+    return min(longest_in / page_height_in, 0.16)
+
+
 class ConsultingLayoutMixin:
     """Consulting report-sheet layout methods. Expects CrossSectionRenderer attributes."""
 
@@ -65,6 +89,10 @@ class ConsultingLayoutMixin:
         title_block = self.consulting_title_block or ConsultingTitleBlock(section_label=self.title)
         if not title_block.notes:
             title_block = title_block.model_copy(update={"notes": DEFAULT_CONSULTING_NOTES})
+        if not water_levels:
+            # The stock groundwater note is false on a section with no water data.
+            kept = tuple(n for n in title_block.notes if n != DEFAULT_CONSULTING_NOTES[0])
+            title_block = title_block.model_copy(update={"notes": kept or DEFAULT_CONSULTING_NOTES[1:]})
         if (
             self.disclaimer
             and self.interpretation_mode in {"interpolated", "correlation_lines"}
@@ -80,7 +108,8 @@ class ConsultingLayoutMixin:
         fig.patch.set_facecolor(CONSULTING_FIGURE_BG)
         # right=0.95 leaves room for the twin RL axis label; at 0.97 it fell
         # off the fixed letter page and was silently dropped from PNG/PDF.
-        fig.subplots_adjust(left=0.06, right=0.95, top=0.97, bottom=0.04)
+        top = 0.97 - _vertical_header_reserve_fraction(ctx.summary, page_height_in=8.5)
+        fig.subplots_adjust(left=0.06, right=0.95, top=top, bottom=0.04)
         grid = GridSpec(3, 1, figure=fig, height_ratios=[58, 12, 22], hspace=0.12)
         ax = fig.add_subplot(grid[0, 0])
         sub_gs = grid[1, 0].subgridspec(1, 3, width_ratios=[32, 36, 32], wspace=0.14)

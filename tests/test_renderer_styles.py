@@ -912,3 +912,35 @@ def test_very_long_titles_are_shortened_for_export() -> None:
     renderer = CrossSectionRenderer(title="T" * 300)
     assert len(renderer.title) <= 120 and renderer.title.endswith("…")
     assert CrossSectionRenderer(title="Section A-A'").title == "Section A-A'"
+
+
+def test_consulting_groundwater_note_only_with_water_data() -> None:
+    from render_theme import DEFAULT_CONSULTING_NOTES
+
+    ids, projected, polygons = _dense_header_section(3, 40.0)
+
+    def note_texts(water):
+        renderer = CrossSectionRenderer(show_legend=True, render_profile=CONSULTING_SECTION_PROFILE)
+        figure = renderer.render(
+            polygons, projected, collar_depths={h: 8.0 for h in ids}, water_levels=water
+        )
+        return [t.get_text() for ax in figure.axes for t in ax.texts]
+
+    dry = " ".join(note_texts(None))
+    assert "GROUNDWATER BASED ON" not in dry
+    assert "masl DENOTES" in dry
+    wet = " ".join(note_texts([WaterLevel(hole_id=ids[0], depth=2.0)]))
+    assert DEFAULT_CONSULTING_NOTES[0].split(" ")[0] in wet
+
+
+def test_dense_consulting_headers_go_vertical_instead_of_overlapping() -> None:
+    """30 long IDs 6 m apart on the consulting sheet: no horizontal layout
+    fits, and the plot starts at the page top, so room is reserved for
+    vertical headers."""
+    ids, projected, polygons = _dense_header_section(30, 6.0)
+    renderer = CrossSectionRenderer(show_legend=True, render_profile=CONSULTING_SECTION_PROFILE)
+    figure = renderer.render(polygons, projected, collar_depths={hole: 8.0 for hole in ids})
+    pairs, tick_hits = _header_hits(figure, renderer)
+    assert pairs == 0 and tick_hits == 0
+    assert all(t.get_rotation() == 90 for t in renderer._header_labels)
+    assert all(t.get_window_extent(figure.canvas.get_renderer()).y1 <= figure.bbox.y1 for t in renderer._header_labels)

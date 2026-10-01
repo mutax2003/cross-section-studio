@@ -52,6 +52,27 @@ PARAMETER_PALETTE: tuple[str, ...] = (
 )
 
 
+def parameter_series_colors(parameters) -> dict[str, str]:
+    """Colour per parameter for one section: the stable hashed slot when free,
+    else the next unused palette entry, so two parameters on a sheet never
+    share a colour while a parameter keeps its colour wherever possible."""
+    assigned: dict[str, str] = {}
+    used: set[str] = set()
+    for name in sorted(parameters, key=lambda p: p.strip().casefold()):
+        preferred = parameter_series_color(name)
+        colour = preferred
+        if colour in used:
+            start = PARAMETER_PALETTE.index(preferred)
+            for step in range(1, len(PARAMETER_PALETTE)):
+                candidate = PARAMETER_PALETTE[(start + step) % len(PARAMETER_PALETTE)]
+                if candidate not in used:
+                    colour = candidate
+                    break
+        assigned[name] = colour
+        used.add(colour)
+    return assigned
+
+
 def parameter_series_color(parameter: str) -> str:
     """Stable colour for a parameter name, the same on every section.
 
@@ -129,7 +150,8 @@ def chemistry_label_color(
     if value <= green_max:
         return CHEMISTRY_LABEL_GREEN
     if value <= yellow_max:
-        return CHEMISTRY_LABEL_YELLOW
+        # Orange replaces yellow (hard to read on white) — meeting 1 Oct 2026.
+        return CHEMISTRY_LABEL_ORANGE
     return CHEMISTRY_LABEL_RED
 
 

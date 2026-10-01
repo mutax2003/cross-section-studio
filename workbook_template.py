@@ -438,7 +438,7 @@ def _instructions_lines() -> list[str]:
         "4. Optionally fill Water, Environmental, Screens, Gradients, and Sections.",
         "5. Upload this file in Cross Section Studio (Upload step).",
         "6. On Configure, pick the transect holes, groundwater series (max 4), and lab parameters to plot.",
-        "7. Optional: set chemistry label colour to green/yellow/red thresholds on Configure.",
+        "7. Optional: colour chemistry labels per row (label_color) or by green/orange/red thresholds on Configure.",
         "",
         "TAB GUIDE",
         "• Instructions — this guide.",
@@ -730,28 +730,45 @@ def _write_dataframe_sheet(
     worksheet.cell(row=1, column=hint_col, value=status).font = _HINT_FONT
     _autosize_columns(worksheet)
     if sheet_name == GRADIENTS_SHEET:
-        validation = DataValidation(
-            type="list",
-            formula1='"up,down"',
-            allow_blank=True,
-            showDropDown=False,
+        _add_list_validation(
+            worksheet, "B", entry_end, ("up", "down"), title="Gradient direction", error="Use up or down"
         )
-        validation.error = "Use up or down"
-        validation.errorTitle = "Gradient direction"
-        worksheet.add_data_validation(validation)
-        validation.add(f"B2:B{entry_end}")
     if sheet_name == ENVIRONMENTAL_SHEET and "label_color" in columns:
-        column_letter = get_column_letter(list(columns).index("label_color") + 1)
-        validation = DataValidation(
-            type="list",
-            formula1='"' + ",".join(LABEL_COLOR_CHOICES) + '"',
-            allow_blank=True,
-            showDropDown=False,
-        )
-        validation.error = "Use green, red, black or orange (blue is reserved for groundwater)"
-        validation.errorTitle = "Label colour"
-        worksheet.add_data_validation(validation)
-        validation.add(f"{column_letter}2:{column_letter}{entry_end}")
+        _add_label_color_validation(worksheet, list(columns), entry_end)
+
+
+def _add_list_validation(worksheet, column_letter: str, last_row: int, choices, *, title: str, error: str) -> None:
+    """In-cell drop-down that also REJECTS typed values outside the list.
+
+    openpyxl defaults showErrorMessage to False, which draws the arrow but
+    lets Excel accept anything typed; the row then fails only on upload.
+    """
+    validation = DataValidation(
+        type="list",
+        formula1='"' + ",".join(choices) + '"',
+        allow_blank=True,
+        showDropDown=False,
+        showErrorMessage=True,
+        showInputMessage=True,
+    )
+    validation.error = error
+    validation.errorTitle = title
+    validation.prompt = error
+    validation.promptTitle = title
+    worksheet.add_data_validation(validation)
+    validation.add(f"{column_letter}2:{column_letter}{last_row}")
+
+
+def _add_label_color_validation(worksheet, columns: list[str], last_row: int) -> None:
+    column_letter = get_column_letter(columns.index("label_color") + 1)
+    _add_list_validation(
+        worksheet,
+        column_letter,
+        last_row,
+        LABEL_COLOR_CHOICES,
+        title="Label colour",
+        error="Use green, red, black or orange (blue is reserved for groundwater)",
+    )
 
 
 def _write_project_sheet(writer: pd.ExcelWriter) -> None:
@@ -1159,4 +1176,9 @@ def export_cleaned_workbook_bytes(
         if sections:
             pd.DataFrame(sections).to_excel(writer, sheet_name=SECTIONS_SHEET, index=False)
         _neutralise_formula_cells(writer.book)
+        if environmental and ENVIRONMENTAL_SHEET in writer.book.sheetnames:
+            # Keep the colour drop-down on the round-tripped workbook too.
+            _add_label_color_validation(
+                writer.book[ENVIRONMENTAL_SHEET], list(environmental[0]), len(environmental) + 21
+            )
     return buffer.getvalue()

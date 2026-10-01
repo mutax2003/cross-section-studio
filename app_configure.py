@@ -398,17 +398,17 @@ def render_configure_step(
                 st.markdown("**Parameter label colour**")
                 color_mode_choice = st.radio(
                     "Chemistry value labels",
-                    options=["All black (default)", "Green / yellow / red thresholds"],
+                    options=["All black (default)", "Green / orange / red thresholds"],
                     index=0,
                     key="chemistry_color_mode_radio",
                     help=(
                         "Black labels for data presentation. Threshold mode colours each "
-                        "value green, yellow, or red using site-specific limits set below."
+                        "value green, orange, or red using site-specific limits set below."
                     ),
                 )
                 chemistry_color_mode = (
                     "threshold"
-                    if color_mode_choice == "Green / yellow / red thresholds"
+                    if color_mode_choice == "Green / orange / red thresholds"
                     else "black"
                 )
                 chemistry_threshold_green_max = None
@@ -428,7 +428,7 @@ def render_configure_step(
                     with threshold_cols[1]:
                         chemistry_threshold_yellow_max = float(
                             st.number_input(
-                                "Yellow ≤",
+                                "Orange ≤",
                                 min_value=0.0,
                                 value=250.0,
                                 step=1.0,
@@ -436,7 +436,7 @@ def render_configure_step(
                             )
                         )
                     if chemistry_threshold_yellow_max < chemistry_threshold_green_max:
-                        st.warning("Yellow threshold should be ≥ green threshold.")
+                        st.warning("Orange threshold should be ≥ green threshold.")
                 if any(r.label_color for r in parse_result.environmental_readings):
                     st.caption(
                         "Rows with a **label_color** (green / red / black / orange) in the "

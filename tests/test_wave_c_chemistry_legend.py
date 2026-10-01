@@ -8,8 +8,8 @@ from render_profiles import CONSULTING_SECTION_PROFILE, SECTION_SHEET_PROFILE
 from render_theme import (
     CHEMISTRY_LABEL_BLACK,
     CHEMISTRY_LABEL_GREEN,
+    CHEMISTRY_LABEL_ORANGE,
     CHEMISTRY_LABEL_RED,
-    CHEMISTRY_LABEL_YELLOW,
     chemistry_label_color,
 )
 from tests.conftest import assert_valid_svg
@@ -27,7 +27,7 @@ def test_chemistry_label_color_threshold_bands() -> None:
         CHEMISTRY_LABEL_GREEN
     )
     assert chemistry_label_color(150.0, "threshold", green_max=100.0, yellow_max=250.0) == (
-        CHEMISTRY_LABEL_YELLOW
+        CHEMISTRY_LABEL_ORANGE
     )
     assert chemistry_label_color(300.0, "threshold", green_max=100.0, yellow_max=250.0) == (
         CHEMISTRY_LABEL_RED

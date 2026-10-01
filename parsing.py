@@ -96,9 +96,14 @@ def _short_error(exc: Exception) -> str:
     return str(exc)
 
 
+_COLUMN_SPELLINGS = {"label_colour": "label_color"}
+
+
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     # Same collapse as FormatDetector, so a header it accepts cannot fail here.
     renamed = {col: re.sub(r"\s+", "_", str(col).strip().lower()) for col in df.columns}
+    # The product's own text says "colour"; accept that spelling in headers too.
+    renamed = {col: _COLUMN_SPELLINGS.get(name, name) for col, name in renamed.items()}
     df = df.rename(columns=renamed)
     if "hole_id" in df.columns:
         # A blank cell makes pandas read numeric IDs as float: 1 -> 1.0 -> "1.0",

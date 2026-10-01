@@ -110,7 +110,7 @@ def render_configure_step(
     parameter_interpolate_segments_default: bool | None = None,
     elevation_mode_default: str | None = None,
 ) -> ConfigureState:
-    st.subheader("Configure")
+    st.subheader("Configure", anchor=False)
     st.caption("Choose elevation mode, transect readiness, and export gates before generating.")
     all_hole_ids = [collar.hole_id for collar in parse_result.collars]
     _render_plan_minimap(parse_result, selected_holes, transect_mode)

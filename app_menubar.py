@@ -297,10 +297,12 @@ def render_menubar() -> None:
                     st.info("You are on the latest published version.")
 
     _render_accelerator_buttons()
-    # Parent-document listener persists across Streamlit reruns; avoid remounting the iframe.
-    if not st.session_state.get("_shortcut_bridge_mounted"):
+    # Mount on EVERY run: an element not rendered in a run is removed by
+    # Streamlit, and a detached iframe's listener can no longer reach the page
+    # (shortcuts used to die after the first rerun). Same srcdoc each run, so
+    # React keeps the node; the JS swaps in a fresh listener when it remounts.
+    with st.container(key="shortcut_bridge"):
         _inject_shortcut_bridge()
-        st.session_state["_shortcut_bridge_mounted"] = True
 
 
 def _render_accelerator_buttons() -> None:
@@ -382,7 +384,7 @@ def _inject_shortcut_bridge() -> None:
     return false;
   }}
   function clickLabel(label) {{
-    const root = window.parent.document;
+    const root = doc;
     const buttons = root.querySelectorAll('button');
     for (const btn of buttons) {{
       const text = (btn.innerText || btn.textContent || '').trim();
@@ -420,20 +422,12 @@ def _inject_shortcut_bridge() -> None:
     clickLabel(LABELS[action]);
   }}
   const doc = window.parent.document;
-  function disarmAccelButtons() {{
-    const buttons = doc.querySelectorAll('button');
-    for (const btn of buttons) {{
-      const text = (btn.innerText || btn.textContent || '').trim();
-      if (text.indexOf('☰accel·') === 0) {{
-        btn.tabIndex = -1;
-        btn.setAttribute('aria-hidden', 'true');
-      }}
-    }}
+  // Replace any listener left by a previous (possibly detached) bridge.
+  if (doc._cssMenuAccelHandler) {{
+    doc.removeEventListener('keydown', doc._cssMenuAccelHandler, true);
   }}
-  disarmAccelButtons();
-  if (doc._cssMenuAccelBound) return;
+  doc._cssMenuAccelHandler = onKey;
   doc.addEventListener('keydown', onKey, true);
-  doc._cssMenuAccelBound = true;
 }})();
 </script>
 """,

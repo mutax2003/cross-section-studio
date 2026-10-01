@@ -28,7 +28,7 @@ APP_CSS = """
     .app-hero.compact h1 { font-size: 1.05rem; }
     .app-hero.compact p { display: none; }
     .app-hero.compact .workflow { margin-top: 0.3rem; }
-    .app-hero.compact .workflow-step { padding: 0.28rem 0.4rem; font-size: 0.68rem; }
+    .app-hero.compact .workflow-step { padding: 0.28rem 0.4rem; font-size: 0.75rem; }
     .generate-strip {
         display: flex;
         flex-wrap: wrap;
@@ -56,8 +56,8 @@ APP_CSS = """
         border: 1px solid rgba(255,255,255,0.22);
         border-radius: 8px;
         padding: 0.35rem 0.5rem;
-        font-size: 0.74rem;
-        color: #e2e8f0;
+        font-size: 0.75rem;
+        color: #f1f5f9;
         text-align: center;
     }
     .workflow-step.active {
@@ -66,7 +66,7 @@ APP_CSS = """
         font-weight: 600;
         border-color: transparent;
     }
-    .workflow-step.done { opacity: 0.88; }
+    .workflow-step.done { color: #d1fae5; }
     .metric-card {
         background: var(--surface);
         border: 1px solid var(--border);
@@ -76,7 +76,7 @@ APP_CSS = """
         min-height: 4.5rem;
     }
     .metric-card .value { font-size: 1.45rem; font-weight: 700; color: var(--text); line-height: 1.2; }
-    .metric-card .label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.15rem; }
+    .metric-card .label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.15rem; }
     .metric-card.ok { border-color: #86efac; background: linear-gradient(180deg, #f0fdf4 0%, #fff 100%); }
     .metric-card.warn { border-color: #fcd34d; background: linear-gradient(180deg, #fffbeb 0%, #fff 100%); }
     .metric-card.error { border-color: #fca5a5; background: linear-gradient(180deg, #fef2f2 0%, #fff 100%); }
@@ -159,7 +159,7 @@ APP_CSS = """
         outline-offset: 2px;
     }
     .sidebar-section-title {
-        font-size: 0.72rem;
+        font-size: 0.75rem;
         text-transform: uppercase;
         letter-spacing: 0.06em;
         color: var(--muted);
@@ -177,27 +177,32 @@ APP_CSS = """
         background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
         border: 1px solid var(--border);
         border-radius: 10px;
-        padding: 0.2rem 0.45rem 0.35rem;
+        padding: 0.25rem 0.5rem;
         margin-bottom: 0.5rem;
         box-shadow: 0 1px 4px rgba(15, 23, 42, 0.04);
     }
-    .app-menubar [data-testid="stHorizontalBlock"] {
+    .app-menubar [data-testid="stHorizontalBlock"],
+    .st-key-app_menubar [data-testid="stHorizontalBlock"] {
         align-items: center;
     }
     .app-menubar button[kind="secondary"],
-    .app-menubar button {
-        font-size: 0.82rem !important;
+    .app-menubar button,
+    .st-key-app_menubar [data-testid="stPopover"] button {
+        font-size: 0.875rem !important;
         font-weight: 600 !important;
         border: 1px solid transparent !important;
         background: transparent !important;
         color: var(--text) !important;
-        min-height: 1.85rem !important;
+        min-height: 2rem !important;
     }
-    .app-menubar button:hover {
+    .st-key-app_menubar [data-testid="stCaptionContainer"] { margin: 0; }
+    .app-menubar button:hover,
+    .st-key-app_menubar [data-testid="stPopover"] button:hover {
         background: #e2e8f0 !important;
         border-color: #cbd5e1 !important;
     }
-    .app-menubar button:focus-visible {
+    .app-menubar button:focus-visible,
+    .st-key-app_menubar [data-testid="stPopover"] button:focus-visible {
         outline: 2px solid var(--brand-mid) !important;
         outline-offset: 2px !important;
         background: #ecfdf5 !important;
@@ -205,7 +210,7 @@ APP_CSS = """
     .menu-shortcut {
         float: right;
         color: var(--muted);
-        font-size: 0.72rem;
+        font-size: 0.75rem;
         font-weight: 500;
         margin-left: 0.75rem;
     }
@@ -220,6 +225,25 @@ APP_CSS = """
         border: 0 !important;
         padding: 0 !important;
         margin: -1px !important;
+        visibility: hidden !important;
+    }
+    .st-key-shortcut_bridge iframe { visibility: hidden !important; }
+    /* Streamlit wraps each keyed container; take the WRAPPERS out of flow
+       too, or each zero-height block still costs a 16px flex gap. */
+    div:has(> .st-key-menu_accels),
+    div:has(> .st-key-shortcut_bridge) {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        overflow: hidden !important;
+    }
+    /* Out of flow: an in-flow zero-height block still takes a flex gap. */
+    .st-key-shortcut_bridge {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        overflow: hidden !important;
+        margin: 0 !important;
     }
     div[data-testid="stSidebar"] {
         background-color: #f8fafc;
@@ -228,6 +252,22 @@ APP_CSS = """
     div[data-testid="stSidebar"] .stButton > button[kind="primary"] {
         font-weight: 600;
     }
+    /* WCAG 2.2 AA: captions and success text >= 4.5:1 (Streamlit dims captions to ~4:1). */
+    [data-testid="stCaptionContainer"] { opacity: 1 !important; color: #475569 !important; }
+    [data-testid="stAlertContentSuccess"] { color: #166534 !important; }
+    /* One solid, >=3:1 focus indicator for every interactive control. */
+    button:focus-visible,
+    summary:focus-visible,
+    a:focus-visible,
+    [role="switch"]:focus-visible,
+    [role="radio"]:focus-visible,
+    input[type="checkbox"]:focus-visible,
+    [data-baseweb="select"] input:focus-visible {
+        outline: 2px solid var(--brand-mid) !important;
+        outline-offset: 2px !important;
+    }
+    /* Reclaim default top padding so results sit higher on the page. */
+    [data-testid="stMainBlockContainer"] { padding-top: 2.25rem; }
     @media (prefers-reduced-motion: reduce) {
         .workflow-step, .metric-card, .section-card {
             transition: none;

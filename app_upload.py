@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import zipfile
 from io import BytesIO
 
 import streamlit as st
@@ -97,6 +98,32 @@ def render_input_template_download(*, key: str, help: str | None = None) -> None
     )
 
 
+def _friendly_workbook_error(exc: Exception) -> str:
+    """Plain-language upload/parse failure with a next step (raw text goes in a details expander)."""
+    text = str(exc)
+    lowered = text.lower()
+    if isinstance(exc, zipfile.BadZipFile) or "format cannot be determined" in lowered or "not a zip file" in lowered:
+        return (
+            "This file isn't a readable Excel workbook (.xlsx). It may be a renamed CSV or .xls "
+            "file, or damaged. Open it in Excel, choose **Save As → Excel Workbook (.xlsx)**, "
+            "then upload it again."
+        )
+    if "Could not detect a supported workbook format" in text:
+        found = text.split("Sheets found:", 1)[-1].strip() if "Sheets found:" in text else ""
+        sheets = f" (sheets in this file: {found})" if found else ""
+        return (
+            f"No **Collars** sheet was found{sheets}. Add a Collars sheet with hole_id, easting, "
+            "northing, elevation and total_depth, or start from **Download template**. "
+            "See Help → Workbook quick reference."
+        )
+    if "Missing required sheet" in text:
+        return f"{text}. Add the missing sheet(s), or start from **Download template**."
+    return (
+        "The workbook couldn't be read. Check that Collars and Lithology use the template "
+        "headers, then upload it again."
+    )
+
+
 def render_workbook_recovery(*, key_prefix: str = "recovery") -> None:
     """Clear / retry controls when workbook bytes exist but parse_result is missing."""
     cols = st.columns([1, 3])
@@ -106,8 +133,8 @@ def render_workbook_recovery(*, key_prefix: str = "recovery") -> None:
             st.rerun()
     with cols[1]:
         st.caption(
-            "Parse failed or did not complete — leftover section output was cleared. "
-            "Clear the workbook, fix the file, or try the sample project again."
+            "The workbook couldn't be loaded. Fix the file in Excel and upload it again, "
+            "clear it, or try the sample project."
         )
 
 
@@ -297,16 +324,18 @@ def handle_workbook_upload(
         except Exception as exc:
             st.session_state.detection_result = None
             clear_section_output_state()
-            st.session_state.upload_banner_error = f"Failed to inspect workbook: {exc}"
+            st.session_state.upload_banner_error = _friendly_workbook_error(exc)
+            st.session_state.upload_banner_error_detail = str(exc)
             st.session_state.pop("upload_banner_success", None)
             st.session_state.pop("upload_banner_caption", None)
 
     detection = st.session_state.detection_result
     if detection is not None:
-        st.caption(
-            f"Detected format: **{detection.label}** "
-            f"({detection.confidence:.0%} confidence)"
-        )
+        if st.session_state.get("svg_bytes") is None:
+            st.caption(
+                f"Detected format: **{detection.label}** "
+                f"({detection.confidence:.0%} confidence)"
+            )
         if detection.profile_id != NATIVE_PROFILE_ID:
             st.info(
                 "Field Data sheet (if present) is not used for stratigraphy. "
@@ -375,6 +404,7 @@ def handle_workbook_upload(
                 f"**{len(parse_result.lithologies)}** lithology intervals."
             )
             st.session_state.upload_banner_info = " ".join(info_parts) if info_parts else None
+            st.session_state.upload_banner_skipped = list(parse_result.errors) or None
             st.session_state.upload_banner_caption = (
                 f"Suggested transect offset threshold: **{st.session_state.suggested_offset_m:.0f} m** "
                 "(applied to sidebar warnings)."
@@ -394,7 +424,8 @@ def handle_workbook_upload(
             st.session_state.quality_report = None
             st.session_state.parse_signature = None
             clear_section_output_state()
-            st.session_state.upload_banner_error = f"Failed to parse workbook: {exc}"
+            st.session_state.upload_banner_error = _friendly_workbook_error(exc)
+            st.session_state.upload_banner_error_detail = str(exc)
             st.session_state.pop("upload_banner_success", None)
             st.session_state.pop("upload_banner_info", None)
             st.session_state.pop("upload_banner_caption", None)
@@ -403,9 +434,22 @@ def handle_workbook_upload(
     error_banner = st.session_state.pop("upload_banner_error", None)
     if error_banner:
         st.error(error_banner)
+        detail = st.session_state.pop("upload_banner_error_detail", None)
+        if detail:
+            with st.expander("Technical details"):
+                st.code(detail, language=None)
     success_banner = st.session_state.pop("upload_banner_success", None)
     if success_banner:
         st.success(success_banner)
+    skipped = st.session_state.pop("upload_banner_skipped", None)
+    if skipped:
+        st.warning(
+            f"**{len(skipped)} row(s) were not imported**, so the section won't include them. "
+            "Fix these rows in Excel and upload again (for example, add the hole to Collars "
+            "or correct the hole_id spelling)."
+        )
+        with st.expander(f"Show skipped rows ({len(skipped)})"):
+            st.markdown("\n".join(f"- {message}" for message in skipped[:50]))
     info_banner = st.session_state.pop("upload_banner_info", None)
     if info_banner:
         st.info(info_banner)

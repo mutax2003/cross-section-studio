@@ -40,6 +40,14 @@ from models import ConsultingTitleBlock
 from pipeline import DEFAULT_UNCERTAINTY_SPACING_M
 from ui_output_presets import FIGURE_PRESET_IDS, OUTPUT_PRESET_LABELS, resolve_output_preset
 
+_OUTPUT_STYLE_HELP: dict[str, str] = {
+    "section_sheet": "Strater-style sheet: RL axis, hole headers, side legend. Default for general use.",
+    "consulting_report": "Client figure with footer title block, scale bar and notes; groundwater labels on.",
+    "gwm_fence": "GWM fence: interpolated MASL section with groundwater; locks interpretation, VE and water labels.",
+    "p2_chemistry_sticks": "Borehole-only mbgs columns with chloride labels (P2 client figure).",
+    "chemistry_gw": "Chloride labels and groundwater levels on one section.",
+    "quick_preview": "Fast chart for checking data; not a report figure.",
+}
 
 @dataclass(frozen=True)
 class SidebarState:
@@ -187,18 +195,27 @@ def render_sidebar() -> SidebarState:
         uploaded_name = st.session_state.get("uploaded_name")
         if uploaded_name or st.session_state.get("file_bytes"):
             st.caption(f"Loaded: {uploaded_name or 'workbook.xlsx'}")
-        action_cols = st.columns(2)
-        with action_cols[0]:
-            if st.button("Clear workbook", key="sidebar_clear_workbook"):
-                clear_workbook_session()
+        # Stacked full-width: two columns in the 300px sidebar truncated both
+        # labels ('Clear wor…'), which is risky for a destructive action.
+        if st.button(
+            "Try sample project",
+            key="sidebar_try_sample",
+            width="stretch",
+            icon=":material/science:",
+        ):
+            try:
+                load_sample_workbook()
                 st.rerun()
-        with action_cols[1]:
-            if st.button("Try sample project", key="sidebar_try_sample"):
-                try:
-                    load_sample_workbook()
-                    st.rerun()
-                except FileNotFoundError as exc:
-                    st.error(str(exc))
+            except FileNotFoundError as exc:
+                st.error(str(exc))
+        if st.button(
+            "Clear workbook",
+            key="sidebar_clear_workbook",
+            width="stretch",
+            icon=":material/delete:",
+        ):
+            clear_workbook_session()
+            st.rerun()
         uploaded = st.file_uploader(
             "Upload Excel workbook",
             type=["xlsx"],
@@ -211,8 +228,15 @@ def render_sidebar() -> SidebarState:
         if uploaded is not None:
             st.session_state.uploaded_name = uploaded.name
 
+        # Open import settings only when they need attention (failed parse or a
+        # non-native profile); a clean native workbook keeps the sidebar short.
+        detection = st.session_state.get("detection_result")
+        needs_import_attention = bool(st.session_state.get("file_bytes")) and (
+            st.session_state.get("parse_result") is None
+            or (detection is not None and detection.profile_id != NATIVE_PROFILE_ID)
+        )
         selected_profile_key, override_id, default_elevation_m, target_crs = _render_import_settings(
-            expanded=bool(uploaded) or bool(st.session_state.get("file_bytes")),
+            expanded=needs_import_attention,
         )
 
     with st.expander("Section output", expanded=has_parsed):
@@ -221,13 +245,12 @@ def render_sidebar() -> SidebarState:
             options=tuple(OUTPUT_PRESET_LABELS.keys()),
             format_func=lambda key: OUTPUT_PRESET_LABELS[key],
             key="output_preset",
-            help=(
-                "GWM fence: interpolated MASL section with groundwater. "
-                "P2 sticks: borehole-only mbgs columns with chloride labels. "
-                "Chemistry + groundwater: chlorides and water levels together. "
-                "Consulting report: generic title-block layout."
+            help=" ".join(
+                f"{OUTPUT_PRESET_LABELS[key]}: {text}" for key, text in _OUTPUT_STYLE_HELP.items()
             ),
         )
+        # Visible, not hidden behind (?): what this style produces / locks.
+        st.caption(_OUTPUT_STYLE_HELP.get(output_preset, ""))
         preset_config = resolve_output_preset(output_preset)
         render_layout = preset_config.render_layout
         report_preset = preset_config.report_preset

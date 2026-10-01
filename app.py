@@ -27,7 +27,7 @@ from app_upload import (
     render_welcome_card,
     render_workbook_recovery,
 )
-from app_validate import render_validate_step
+from app_validate import render_next_step_coach, render_validate_step
 from models import ParseResult
 from ops_apm import init_apm
 from ops_audit import audit_event
@@ -56,17 +56,8 @@ render_menubar()
 with st.sidebar:
     sidebar = render_sidebar()
 
-_render_hero(
-    workflow_stage(
-        has_upload=sidebar.uploaded is not None or bool(st.session_state.get("file_bytes")),
-        has_parse_result=st.session_state.parse_result is not None,
-        has_profile=st.session_state.svg_bytes is not None,
-        has_blocking_errors=bool(
-            getattr(st.session_state.get("quality_report"), "has_blocking_errors", False)
-        ),
-        has_transect=st.session_state.get("transect_selection") is not None,
-    )
-)
+# Filled at the end of the run so the stepper reflects THIS run's state.
+hero_slot = st.container(key="hero_slot")
 
 flash_success = st.session_state.pop("_flash_success", None)
 if flash_success:
@@ -230,7 +221,11 @@ else:
                 consulting_title_block=sidebar.consulting_title_block,
             )
         else:
-            render_validate_step()
+            # Reserve the slot above Validate/Configure; filled below once
+            # configure_state (and so the enabled/disabled reason) is known.
+            generate_slot = st.container(key="generate_action_bar")
+            coach_slot = st.container(key="next_step_coach_slot")
+            render_validate_step(show_coach=False)
             configure_state = render_configure_step(
                 parse_result,
                 transect_mode=sidebar.transect_mode,
@@ -254,43 +249,55 @@ else:
         generate_clicked = False
         if not has_svg:
             regenerate_requested = bool(st.session_state.pop("_regenerate_requested", False))
-            gen_col1, gen_col2 = st.columns([1, 3])
-            with gen_col1:
-                generate_clicked = st.button(
-                    "Generate Cross-Section",
-                    type="primary",
-                    disabled=not configure_state.can_generate,
-                    width="stretch",
-                    key="generate_cross_section",
-                )
-                if regenerate_requested and configure_state.can_generate:
-                    generate_clicked = True
-                elif regenerate_requested and not configure_state.can_generate:
-                    st.caption("Generate shortcut ignored — resolve Configure / Validate first.")
-            with gen_col2:
-                if configure_state.can_generate:
-                    st.caption("Builds the profile from sidebar style and transect settings.")
-                elif configure_state.blocking:
-                    st.caption("Fix blocking QA errors in Validate before generating.")
-                elif configure_state.placeholder_blocks_interp:
-                    st.caption(
-                        "Placeholder collar elevations block interpolated geology — "
-                        "switch to relative depth or borehole-only mode."
+            with coach_slot:
+                render_next_step_coach()
+            with generate_slot:
+                gen_col1, gen_col2 = st.columns([1, 3])
+                with gen_col1:
+                    generate_clicked = st.button(
+                        "Generate Cross-Section",
+                        type="primary",
+                        disabled=not configure_state.can_generate,
+                        width="stretch",
+                        key="generate_cross_section",
                     )
-                elif configure_state.fail_on_overlaps and configure_state.has_overlap_warnings:
-                    st.caption(
-                        "Polygon overlaps block export — resolve correlation or disable "
-                        "'Block export on polygon overlaps'."
-                    )
-                elif configure_state.transect_selection is None:
-                    st.caption("Select a transect (holes, coordinates, or recommended) before generating.")
-                elif configure_state.has_warnings and not configure_state.override_warnings:
-                    st.caption(
-                        "QA warnings are present — enable 'Allow generate with warnings' in Configure, "
-                        "or resolve the warnings in Validate."
-                    )
-                else:
-                    st.caption("Resolve Configure / Validate issues before generating.")
+                    if regenerate_requested and configure_state.can_generate:
+                        generate_clicked = True
+                    elif regenerate_requested and not configure_state.can_generate:
+                        st.caption("Generate shortcut ignored — resolve Configure / Validate first.")
+                with gen_col2:
+                    if configure_state.can_generate:
+                        st.caption("Builds the profile from sidebar style and transect settings.")
+                    elif configure_state.blocking:
+                        st.caption("Fix blocking QA errors in Validate before generating.")
+                    elif configure_state.placeholder_blocks_interp:
+                        st.caption(
+                            "Placeholder collar elevations block interpolated geology — "
+                            "switch to relative depth or borehole-only mode."
+                        )
+                    elif configure_state.fail_on_overlaps and configure_state.has_overlap_warnings:
+                        st.caption(
+                            "Polygon overlaps block export — resolve correlation or disable "
+                            "'Block export on polygon overlaps'."
+                        )
+                    elif configure_state.transect_selection is None:
+                        if (
+                            sidebar.transect_mode == "By hole sequence"
+                            and len(configure_state.selected_holes) < 2
+                        ):
+                            st.caption(
+                                "Pick at least 2 holes in **Transect selection** "
+                                f"({len(configure_state.selected_holes)} selected)."
+                            )
+                        else:
+                            st.caption("Select a transect (holes, coordinates, or recommended) before generating.")
+                    elif configure_state.has_warnings and not configure_state.override_warnings:
+                        st.caption(
+                            "QA warnings are present — enable 'Allow generate with warnings' in Configure, "
+                            "or resolve the warnings in Validate."
+                        )
+                    else:
+                        st.caption("Resolve Configure / Validate issues before generating.")
         else:
             regenerate_requested = bool(st.session_state.pop("_regenerate_requested", False))
             generate_clicked = regenerate_requested and configure_state is not None and configure_state.can_generate
@@ -386,16 +393,17 @@ else:
                 if build_request is None or cache_key is None:
                     raise ValueError("Select at least two holes for the transect")
 
-                svg_bytes, png_bytes, pdf_bytes, polygon_count, lithology_codes, overlap_warnings = (
-                    generate_cross_section(
-                        parse_result,
-                        list(transect_points),
-                        active_hole_ids,
-                        build_request,
-                        sidebar.offset_warning_m,
-                        lithology_index=safe_lithology_index(parse_result),
+                with st.spinner("Generating cross-section…"):
+                    svg_bytes, png_bytes, pdf_bytes, polygon_count, lithology_codes, overlap_warnings = (
+                        generate_cross_section(
+                            parse_result,
+                            list(transect_points),
+                            active_hole_ids,
+                            build_request,
+                            sidebar.offset_warning_m,
+                            lithology_index=safe_lithology_index(parse_result),
+                        )
                     )
-                )
                 st.session_state.svg_bytes = svg_bytes
                 st.session_state.png_bytes = png_bytes
                 st.session_state.pdf_bytes = pdf_bytes
@@ -422,9 +430,20 @@ else:
                         f"across {len(active_hole_ids)} boreholes."
                     )
                 st.rerun()
+            except ValueError as exc:
+                # Expected, user-fixable conditions (too few holes in range, empty
+                # selection…): show the reason in plain sight, not in server logs.
+                st.session_state.render_cache_key = None
+                st.error(
+                    f"Couldn't generate the section: {exc} Adjust **Transect selection** "
+                    "in the sidebar or Configure, then try again."
+                )
             except Exception as exc:
                 logger.exception("Cross-section generation failed")
-                error_msg = "Cross-section generation failed. See server logs for details."
+                error_msg = (
+                    "Something unexpected went wrong while drawing the section. Try Generate "
+                    "again; if it repeats, re-upload the workbook or send the log to support."
+                )
                 st.session_state["_flash_error"] = error_msg
                 # Keep SVG if present but mark stale so downloads stay gated.
                 st.session_state.render_cache_key = None
@@ -439,6 +458,19 @@ else:
                         st.code(traceback.format_exc())
                 else:
                     st.caption(str(exc)[:240])
+
+with hero_slot:
+    _render_hero(
+        workflow_stage(
+            has_upload=sidebar.uploaded is not None or bool(st.session_state.get("file_bytes")),
+            has_parse_result=st.session_state.parse_result is not None,
+            has_profile=st.session_state.svg_bytes is not None,
+            has_blocking_errors=bool(
+                getattr(st.session_state.get("quality_report"), "has_blocking_errors", False)
+            ),
+            has_transect=st.session_state.get("transect_selection") is not None,
+        )
+    )
 
 with st.expander("Excel format", expanded=False):
     st.caption("Quick reference — full help is under Help → Workbook quick reference.")

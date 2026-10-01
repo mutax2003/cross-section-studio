@@ -2,15 +2,17 @@
 
 Cross Section Studio is **SVG-first**: **Generate Cross-Section** (or `Ctrl+G`) builds the fence diagram as SVG immediately.
 
-## Quick downloads
+## Downloads
 
-After Generate:
+After Generate, the download buttons sit directly **above the figure**:
 
-| Format | When | Use |
+| Button | When | Use |
 |--------|------|-----|
-| **SVG** | Immediately after Generate | Review, CAD import, further editing |
-| **PNG** | After Prepare | Word / PowerPoint |
-| **PDF** | After Prepare | Print / client binders |
+| **Download PDF · print** | After Prepare | Print / client binders |
+| **Download PNG · Word/slides** | After Prepare | Word / PowerPoint |
+| **Download SVG · CAD/review** | Immediately after Generate | Review, CAD import, further editing |
+
+Greyed buttons explain why on hover. The green (primary) button is always the next step: **Prepare deliverables** until PNG/PDF exist, then **Download PDF**.
 
 ## Prepare deliverables
 
@@ -19,7 +21,7 @@ Click **Prepare deliverables (PNG · PDF · Word · package)** once. That builds
 - **Word figure (.docx)** — PNG + caption/metadata (needs `python-docx`)
 - **Copy PNG to clipboard** — browser clipboard (permission-dependent; fall back to Download PNG)
 - **Build report ZIP** / **Download report ZIP** — SVG + PNG + PDF + metadata JSON + README (+ Word when available)
-- **Save to project folder** — set **Export output folder** under sidebar **Export framing & deliverables**
+- **Save to project folder** — set **Save exports to folder** (a full path, e.g. `P:\Projects\Job\Figures`) under sidebar **Export framing & deliverables**
 
 **Report ZIP** packages the **current** figure. **Multi-transect ZIP** (below) rebuilds a separate figure per Configure batch line.
 

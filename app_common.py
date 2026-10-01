@@ -81,20 +81,27 @@ def llm_suggestions_available() -> bool:
     return bool(_llm_api_key_for_provider(provider_kind))
 
 
-def _render_workflow_stepper(stage: int) -> None:
+def _workflow_stepper_html(stage: int) -> str:
     steps_html = []
     for index, label in enumerate(_WORKFLOW_LABELS):
         if index < stage:
             css_class = "workflow-step done"
+            prefix = "✓ "
         elif index == stage:
             css_class = "workflow-step active"
+            prefix = f"{index + 1}. "
         else:
             css_class = "workflow-step"
+            prefix = f"{index + 1}. "
         steps_html.append(
             f'<div class="{css_class}" role="listitem" aria-current="{"step" if index == stage else "false"}">'
-            f"{index + 1}. {escape_html(label)}</div>"
+            f"{prefix}{escape_html(label)}</div>"
         )
-    st.markdown(f'<div class="workflow" role="list">{"".join(steps_html)}</div>', unsafe_allow_html=True)
+    return f'<div class="workflow" role="list">{"".join(steps_html)}</div>'
+
+
+def _render_workflow_stepper(stage: int) -> None:
+    st.markdown(_workflow_stepper_html(stage), unsafe_allow_html=True)
 
 
 def _render_hero(stage: int) -> None:
@@ -110,11 +117,11 @@ def _render_hero(stage: int) -> None:
 <div class="{hero_class}">
   <h1>Cross Section Studio</h1>
   {tagline}
+  {_workflow_stepper_html(stage)}
 </div>
 """,
         unsafe_allow_html=True,
     )
-    _render_workflow_stepper(stage)
 
 
 def _render_sticky_generate_strip(
@@ -142,7 +149,7 @@ def _render_sticky_generate_strip(
         if has_svg:
             if st.button(
                 "Regenerate",
-                type="primary",
+                type="primary" if is_stale else "secondary",
                 disabled=not can_generate,
                 key="sticky_regenerate",
                 width="stretch",
@@ -212,8 +219,10 @@ def _render_profile_chips(
     chips.append(
         f'<span class="chip {"warn" if is_stale else ""}">{freshness}</span>'
     )
-    export_bits = [f"PNG {'✓' if png_ready else '—'}", f"PDF {'✓' if pdf_ready else '—'}"]
-    chips.append(f'<span class="chip">{" · ".join(export_bits)}</span>')
+    if png_ready and pdf_ready:
+        chips.append('<span class="chip brand">PNG/PDF ready</span>')
+    else:
+        chips.append('<span class="chip">PNG/PDF not prepared</span>')
     st.markdown(f'<div class="profile-header">{"".join(chips)}</div>', unsafe_allow_html=True)
 
 
@@ -248,7 +257,7 @@ def _render_lithology_legend(codes: list[str]) -> None:
     st.markdown("".join(rows), unsafe_allow_html=True)
 
 
-def _display_svg(svg_bytes: bytes) -> None:
+def _display_svg(svg_bytes: bytes, alt_text: str = "Cross-section profile") -> None:
     """Render SVG in Streamlit (st.image does not support SVG via PIL)."""
     cached = st.session_state.get("svg_display_meta")
     if cached is None or st.session_state.svg_bytes != svg_bytes:
@@ -260,10 +269,9 @@ def _display_svg(svg_bytes: bytes) -> None:
     # One markdown block: Streamlit auto-closes a lone <div>, so splitting this
     # across calls renders an empty bordered frame with the image outside it.
     st.markdown(
-        f'<div class="svg-frame" role="img" aria-label="Cross-section profile" '
-        f'style="min-height:{cached.height}px;">'
+        '<div class="svg-frame">'
         f'<img src="data:image/svg+xml;base64,{cached.encoded}" '
-        'style="width:100%;height:auto;display:block;" alt="Cross-section profile" />'
+        f'style="width:100%;height:auto;display:block;" alt="{escape_html(alt_text)}" />'
         "</div>",
         unsafe_allow_html=True,
     )

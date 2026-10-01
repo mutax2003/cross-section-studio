@@ -32,13 +32,35 @@ CHEMISTRY_LABEL_BLACK = "#111827"
 CHEMISTRY_LABEL_GREEN = "#059669"
 CHEMISTRY_LABEL_YELLOW = "#CA8A04"
 CHEMISTRY_LABEL_RED = "#DC2626"
+CHEMISTRY_LABEL_ORANGE = "#EA580C"
+# Fixed label colours a logger can pick in the workbook (meeting 1 Oct 2026):
+# one hex per name, no shades; blue is reserved for groundwater elevations.
+CHEMISTRY_FIXED_COLORS: dict[str, str] = {
+    "green": CHEMISTRY_LABEL_GREEN,
+    "red": CHEMISTRY_LABEL_RED,
+    "black": CHEMISTRY_LABEL_BLACK,
+    "orange": CHEMISTRY_LABEL_ORANGE,
+}
+CHEMISTRY_LABEL_COLOR_NAMES: tuple[str, ...] = tuple(CHEMISTRY_FIXED_COLORS)
+# Series (marker/stick) colours per parameter. No blue: that is groundwater.
 PARAMETER_PALETTE: tuple[str, ...] = (
     "#EA580C",
     "#7C3AED",
     "#059669",
     "#DC2626",
-    "#2563EB",
+    "#B45309",
 )
+
+
+def parameter_series_color(parameter: str) -> str:
+    """Stable colour for a parameter name, the same on every section.
+
+    Colours used to follow the order parameters appeared on a section, so
+    chloride could change colour between cross-sections of one project.
+    """
+    key = parameter.strip().casefold()
+    digest = sum((index + 1) * ord(char) for index, char in enumerate(key))
+    return PARAMETER_PALETTE[digest % len(PARAMETER_PALETTE)]
 CONSULTING_SURFACE_COLOR = "#8B6914"
 CONSULTING_NM_COLOR = "#64748B"
 DEFAULT_CONSULTING_NOTES: tuple[str, ...] = (

@@ -84,7 +84,9 @@ ENVIRONMENTAL_COLUMNS = (
     "to_depth",
     "unit",
     "value_label",
+    "label_color",
 )
+LABEL_COLOR_CHOICES = ("green", "red", "black", "orange")
 SCREEN_COLUMNS = ("hole_id", "from_depth", "to_depth")
 GRADIENT_COLUMNS = ("hole_id", "direction")
 SECTION_COLUMNS = ("section_label", "hole_ids")
@@ -297,6 +299,7 @@ def _sample_environmental() -> list[dict[str, object]]:
             "to_depth": "",
             "unit": "mg/L",
             "value_label": "<5 mg/L",
+            "label_color": "green",
         },
         {
             "hole_id": "MW-01",
@@ -397,6 +400,7 @@ def _column_hints() -> dict[str, dict[str, str]]:
             "to_depth": "Interval base (m) if not using depth",
             "unit": "e.g. mg/L",
             "value_label": "Optional figure text (e.g. <5 mg/L)",
+            "label_color": "Optional: green, red, black or orange (blue is reserved for groundwater)",
         },
         SCREENS_SHEET: {
             "hole_id": "Must match Collars.hole_id",
@@ -442,7 +446,7 @@ def _instructions_lines() -> list[str]:
         "• Collars — required. Coordinates and collar elevation (RL).",
         "• Lithology — required. Stick-log intervals; hole_id must match Collars.",
         "• Water — optional. Groundwater as depth below collar OR elevation_masl (not both on one row). Use series_id for snapshots; connect_group for shallow/deep nests.",
-        "• Environmental — optional. Lab/field parameters at a point depth or depth interval. Units belong in the legend; threshold colours are set in the app Configure step.",
+        "• Environmental — optional. Lab/field parameters at a point depth or depth interval. Units belong in the legend; label_color (green/red/black/orange) sets each value's colour on the figure.",
         "• Screens — optional. Screened intervals (consulting hatch bands).",
         "• Gradients — optional. Vertical gradient arrows (direction = up or down).",
         "• Sections — optional. Named transects (section_label + hole_ids) that seed Configure multi-transect batch lines.",
@@ -456,7 +460,8 @@ def _instructions_lines() -> list[str]:
         "ENVIRONMENTAL RULES",
         "• Use depth for a point sample, OR from_depth + to_depth for an interval — not both.",
         "• value_label is optional display text on the figure (e.g. <5 mg/L for non-detects).",
-        "• Select parameters and optional G/Y/R thresholds on Configure after upload.",
+        "• label_color is optional: green, red, black or orange (one fixed colour each; blue is reserved for groundwater). Blank = black, or G/Y/R thresholds if set on Configure.",
+        "• Select parameters on Configure after upload.",
         "",
         "WATER RULES",
         "• Up to four series_id values can be plotted; pick them on Configure.",
@@ -735,6 +740,18 @@ def _write_dataframe_sheet(
         validation.errorTitle = "Gradient direction"
         worksheet.add_data_validation(validation)
         validation.add(f"B2:B{entry_end}")
+    if sheet_name == ENVIRONMENTAL_SHEET and "label_color" in columns:
+        column_letter = get_column_letter(list(columns).index("label_color") + 1)
+        validation = DataValidation(
+            type="list",
+            formula1='"' + ",".join(LABEL_COLOR_CHOICES) + '"',
+            allow_blank=True,
+            showDropDown=False,
+        )
+        validation.error = "Use green, red, black or orange (blue is reserved for groundwater)"
+        validation.errorTitle = "Label colour"
+        worksheet.add_data_validation(validation)
+        validation.add(f"{column_letter}2:{column_letter}{entry_end}")
 
 
 def _write_project_sheet(writer: pd.ExcelWriter) -> None:
@@ -1090,6 +1107,7 @@ def export_cleaned_workbook_bytes(
             "to_depth": reading.to_depth if reading.to_depth is not None else "",
             "unit": reading.unit or "",
             "value_label": reading.value_label or "",
+            "label_color": reading.label_color or "",
         }
         for reading in parse_result.environmental_readings
     ]

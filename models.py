@@ -359,11 +359,24 @@ class EnvironmentalReading(BaseModel, frozen=True):
     to_depth: float | None = None
     unit: str = ""
     value_label: str = ""
+    label_color: str = ""  # "", green, red, black or orange (fixed hex each)
 
     @field_validator("hole_id", "parameter", mode="before")
     @classmethod
     def strip_text(cls, value: object) -> str:
         return _clean_text(value)
+
+    @field_validator("label_color", mode="before")
+    @classmethod
+    def normalise_label_color(cls, value: object) -> str:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ""
+        text = _clean_text(value).casefold()
+        if text in ("", "green", "red", "black", "orange"):
+            return text
+        if text == "blue":
+            raise ValueError("label_color 'blue' is reserved for groundwater elevations")
+        raise ValueError(f"label_color must be green, red, black or orange (got {text!r})")
 
     @model_validator(mode="after")
     def validate_depth_fields(self) -> EnvironmentalReading:

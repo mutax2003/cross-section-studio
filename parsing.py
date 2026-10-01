@@ -302,7 +302,7 @@ class DataParser:
             unconformities = self._parse_unconformity_sheet(workbook, structure_errors)
 
         if workbook is not None:
-            section_specs = self._parse_sections_sheet(workbook, collars)
+            section_specs = self._parse_sections_sheet(workbook, collars, structure_errors)
 
         if lithology_aliases:
             lithologies = self._apply_lithology_aliases(lithologies, lithology_aliases)
@@ -724,10 +724,12 @@ class DataParser:
             if self._blank_hole_id(getattr(row, "hole_id", None)):
                 continue
             payload = row._asdict()
-            if "unit" not in payload:
-                payload["unit"] = ""
-            if "value_label" not in payload:
-                payload["value_label"] = ""
+            # Blank text cells read back as NaN (e.g. from the cleaned export);
+            # the model expects strings.
+            for text_field in ("unit", "value_label", "label_color"):
+                raw = payload.get(text_field)
+                if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+                    payload[text_field] = ""
             try:
                 has_point = (
                     has_depth
@@ -950,6 +952,7 @@ class DataParser:
         self,
         workbook: pd.ExcelFile,
         collars: list[Collar],
+        errors: list[str] | None = None,
     ) -> list[WorkbookSectionSpec]:
         """Parse optional Sections sheet; log-and-skip bad rows (not folded into errors)."""
         sheet = self._find_sheet(workbook.sheet_names, self.SECTIONS_SHEET)
@@ -982,17 +985,21 @@ class DataParser:
                     {"label": label_raw, "hole_ids": hole_ids}
                 )
             except Exception as exc:
-                logger.warning("Skipping Sections row %s: %s", row_num, exc)
+                message = f"Sections row {row_num}: {_short_error(exc)}"
+                logger.warning("Skipping %s", message)
+                if errors is not None:
+                    errors.append(message)
                 continue
             if collar_ids:
                 unknown = [hole_id for hole_id in spec.hole_ids if hole_id not in collar_ids]
                 if unknown:
-                    logger.warning(
-                        "Skipping Sections row %s (%s): unknown collar(s): %s",
-                        row_num,
-                        spec.label,
-                        ", ".join(unknown),
+                    message = (
+                        f"Sections row {row_num} ({spec.label}): unknown collar(s) "
+                        f"{', '.join(unknown)} — check the spelling against Collars"
                     )
+                    logger.warning("Skipping %s", message)
+                    if errors is not None:
+                        errors.append(message)
                     continue
             specs.append(spec)
         return specs

@@ -131,7 +131,7 @@ else:
             if configure_state and configure_state.transect_selection is not None:
                 active_ids, _ = configure_state.transect_selection
                 if len(active_ids) >= 2:
-                    section_label = st.session_state.get("consulting_section_label") or "A–A′"
+                    section_label = st.session_state.get("consulting_section_label") or "A-A'"
                     transect_label = f"{section_label} {active_ids[0]}→{active_ids[-1]}"
                     import_report = st.session_state.import_report
                     coordinate_reference = sidebar.target_crs or (

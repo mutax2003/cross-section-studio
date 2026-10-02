@@ -36,3 +36,11 @@ Column details: [Workbook & data entry](workbook-quick.md) and the full [workboo
 ## Before client delivery
 
 Inter-hole fills are a **rule-based 2D fence** (linear contacts, midpoint pinch-outs) — not geostatistical interpolation. Review Configure preflight, overlap warnings, and regenerate after any correlation fix.
+
+## Configure extras
+
+- **Section (from workbook Sections tab)** — when your workbook has a Sections tab, pick a named line to preview it; the batch ZIP exports every line.
+- **Chemistry value labels** — colour each value in the workbook (`label_color`: green / red / black / orange; blue is reserved for groundwater) or use green / orange / red thresholds; choose a readability style (plain, white box, coloured dot + black text, outlined) for hatched fills. Labels never overlap and stay beside their own borehole.
+- **Preview size** — Fit width / 100 % / 150 % above the figure; the frame scrolls so small labels can be checked before export.
+- **Confirm before discarding** — Clear workbook and Try sample project ask first when a generated section would be lost.
+- **Upload limit** — 50 MB per workbook; sheets over 200,000 rows are refused (delete empty formatted rows).

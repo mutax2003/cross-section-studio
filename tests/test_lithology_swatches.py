@@ -30,7 +30,8 @@ def test_swatch_is_exact_pixel_size_and_filled_with_the_lithology_colour() -> No
 def test_export_writes_every_code_to_folder_and_zip(tmp_path: Path) -> None:
     names = export_swatches(tmp_path / "out", width_px=32, height_px=32, zip_path=tmp_path / "s.zip")
     assert len(names) == len(USGS_LITHOLOGY_COLORS)
-    assert swatch_filename("Sand and Gravel") == "sand_and_gravel.png" in names
+    assert swatch_filename("Sand and Gravel") == "sand_and_gravel.png"
+    assert "sand_and_gravel.png" in names
     assert (tmp_path / "out" / "silty_sand.png").exists()
     with zipfile.ZipFile(tmp_path / "s.zip") as archive:
         assert sorted(archive.namelist()) == sorted(names)

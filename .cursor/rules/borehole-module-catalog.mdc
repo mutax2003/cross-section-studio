@@ -37,7 +37,7 @@ Companion to `borehole-platform-architecture.mdc` (always-on boundaries). Load w
 | `renderer_chart.py` | Chart (legacy debug) layout mixin |
 | `renderer_consulting.py` | Consulting layout: title block, subtitle, well columns, screens/gradients |
 | `render_profiles.py` | Section-sheet / consulting / chart profiles (`track_width_m`, `auto_fit_track_width`) |
-| `render_theme.py` | Visual theme tokens; consulting title helpers |
+| `render_theme.py` | Visual theme tokens, consulting title helpers, fixed chemistry label colours / threshold colours / parameter palettes |
 | `report_export.py` | Two-page PDF export |
 | `export_framing.py` | `ExportFramingConfig`, page/DPI/margins, filenames, report ZIP / folder save, draft watermark & SVG CAD metadata helpers (cosmetic; not geometry) |
 | `batch_export.py` | Multi-transect rebuild (`BatchTransectSpec` / `build_multi_transect_exports`) + ZIP + binder PDF |

@@ -6,6 +6,7 @@ import logging
 import math
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+from typing import get_args
 
 import pandas as pd
 
@@ -38,7 +39,7 @@ from models import (
     WaterLevel,
 )
 from projection import DEFAULT_OFFSET_WARNING_M, project_boreholes, transect_azimuth_deg
-from render_profiles import profile_for_layout, profile_with_elevation_mode
+from render_profiles import ChemistryLabelStyle, profile_for_layout, profile_with_elevation_mode
 from render_theme import filter_water_levels_for_plot
 from renderer import CrossSectionRenderer
 from stratigraphy import (
@@ -349,7 +350,7 @@ def build_cross_section(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
-    chemistry_label_style: str | None = None,
+    chemistry_label_style: ChemistryLabelStyle | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
     auto_fit_track_width: bool = True,
@@ -483,7 +484,7 @@ def render_cross_section_from_geometry(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
-    chemistry_label_style: str | None = None,
+    chemistry_label_style: ChemistryLabelStyle | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
     auto_fit_track_width: bool = True,
@@ -569,6 +570,11 @@ def render_cross_section_from_geometry(
         ("chemistry_threshold_yellow_max", chemistry_threshold_yellow_max),
         ("chemistry_label_style", chemistry_label_style),
     )
+    if chemistry_label_style is not None and chemistry_label_style not in get_args(ChemistryLabelStyle):
+        raise ValueError(
+            f"chemistry_label_style must be one of {get_args(ChemistryLabelStyle)} "
+            f"(got {chemistry_label_style!r})"
+        )
     if environmental_parameters:
         profile_updates["show_parameter_markers"] = True
     if render_layout == "consulting_section" and interpretation_mode == "borehole_only":

@@ -51,7 +51,9 @@ PM/Architect prompts (`pm.md`, `architect.md`) are **IDE-only** — the SDK does
 | Stratigraphy bug | `stratigraphy.py` | `stratigraphy.py` only | `tests/test_stratigraphy.py`, `tests/test_e2e_edge_cases.py` |
 | Projection math | `projection.py` | `projection.py` | `tests/test_projection.py` |
 | Transect planner | `transect_planner.py` | `transect_planner.py` | `tests/test_ai_assistant.py`, `tests/test_e2e_edge_cases.py` |
-| Lithology palette | `constants.py` | `constants.py` | `tests/test_renderer_styles.py`, `tests/test_advantage_p2_reference.py` |
+| Lithology palette | `constants.py`, `data/bh_log_lithology_legend.json` | `constants.py` (scheme) or `scripts/export_lithology_swatches.py` (Survey123 swatches) | `tests/test_renderer_styles.py`, `tests/test_advantage_p2_reference.py`, `tests/test_lithology_swatches.py` |
+| Chemistry label colours / theme | `render_theme.py`, `renderer_chemistry.py` | One of `render_theme.py` (fixed colours, palettes) or `renderer_chemistry.py` (label styles, placement) | `tests/test_chemistry_label_colours.py`, `tests/test_wave_c_chemistry_legend.py` |
+| Product identity / attribution | `app_identity.py` | `app_identity.py` (every notice reads from it) | `tests/test_attribution.py` |
 | Lithology codes helper | `lithology_codes.py` | `lithology_codes.py` | `tests/test_pipeline.py` |
 | Water / GW QA & UI | `ai_quality.py`, `hydro_metrics.py`, `app_validate.py` (scout may read both) | One of `ai_quality.py`, `hydro_metrics.py`, or one `app_*.py` per pass — do not mix in `--modules` | `tests/test_water_quality.py`, `tests/test_streamlit_app.py` |
 | AI assistant (UI) | `ai_assistant.py` | `ai_assistant.py` only | `tests/test_ai_assistant.py` |

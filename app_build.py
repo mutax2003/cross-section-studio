@@ -17,6 +17,7 @@ from models import (
     subset_parse_result,
 )
 from projection import off_transect_warnings
+from render_profiles import ChemistryLabelStyle
 from section_build_request import SectionBuildRequest
 from ui_helpers import dedupe_messages, holes_missing_lithology, screen_interval_warnings
 from ui_output_presets import resolve_output_preset
@@ -106,7 +107,7 @@ def build_section_request(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
-    chemistry_label_style: str | None = None,
+    chemistry_label_style: ChemistryLabelStyle | None = None,
     render_layout: str,
     track_width_m: float,
     auto_fit_track_width: bool = True,
@@ -213,7 +214,7 @@ def collect_section_build_request(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
-    chemistry_label_style: str | None = None,
+    chemistry_label_style: ChemistryLabelStyle | None = None,
     render_layout: str,
     track_width_m: float,
     auto_fit_track_width: bool = True,

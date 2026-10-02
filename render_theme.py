@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from models import LABEL_COLOR_NAMES
+
 SURFACE_COLOR = "#2F5D3A"
 SKY_FILL_COLOR = "#E8F4FC"
 STICK_COLOR = "#1F2937"
@@ -30,7 +32,6 @@ PARAMETER_READING_COLOR = "#EA580C"
 PARAMETER_TEXT_COLOR = "#DC2626"
 CHEMISTRY_LABEL_BLACK = "#111827"
 CHEMISTRY_LABEL_GREEN = "#059669"
-CHEMISTRY_LABEL_YELLOW = "#CA8A04"
 CHEMISTRY_LABEL_RED = "#DC2626"
 CHEMISTRY_LABEL_ORANGE = "#EA580C"
 # Fixed label colours a logger can pick in the workbook (meeting 1 Oct 2026):
@@ -41,7 +42,8 @@ CHEMISTRY_FIXED_COLORS: dict[str, str] = {
     "black": CHEMISTRY_LABEL_BLACK,
     "orange": CHEMISTRY_LABEL_ORANGE,
 }
-CHEMISTRY_LABEL_COLOR_NAMES: tuple[str, ...] = tuple(CHEMISTRY_FIXED_COLORS)
+CHEMISTRY_LABEL_COLOR_NAMES: tuple[str, ...] = LABEL_COLOR_NAMES
+assert tuple(CHEMISTRY_FIXED_COLORS) == LABEL_COLOR_NAMES
 # Series (marker/stick) colours per parameter. No blue: that is groundwater.
 PARAMETER_PALETTE: tuple[str, ...] = (
     "#EA580C",

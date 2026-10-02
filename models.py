@@ -348,6 +348,11 @@ class Unconformity(BaseModel, frozen=True):
     elevation_profile: list[tuple[float, float]] = Field(min_length=2)
 
 
+# Fixed label colours a logger may pick in the workbook (one hex each in
+# render_theme); blue is reserved for groundwater elevations.
+LABEL_COLOR_NAMES: tuple[str, ...] = ("green", "red", "black", "orange")
+
+
 class EnvironmentalReading(BaseModel, frozen=True):
     """Environmental / lab sample on a point depth or depth interval."""
 
@@ -372,7 +377,7 @@ class EnvironmentalReading(BaseModel, frozen=True):
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return ""
         text = _clean_text(value).casefold()
-        if text in ("", "green", "red", "black", "orange"):
+        if text == "" or text in LABEL_COLOR_NAMES:
             return text
         if text == "blue":
             raise ValueError("label_color 'blue' is reserved for groundwater elevations")

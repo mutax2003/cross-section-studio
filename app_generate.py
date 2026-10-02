@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import streamlit as st
@@ -99,7 +100,12 @@ def _cached_docx_bytes(
     section_title: str,
     metadata: dict[str, object],
 ) -> bytes:
-    cache_token = st.session_state.get("render_cache_key")
+    # The Word pack embeds the caption and metadata, so they are part of the key.
+    cache_token = (
+        st.session_state.get("render_cache_key"),
+        str(st.session_state.get("ai_figure_caption") or ""),
+        json.dumps(metadata, sort_keys=True, default=str),
+    )
     if st.session_state.get("_figure_docx_cache_token") == cache_token:
         return st.session_state.get("figure_docx_bytes") or b""
     docx_bytes = _build_docx_if_ready(

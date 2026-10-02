@@ -20,6 +20,7 @@ from app_common import (
 )
 from app_services import cached_configure_preflight, cached_recommend_transects
 from models import CorrelationOverride, ParseResult, subset_parse_result
+from render_profiles import ChemistryLabelStyle
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,7 @@ class ConfigureState:
     chemistry_color_mode: str = "black"
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
-    chemistry_label_style: str = "plain"
+    chemistry_label_style: ChemistryLabelStyle = "plain"
 
     @property
     def blocked_reason(self) -> str | None:
@@ -122,15 +123,6 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
             height=160,
         )
     return selected_holes, coordinate_text
-
-
-def section_choice_to_sequence(specs, choice: str, known_hole_ids: Sequence[str]) -> tuple[str, list[str]] | None:
-    """(label, ordered holes) for a Sections-tab label, or None for 'Custom'."""
-    for spec in specs:
-        if spec.label == choice:
-            holes = [h for h in spec.hole_ids if h in set(known_hole_ids)]
-            return spec.label, holes
-    return None
 
 
 def _render_workbook_section_picker(specs) -> None:
@@ -490,7 +482,7 @@ def render_configure_step(
                     key="chemistry_label_style_select",
                     help="Keeps coloured values legible over hatched lithology fills.",
                 )
-                chemistry_label_style = str(style_choice)
+                chemistry_label_style = style_choice
             elif parse_result.environmental_readings:
                 st.caption(
                     "Environmental readings exist but none fall on the current transect holes."
@@ -750,7 +742,7 @@ def render_configure_step(
 def _transect_section_caption(hole_ids: Sequence[str]) -> str:
     if len(hole_ids) < 2:
         return ""
-    label = st.session_state.get("consulting_section_label") or "A–A′"
+    label = st.session_state.get("consulting_section_label") or "A-A'"
     return f"{label} ({hole_ids[0]} → {hole_ids[-1]})"
 
 
@@ -835,7 +827,7 @@ def _render_hole_sequence_order(hole_ids: list[str]) -> None:
                 sequence[index + 1], sequence[index] = sequence[index], sequence[index + 1]
                 st.session_state.hole_sequence_multiselect = sequence
                 st.rerun()
-    section_label = st.session_state.get("consulting_section_label") or "A–A′"
+    section_label = st.session_state.get("consulting_section_label") or "A-A'"
     st.caption(f"Section {section_label}: **{sequence[0]} → {sequence[-1]}**")
 
 

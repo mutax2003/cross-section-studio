@@ -260,15 +260,3 @@ def test_plan_view_chart_fits_axes_to_utm_collars() -> None:
     assert spec["encoding"]["color"]["field"] == "selected"
     assert "color" not in _plan_view_chart(frame, None).to_dict()["encoding"]
 
-
-def test_section_choice_to_sequence_maps_a_workbook_section_to_known_holes() -> None:
-    from app_configure import section_choice_to_sequence
-    from models import WorkbookSectionSpec
-
-    specs = (
-        WorkbookSectionSpec(label="A-A'", hole_ids=("BH-01", "BH-02", "BH-03")),
-        WorkbookSectionSpec(label="B-B'", hole_ids=("BH-03", "BH-09")),
-    )
-    assert section_choice_to_sequence(specs, "A-A'", ["BH-01", "BH-02", "BH-03"]) == ("A-A'", ["BH-01", "BH-02", "BH-03"])
-    assert section_choice_to_sequence(specs, "B-B'", ["BH-01", "BH-03"]) == ("B-B'", ["BH-03"])
-    assert section_choice_to_sequence(specs, "Custom", ["BH-01"]) is None

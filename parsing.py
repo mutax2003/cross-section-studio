@@ -61,7 +61,11 @@ def check_workbook_row_counts(source: WorkbookSource, *, limit: int = MAX_WORKBO
         return  # let the real reader report format problems
     try:
         for sheet in book.worksheets:
-            rows = sheet.max_row or 0
+            rows = sheet.max_row
+            if rows is None:
+                # No <dimension> element (write-only generators): probe past the
+                # limit instead of trusting a missing size.
+                rows = sum(1 for _ in sheet.iter_rows(min_row=1, max_row=limit + 1))
             if rows > limit:
                 raise WorkbookTooLargeError(
                     f"Sheet '{sheet.title}' has {rows:,} rows (limit {limit:,}). "
@@ -396,6 +400,11 @@ class DataParser:
                 return name
         return None
 
+    _failed_collar_ids: set[str] = set()
+
+    def _collar_failed(self, hole_id: object) -> bool:
+        return str(hole_id).strip() in self._failed_collar_ids
+
     @staticmethod
     def _row_has_values(row: object, fields: tuple[str, ...]) -> bool:
         """True when any named cell holds data (so the row is not just padding)."""
@@ -428,6 +437,7 @@ class DataParser:
             "azimuth_deg",
             "stick_up_m",
         } & set(df.columns)
+        self._failed_collar_ids = set()
 
         for index, row in enumerate(df.itertuples(index=True)):
             row_num = int(row.Index) + 2
@@ -456,7 +466,10 @@ class DataParser:
                     payload["stick_up_m"] = row.stick_up_m
                 collar = Collar.model_validate(payload)
             except Exception as exc:
-                errors.append(f"Collars row {row_num}: {exc}")
+                errors.append(f"Collars row {row_num}: {_short_error(exc)}")
+                # Child rows of a rejected collar get no "unknown hole_id"
+                # cascade: the collar error already explains them.
+                self._failed_collar_ids.add(str(row.hole_id).strip())
                 continue
 
             if collar.hole_id in seen_ids:
@@ -501,13 +514,14 @@ class DataParser:
                     payload["unit_order"] = row.unit_order
                 lithology = Lithology.model_validate(payload)
             except Exception as exc:
-                errors.append(f"Lithology row {row_num}: {exc}")
+                errors.append(f"Lithology row {row_num}: {_short_error(exc)}")
                 continue
 
             if valid_hole_ids and lithology.hole_id not in valid_hole_ids:
-                errors.append(
-                    f"Lithology row {row_num}: unknown hole_id '{lithology.hole_id}'"
-                )
+                if not self._collar_failed(lithology.hole_id):
+                    errors.append(
+                        f"Lithology row {row_num}: unknown hole_id '{lithology.hole_id}'"
+                    )
                 continue
 
             lithologies.append(lithology)
@@ -588,10 +602,11 @@ class DataParser:
                         payload[col] = getattr(row, col)
                 level = WaterLevel.model_validate(payload)
             except Exception as exc:
-                errors.append(f"Water row {row_num}: {exc}")
+                errors.append(f"Water row {row_num}: {_short_error(exc)}")
                 continue
             if valid_hole_ids and level.hole_id not in valid_hole_ids:
-                errors.append(f"Water row {row_num}: unknown hole_id '{level.hole_id}'")
+                if not self._collar_failed(level.hole_id):
+                    errors.append(f"Water row {row_num}: unknown hole_id '{level.hole_id}'")
                 continue
             levels.append(level)
 
@@ -635,10 +650,11 @@ class DataParser:
             try:
                 interval = ScreenInterval.model_validate(row._asdict())
             except Exception as exc:
-                errors.append(f"Screens row {row_num}: {exc}")
+                errors.append(f"Screens row {row_num}: {_short_error(exc)}")
                 continue
             if valid_hole_ids and interval.hole_id not in valid_hole_ids:
-                errors.append(f"Screens row {row_num}: unknown hole_id '{interval.hole_id}'")
+                if not self._collar_failed(interval.hole_id):
+                    errors.append(f"Screens row {row_num}: unknown hole_id '{interval.hole_id}'")
                 continue
             intervals.append(interval)
         return intervals, errors
@@ -659,10 +675,11 @@ class DataParser:
             try:
                 gradient = VerticalGradient.model_validate(row._asdict())
             except Exception as exc:
-                errors.append(f"Gradients row {row_num}: {exc}")
+                errors.append(f"Gradients row {row_num}: {_short_error(exc)}")
                 continue
             if valid_hole_ids and gradient.hole_id not in valid_hole_ids:
-                errors.append(f"Gradients row {row_num}: unknown hole_id '{gradient.hole_id}'")
+                if not self._collar_failed(gradient.hole_id):
+                    errors.append(f"Gradients row {row_num}: unknown hole_id '{gradient.hole_id}'")
                 continue
             gradients.append(gradient)
         return gradients, errors
@@ -767,12 +784,13 @@ class DataParser:
                     payload["value_label"] = ""
                 reading = EnvironmentalReading.model_validate(payload)
             except Exception as exc:
-                errors.append(f"Environmental row {row_num}: {exc}")
+                errors.append(f"Environmental row {row_num}: {_short_error(exc)}")
                 continue
             if valid_hole_ids and reading.hole_id not in valid_hole_ids:
-                errors.append(
-                    f"Environmental row {row_num}: unknown hole_id '{reading.hole_id}'"
-                )
+                if not self._collar_failed(reading.hole_id):
+                    errors.append(
+                        f"Environmental row {row_num}: unknown hole_id '{reading.hole_id}'"
+                    )
                 continue
             readings.append(reading)
         return readings, errors

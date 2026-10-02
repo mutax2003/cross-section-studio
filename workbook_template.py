@@ -21,6 +21,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
+from models import LABEL_COLOR_NAMES
+
 INSTRUCTIONS_SHEET = "Instructions"
 PROJECT_SHEET = "Project"
 DATA_ENTRY_SHEET = "Data Entry"
@@ -86,7 +88,7 @@ ENVIRONMENTAL_COLUMNS = (
     "value_label",
     "label_color",
 )
-LABEL_COLOR_CHOICES = ("green", "red", "black", "orange")
+LABEL_COLOR_CHOICES = LABEL_COLOR_NAMES
 SCREEN_COLUMNS = ("hole_id", "from_depth", "to_depth")
 GRADIENT_COLUMNS = ("hole_id", "direction")
 SECTION_COLUMNS = ("section_label", "hole_ids")
@@ -98,7 +100,6 @@ TABLE_SECTIONS: dict[str, tuple[str, ...]] = {
     "ENVIRONMENTAL": ENVIRONMENTAL_COLUMNS,
     "SCREENS": SCREEN_COLUMNS,
     "GRADIENTS": GRADIENT_COLUMNS,
-    "SECTIONS": SECTION_COLUMNS,
 }
 
 _HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
@@ -609,7 +610,7 @@ def parse_data_entry_sheet(frame: pd.DataFrame) -> DataEntrySheets:
             mode = "table_header"
             continue
 
-        if upper.startswith("PROJECT"):
+        if upper.startswith("PROJECT") and _normalize_key(first) not in project_fields:
             mode = "project"
             current_section = None
             continue
@@ -1065,6 +1066,13 @@ def export_cleaned_workbook_bytes(
     if any(collar.elevation_datum for collar in parse_result.collars):
         for row, collar in zip(collars, parse_result.collars):
             row["elevation_datum"] = collar.elevation_datum or ""
+    # Deviated-hole angles used to be dropped here, straightening every hole
+    # on re-upload of a "cleaned" workbook.
+    for field in ("inclination_deg", "azimuth_deg"):
+        if any(getattr(collar, field) is not None for collar in parse_result.collars):
+            for row, collar in zip(collars, parse_result.collars):
+                value = getattr(collar, field)
+                row[field] = value if value is not None else ""
     lithology = []
     for interval in parse_result.lithologies:
         code = normalize_lithology_code(interval.lithology_code, aliases) if aliases else interval.lithology_code
@@ -1077,6 +1085,9 @@ def export_cleaned_workbook_bytes(
                 "unit_order": interval.unit_order if interval.unit_order is not None else "",
             }
         )
+    if any(interval.hatch_pattern for interval in parse_result.lithologies):
+        for row, interval in zip(lithology, parse_result.lithologies):
+            row["hatch_pattern"] = interval.hatch_pattern or ""
 
     seen_water: set[tuple[object, ...]] = set()
     water_rows: list[dict[str, object]] = []
@@ -1113,6 +1124,15 @@ def export_cleaned_workbook_bytes(
                 "connect_group": level.connect_group or "",
             }
         )
+    for field in ("color", "marker"):
+        if any(getattr(level, field, None) for level in parse_result.water_levels):
+            kept = [level for level in parse_result.water_levels]
+            for row in water_rows:
+                match = next(
+                    (lv for lv in kept if lv.hole_id == row["hole_id"] and (lv.series_id or "") == row["series_id"]),
+                    None,
+                )
+                row[field] = (getattr(match, field, None) or "") if match else ""
 
     environmental = [
         {
@@ -1155,6 +1175,26 @@ def export_cleaned_workbook_bytes(
         for spec in parse_result.section_specs
     ]
 
+    deviations = [
+        {
+            "hole_id": item.hole_id,
+            "depth": item.depth,
+            "inclination_deg": item.inclination_deg,
+            "azimuth_deg": item.azimuth_deg,
+        }
+        for item in parse_result.deviation_readings
+    ]
+    faults = [
+        {"name": fault.name, "x_profile": x, "elevation": y}
+        for fault in parse_result.faults
+        for x, y in fault.trace_points
+    ]
+    unconformities = [
+        {"name": surface.name, "x_profile": x, "elevation": y}
+        for surface in parse_result.unconformities
+        for x, y in surface.elevation_profile
+    ]
+
     project_rows = [{"field": key, "value": value} for key, value in project.items() if value]
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -1175,6 +1215,13 @@ def export_cleaned_workbook_bytes(
             pd.DataFrame(gradients).to_excel(writer, sheet_name=GRADIENTS_SHEET, index=False)
         if sections:
             pd.DataFrame(sections).to_excel(writer, sheet_name=SECTIONS_SHEET, index=False)
+        # Structural interpretation sheets were silently omitted before.
+        if deviations:
+            pd.DataFrame(deviations).to_excel(writer, sheet_name="Deviations", index=False)
+        if faults:
+            pd.DataFrame(faults).to_excel(writer, sheet_name="Faults", index=False)
+        if unconformities:
+            pd.DataFrame(unconformities).to_excel(writer, sheet_name="Unconformities", index=False)
         _neutralise_formula_cells(writer.book)
         if environmental and ENVIRONMENTAL_SHEET in writer.book.sheetnames:
             # Keep the colour drop-down on the round-tripped workbook too.

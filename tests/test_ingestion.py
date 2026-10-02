@@ -1033,3 +1033,69 @@ def test_sections_rows_naming_unknown_holes_are_reported_not_silently_dropped() 
     assert "Sections row 3 (B-B'): unknown collar(s) BH-99" in joined
     assert "Sections row 4" in joined
     assert "Sections row 5" in joined and "listed more than once: BH1" in joined
+
+
+def test_cleaned_export_keeps_every_ingested_field() -> None:
+    """Deviated-hole angles, hatch patterns, water styling and the structural
+    sheets (Deviations, Faults, Unconformities) used to vanish on re-upload."""
+    from workbook_template import export_cleaned_workbook_bytes
+
+    collars = [
+        {**_TWO_COLLARS[0], "inclination_deg": -85.0, "azimuth_deg": 45.0, "stick_up_m": 0.6},
+        {**_TWO_COLLARS[1], "inclination_deg": -90.0, "azimuth_deg": 0.0},
+    ]
+    lith = [{**row, "hatch_pattern": "///"} for row in _TWO_LITH]
+    extra = {
+        "Water": [{"hole_id": "BH1", "depth": 2.5, "series_id": "s1", "color": "#ff0000", "marker": "v"}],
+        "Deviations": [{"hole_id": "BH1", "depth": 5.0, "inclination_deg": -80.0, "azimuth_deg": 40.0}],
+        "Faults": [{"name": "F1", "x_profile": 0.0, "elevation": 95.0}, {"name": "F1", "x_profile": 50.0, "elevation": 90.0}],
+        "Unconformities": [{"name": "U1", "x_profile": 0.0, "elevation": 97.0}, {"name": "U1", "x_profile": 50.0, "elevation": 96.0}],
+    }
+    first, report = ingest_workbook(_hostile_workbook(collars, lith, extra))
+    assert first.deviation_readings and first.faults and first.unconformities
+    again, _ = ingest_workbook(BytesIO(export_cleaned_workbook_bytes(first, project_metadata=report.project_metadata)))
+    assert [(c.inclination_deg, c.azimuth_deg, c.stick_up_m) for c in again.collars] == [
+        (c.inclination_deg, c.azimuth_deg, c.stick_up_m) for c in first.collars
+    ]
+    assert [i.hatch_pattern for i in again.lithologies] == ["///", "///"]
+    assert (again.water_levels[0].color, again.water_levels[0].marker) == ("#ff0000", "v")
+    assert again.deviation_readings == first.deviation_readings
+    assert again.faults == first.faults and again.unconformities == first.unconformities
+
+
+def test_data_entry_project_number_row_is_a_field_not_a_block_header() -> None:
+    from workbook_template import parse_data_entry_sheet
+
+    sheets = parse_data_entry_sheet(
+        pd.DataFrame([["PROJECT / CLIENT METADATA", "value"], ["project_number", "P-123"], ["client_name", "ACME"]])
+    )
+    assert sheets.project.get("project_number") == "P-123" and sheets.project.get("client_name") == "ACME"
+
+
+def test_row_cap_still_applies_without_a_dimension_tag(tmp_path: Path) -> None:
+    """Write-only workbooks carry no <dimension>; openpyxl then reports
+    max_row=None and the cap used to be skipped."""
+    import openpyxl
+
+    from parsing import WorkbookTooLargeError, check_workbook_row_counts
+
+    book = openpyxl.Workbook(write_only=True)
+    sheet = book.create_sheet("Collars")
+    for _ in range(30):
+        sheet.append(["x"])
+    path = tmp_path / "nodim.xlsx"
+    book.save(path)
+    assert openpyxl.load_workbook(path, read_only=True)["Collars"].max_row is None
+    with pytest.raises(WorkbookTooLargeError):
+        check_workbook_row_counts(path, limit=20)
+    check_workbook_row_counts(path, limit=40)
+
+
+def test_bad_collar_row_does_not_cascade_into_unknown_hole_errors() -> None:
+    collars = [{**_TWO_COLLARS[0], "elevation": "1,110"}, _TWO_COLLARS[1]]
+    lith = _TWO_LITH + [{"hole_id": "BH1", "from_depth": 10, "to_depth": 12, "lithology_code": "Sand"}]
+    result, _ = ingest_workbook(_hostile_workbook(collars, lith, {"Water": [{"hole_id": "BH1", "depth": 2.0}]}))
+    assert len(result.collars) == 1
+    collar_errors = [e for e in result.errors if e.startswith("Collars row 2")]
+    assert len(collar_errors) == 1 and "pydantic.dev" not in collar_errors[0]
+    assert not any("unknown hole_id 'BH1'" in e for e in result.errors)  # the collar error explains them

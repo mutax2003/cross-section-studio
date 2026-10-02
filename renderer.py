@@ -1238,9 +1238,18 @@ class CrossSectionRenderer(
             x_start = x_max - 0.04 * (x_max - x_min) - bar_length
         else:
             x_start = x_min + 0.04 * (x_max - x_min)
-        y_pos = y_min + 0.06 * (y_max - y_min)
-        tick = 0.01 * (y_max - y_min)
+        y_span = y_max - y_min
+        # Depth mode inverts the axis after drawing, so the visual bottom of
+        # the plot is the numeric maximum; keep the bar at the visual bottom.
+        depth_mode = self.profile.y_axis_mode == "depth_below_collar"
+        if depth_mode:
+            y_pos = y_max - 0.06 * y_span
+            label_y = y_pos - 0.025 * y_span
+        else:
+            y_pos = y_min + 0.06 * y_span
+            label_y = y_pos + 0.025 * y_span
+        tick = 0.01 * y_span
         ax.plot([x_start, x_start + bar_length], [y_pos, y_pos], color=STICK_COLOR, linewidth=4, solid_capstyle="butt", zorder=9)
         ax.plot([x_start, x_start], [y_pos - tick, y_pos + tick], color=STICK_COLOR, linewidth=1.5, zorder=9)
         ax.plot([x_start + bar_length, x_start + bar_length], [y_pos - tick, y_pos + tick], color=STICK_COLOR, linewidth=1.5, zorder=9)
-        ax.text(x_start + bar_length / 2.0, y_pos + 0.025 * (y_max - y_min), f"{bar_length:g} m", ha="center", va="bottom", fontsize=8, fontweight="bold", color=LABEL_COLOR, zorder=9)
+        ax.text(x_start + bar_length / 2.0, label_y, f"{bar_length:g} m", ha="center", va="bottom", fontsize=8, fontweight="bold", color=LABEL_COLOR, zorder=9)

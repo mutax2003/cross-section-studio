@@ -90,3 +90,28 @@ def test_pipeline_chart_layout_emits_reading_labels_in_svg() -> None:
     svg = svg_bytes.decode("utf-8", errors="ignore")
     for value in _VALUES:
         assert f"{value:g}" in svg
+
+
+def test_chart_layout_honours_depth_below_collar_mode() -> None:
+    """The sidebar elevation-mode radio applies to the quick-preview chart."""
+    collars = _collars()
+    collars[1] = collars[1].model_copy(update={"elevation": 104.0})
+    projected, polygons, _ = run_pipeline(collars, _lithologies(), _TRANSECT, render_layout="chart")
+    renderer = CrossSectionRenderer(
+        render_profile=CHART_PROFILE.model_copy(update={"y_axis_mode": "depth_below_collar"})
+    )
+    figure = renderer.render(polygons, projected, collar_depths={h: 12.0 for h in _IDS})
+    try:
+        ax = figure.axes[0]
+        assert ax.get_ylabel().startswith("Depth below collar")
+        assert ax.yaxis_inverted()
+        # Both collars plot at depth 0 regardless of their RL difference.
+        y_lo, y_hi = sorted(ax.get_ylim())
+        assert y_lo <= 0.0 < y_hi
+        # Scale bar text stays at the visual bottom (numerically deep end).
+        bar = next(t for t in ax.texts if t.get_text().endswith(" m") and "TD" not in t.get_text())
+        assert bar.get_position()[1] > 0.5 * y_hi
+    finally:
+        import matplotlib.pyplot as plt
+
+        plt.close(figure)

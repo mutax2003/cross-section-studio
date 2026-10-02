@@ -46,6 +46,8 @@ _PARAMETER_PROFILE_FIELDS: tuple[str, ...] = (
     "chemistry_threshold_green_max",
     "chemistry_threshold_yellow_max",
     "chemistry_label_style",
+    # Elevation-mode radio in the sidebar (RL vs depth below collar).
+    "y_axis_mode",
 )
 
 
@@ -169,8 +171,15 @@ class ChartLayoutMixin:
                 self._draw_legend(ax, style_cache, lithology_codes, polygons)
 
             ax.set_xlabel("Distance along transect (m)", fontsize=10, labelpad=8)
-            ax.set_ylabel("Elevation (m)", fontsize=10, labelpad=8)
+            depth_mode = self.profile.y_axis_mode == "depth_below_collar"
+            ax.set_ylabel(
+                "Depth below collar (m)" if depth_mode else "Elevation (m)",
+                fontsize=10,
+                labelpad=8,
+            )
             apply_true_value_y_axis(ax, ve)
+            if depth_mode:
+                ax.invert_yaxis()
             ax.set_title(self.title, fontsize=13, fontweight="bold", pad=12, color=LABEL_COLOR)
             ax.set_aspect("auto")
             ax.grid(True, linestyle="--", alpha=0.35, color=GRID_COLOR, zorder=0)

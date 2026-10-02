@@ -69,6 +69,9 @@ from renderer_section_sheet import SectionSheetLayoutMixin
 from renderer_water import RendererWaterMixin, WaterSeriesLegendEntry, resolve_header_collisions
 from stratigraphy import GeologicalPolygon, PolygonOverlap
 
+# Salted element ids (with no <dc:date>) make identical inputs give identical SVG.
+mpl.rcParams["svg.hashsalt"] = "cross-section-studio"
+
 logger = logging.getLogger(__name__)
 
 
@@ -124,7 +127,9 @@ def _export_file_metadata(fmt: str) -> dict[str, str]:
     """
     author = f"{AUTHOR}, {ORGANIZATION}"
     if fmt == "svg":
-        return {"Creator": APP_NAME, "Publisher": ORGANIZATION, "Rights": COPYRIGHT_NOTICE}
+        # Date omitted and ids salted (rcParam svg.hashsalt) so identical
+        # inputs give byte-identical SVG.
+        return {"Creator": APP_NAME, "Publisher": ORGANIZATION, "Rights": COPYRIGHT_NOTICE, "Date": None}
     if fmt == "pdf":
         return {"Creator": APP_NAME, "Author": author}
     if fmt == "png":
@@ -1105,6 +1110,15 @@ class CrossSectionRenderer(
             self.export_framing,
             layout=str(getattr(self.profile, "layout", "")),
         )
+        if (
+            str(getattr(self.profile, "layout", "")) == "consulting_section"
+            and figure.get_size_inches()[0] < 10.0
+        ):
+            # Portrait pages are narrower: give the twin RL axis label room.
+            figure.subplots_adjust(right=0.925)
+        if tuple(figure.get_size_inches()) == tuple(getattr(figure, "_css_prepared_size", ())):
+            return figure  # already prepared at this size: label passes are current
+        figure._css_prepared_size = tuple(figure.get_size_inches())
         # Page sizing moves every artist; redo label placement for the new page.
         headers = [t for t in getattr(self, "_header_labels", None) or [] if t.figure is figure]
         resolve_header_collisions(figure, headers)

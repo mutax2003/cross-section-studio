@@ -68,6 +68,24 @@ _CHEM_RELATIVE_OFFSETS = [(dx, dy, "left") for dx in (0.0, 10.0, 22.0) for dy in
 _LABEL_PRIORITY = {"rl": 0, "nm": 1, "chem": 2, "gradient": 3}
 
 
+class _ObstacleArray:
+    """Axis-aligned boxes kept as an (N, 4) array for vectorised overlap sums."""
+
+    def __init__(self, boxes) -> None:
+        rows = [(b.x0, b.y0, b.x1, b.y1) for b in boxes]
+        self._arr = np.array(rows, dtype=float).reshape(-1, 4)
+
+    def add(self, box) -> None:
+        self._arr = np.vstack([self._arr, [[box.x0, box.y0, box.x1, box.y1]]])
+
+    def overlap(self, box) -> float:
+        if self._arr.shape[0] == 0:
+            return 0.0
+        w = np.minimum(self._arr[:, 2], box.x1) - np.maximum(self._arr[:, 0], box.x0)
+        h = np.minimum(self._arr[:, 3], box.y1) - np.maximum(self._arr[:, 1], box.y0)
+        return float(np.sum(np.clip(w, 0.0, None) * np.clip(h, 0.0, None)))
+
+
 def _sync_label_companions(annotation, fig, dx: float, dy: float, ha: str) -> None:
     """Keep a label's halo twin and colour dot on the label after it moves."""
     halo = getattr(annotation, "_halo", None)
@@ -81,12 +99,30 @@ def _sync_label_companions(annotation, fig, dx: float, dy: float, ha: str) -> No
         )
 
 
-def _candidates_for(kind: str, base: tuple[float, float]) -> list[tuple[float, float, str]]:
+def _candidates_for(
+    kind: str, base: tuple[float, float], annotation=None, column_boxes=(), fig=None
+) -> list[tuple[float, float, str]]:
     fixed = _LABEL_CANDIDATES.get(kind)
     if fixed is not None:
         return fixed
     relative = [(base[0] + dx, base[1] + dy, ha) for dx, dy, ha in _CHEM_RELATIVE_OFFSETS]
-    return _nearest_first(base, relative)
+    candidates = _nearest_first(base, relative)
+    if annotation is not None and fig is not None:
+        # Lowest-priority fallback: the far side of the label's OWN column,
+        # for the last hole on a sheet whose right-hand options leave the page.
+        candidates += _left_of_column_offsets(annotation, column_boxes, fig)
+    return candidates
+
+
+def _left_of_column_offsets(annotation, column_boxes, fig) -> list[tuple[float, float, str]]:
+    ax = annotation.axes
+    anchor_x = ax.transData.transform([annotation.xy])[0][0]
+    own = next((b for b in column_boxes if b.x0 - 1 <= anchor_x <= b.x1 + 1), None)
+    if own is None:
+        return []
+    width_pt = (own.x1 - own.x0) * 72.0 / fig.dpi
+    dx = -(width_pt + 6.0)
+    return [(dx, dy, "right") for dy in _DY_GRID]
 _LEADER_THRESHOLD_PT = 14.0
 
 
@@ -112,17 +148,12 @@ def _text_box(annotation, renderer):
 # Hole-ID header candidates as (dx_pt, tier, ha): first shift alignment away
 # from the neighbour, then stagger outward one or two text heights; negative
 # tiers step inward for headers already at the page edge (consulting top row).
-_HEADER_CANDIDATES = (
-    (0.0, 0, "center"),
-    (2.0, 0, "left"),
-    (-2.0, 0, "right"),
-    (0.0, 1, "center"),
-    (2.0, 1, "left"),
-    (-2.0, 1, "right"),
-    (0.0, -1, "center"),
-    (2.0, -1, "left"),
-    (-2.0, -1, "right"),
-    (0.0, 2, "center"),
+_HEADER_CANDIDATES = tuple(
+    (dx, tier, "center" if dx == 0.0 else ("left" if dx > 0 else "right"))
+    for tier in (0, 1, -1, 2)
+    # Small nudges first; the wider steps let a corner header slide clear of a
+    # transect end label ("A / NORTHWEST") that spans two lines.
+    for dx in (0.0, 2.0, -2.0, 14.0, -14.0, 28.0, -28.0)
 )
 
 
@@ -232,6 +263,8 @@ def _header_obstacles(fig, renderer, pad, *, exclude: set[int]) -> list:
             continue
         artists.extend(_drawn_tick_labels(ax.xaxis, ax.get_xlim()))
         artists.extend(_drawn_tick_labels(ax.yaxis, ax.get_ylim()))
+        # Other axes text (transect end labels, notes) is an obstacle too.
+        artists.extend(ax.texts)
         artists.extend((ax.xaxis.label, ax.yaxis.label, ax.title, ax._left_title, ax._right_title))
     boxes = []
     for artist in artists:
@@ -381,19 +414,25 @@ class RendererWaterMixin:
         # misattributes the value.
         column_boxes = self._column_obstacle_boxes(fig)
         ordered = sorted(labels, key=lambda item: _LABEL_PRIORITY.get(item[0], 9))
+        # Obstacles as an (N, 4) array: with hundreds of labels x dozens of
+        # candidates the per-box Python loop dominated render time.
+        placed_arr = _ObstacleArray(placed)
+        column_arr = _ObstacleArray(column_boxes)
         for kind, annotation, _color in ordered:
             frame = annotation.axes.get_window_extent(renderer)
             if not hasattr(annotation, "_water_base_xyann"):
                 annotation._water_base_xyann = tuple(annotation.xyann)
             base = annotation._water_base_xyann
-            obstacles = placed + column_boxes if kind == "chem" else placed
             best: tuple[float, tuple[float, float, str]] | None = None
-            for index, (dx, dy, ha) in enumerate(_candidates_for(kind, base)):
+            for index, (dx, dy, ha) in enumerate(_candidates_for(kind, base, annotation, column_boxes, fig)):
                 annotation.xyann = (dx, dy)
                 annotation.set_horizontalalignment(ha)
                 box = _text_box(annotation, renderer).padded(pad)
-                collision = sum(_overlap_area(box, other) for other in obstacles)
-                outside = _outside_area(box, frame)
+                collision = placed_arr.overlap(box)
+                if kind == "chem":
+                    collision += column_arr.overlap(box)
+                # Off the axes is bad; off the page is worse (it is cut off).
+                outside = _outside_area(box, frame) + 4.0 * _outside_area(box, fig.bbox)
                 score = (collision + 4.0 * outside) * 1000.0 + index
                 if best is None or score < best[0]:
                     best = (score, (dx, dy, ha))
@@ -404,7 +443,9 @@ class RendererWaterMixin:
             annotation.xyann = (dx, dy)
             annotation.set_horizontalalignment(ha)
             _sync_label_companions(annotation, fig, dx, dy, ha)
-            placed.append(_text_box(annotation, renderer).padded(pad))
+            final_box = _text_box(annotation, renderer).padded(pad)
+            placed.append(final_box)
+            placed_arr.add(final_box)
             moved = abs(dy - base[1]) > _LEADER_THRESHOLD_PT or abs(dx - base[0]) > _LEADER_THRESHOLD_PT
             annotation.arrow_patch.set_visible(moved and getattr(annotation, "_leader_allowed", True))
 

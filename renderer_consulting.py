@@ -17,6 +17,7 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.patches import FancyArrow, Rectangle
 from matplotlib.ticker import FuncFormatter, MultipleLocator
+from matplotlib.transforms import blended_transform_factory, offset_copy
 
 from lithology_codes import collect_lithology_codes
 from models import ConsultingTitleBlock, VerticalGradient, WaterLevel
@@ -481,16 +482,24 @@ class ConsultingLayoutMixin:
         )
         if not start_primary and not start_secondary and not end_primary and not end_secondary:
             return
-        header_transform = ax.transAxes
+        # x in axes fraction, y in figure fraction: the labels sit just below
+        # the page edge whatever the axes height. At transAxes y=1.06 they
+        # landed above the page on every letter sheet and were never printed.
+        # Inside the plot width at the two corners; the hole-ID header pass
+        # treats these as obstacles and steps the end headers aside. (In the
+        # page margins a long "NORTHWEST" ran off the sheet.)
+        header_transform = blended_transform_factory(ax.transAxes, ax.figure.transFigure)
+        start_transform = offset_copy(header_transform, fig=ax.figure, x=2.0, y=0.0, units="points")
+        end_transform = offset_copy(header_transform, fig=ax.figure, x=-2.0, y=0.0, units="points")
         if start_primary or start_secondary:
             start_lines = [line for line in (start_primary, start_secondary) if line]
             ax.text(
                 0.0,
-                1.06,
+                0.992,
                 "\n".join(start_lines),
-                transform=header_transform,
+                transform=start_transform,
                 ha="left",
-                va="bottom",
+                va="top",
                 fontsize=8,
                 fontweight="bold",
                 color=LABEL_COLOR,
@@ -502,11 +511,11 @@ class ConsultingLayoutMixin:
             end_lines = [line for line in (end_primary, end_secondary) if line]
             ax.text(
                 1.0,
-                1.06,
+                0.992,
                 "\n".join(end_lines),
-                transform=header_transform,
+                transform=end_transform,
                 ha="right",
-                va="bottom",
+                va="top",
                 fontsize=8,
                 fontweight="bold",
                 color=LABEL_COLOR,
@@ -639,19 +648,24 @@ class ConsultingLayoutMixin:
             transform=ax_notes.transAxes,
         )
         note_y = 0.68
+        line_step = 0.11
         for index, note in enumerate(notes[:4], start=1):
+            # Wrap ourselves and advance by the number of lines: matplotlib's
+            # wrap=True kept a fixed step, so a two-line note printed its
+            # second line over the next note.
+            lines = textwrap.wrap(f"{index}. {note}", width=58) or [f"{index}. {note}"]
             ax_notes.text(
                 0.04,
                 note_y,
-                f"{index}. {note}",
+                "\n".join(lines),
                 ha="left",
                 va="top",
                 fontsize=6.5,
                 color=LABEL_COLOR,
                 transform=ax_notes.transAxes,
-                wrap=True,
+                linespacing=1.15,
             )
-            note_y -= 0.22
+            note_y -= line_step * len(lines)
 
     def _draw_cad_title_block(
         self,

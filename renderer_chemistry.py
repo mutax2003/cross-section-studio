@@ -243,6 +243,7 @@ class RendererChemistryMixin:
 
             marker_xs: list[float] = []
             marker_ys: list[float] = []
+            marker_colors: list[str] = []
             marker_labels: list[tuple[float, float, str, str]] = []
             interval_sticks: list[np.ndarray] = []
             y_cache: dict[tuple[str, float], float] = {}
@@ -272,6 +273,13 @@ class RendererChemistryMixin:
                     if draw_markers:
                         marker_xs.append(x_profile)
                         marker_ys.append(y)
+                        # "dot" style carries the workbook colour on the marker
+                        # itself instead of adding a second dot beside the label.
+                        marker_colors.append(
+                            (CHEMISTRY_FIXED_COLORS.get(reading.label_color) or color)
+                            if str(self.profile.chemistry_label_style or "plain") == "dot"
+                            else color
+                        )
                         if (
                             reading.from_depth is not None
                             and reading.to_depth is not None
@@ -323,7 +331,7 @@ class RendererChemistryMixin:
                     marker_xs,
                     marker_ys,
                     marker=marker,
-                    c=color,
+                    c=marker_colors,
                     s=float(self.profile.parameter_marker_size),
                     zorder=8,
                 )
@@ -372,7 +380,7 @@ class RendererChemistryMixin:
                 marker_labels, label_offsets, strict=True
             ):
                 anchor = (x_profile + column_half_m, y)
-                if label_style == "dot":
+                if label_style == "dot" and not draw_markers:
                     dx += 5.0
                 text_color = CHEMISTRY_LABEL_BLACK if label_style == "dot" else label_color
                 annotation = ax.annotate(
@@ -414,7 +422,7 @@ class RendererChemistryMixin:
                         path_effects=[withStroke(linewidth=2.6, foreground="white")],
                     )
                     annotation._halo = halo
-                if label_style == "dot":
+                if label_style == "dot" and not draw_markers:
                     # Colour travels on a dot just left of the value; the dot is
                     # positioned in points off the anchor so it follows the
                     # label when the collision pass moves it.

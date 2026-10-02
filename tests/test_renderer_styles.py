@@ -1102,3 +1102,98 @@ def test_consulting_legend_holds_many_units_without_overlap_or_silent_loss() -> 
     assert all(box.y0 >= panel.y0 - 1 and box.y1 <= panel.y1 + 1 for box in entry_boxes)
     for a, b in itertools.combinations(entry_boxes, 2):
         assert _overlap_area(a, b) == 0
+
+
+def _consulting_figure(n_holes: int = 3, spacing: float = 40.0, **profile_updates):
+    ids, projected, polygons = _dense_header_section(n_holes, spacing)
+    title_block = ConsultingTitleBlock(
+        section_label="A-A'",
+        transect_start_label="A",
+        transect_start_secondary="WEST",
+        transect_end_label="A'",
+        transect_end_secondary="EAST",
+        notes=(
+            "GROUNDWATER BASED ON GROUNDWATER MONITORING WELL OBSERVATIONS ONLY, SEE TABLE 2.",
+            "masl DENOTES METRES ABOVE SEA LEVEL.",
+            "LITHOLOGY BETWEEN BOREHOLES IS INFERRED AND SCHEMATIC ONLY.",
+        ),
+    )
+    renderer = CrossSectionRenderer(
+        show_legend=True,
+        render_profile=CONSULTING_SECTION_PROFILE.model_copy(update=profile_updates),
+        consulting_title_block=title_block,
+    )
+    figure = renderer.render(polygons, projected, collar_depths={h: 8.0 for h in ids})
+    figure.draw_without_rendering()
+    return renderer, figure
+
+
+def _texts_outside_page(figure) -> list[str]:
+    mpl_renderer = figure.canvas.get_renderer()
+    outside = []
+    for ax in figure.axes:
+        for text in ax.texts:
+            if not text.get_text().strip() or not text.get_visible():
+                continue
+            box = text.get_window_extent(mpl_renderer)
+            if box.x0 < figure.bbox.x0 - 0.5 or box.x1 > figure.bbox.x1 + 0.5 or box.y1 > figure.bbox.y1 + 0.5:
+                outside.append(text.get_text())
+    return outside
+
+
+def test_consulting_end_labels_print_on_the_page() -> None:
+    """'A / WEST' and 'A' / EAST' sat above the page edge on every letter
+    sheet and were silently cut from PNG and PDF."""
+    _, figure = _consulting_figure()
+    labels = [t.get_text() for ax in figure.axes for t in ax.texts]
+    assert any("WEST" in label for label in labels) and any("EAST" in label for label in labels)
+    assert not [t for t in _texts_outside_page(figure) if "WEST" in t or "EAST" in t]
+    # ...and they sit beside the hole-ID header strip, not on it.
+    from matplotlib.text import Text
+
+    from renderer_water import _overlap_area
+
+    renderer, figure = _consulting_figure()
+    mpl_renderer = figure.canvas.get_renderer()
+    ends = [t for ax in figure.axes for t in ax.texts if "WEST" in t.get_text() or "EAST" in t.get_text()]
+    end_boxes = [Text.get_window_extent(t, mpl_renderer) for t in ends]
+    header_boxes = [Text.get_window_extent(t, mpl_renderer) for t in renderer._header_labels]
+    assert all(_overlap_area(e, h) == 0 for e in end_boxes for h in header_boxes)
+
+
+def test_consulting_notes_do_not_overlap_each_other() -> None:
+    from matplotlib.text import Text
+
+    from renderer_water import _overlap_area
+
+    _, figure = _consulting_figure()
+    mpl_renderer = figure.canvas.get_renderer()
+    notes = [t for ax in figure.axes for t in ax.texts if t.get_text()[:2] in ("1.", "2.", "3.")]
+    assert len(notes) >= 2
+    boxes = [Text.get_window_extent(t, mpl_renderer) for t in notes]
+    for a, b in itertools.combinations(boxes, 2):
+        assert _overlap_area(a, b) == 0
+
+
+def test_last_hole_value_labels_stay_on_the_page() -> None:
+    """Right-only candidates pushed the last column's values past the page
+    edge; a left-of-column fallback now catches them."""
+    ids = [f"BH-{i:02d}" for i in range(6)]
+    collars = [Collar(hole_id=h, easting=i * 40.0, northing=0.0, elevation=100.0, total_depth=8.0) for i, h in enumerate(ids)]
+    lithologies = [Lithology(hole_id=h, from_depth=0.0, to_depth=8.0, lithology_code="Clay") for h in ids]
+    readings = [
+        EnvironmentalReading(hole_id=ids[-1], parameter="Chloride", value=1000.0 + k, depth=1.0 + k)
+        for k in range(6)
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (200.0, 0.0)])
+    renderer = CrossSectionRenderer(
+        show_legend=True,
+        render_profile=CONSULTING_SECTION_PROFILE.model_copy(
+            update={"show_parameter_markers": True, "show_parameter_labels": True}
+        ),
+        environmental_readings=readings,
+        environmental_parameters=("Chloride",),
+    )
+    figure = renderer.render(polygons, projected, collar_depths={h: 8.0 for h in ids})
+    figure.draw_without_rendering()
+    assert not [t for t in _texts_outside_page(figure) if t.startswith("100")]

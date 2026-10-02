@@ -241,3 +241,26 @@ def test_save_exports_confined_to_allowed_roots(tmp_path, monkeypatch) -> None:
             str(tmp_path / "allowed" / ".." / "elsewhere"),
             stem="s", svg_bytes=b"<svg/>", png_bytes=b"", pdf_bytes=b"", metadata={},
         )
+
+
+def test_portrait_export_keeps_the_right_axis_label_on_the_page() -> None:
+    from models import Collar, Lithology
+    from render_profiles import CONSULTING_SECTION_PROFILE
+    from renderer import CrossSectionRenderer
+    from tests.conftest import run_pipeline
+
+    ids = ["BH-01", "BH-02", "BH-03"]
+    collars = [Collar(hole_id=h, easting=i * 40.0, northing=0.0, elevation=100.0, total_depth=8.0) for i, h in enumerate(ids)]
+    lith = [Lithology(hole_id=h, from_depth=0.0, to_depth=8.0, lithology_code="Clay") for h in ids]
+    projected, polygons, _ = run_pipeline(collars, lith, [(0.0, 0.0), (80.0, 0.0)])
+    renderer = CrossSectionRenderer(
+        show_legend=True,
+        render_profile=CONSULTING_SECTION_PROFILE,
+        export_framing=ExportFramingConfig(page_preset="letter_portrait", export_dpi=72),
+    )
+    figure = renderer.render(polygons, projected, collar_depths={h: 8.0 for h in ids})
+    renderer.to_png_bytes(figure)
+    figure.draw_without_rendering()
+    mpl_renderer = figure.canvas.get_renderer()
+    right = [ax.yaxis.label for ax in figure.axes if ax.yaxis.get_label_position() == "right" and ax.yaxis.label.get_text()]
+    assert right and all(lbl.get_window_extent(mpl_renderer).x1 <= figure.bbox.x1 for lbl in right)

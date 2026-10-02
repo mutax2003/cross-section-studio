@@ -30,7 +30,13 @@ def test_label_colour_names_are_fixed_and_blue_is_reserved() -> None:
 def test_parameter_colour_is_stable_across_sections() -> None:
     """Colours used to follow the order parameters appeared on a section."""
     assert parameter_series_color("Chloride") == parameter_series_color(" chloride ")
-    assert all(parameter_series_color(p).upper() != "#2563EB" for p in ("Chloride", "Benzene", "BTEX"))
+    from render_theme import PARAMETER_PALETTE
+
+    def is_blue(hex_colour: str) -> bool:
+        r, g, b = (int(hex_colour[i : i + 2], 16) for i in (1, 3, 5))
+        return b > g > r  # cobalt/sky blues (purple has r > g)
+
+    assert not any(is_blue(c) for c in PARAMETER_PALETTE)  # blue is groundwater
 
 
 def test_template_has_a_label_colour_drop_down_and_round_trips_it() -> None:
@@ -129,13 +135,8 @@ def test_workbook_colours_reach_the_figure_and_labels_never_overlap() -> None:
     boxes = [Text.get_window_extent(ann, mpl_renderer) for _, ann in labels]
     overlaps = sum(1 for a, b in itertools.combinations(boxes, 2) if _overlap_area(a, b) > 0)
     assert overlaps == 0
-    for ax in figure.axes:
-        frame = ax.get_window_extent(mpl_renderer)
-        for box in boxes:
-            if box.x0 >= frame.x0 - 1 and box.x1 <= frame.x1 + 1:
-                continue
-        # every label stays on the page
-        assert all(box.x0 >= figure.bbox.x0 and box.x1 <= figure.bbox.x1 for box in boxes)
+    # every label stays on the page
+    assert all(box.x0 >= figure.bbox.x0 and box.x1 <= figure.bbox.x1 for box in boxes)
 
 
 def test_readability_styles_change_the_label_rendering() -> None:
@@ -156,9 +157,20 @@ def test_readability_styles_change_the_label_rendering() -> None:
     halos = [t for t in chem_texts(stroked) if t.get_color() == "white"]
     assert stroked_labels and not any(t.get_path_effects() for t in stroked_labels)
     assert len(halos) == len(stroked_labels) and all(t.get_path_effects() for t in halos)
-    assert all(t.get_color().lower() == "#111827" for t in chem_texts(dotted))  # black text, colour on the dot
-    dots = [line for ax in dotted.axes for line in ax.lines if line.get_marker() == "o" and line.get_linestyle() == "None"]
-    assert len(dots) >= len(chem_texts(dotted))
+    assert all(t.get_color().lower() == "#111827" for t in chem_texts(dotted))  # black text
+    # With series markers drawn, the colour rides on the column marker (no
+    # second dot); the scatter carries per-reading colours.
+    from matplotlib.colors import to_hex
+
+    scatter_colours = {
+        to_hex(c).upper()
+        for ax in dotted.axes
+        for coll in ax.collections
+        if hasattr(coll, "get_offsets") and len(coll.get_offsets()) > 1
+        for c in coll.get_facecolors()
+    }
+    assert {CHEMISTRY_FIXED_COLORS["green"], CHEMISTRY_FIXED_COLORS["red"]} <= scatter_colours
+
 
 
 def test_consulting_layout_also_registers_chemistry_labels() -> None:
@@ -201,7 +213,6 @@ def test_colour_header_accepts_uk_spelling_and_drop_down_blocks_typed_values() -
 def test_parameters_on_one_section_never_share_a_colour_and_threshold_middle_is_orange() -> None:
     from render_theme import (
         CHEMISTRY_LABEL_ORANGE,
-        CHEMISTRY_LABEL_YELLOW,
         PARAMETER_PALETTE,
         chemistry_label_color,
         parameter_series_colors,
@@ -215,7 +226,7 @@ def test_parameters_on_one_section_never_share_a_colour_and_threshold_middle_is_
     stable = parameter_series_colors(["Benzene", "Xylenes", "Toluene"])
     assert all(stable[name] == parameter_series_color(name) for name in stable)
     assert chemistry_label_color(150.0, "threshold", green_max=100.0, yellow_max=250.0) == CHEMISTRY_LABEL_ORANGE
-    assert CHEMISTRY_LABEL_YELLOW not in {
+    assert "#CA8A04" not in {  # the old yellow is gone from threshold mode
         chemistry_label_color(v, "threshold", green_max=100.0, yellow_max=250.0) for v in (1.0, 150.0, 999.0)
     }
 
@@ -278,7 +289,12 @@ def test_dot_style_dot_follows_its_label_when_moved() -> None:
     renderer = CrossSectionRenderer(
         show_legend=True,
         render_profile=SECTION_SHEET_PROFILE.model_copy(
-            update={"show_parameter_markers": True, "show_parameter_labels": True, "chemistry_label_style": "dot"}
+            update={
+                "show_parameter_markers": True,
+                "show_parameter_labels": True,
+                "chemistry_label_style": "dot",
+                "parameter_draw_markers": False,  # label dots are used only without series markers
+            }
         ),
         environmental_readings=readings,
         environmental_parameters=("Chloride",),

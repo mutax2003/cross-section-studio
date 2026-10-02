@@ -38,6 +38,134 @@ def apply_true_value_y_axis(ax, ve: float) -> None:
     ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _pos, v=ve: f"{value / v:.6g}"))
 
 
+# Column intervals drawn shorter than this (in inches on the output page) get a
+# densified hatch so a sparse single-character pattern ('.', '/', 'O', '+')
+# still leaves visible marks. 0.1 in is ~28-30 px at 300 dpi.
+THIN_UNIT_MIN_HEIGHT_IN = 0.1
+# Matplotlib lays a single-character hatch out on a 1 in unit cell at
+# rcParams-independent density 6, i.e. rows of marks every 1/6 in; every
+# repeat of the character adds another 6 rows per inch.
+BASE_HATCH_ROW_SPACING_IN = 1.0 / 6.0
+# Densify at least 2x below the threshold and never beyond 4x so the pattern
+# still reads as the legend's stipple / diagonal rather than solid texture.
+THIN_UNIT_MIN_DENSIFY = 2
+THIN_UNIT_MAX_DENSIFY = 4
+
+
+def densify_hatch(hatch: str | None, factor: int = THIN_UNIT_MIN_DENSIFY) -> str:
+    """Repeat a sparse hatch so matplotlib draws it ``factor`` times denser.
+
+    Matplotlib hatch density scales with the number of pattern characters, so
+    ``'.'`` → ``'..'``, ``'/'`` → ``'//'``, ``'O'`` → ``'OO'``, ``'+'`` → ``'++'``.
+    An empty hatch (plain unit) stays empty.
+    """
+    if not hatch:
+        return ""
+    return hatch * max(1, int(factor))
+
+
+def thin_unit_densify_factor(
+    height_in: float,
+    *,
+    min_height_in: float = THIN_UNIT_MIN_HEIGHT_IN,
+) -> int:
+    """Hatch repeat factor for an interval drawn ``height_in`` inches tall.
+
+    Returns 1 (base hatch) at or above ``min_height_in``.  Below it, the
+    smallest repeat whose row spacing fits inside the interval (so at least one
+    row of marks lands in the band whatever the pattern phase), clamped to
+    ``[THIN_UNIT_MIN_DENSIFY, THIN_UNIT_MAX_DENSIFY]``.
+    """
+    if not np.isfinite(height_in) or height_in >= min_height_in:
+        return 1
+    if height_in <= 0.0:
+        return THIN_UNIT_MAX_DENSIFY
+    needed = int(np.ceil(BASE_HATCH_ROW_SPACING_IN / height_in))
+    return int(min(THIN_UNIT_MAX_DENSIFY, max(THIN_UNIT_MIN_DENSIFY, needed)))
+
+
+class ThinUnitHatchCollection(PolyCollection):
+    """Lithology rectangles whose hatch is densified for thin intervals at draw time.
+
+    The split between "thin" and "thick" intervals needs the final axes
+    transform (view limits, ``subplots_adjust`` and the output dpi are only
+    known when the figure is drawn), so the decision is taken inside
+    :meth:`draw`.  Each densify factor in use is drawn as its own batch with
+    the matching hatch; ``resolved_hatches`` records the per-rectangle outcome
+    of the last draw for inspection and tests.
+    """
+
+    def __init__(
+        self,
+        verts,
+        *,
+        base_hatch: str,
+        min_height_in: float = THIN_UNIT_MIN_HEIGHT_IN,
+        **kwargs,
+    ) -> None:
+        super().__init__(verts, hatch=base_hatch or None, **kwargs)
+        self.base_hatch = base_hatch or ""
+        self.min_height_in = float(min_height_in)
+        self.resolved_hatches: list[str] = [self.base_hatch] * len(self._paths)
+
+    def _interval_heights_in(self) -> np.ndarray | None:
+        """Drawn height of each rectangle in inches, or None when unknowable."""
+        figure = self.get_figure()
+        if figure is None or not self._paths:
+            return None
+        dpi = float(getattr(figure, "dpi", 0.0) or 0.0)
+        if dpi <= 0.0:
+            return None
+        verts = np.asarray([path.vertices for path in self._paths], dtype=float)
+        if verts.ndim != 3 or verts.shape[1] < 4:
+            return None
+        # Rect verts are (x_left, y0), (x_right, y0), (x_right, y_top), (x_left, y_top).
+        bottom = verts[:, 0, :]
+        top = verts[:, 3, :]
+        transform = self.get_transform()
+        bottom_px = transform.transform(bottom)
+        top_px = transform.transform(top)
+        return np.abs(top_px[:, 1] - bottom_px[:, 1]) / dpi
+
+    def densify_factors(self) -> np.ndarray:
+        """Per-rectangle hatch repeat factor for the current figure transform."""
+        heights = self._interval_heights_in()
+        if heights is None:
+            return np.ones(len(self._paths), dtype=int)
+        return np.asarray(
+            [thin_unit_densify_factor(float(h), min_height_in=self.min_height_in) for h in heights],
+            dtype=int,
+        )
+
+    def thin_mask(self) -> np.ndarray:
+        """Boolean mask of rectangles currently shorter than ``min_height_in``."""
+        return self.densify_factors() > 1
+
+    def draw(self, renderer) -> None:  # type: ignore[override]
+        if not self.base_hatch:
+            super().draw(renderer)
+            return
+        factors = self.densify_factors()
+        self.resolved_hatches = [densify_hatch(self.base_hatch, int(f)) for f in factors]
+        distinct = sorted({int(f) for f in factors})
+        if distinct == [1]:
+            self.set_hatch(self.base_hatch)
+            super().draw(renderer)
+            return
+        all_paths = self._paths
+        try:
+            for factor in distinct:
+                subset = [
+                    path for path, f in zip(all_paths, factors, strict=True) if int(f) == factor
+                ]
+                self._paths = subset
+                self.set_hatch(densify_hatch(self.base_hatch, factor))
+                super().draw(renderer)
+        finally:
+            self._paths = all_paths
+            self.set_hatch(self.base_hatch)
+
+
 class RendererGeometryMixin:
     """Well extents, profile lookup, and lithology style resolution."""
 
@@ -218,26 +346,44 @@ class RendererGeometryMixin:
         split_at = np.concatenate(
             ([0], np.flatnonzero(sorted_codes[1:] != sorted_codes[:-1]) + 1, [len(sorted_codes)])
         )
+        thin_min_in = float(getattr(self, "thin_unit_min_height_in", THIN_UNIT_MIN_HEIGHT_IN))
         for start, end in zip(split_at[:-1], split_at[1:], strict=True):
             code = str(sorted_codes[start])
             style = self._resolve_style(code, style_cache)
             slice_idx = order[start:end]
             count = end - start
-            self._add_rect_collection(
-                ax,
-                (
-                    x_masked[slice_idx] - track_half_width,
-                    y0_masked[slice_idx],
-                    np.full(count, width),
-                    heights_masked[slice_idx],
-                ),
+            geometry = (
+                x_masked[slice_idx] - track_half_width,
+                y0_masked[slice_idx],
+                np.full(count, width),
+                heights_masked[slice_idx],
+            )
+            hatch = style.hatch if self.show_hatches else ""
+            if not hatch:
+                self._add_rect_collection(
+                    ax,
+                    geometry,
+                    facecolors=style.color,
+                    edgecolors=style.edge_color,
+                    linewidths=0.6,
+                    zorder=zorder,
+                    hatch=None,
+                    alpha=alpha,
+                )
+                continue
+            # One collection per code; thin intervals pick up the densified
+            # hatch when the figure is drawn (see ThinUnitHatchCollection).
+            collection = ThinUnitHatchCollection(
+                self._rect_verts(*geometry),
+                base_hatch=hatch,
+                min_height_in=thin_min_in,
                 facecolors=style.color,
                 edgecolors=style.edge_color,
                 linewidths=0.6,
-                zorder=zorder,
-                hatch=style.hatch or None,
                 alpha=alpha,
             )
+            collection.set_zorder(zorder)
+            ax.add_collection(collection)
 
     def _style_cache_for(self, lithology_codes: Sequence[str]) -> dict:
         consulting_palette = bool(getattr(self.profile, "use_consulting_palette", False))

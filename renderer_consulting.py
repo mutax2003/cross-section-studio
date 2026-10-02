@@ -48,6 +48,13 @@ from stratigraphy import GeologicalPolygon
 
 logger = logging.getLogger(__name__)
 
+_MBGS_NOTE = "mbgs DENOTES METRES BELOW GROUND SURFACE."
+
+
+def _is_masl_note(note: str) -> bool:
+    """True for the stock "masl denotes metres above sea level" note."""
+    return "MASL DENOTES METRES ABOVE SEA LEVEL" in note.upper()
+
 # Minimum legend column width (axes fraction) before wrapping to two columns.
 _LEGEND_MIN_COL_WIDTH = 0.14
 _LEGEND_CHAR_WIDTH = 0.0065  # approx. axes fraction per character at 7.5 pt
@@ -156,6 +163,16 @@ class ConsultingLayoutMixin:
         title_block = self.consulting_title_block or ConsultingTitleBlock(section_label=self.title)
         if not title_block.notes:
             title_block = title_block.model_copy(update={"notes": DEFAULT_CONSULTING_NOTES})
+        if self.profile.y_axis_mode == "depth_below_collar":
+            # A depth axis is not in masl: swap the stock masl note (built-in
+            # default or the workbook template's) for the mbgs one.
+            title_block = title_block.model_copy(
+                update={
+                    "notes": tuple(
+                        _MBGS_NOTE if _is_masl_note(n) else n for n in title_block.notes
+                    )
+                }
+            )
         if not water_levels:
             # The stock groundwater note is false on a section with no water data.
             kept = tuple(n for n in title_block.notes if n != DEFAULT_CONSULTING_NOTES[0])
@@ -269,11 +286,13 @@ class ConsultingLayoutMixin:
             if self.unconformities:
                 self._draw_unconformities(ax, collar_lookup, hole_summary=hole_summary)
 
+            depth_axis = self.profile.y_axis_mode == "depth_below_collar"
             y_label = title_block.y_axis_label or self.profile.y_axis_label or (
-                "DEPTH (mbgs)"
-                if self.profile.y_axis_mode == "depth_below_collar"
-                else "ELEVATION (m)"
+                "DEPTH (mbgs)" if depth_axis else "ELEVATION (m)"
             )
+            if depth_axis and "MASL" in y_label.upper():
+                # The stock elevation label on a depth axis (P2 sticks preset).
+                y_label = "DEPTH (mbgs)"
             ax.set_xlabel("DISTANCE (m)", fontsize=self._fs(10), labelpad=2, color=LABEL_COLOR)
             ax.set_ylabel(y_label, fontsize=self._fs(10), labelpad=6, color=LABEL_COLOR)
             ax.set_aspect("auto")

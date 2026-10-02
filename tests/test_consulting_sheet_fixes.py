@@ -481,3 +481,46 @@ def test_long_notes_and_prepared_values_stay_on_page_and_apart(
         if min(b1.x1, b2.x1) - max(b1.x0, b2.x0) > 1.0 and min(b1.y1, b2.y1) - max(b1.y0, b2.y0) > 1.0
     ]
     assert clashes == [], clashes
+
+
+def test_depth_axis_does_not_carry_masl_label_or_note() -> None:
+    """P2 chemistry sticks (depth below ground) printed "ELEVATION ABOVE SEA
+    LEVEL (MASL)" and the masl note on a depth axis."""
+    import matplotlib.pyplot as plt
+
+    from models import Collar, Lithology
+    from pipeline import build_cross_section
+
+    collars = [
+        Collar(hole_id=h, easting=10.0 * i, northing=0.0, elevation=100.0, total_depth=6.0)
+        for i, h in enumerate(("BH-1", "BH-2", "BH-3"))
+    ]
+    liths = [Lithology(hole_id=c.hole_id, from_depth=0.0, to_depth=6.0, lithology_code="Sand") for c in collars]
+    captured = {}
+    import renderer as renderer_mod
+
+    original = renderer_mod.CrossSectionRenderer.render
+
+    def spy(self, *args, **kwargs):
+        captured["fig"] = original(self, *args, **kwargs)
+        return captured["fig"]
+
+    renderer_mod.CrossSectionRenderer.render = spy
+    try:
+        build_cross_section(
+            collars, liths, [(0.0, 0.0), (20.0, 0.0)],
+            render_layout="consulting_section", elevation_mode="relative",
+            interpretation_mode="borehole_only",
+        )
+    finally:
+        renderer_mod.CrossSectionRenderer.render = original
+    fig = captured["fig"]
+    try:
+        labels = [ax.get_ylabel() for ax in fig.axes if ax.get_ylabel()]
+        texts = [t.get_text() for t in fig.findobj(lambda o: hasattr(o, "get_text"))]
+        assert labels and all("MASL" not in label.upper() for label in labels)
+        assert any("DEPTH (mbgs)" in label for label in labels)
+        assert not any("METRES ABOVE SEA LEVEL" in t.upper() for t in texts)
+        assert any("METRES BELOW GROUND SURFACE" in t.upper() for t in texts)
+    finally:
+        plt.close(fig)

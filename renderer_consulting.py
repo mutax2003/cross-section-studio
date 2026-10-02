@@ -43,6 +43,7 @@ from render_theme import (
     primary_water_depth_by_hole,
     water_has_multiple_series,
 )
+from renderer_common import legend_swatch_hatch
 from stratigraphy import GeologicalPolygon
 
 logger = logging.getLogger(__name__)
@@ -1230,6 +1231,10 @@ class ConsultingLayoutMixin:
                 if y < content_bottom + 0.02:
                     break
                 display = label
+                if kind == "text" and len(label) > max_label_chars:
+                    # "+N MORE UNITS (SEE LOG)": drop a word, never cut mid-word.
+                    label = label.replace(" UNITS", "")
+                    display = label
                 if len(label) > max_label_chars:
                     paren = label.rfind("(")
                     if paren > 0 and label.endswith(")") and len(label) - paren <= 14:
@@ -1248,7 +1253,10 @@ class ConsultingLayoutMixin:
                         facecolor=style["facecolor"],
                         edgecolor=style["edgecolor"],
                         linewidth=0.6,
-                        hatch=style.get("hatch"),
+                        hatch=legend_swatch_hatch(
+                            style.get("hatch"),
+                            swatch_h * ax.get_position().height * ax.figure.get_size_inches()[1],
+                        ),
                         transform=ax.transAxes,
                         clip_on=True,
                     )

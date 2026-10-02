@@ -319,3 +319,16 @@ def test_draw_leaves_figure_not_stale() -> None:
     renderer.to_png_bytes(figure, dpi=150)
     assert not collection.stale
     matplotlib.pyplot.close(figure)
+
+
+def test_legend_swatch_hatch_keeps_marks_on_short_swatches() -> None:
+    """A swatch shorter than one hatch row could miss every mark, so Sand
+    read as plain in a large-font portrait legend (template 261002: Sand is
+    dotted)."""
+    from renderer_common import legend_swatch_hatch
+
+    assert legend_swatch_hatch(".", 0.11) == ".."
+    assert legend_swatch_hatch(".", 0.25) == "."
+    assert legend_swatch_hatch("xxx", 0.05) == "xxx"  # already dense: capped
+    assert legend_swatch_hatch("", 0.05) == ""
+    assert legend_swatch_hatch(None, 0.05) is None

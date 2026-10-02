@@ -117,6 +117,21 @@ def thin_unit_densify_factor(
     return int(min(max_factor, max(min_factor, needed)))
 
 
+
+def legend_swatch_hatch(hatch: str | None, height_in: float) -> str | None:
+    """Hatch for a legend swatch ``height_in`` inches tall.
+
+    A swatch shorter than one hatch row can miss every mark (Sand then reads
+    as plain in the legend). Densify just enough that a row always lands
+    inside, with the same caps as thin beds; taller swatches keep the base.
+    """
+    if not hatch:
+        return hatch
+    factor = thin_unit_densify_factor(
+        height_in, min_height_in=BASE_HATCH_ROW_SPACING_IN, base_hatch=hatch
+    )
+    return densify_hatch(hatch, factor) if factor > 1 else hatch
+
 class ThinUnitHatchCollection(PolyCollection):
     """Lithology rectangles whose hatch is densified for thin intervals at draw time.
 

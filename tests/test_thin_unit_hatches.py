@@ -16,6 +16,7 @@ from renderer_common import (
     THIN_UNIT_MIN_HEIGHT_IN,
     ThinUnitHatchCollection,
     densify_hatch,
+    hatch_density,
     thin_unit_densify_factor,
 )
 from tests.conftest import assert_valid_svg, run_pipeline
@@ -90,7 +91,7 @@ def _sand_collection(figure) -> ThinUnitHatchCollection:
 
 def _rect_index_by_height(collection: ThinUnitHatchCollection) -> tuple[int, int]:
     """Return (thin_index, thick_index) from the data-space rect heights."""
-    heights = [abs(path.vertices[3, 1] - path.vertices[0, 1]) for path in collection._paths]
+    heights = [abs(path.vertices[3, 1] - path.vertices[0, 1]) for path in collection.get_paths()]
     assert len(heights) == 2
     thin = int(np.argmin(heights))
     thick = 1 - thin
@@ -107,7 +108,7 @@ def _thin_rect_dark_pixels(
     buffer = np.asarray(figure.canvas.buffer_rgba())
     height_px = buffer.shape[0]
     thin_index, _ = _rect_index_by_height(collection)
-    verts_px = collection.get_transform().transform(collection._paths[thin_index].vertices)
+    verts_px = collection.get_transform().transform(collection.get_paths()[thin_index].vertices)
     x0, x1 = verts_px[:, 0].min(), verts_px[:, 0].max()
     y0, y1 = verts_px[:, 1].min(), verts_px[:, 1].max()
     row0, row1 = int(round(height_px - y1)) + 2, int(round(height_px - y0)) - 2
@@ -233,4 +234,88 @@ def test_thin_hatch_section_exports_valid_svg_and_png() -> None:
     assert_valid_svg(svg_bytes)
     png_bytes = renderer.to_png_bytes(figure, dpi=150)
     assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+    matplotlib.pyplot.close(figure)
+
+
+@pytest.mark.parametrize(
+    ("hatch", "density"), [(".", 1), ("..", 2), ("xxx", 3), ("**", 2), ("/.", 2), ("", 1), (None, 1)]
+)
+def test_hatch_density_counts_pattern_characters(hatch, density) -> None:
+    assert hatch_density(hatch) == density
+
+
+@pytest.mark.parametrize("base", ["xxx", "**", "/.", "..", "\\\\", "XXXX"])
+def test_multi_char_base_hatch_never_exceeds_density_cap(base) -> None:
+    """Already-dense legend hatches must not be repeated into near-solid texture."""
+    for height in [0.0, 1e-4, *np.linspace(1e-3, 0.2, 60).tolist(), float("nan")]:
+        factor = thin_unit_densify_factor(float(height), base_hatch=base)
+        assert factor >= 1
+        assert len(base) * factor <= THIN_UNIT_MAX_DENSIFY or factor == 1
+        assert len(densify_hatch(base, factor)) <= max(len(base), THIN_UNIT_MAX_DENSIFY)
+
+
+def test_multi_char_base_hatch_factors() -> None:
+    # 'xxx' x2 would be 6 chars: never densified.
+    assert thin_unit_densify_factor(0.0, base_hatch="xxx") == 1
+    assert thin_unit_densify_factor(0.03, base_hatch="xxx") == 1
+    # Two-char bases are thin only below half the threshold, then capped at 2x.
+    half = THIN_UNIT_MIN_HEIGHT_IN / 2
+    for base in ("**", "/.", ".."):
+        assert thin_unit_densify_factor(0.08, base_hatch=base) == 1
+        assert thin_unit_densify_factor(half, base_hatch=base) == 1
+        assert thin_unit_densify_factor(half - 1e-3, base_hatch=base) == 2
+        assert thin_unit_densify_factor(0.0, base_hatch=base) == 2
+        assert densify_hatch(base, 2) == base * 2
+    # Single-char behaviour is unchanged by passing the base explicitly.
+    for height in (0.0, 0.01, 0.05, 0.08, 0.099, 0.1, 0.5):
+        assert thin_unit_densify_factor(height, base_hatch=".") == thin_unit_densify_factor(height)
+
+
+def test_thin_bed_with_multi_char_hatch_is_not_over_densified() -> None:
+    """A 0.3 m Bedrock / Flare Pit / Sand and Clay bed keeps the legend density."""
+    for code in ("Bedrock", "Flare Pit Material", "Sand and Clay"):
+        collars = [
+            Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=15.0),
+            Collar(hole_id="BH-02", easting=60.0, northing=0.0, elevation=100.0, total_depth=15.0),
+        ]
+        lithologies = [
+            Lithology(hole_id="BH-01", from_depth=0.0, to_depth=5.0, lithology_code="Clay"),
+            Lithology(hole_id="BH-01", from_depth=5.0, to_depth=5.3, lithology_code=code),
+            Lithology(hole_id="BH-01", from_depth=5.3, to_depth=15.0, lithology_code="Clay"),
+            Lithology(hole_id="BH-02", from_depth=0.0, to_depth=15.0, lithology_code="Clay"),
+        ]
+        projected, polygons, _ = run_pipeline(
+            collars, lithologies, [(0.0, 0.0), (60.0, 0.0)], show_hatches=True, show_legend=False
+        )
+        renderer = CrossSectionRenderer(
+            show_hatches=True, show_legend=False, render_profile=SECTION_SHEET_PROFILE
+        )
+        figure = renderer.render(
+            polygons, projected, collar_depths={"BH-01": 15.0, "BH-02": 15.0}
+        )
+        base = get_lithology_style(code).hatch
+        matches = [
+            c
+            for c in figure.axes[0].collections
+            if isinstance(c, ThinUnitHatchCollection) and c.base_hatch == base
+        ]
+        assert len(matches) == 1
+        figure.canvas.draw()
+        for resolved in matches[0].resolved_hatches:
+            assert len(resolved) <= max(len(base), THIN_UNIT_MAX_DENSIFY)
+        assert matches[0].resolved_hatches == [base], f"{code} 0.3 m bed should keep {base!r}"
+        matplotlib.pyplot.close(figure)
+
+
+def test_draw_leaves_figure_not_stale() -> None:
+    """Restoring the base hatch after a densified draw must not re-flag the figure stale."""
+    renderer, figure = _render()
+    collection = _sand_collection(figure)
+    figure.canvas.draw()
+    assert any(len(h) > 1 for h in collection.resolved_hatches), "thin bed was densified"
+    assert collection.get_hatch() == get_lithology_style("Sand").hatch
+    assert not collection.stale
+    assert not figure.stale
+    renderer.to_png_bytes(figure, dpi=150)
+    assert not collection.stale
     matplotlib.pyplot.close(figure)

@@ -40,16 +40,33 @@ def apply_true_value_y_axis(ax, ve: float) -> None:
 
 # Column intervals drawn shorter than this (in inches on the output page) get a
 # densified hatch so a sparse single-character pattern ('.', '/', 'O', '+')
-# still leaves visible marks. 0.1 in is ~28-30 px at 300 dpi.
+# still leaves visible marks. 0.1 in is ~28-30 px at 300 dpi.  For a base
+# hatch that is already N characters dense the threshold scales to 0.1 / N in,
+# because its rows are N times closer together (see ``hatch_density``).
 THIN_UNIT_MIN_HEIGHT_IN = 0.1
 # Matplotlib lays a single-character hatch out on a 1 in unit cell at
 # rcParams-independent density 6, i.e. rows of marks every 1/6 in; every
 # repeat of the character adds another 6 rows per inch.
 BASE_HATCH_ROW_SPACING_IN = 1.0 / 6.0
-# Densify at least 2x below the threshold and never beyond 4x so the pattern
-# still reads as the legend's stipple / diagonal rather than solid texture.
+# Total pattern density (base characters x repeat factor) stays within
+# [2, 4]: densify a single-character hatch at least 2x below the threshold and
+# never let any resolved hatch exceed 4 characters, so the pattern still reads
+# as the legend's stipple / diagonal rather than solid texture.  A base hatch
+# that is already 4+ characters ('xxx' is 3, so 2x would be 6) is never
+# densified.
 THIN_UNIT_MIN_DENSIFY = 2
 THIN_UNIT_MAX_DENSIFY = 4
+
+
+def hatch_density(hatch: str | None) -> int:
+    """Density of a matplotlib hatch relative to a single-character pattern.
+
+    ``'.'`` → 1, ``'..'`` → 2, ``'xxx'`` → 3.  Mixed patterns such as ``'/.'``
+    count every character (2) because the extra mark type adds texture even
+    though each individual mark type is still at single density.  Empty / None
+    (plain unit) is reported as 1 so callers can divide by it.
+    """
+    return max(1, len(hatch or ""))
 
 
 def densify_hatch(hatch: str | None, factor: int = THIN_UNIT_MIN_DENSIFY) -> str:
@@ -68,20 +85,36 @@ def thin_unit_densify_factor(
     height_in: float,
     *,
     min_height_in: float = THIN_UNIT_MIN_HEIGHT_IN,
+    base_hatch: str | None = ".",
 ) -> int:
     """Hatch repeat factor for an interval drawn ``height_in`` inches tall.
 
-    Returns 1 (base hatch) at or above ``min_height_in``.  Below it, the
-    smallest repeat whose row spacing fits inside the interval (so at least one
-    row of marks lands in the band whatever the pattern phase), clamped to
-    ``[THIN_UNIT_MIN_DENSIFY, THIN_UNIT_MAX_DENSIFY]``.
+    ``base_hatch`` is the legend pattern that will be repeated; its own density
+    (``hatch_density``) scales both the thin threshold and the row spacing, so
+    ``'..'`` is treated as thin below ``min_height_in / 2`` and ``'xxx'`` is
+    never densified (3 chars x 2 would exceed ``THIN_UNIT_MAX_DENSIFY``).
+
+    Returns 1 (base hatch) at or above the effective threshold.  Below it, the
+    smallest repeat whose effective row spacing fits inside the interval (so
+    at least one row of marks lands in the band whatever the pattern phase),
+    clamped so the resolved pattern density ``hatch_density(base) * factor``
+    lies in ``[THIN_UNIT_MIN_DENSIFY, THIN_UNIT_MAX_DENSIFY]``.  A
+    single-character base therefore gets a factor in ``[2, 4]``.
     """
-    if not np.isfinite(height_in) or height_in >= min_height_in:
+    density = hatch_density(base_hatch)
+    max_factor = THIN_UNIT_MAX_DENSIFY // density
+    if max_factor < 2:
+        # Base is already at least half the cap: a single repeat would exceed it.
         return 1
+    threshold_in = min_height_in / density
+    if not np.isfinite(height_in) or height_in >= threshold_in:
+        return 1
+    min_factor = max(1, -(-THIN_UNIT_MIN_DENSIFY // density))  # ceil division
     if height_in <= 0.0:
-        return THIN_UNIT_MAX_DENSIFY
-    needed = int(np.ceil(BASE_HATCH_ROW_SPACING_IN / height_in))
-    return int(min(THIN_UNIT_MAX_DENSIFY, max(THIN_UNIT_MIN_DENSIFY, needed)))
+        return max_factor
+    row_spacing_in = BASE_HATCH_ROW_SPACING_IN / density
+    needed = int(np.ceil(row_spacing_in / height_in))
+    return int(min(max_factor, max(min_factor, needed)))
 
 
 class ThinUnitHatchCollection(PolyCollection):
@@ -106,17 +139,18 @@ class ThinUnitHatchCollection(PolyCollection):
         super().__init__(verts, hatch=base_hatch or None, **kwargs)
         self.base_hatch = base_hatch or ""
         self.min_height_in = float(min_height_in)
-        self.resolved_hatches: list[str] = [self.base_hatch] * len(self._paths)
+        self.resolved_hatches: list[str] = [self.base_hatch] * len(self.get_paths())
 
     def _interval_heights_in(self) -> np.ndarray | None:
         """Drawn height of each rectangle in inches, or None when unknowable."""
         figure = self.get_figure()
-        if figure is None or not self._paths:
+        paths = self.get_paths()
+        if figure is None or not paths:
             return None
         dpi = float(getattr(figure, "dpi", 0.0) or 0.0)
         if dpi <= 0.0:
             return None
-        verts = np.asarray([path.vertices for path in self._paths], dtype=float)
+        verts = np.asarray([path.vertices for path in paths], dtype=float)
         if verts.ndim != 3 or verts.shape[1] < 4:
             return None
         # Rect verts are (x_left, y0), (x_right, y0), (x_right, y_top), (x_left, y_top).
@@ -131,9 +165,14 @@ class ThinUnitHatchCollection(PolyCollection):
         """Per-rectangle hatch repeat factor for the current figure transform."""
         heights = self._interval_heights_in()
         if heights is None:
-            return np.ones(len(self._paths), dtype=int)
+            return np.ones(len(self.get_paths()), dtype=int)
         return np.asarray(
-            [thin_unit_densify_factor(float(h), min_height_in=self.min_height_in) for h in heights],
+            [
+                thin_unit_densify_factor(
+                    float(h), min_height_in=self.min_height_in, base_hatch=self.base_hatch
+                )
+                for h in heights
+            ],
             dtype=int,
         )
 
@@ -149,7 +188,7 @@ class ThinUnitHatchCollection(PolyCollection):
         self.resolved_hatches = [densify_hatch(self.base_hatch, int(f)) for f in factors]
         distinct = sorted({int(f) for f in factors})
         if distinct == [1]:
-            self.set_hatch(self.base_hatch)
+            self._set_hatch_quietly(self.base_hatch)
             super().draw(renderer)
             return
         all_paths = self._paths
@@ -159,11 +198,19 @@ class ThinUnitHatchCollection(PolyCollection):
                     path for path, f in zip(all_paths, factors, strict=True) if int(f) == factor
                 ]
                 self._paths = subset
-                self.set_hatch(densify_hatch(self.base_hatch, factor))
+                self._set_hatch_quietly(densify_hatch(self.base_hatch, factor))
                 super().draw(renderer)
         finally:
+            # Restore the base hatch without ``set_hatch``: that marks the
+            # collection (and hence the figure) stale after every draw, which
+            # would force a redundant redraw on the next savefig / canvas.draw.
             self._paths = all_paths
-            self.set_hatch(self.base_hatch)
+            self._set_hatch_quietly(self.base_hatch)
+
+    def _set_hatch_quietly(self, hatch: str) -> None:
+        """Swap the draw-time hatch without flagging the artist stale."""
+        if self.get_hatch() != hatch:
+            self._hatch = hatch
 
 
 class RendererGeometryMixin:

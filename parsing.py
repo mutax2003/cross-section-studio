@@ -883,6 +883,17 @@ class DataParser:
                 errors.append(f"Field Data row {row_num}: unknown hole_id '{hole_id}'")
                 continue
 
+            if ova_color_col is not None and ova_color_col == ec_color_col:
+                # Shared colour column: validate once so a bad cell yields a
+                # single error for the row rather than one per parameter.
+                try:
+                    EnvironmentalReading.normalise_label_color(
+                        _color_value(payload, ova_color_col)
+                    )
+                except Exception as exc:
+                    errors.append(f"Field Data row {row_num}: {_short_error(exc)}")
+                    continue
+
             if ova_value is not None:
                 try:
                     readings.append(

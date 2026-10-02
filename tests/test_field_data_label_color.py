@@ -49,11 +49,12 @@ def test_field_data_label_color_column_is_applied_and_validated() -> None:
     assert _by_interval(readings, "OVA", 0.15).label_color == ""
     assert _by_interval(readings, "EC", 0.15).label_color == ""
 
-    # The reserved colour is rejected for both readings on that row, not kept silently.
+    # The reserved colour is rejected once for the row (not once per OVA/EC
+    # reading) so the Validate "rows skipped" count matches the sheet.
     assert not any(abs((r.from_depth or 0.0) - 0.30) < 1e-9 for r in readings)
     blue_errors = [e for e in result.errors if "Field Data row 4" in e and "reserved" in e]
-    assert len(blue_errors) == 2, result.errors
-    assert all("label_color" in e for e in blue_errors)
+    assert len(blue_errors) == 1, result.errors
+    assert "label_color" in blue_errors[0]
     assert len(readings) == 4
 
 

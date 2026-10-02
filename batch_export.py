@@ -113,6 +113,9 @@ def parse_batch_transect_lines(text: str) -> list[BatchTransectSpec]:
 _SECTION_ENDS_RE = re.compile(r"^\s*([A-Za-z0-9]+)\s*[-\u2013]\s*([A-Za-z0-9]+['\u2032\u2019]*)\s*$")
 
 
+_TITLE_SECTION_LABEL_RE = re.compile(r"\b([A-Za-z0-9]{1,3})\s*[-\u2013]\s*\1['\u2032\u2019]")
+
+
 def _section_end_letters(label: str) -> tuple[str, str]:
     """``"B-B'"`` → ``("B", "B'")``; anything else → no end letters.
 
@@ -147,6 +150,30 @@ def _consulting_for_spec(
     return base.model_copy(update={"section_label": label or base.section_label, **ends})
 
 
+
+def _batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
+    """Title for one batch transect.
+
+    The base title usually names the base section ("Site X A-A'"); swap that
+    label for this line's instead of appending ("Site X A-A' — B-B'").
+    """
+    title = base_request.section_title
+    if not label:
+        return title
+    block = base_request.consulting_title_block
+    base_label = (block.section_label if block else "").strip()
+    if base_label and base_label != label and base_label in title:
+        return title.replace(base_label, label)
+    if label in title:
+        return title
+    # No title block (section-sheet styles): look for an "A-A'" style label.
+    match = _TITLE_SECTION_LABEL_RE.search(title)
+    if match is not None and _SECTION_ENDS_RE.match(label):
+        return title[: match.start()] + label + title[match.end() :]
+    if label in title:
+        return title
+    return f"{title} — {label}"
+
 def prepare_batch_section_request(
     parse_result: ParseResult,
     base_request: SectionBuildRequest,
@@ -164,9 +191,7 @@ def prepare_batch_section_request(
     points = spec.transect_points or transect_points_from_collars(
         parse_result.collars, spec.hole_ids
     )
-    title = base_request.section_title
-    if spec.label and not title.endswith(f"— {spec.label}"):
-        title = f"{base_request.section_title} — {spec.label}"
+    title = _batch_section_title(base_request, spec.label)
     consulting = _consulting_for_spec(
         base_request.consulting_title_block,
         label=spec.label,

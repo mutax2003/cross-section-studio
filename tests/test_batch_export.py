@@ -212,3 +212,22 @@ def test_batch_end_labels_use_section_letters_not_hole_ids() -> None:
     free = _consulting_for_spec(None, label="North transect", hole_ids=("BH-1", "BH-2"))
     assert free.transect_start_primary == free.transect_end_primary == ""
     assert "BH-1" not in (free.transect_start_label, free.transect_end_label)
+
+
+def test_batch_title_swaps_the_base_section_label() -> None:
+    """The base title named A-A' and every batch figure was titled
+    "<title> A-A' — B-B'"."""
+    from batch_export import _batch_section_title
+    from models import ConsultingTitleBlock
+
+    class _Req:
+        def __init__(self, title, block=None):
+            self.section_title = title
+            self.consulting_title_block = block
+
+    assert _batch_section_title(_Req("Test Section A-A'"), "B-B'") == "Test Section B-B'"
+    assert _batch_section_title(_Req("Site 4 – A–A′"), "C-C'") == "Site 4 – C-C'"
+    block = ConsultingTitleBlock(section_label="North")
+    assert _batch_section_title(_Req("North line", block), "South") == "South line"
+    assert _batch_section_title(_Req("Borehole Cross-Section"), "B-B'") == "Borehole Cross-Section — B-B'"
+    assert _batch_section_title(_Req("Plan"), "North line") == "Plan — North line"

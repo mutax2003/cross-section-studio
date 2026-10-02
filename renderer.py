@@ -1116,7 +1116,10 @@ class CrossSectionRenderer(
         ):
             # Portrait pages are narrower: give the twin RL axis label room.
             figure.subplots_adjust(right=0.925)
+        # Consulting sheets: keep RL axis labels on the page (no-op otherwise).
+        self.fit_consulting_page_margins(figure)
         if tuple(figure.get_size_inches()) == tuple(getattr(figure, "_css_prepared_size", ())):
+            self.refit_consulting_fitted_text(figure)
             return figure  # already prepared at this size: label passes are current
         figure._css_prepared_size = tuple(figure.get_size_inches())
         # Page sizing moves every artist; redo label placement for the new page.
@@ -1125,7 +1128,7 @@ class CrossSectionRenderer(
         water = getattr(self, "_water_labels", None) or []
         if water and all(annotation.figure is figure for _kind, annotation, _c in water):
             self._resolve_water_label_collisions(figure)
-        # Fitted title-block / band text was measured at the render size.
+        # Fitted title-block / band / notes text was measured at the render size.
         self.refit_consulting_fitted_text(figure)
         return figure
 

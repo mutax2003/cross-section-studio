@@ -374,3 +374,110 @@ def test_long_label_band_title_fits_centre_panel(two_hole_section) -> None:
         assert box.x0 >= panel.x0 - gutter and box.x1 <= panel.x1 + gutter, text.get_text()
         for other in neighbours:
             assert not box.overlaps(other.get_window_extent(renderer)), (text.get_text(), other.get_text())
+
+
+# --- (6) long notes / prepared-for / portrait at every export size -----------
+
+E2E_NOTES = (
+    "Stratigraphy interpolated between boreholes; actual conditions may vary between locations.",
+    "Groundwater levels measured June 2025 and may fluctuate seasonally.",
+    "Chloride results in mg/L; see Table 2 for laboratory analytical data.",
+    "Interpreted fence diagram — contacts are linear between adjacent boreholes. Groundwater "
+    "markers/lines are schematic linear connectors between measured levels — not a "
+    "potentiometric surface.",
+)
+
+
+@pytest.fixture(scope="module")
+def ten_hole_sheet():
+    collars, lith, water, readings = [], [], [], []
+    sequence = [
+        (0.0, 0.5, "Topsoil"),
+        (0.5, 3.0, "Sandy Clay"),
+        (3.0, 7.0, "Sand"),
+        (7.0, 9.0, "Clay"),
+        (9.0, 12.0, "Bedrock"),
+    ]
+    for i in range(10):
+        hole = f"BH-{i + 1:02d}"
+        collars.append(
+            Collar(hole_id=hole, easting=i * 25.0, northing=0.0, elevation=100.0 - i * 0.3, total_depth=12.0)
+        )
+        lith += [
+            Lithology(hole_id=hole, from_depth=a, to_depth=b, lithology_code=code) for a, b, code in sequence
+        ]
+        water.append(WaterLevel(hole_id=hole, depth=2.5 + 0.1 * i))
+        readings.append(
+            EnvironmentalReading(hole_id=hole, parameter="Chloride", value=5.0 + i * 3, depth=4.0, unit="mg/L")
+        )
+    projected, polygons, _ = run_pipeline(collars, lith, [(0.0, 0.0), (225.0, 0.0)])
+    block = ConsultingTitleBlock(
+        section_label="A-A'",
+        transect_start_label="A",
+        transect_end_label="A'",
+        figure_number="3",
+        project_number="PRJ-2026-0142",
+        date="2026-10-02",
+        drawn_by="AL",
+        prepared_for="Northern Prairie Midstream Holdings Ltd.",
+        prepared_by="Ecoventure Environmental Consulting Inc.",
+        notes=E2E_NOTES,
+    )
+    return projected, polygons, water, readings, block
+
+
+def _drawn_texts(figure):
+    """Texts that are actually drawn (no tick labels on axis-off panels)."""
+    texts = []
+    for ax in figure.axes:
+        texts += [t for t in ax.texts if t.get_visible() and t.get_text().strip()]
+        if not ax.axison:
+            continue
+        for axis in (ax.xaxis, ax.yaxis):
+            if axis.label.get_visible() and axis.label.get_text().strip():
+                texts.append(axis.label)
+            for tick in axis._update_ticks():
+                texts += [lab for lab in (tick.label1, tick.label2) if lab.get_visible() and lab.get_text().strip()]
+    return texts
+
+
+@pytest.mark.parametrize("page_preset", ["letter_landscape", "letter_portrait"])
+@pytest.mark.parametrize("export_font_size", [8.0, 11.0, 14.0])
+def test_long_notes_and_prepared_values_stay_on_page_and_apart(
+    ten_hole_sheet, page_preset: str, export_font_size: float
+) -> None:
+    projected, polygons, water, readings, block = ten_hole_sheet
+    profile = CONSULTING_SECTION_PROFILE.model_copy(update={"export_font_size": export_font_size})
+    renderer = CrossSectionRenderer(
+        show_legend=True,
+        render_profile=profile,
+        consulting_title_block=block,
+        environmental_readings=readings,
+        environmental_parameters=("Chloride",),
+        export_framing=ExportFramingConfig(page_preset=page_preset),
+    )
+    figure = renderer.render(
+        polygons, projected, collar_depths={c: 12.0 for c in projected["hole_id"].unique()}, water_levels=water
+    )
+    renderer.to_png_bytes(figure, dpi=72)
+    figure.draw_without_rendering()
+    page = figure.bbox
+    main_axes = {id(figure.axes[0])} | {
+        id(ax) for ax in figure.axes if ax.bbox.bounds == figure.axes[0].bbox.bounds
+    }
+    boxes = [(t, t.get_window_extent()) for t in _drawn_texts(figure)]
+    off_page = [
+        t.get_text()[:40]
+        for t, b in boxes
+        if b.x0 < -1 or b.y0 < -1 or b.x1 > page.width + 1 or b.y1 > page.height + 1
+    ]
+    assert off_page == [], off_page
+    # Notes, title-block and prepared-for/by text (everything below the plot).
+    sheet = [(t, b) for t, b in boxes if t.axes is not None and id(t.axes) not in main_axes and b.width > 0]
+    assert any(t.get_text().startswith("1. ") for t, _b in sheet)
+    clashes = [
+        (t1.get_text()[:30], t2.get_text()[:30])
+        for (t1, b1), (t2, b2) in itertools.combinations(sheet, 2)
+        if min(b1.x1, b2.x1) - max(b1.x0, b2.x0) > 1.0 and min(b1.y1, b2.y1) - max(b1.y0, b2.y0) > 1.0
+    ]
+    assert clashes == [], clashes

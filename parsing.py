@@ -830,6 +830,21 @@ class DataParser:
             (name for name in ("depth", "depth_interval") if name in columns),
             None,
         )
+        # Optional label colour: per-parameter columns win, else a shared
+        # ``label_color`` applies to both OVA and EC (``label_colour`` is
+        # already folded by _normalize_columns). Absent → "" as before.
+        shared_color_col = "label_color" if "label_color" in columns else None
+        ova_color_col = "ova_label_color" if "ova_label_color" in columns else shared_color_col
+        ec_color_col = "ec_label_color" if "ec_label_color" in columns else shared_color_col
+
+        def _color_value(payload: dict[str, object], column: str | None) -> str:
+            if column is None:
+                return ""
+            raw = payload.get(column)
+            if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+                return ""
+            return _clean_text(raw)
+
         valid_hole_ids = {collar.hole_id for collar in collars}
         readings: list[EnvironmentalReading] = []
         errors: list[str] = []
@@ -879,11 +894,12 @@ class DataParser:
                                 "from_depth": from_depth,
                                 "to_depth": to_depth,
                                 "unit": "ppm",
+                                "label_color": _color_value(payload, ova_color_col),
                             }
                         )
                     )
                 except Exception as exc:
-                    errors.append(f"Field Data row {row_num}: {exc}")
+                    errors.append(f"Field Data row {row_num}: {_short_error(exc)}")
             if ec_value is not None:
                 try:
                     readings.append(
@@ -895,11 +911,12 @@ class DataParser:
                                 "from_depth": from_depth,
                                 "to_depth": to_depth,
                                 "unit": "",
+                                "label_color": _color_value(payload, ec_color_col),
                             }
                         )
                     )
                 except Exception as exc:
-                    errors.append(f"Field Data row {row_num}: {exc}")
+                    errors.append(f"Field Data row {row_num}: {_short_error(exc)}")
         return readings, errors
 
     def _parse_field_data_environmental_sheet(

@@ -39,7 +39,12 @@ from models import (
     WaterLevel,
 )
 from projection import DEFAULT_OFFSET_WARNING_M, project_boreholes, transect_azimuth_deg
-from render_profiles import ChemistryLabelStyle, profile_for_layout, profile_with_elevation_mode
+from render_profiles import (
+    ChemistryLabelStyle,
+    LayoutMode,
+    profile_for_layout,
+    profile_with_elevation_mode,
+)
 from render_theme import filter_water_levels_for_plot
 from renderer import CrossSectionRenderer
 from stratigraphy import (
@@ -299,6 +304,15 @@ def compute_section_geometry(
     )
 
 
+
+def _check_render_layout(render_layout: str) -> None:
+    """Reject unknown layouts; profile_for_layout would silently fall back."""
+    if render_layout not in get_args(LayoutMode):
+        raise ValueError(
+            f"render_layout must be one of {get_args(LayoutMode)} (got {render_layout!r})"
+        )
+
+
 def build_cross_section(
     collars: Sequence[Collar],
     lithologies: Sequence[Lithology],
@@ -373,6 +387,7 @@ def build_cross_section(
         raise ValueError("uncertainty_offset_m must be a positive finite number")
     if not math.isfinite(track_width_m) or track_width_m <= 0:
         raise ValueError("track_width_m must be a positive finite number")
+    _check_render_layout(render_layout)
     geometry = compute_section_geometry(
         collars,
         lithologies,
@@ -538,6 +553,7 @@ def render_cross_section_from_geometry(
         max_offset_m=max_offset,
     )
 
+    _check_render_layout(render_layout)
     base_profile = profile_for_layout(render_layout)  # type: ignore[arg-type]
     profile_updates: dict[str, object] = {
         "show_ground_surface": show_ground_surface,

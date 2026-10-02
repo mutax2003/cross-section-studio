@@ -437,3 +437,19 @@ def test_borehole_only_draws_logs_beyond_the_interpolation_offset() -> None:
         max_offset_for_interpolation_m=50.0,
     )
     assert polygons == [] and assert_valid_svg(svg_bytes) is None
+
+
+def test_unknown_render_layout_is_rejected() -> None:
+    """An unknown layout used to fall back silently to the section sheet."""
+    import pytest
+
+    from models import Collar, Lithology
+    from pipeline import build_cross_section
+
+    collars = [
+        Collar(hole_id=h, easting=10.0 * i, northing=0.0, elevation=100.0, total_depth=5.0)
+        for i, h in enumerate(("BH-1", "BH-2"))
+    ]
+    liths = [Lithology(hole_id=c.hole_id, from_depth=0.0, to_depth=5.0, lithology_code="Clay") for c in collars]
+    with pytest.raises(ValueError, match="render_layout"):
+        build_cross_section(collars, liths, [(0.0, 0.0), (10.0, 0.0)], render_layout="consulting")

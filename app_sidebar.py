@@ -348,11 +348,25 @@ def render_sidebar() -> SidebarState:
         )
         if lock_interp and preset_config.interpretation_mode is not None:
             interpretation_mode = preset_config.interpretation_mode
+        # Generic consulting sheets always build without pinch-outs (see
+        # app_build.effective_render_options); lock the toggle rather than
+        # show a setting the figure ignores.
+        consulting_locks_pinch_outs = (
+            preset_config.render_layout == "consulting_section" and not sample_figure
+        )
+        if consulting_locks_pinch_outs:
+            st.session_state.allow_pinch_outs = False
         allow_pinch_outs = st.toggle(
             "Show layers that thin out between holes",
             key="allow_pinch_outs",
-            disabled=interpretation_mode == "borehole_only" or sample_figure,
-            help="When off, units logged in only one hole are not inferred across the section (pinch-outs).",
+            disabled=interpretation_mode == "borehole_only"
+            or sample_figure
+            or consulting_locks_pinch_outs,
+            help=(
+                "Consulting report sheets always draw without pinch-outs."
+                if consulting_locks_pinch_outs
+                else "When off, units logged in only one hole are not inferred across the section (pinch-outs)."
+            ),
         )
         show_ground_surface = st.toggle(
             "Show ground surface (collar RL)",

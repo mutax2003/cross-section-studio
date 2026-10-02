@@ -336,7 +336,8 @@ def test_sections_tab_drop_down_drives_the_preview(tmp_path: Path) -> None:
     assert not at.exception
     assert not [sb for sb in at.selectbox if sb.key == "workbook_section_choice"]
     assert at.session_state["consulting_section_label"] != "A-A'"
-    assert at.session_state.get("hole_sequence_multiselect") == ["BH-01", "BH-02", "BH-03", "BH-04"]
+    # A small workbook without a Sections tab starts with every hole.
+    assert at.session_state.get("hole_sequence_multiselect") == ["BH-01", "BH-02", "BH-03", "BH-04", "BH-05"]
 
 
 def test_clear_then_sample_drops_project_fields_and_opens_unblocked(sample_workbook: Path) -> None:

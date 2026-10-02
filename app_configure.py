@@ -106,7 +106,7 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
             st.session_state.hole_sequence_multiselect = (
                 [h for h in specs[0].hole_ids if h in hole_ids]
                 if specs
-                else hole_ids[: min(4, len(hole_ids))]
+                else default_hole_sequence(hole_ids)
             )
         selected_holes = st.multiselect(
             "Hole sequence",
@@ -803,10 +803,24 @@ def _plan_view_chart(chart_df: pd.DataFrame, color_col: str | None):
     return chart.properties(height=300)
 
 
+
+# A workbook with this many holes or fewer is usually one section listed in
+# order (e.g. a B-B' test workbook), so start with all of them; larger
+# multi-transect workbooks start on the first few holes.
+ALL_HOLES_DEFAULT_MAX = 10
+PARTIAL_DEFAULT_HOLES = 4
+
+
+def default_hole_sequence(hole_ids: list[str]) -> list[str]:
+    """Initial "By hole sequence" selection when the workbook has no Sections tab."""
+    if len(hole_ids) <= ALL_HOLES_DEFAULT_MAX:
+        return list(hole_ids)
+    return list(hole_ids[:PARTIAL_DEFAULT_HOLES])
+
 def _render_hole_sequence_order(hole_ids: list[str]) -> None:
     """Numbered hole order with Up/Down (first-class fence sequence)."""
     if "hole_sequence_multiselect" not in st.session_state:
-        st.session_state.hole_sequence_multiselect = hole_ids[: min(4, len(hole_ids))]
+        st.session_state.hole_sequence_multiselect = default_hole_sequence(hole_ids)
     sequence: list[str] = list(st.session_state.hole_sequence_multiselect)
     if not sequence:
         return

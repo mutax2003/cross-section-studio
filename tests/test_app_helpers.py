@@ -260,3 +260,14 @@ def test_plan_view_chart_fits_axes_to_utm_collars() -> None:
     assert spec["encoding"]["color"]["field"] == "selected"
     assert "color" not in _plan_view_chart(frame, None).to_dict()["encoding"]
 
+
+
+def test_default_hole_sequence_takes_every_hole_of_a_small_workbook() -> None:
+    """A 7-hole B-B' workbook opened on only its first 4 holes."""
+    from app_configure import default_hole_sequence
+
+    seven = [f"BH-{i}" for i in range(1, 8)]
+    assert default_hole_sequence(seven) == seven
+    many = [f"BH-{i}" for i in range(1, 24)]
+    assert default_hole_sequence(many) == many[:4]
+    assert default_hole_sequence(["A", "B"]) == ["A", "B"]

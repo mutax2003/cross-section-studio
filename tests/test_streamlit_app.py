@@ -314,6 +314,7 @@ def test_sections_tab_drop_down_drives_the_preview(tmp_path: Path) -> None:
     assert not at.exception
     assert at.session_state["hole_sequence_multiselect"] == ["BH-03", "BH-04", "BH-05"]
     assert at.session_state["consulting_section_label"] == "B-B'"
+    assert at.session_state["section_title"] == "B-B'"  # file names and metadata follow
 
     # Picking a section while the Consulting layout (with its "Section label"
     # text box) is active used to raise StreamlitWidgetAlreadyInstantiatedError.
@@ -336,3 +337,30 @@ def test_sections_tab_drop_down_drives_the_preview(tmp_path: Path) -> None:
     assert not [sb for sb in at.selectbox if sb.key == "workbook_section_choice"]
     assert at.session_state["consulting_section_label"] != "A-A'"
     assert at.session_state.get("hole_sequence_multiselect") == ["BH-01", "BH-02", "BH-03", "BH-04"]
+
+
+def test_clear_then_sample_drops_project_fields_and_opens_unblocked(sample_workbook: Path) -> None:
+    """The title block fields seeded from a Project tab leaked onto the next
+    workbook, and the demo opened on a blocked Generate under the consulting
+    preset (its pinch-out overlaps are blocked by default)."""
+    from streamlit.testing.v1 import AppTest
+
+    from workbook_template import build_input_template_bytes
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("template.xlsx", build_input_template_bytes()).run()
+    assert not at.exception
+    # One-shot upload banner: read it on the run that shows it.
+    assert any("template's sample values" in w.value for w in at.warning)
+    at.run()
+    assert at.session_state["consulting_section_label"] == "A - A' WITH CHLORIDE AVERAGES"
+    at.session_state["output_preset"] = "consulting_report"
+    at.run()
+    [btn for btn in at.button if btn.label == "Clear workbook"][0].click().run()
+    [btn for btn in at.button if btn.label == "Try sample project"][0].click().run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["consulting_section_label"] != "A - A' WITH CHLORIDE AVERAGES"
+    assert not any("Polygon overlaps detected" in e.value for e in at.error)
+    assert at.session_state.get("fail_on_overlaps_checkbox") is False

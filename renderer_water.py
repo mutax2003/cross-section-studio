@@ -409,6 +409,17 @@ class RendererWaterMixin:
             for text in ax.texts:
                 if id(text) not in water_artists and text.get_visible() and text.get_text().strip():
                     placed.append(text.get_window_extent(renderer).padded(pad))
+        # Tick labels too — the twin RL axis on consulting sheets sits exactly
+        # where a last-hole value label wants to go.
+        fig.draw_without_rendering()
+        for ax in fig.axes:
+            if not ax.get_visible():
+                continue
+            for tick in _drawn_tick_labels(ax.xaxis, ax.get_xlim()) + _drawn_tick_labels(
+                ax.yaxis, ax.get_ylim()
+            ):
+                if tick.get_visible() and tick.get_text().strip():
+                    placed.append(tick.get_window_extent(renderer).padded(pad))
         # Borehole columns are obstacles for value labels: a label over a
         # column hides the stick/markers, and over a neighbour's column it
         # misattributes the value.

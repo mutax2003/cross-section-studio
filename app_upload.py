@@ -45,6 +45,8 @@ def _forget_previous_transect() -> None:
     st.session_state.pop("workbook_section_choice", None)
     st.session_state.pop("_workbook_section_applied", None)
     st.session_state["_reset_consulting_section_label"] = True
+    # Project-seeded title block fields belong to the workbook being dropped.
+    st.session_state["_reset_project_seed"] = True
 
 
 def clear_workbook_session() -> None:
@@ -174,6 +176,9 @@ def load_sample_workbook() -> None:
             "Run: python scripts/generate_sample_data.py"
         )
     data = sample_path.read_bytes()
+    # The demo must never open on a blocked Generate: the sample has pinch-out
+    # overlaps, which the consulting preset blocks by default.
+    queue_session_values(fail_on_overlaps_checkbox=False)
     st.session_state.file_bytes = data
     st.session_state.uploaded_name = sample_path.name
     st.session_state.file_hash = hashlib.sha256(data).hexdigest()[:24]
@@ -317,8 +322,46 @@ def _seed_consulting_fields_from_project_metadata(project: dict[str, str]) -> No
         st.session_state[_PENDING_PROJECT_SEED_KEY] = pending
 
 
+# Widget keys the Project tab (or the Section picker) seeds; cleared together
+# when the workbook goes away so nothing leaks onto the next one.
+PROJECT_SEEDED_KEYS: tuple[str, ...] = (
+    "consulting_prepared_for",
+    "consulting_prepared_by",
+    "consulting_project_number",
+    "consulting_section_label",
+    "consulting_date",
+    "consulting_drawn_by",
+    "consulting_source",
+    "consulting_map_scale",
+    "consulting_notes",
+    "consulting_start_label",
+    "consulting_start_primary",
+    "consulting_start_secondary",
+    "consulting_end_label",
+    "consulting_end_primary",
+    "consulting_end_secondary",
+    "section_title",
+)
+
+
+def queue_session_values(**values: object) -> None:
+    """Set widget-backed session values on the NEXT run, before widgets exist.
+
+    Writing a widget key after its widget was drawn raises; the sidebar
+    applies this queue first thing each run.
+    """
+    pending = st.session_state.get(_PENDING_PROJECT_SEED_KEY)
+    if not isinstance(pending, dict):
+        pending = {}
+    pending.update(values)
+    st.session_state[_PENDING_PROJECT_SEED_KEY] = pending
+
+
 def apply_pending_project_seed() -> None:
     """Apply queued Project metadata before sidebar widgets are created."""
+    if st.session_state.pop("_reset_project_seed", False):
+        for key in PROJECT_SEEDED_KEYS:
+            st.session_state.pop(key, None)
     pending = st.session_state.pop(_PENDING_PROJECT_SEED_KEY, None)
     if not isinstance(pending, dict):
         return
@@ -456,6 +499,20 @@ def handle_workbook_upload(
                 info_parts.append(
                     "Seeded consulting report fields from Project metadata."
                 )
+                from workbook_template import _sample_project
+
+                sample = _sample_project()
+                stale = [
+                    key
+                    for key in ("client_name", "project_number", "report_date", "section_title")
+                    if str(project_metadata.get(key, "")).strip() == sample.get(key, "")
+                ]
+                if stale:
+                    st.session_state.upload_banner_caution = (
+                        "The Project tab still holds the template's sample values for "
+                        f"{', '.join(stale)} (e.g. {sample['client_name']}); they will print on "
+                        "the title block — update them before issuing figures."
+                    )
             st.session_state.upload_banner_success = (
                 f"Loaded **{len(hole_ids)}** boreholes and "
                 f"**{len(parse_result.lithologies)}** lithology intervals."
@@ -507,6 +564,9 @@ def handle_workbook_upload(
         )
         with st.expander(f"Show skipped rows ({len(skipped)})"):
             st.markdown("\n".join(f"- {message}" for message in skipped[:50]))
+    caution = st.session_state.pop("upload_banner_caution", None)
+    if caution:
+        st.warning(caution)
     info_banner = st.session_state.pop("upload_banner_info", None)
     if info_banner:
         st.info(info_banner)

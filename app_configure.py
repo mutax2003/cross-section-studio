@@ -19,6 +19,7 @@ from app_common import (
     safe_lithology_index,
 )
 from app_services import cached_configure_preflight, cached_recommend_transects
+from app_upload import queue_session_values
 from models import CorrelationOverride, ParseResult, subset_parse_result
 from render_profiles import ChemistryLabelStyle
 
@@ -185,11 +186,10 @@ def queue_consulting_section_label(label: str | None) -> None:
     if label is None:
         st.session_state["_reset_consulting_section_label"] = True
         return
-    pending = st.session_state.get("_pending_project_seed")
-    if not isinstance(pending, dict):
-        pending = {}
-    pending["consulting_section_label"] = label
-    st.session_state["_pending_project_seed"] = pending
+    # Both the consulting sheet label and the figure/file title: exports name
+    # files and metadata from section_title, which otherwise kept the
+    # previous section's name.
+    queue_session_values(consulting_section_label=label, section_title=label)
 
 
 def render_configure_step(

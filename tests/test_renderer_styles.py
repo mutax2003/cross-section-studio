@@ -1197,3 +1197,24 @@ def test_last_hole_value_labels_stay_on_the_page() -> None:
     figure = renderer.render(polygons, projected, collar_depths={h: 8.0 for h in ids})
     figure.draw_without_rendering()
     assert not [t for t in _texts_outside_page(figure) if t.startswith("100")]
+    # ...and they do not sit on the twin RL axis tick numbers either.
+    from matplotlib.text import Text
+
+    from renderer_water import _drawn_tick_labels, _overlap_area
+
+    mpl_renderer = figure.canvas.get_renderer()
+    values = [Text.get_window_extent(a, mpl_renderer) for k, a, _c in renderer._water_labels if k == "chem"]
+    ticks = [
+        t.get_window_extent(mpl_renderer)
+        for ax in figure.axes
+        for t in _drawn_tick_labels(ax.yaxis, ax.get_ylim())
+        if t.get_visible() and t.get_text().strip()
+    ]
+    assert values and not any(_overlap_area(v, t) > 0 for v in values for t in ticks)
+
+
+def test_unknown_lithology_codes_get_distinct_fallback_styles() -> None:
+    styles = {code: get_lithology_style(code) for code in ("CL", "SM", "TILL", "GP")}
+    assert all(s.color.startswith("#") and len(s.hatch) >= 2 for s in styles.values())
+    assert len({(s.color, s.hatch) for s in styles.values()}) >= 3  # not one grey for all
+    assert get_lithology_style("CL") == get_lithology_style("cl")  # stable per code

@@ -242,9 +242,11 @@ def _render_lithology_legend(codes: list[str]) -> None:
         st.caption("Legend appears after you generate a cross-section.")
         return
     rows = []
+    show_hatches = bool(st.session_state.get("show_hatches", True))
     for code in sorted(codes):
         style = get_lithology_style(code)
-        hatch_bg = legend_hatch_background(style.hatch)
+        # Match the figure: hatches off in the sidebar means plain swatches here too.
+        hatch_bg = legend_hatch_background(style.hatch if show_hatches else "")
         color = normalize_hex_colour(style.color) or DEFAULT_LITHOLOGY_COLOR
         rows.append(
             f'<div class="legend-row">'

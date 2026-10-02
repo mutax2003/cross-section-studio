@@ -30,6 +30,15 @@ _BASE_LITHOLOGY_COLORS: dict[str, str] = {
 }
 
 DEFAULT_LITHOLOGY_COLOR = "#B8B8B8"
+# Codes outside the scheme cycle through these so two unknown units on one
+# section do not look identical (first entry = the historic default).
+FALLBACK_LITHOLOGY_STYLES: tuple[tuple[str, str], ...] = (
+    ("#B8B8B8", "++"),
+    ("#A3A3A3", "xx"),
+    ("#CFCFCF", "//"),
+    ("#8F8F8F", "\\\\"),
+    ("#DEDEDE", "oo"),
+)
 DEFAULT_LITHOLOGY_HATCH = "++"  # "+" covers any remaining type
 HATCH_LINE_COLOR = "#323232"  # mark colour in the CAD template
 POLYGON_EDGE_COLOR = "#2C2C2C"
@@ -227,6 +236,12 @@ class LithologyStyle:
     edge_color: str = POLYGON_EDGE_COLOR
 
 
+def _fallback_style_for(lithology_code: str) -> tuple[str, str]:
+    key = lithology_code.strip().casefold()
+    digest = sum((index + 1) * ord(char) for index, char in enumerate(key))
+    return FALLBACK_LITHOLOGY_STYLES[digest % len(FALLBACK_LITHOLOGY_STYLES)]
+
+
 @lru_cache(maxsize=256)
 def get_lithology_style(
     lithology_code: str,
@@ -248,13 +263,14 @@ def get_lithology_style(
     color = palette.get(lithology_code)
     if color is None:
         lowered = {key.casefold(): value for key, value in palette.items()}
-        color = lowered.get(lithology_code.casefold(), DEFAULT_LITHOLOGY_COLOR)
+        fallback = _fallback_style_for(lithology_code)
+        color = lowered.get(lithology_code.casefold(), fallback[0])
     hatch = ""
     if use_hatch:
         hatch = USGS_LITHOLOGY_HATCHES.get(lithology_code)
         if hatch is None:
             hatch_lookup = {key.casefold(): value for key, value in USGS_LITHOLOGY_HATCHES.items()}
-            hatch = hatch_lookup.get(lithology_code.casefold(), DEFAULT_LITHOLOGY_HATCH)
+            hatch = hatch_lookup.get(lithology_code.casefold(), fallback[1])
     return LithologyStyle(color=color, hatch=hatch)
 
 

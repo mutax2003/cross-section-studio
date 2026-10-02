@@ -217,26 +217,6 @@ class ChartLayoutMixin:
         collection = LineCollection(segments, colors=STICK_COLOR, linewidths=4.0, zorder=5)
         ax.add_collection(collection)
         ax.scatter(x_values, top_y, marker="v", s=49, c=SURFACE_COLOR, zorder=7)
-        x_to_collar = dict(
-            zip(
-                hole_summary["x_profile"].to_numpy(dtype=float),
-                hole_summary["collar_elevation"].to_numpy(dtype=float),
-                strict=True,
-            )
-        )
-        for x_profile, top in zip(x_values, top_y, strict=True):
-            collar_rl = x_to_collar.get(float(x_profile))
-            if collar_rl is None:
-                continue
-            ax.annotate(
-                f"{float(collar_rl):.1f} m RL",
-                xy=(float(x_profile), float(top)),
-                xytext=(6, 4),
-                textcoords="offset points",
-                fontsize=7,
-                color=LABEL_COLOR,
-                zorder=8,
-            )
 
     def _build_borehole_labels(
         self,
@@ -247,11 +227,15 @@ class ChartLayoutMixin:
         for row in hole_summary.itertuples(index=False):
             depth = collar_depths.get(row.hole_id)
             depth_text = f"{depth:.1f} m TD" if depth is not None else ""
+            # The collar RL rides in the header box: as a separate label it
+            # sat under the box and only "m RL" showed.
+            rl_text = f"{float(row.collar_elevation):.1f} m RL"
+            lines = [str(row.hole_id), depth_text, rl_text]
             labels.append(
                 _LabelSpec(
                     x=float(row.x_profile),
                     y=float(row.collar_elevation),
-                    text=f"{row.hole_id}\n{depth_text}".strip(),
+                    text="\n".join(line for line in lines if line),
                 )
             )
         return labels

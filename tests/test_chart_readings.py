@@ -115,3 +115,17 @@ def test_chart_layout_honours_depth_below_collar_mode() -> None:
         import matplotlib.pyplot as plt
 
         plt.close(figure)
+
+
+def test_chart_collar_rl_rides_in_the_header_box() -> None:
+    """The RL label used to sit under the header box with only "m RL" showing."""
+    _, figure = _render_chart(show_markers=False)
+    try:
+        texts = [t.get_text() for ax in figure.axes for t in ax.texts]
+        headers = [t for t in texts if t.startswith("BH-01")]
+        assert headers and "100.0 m RL" in headers[0]
+        assert not any(t.endswith("m RL") and not t.startswith("BH-") for t in texts)
+    finally:
+        import matplotlib.pyplot as plt
+
+        plt.close(figure)

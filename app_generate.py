@@ -7,7 +7,6 @@ import json
 from pathlib import Path
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from app_common import _display_svg, _render_overlap_warnings, _render_profile_chips
 from app_services import (
@@ -482,7 +481,7 @@ def render_profile_and_downloads(
             else:
                 st.caption("Word pack needs python-docx.")
             if png_data:
-                components.html(png_clipboard_html(png_data), height=48)
+                st.iframe(png_clipboard_html(png_data), height=48)
         with pack2:
             if st.button("Build report ZIP", key="build_report_package", width="stretch"):
                 svg_bytes, png_bytes, pdf_bytes = _session_export_triple()

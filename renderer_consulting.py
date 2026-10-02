@@ -56,7 +56,11 @@ _HEADER_CHAR_WIDTH_IN = _HEADER_FONT_PT * 0.62 / 72.0
 
 
 def _vertical_header_reserve_fraction(
-    hole_summary: pd.DataFrame, *, page_height_in: float, axes_width_in: float = 11.0 * 0.89
+    hole_summary: pd.DataFrame,
+    *,
+    page_height_in: float,
+    axes_width_in: float = 11.0 * 0.89,
+    font_pt: float = _HEADER_FONT_PT,
 ) -> float:
     """Page-height fraction to keep free above the plot for vertical hole IDs.
 
@@ -68,15 +72,51 @@ def _vertical_header_reserve_fraction(
     if hole_summary is None or hole_summary.empty:
         return 0.0
     ids = [str(h) for h in hole_summary["hole_id"]]
-    widths_in = [len(h) * _HEADER_CHAR_WIDTH_IN + 0.08 for h in ids]
+    char_width_in = font_pt * 0.62 / 72.0
+    widths_in = [len(h) * char_width_in + 0.08 for h in ids]
     if sum(widths_in) <= 2.0 * axes_width_in:
         return 0.0
     longest_in = max(widths_in) + 0.15
     return min(longest_in / page_height_in, 0.16)
 
 
+# Consulting sheets are designed at this base size; ``export_font_size`` scales
+# every explicit point size from here (the sidebar default of 8 clamps up to 9,
+# so the stock output is unchanged).
+_CONSULTING_BASE_FONT_PT = 9.0
+
+# Title-block metadata values: start size, smallest one-line size, and the
+# smallest size tried when wrapping is forced.
+_TITLE_CELL_BASE_PT = 7.0
+_TITLE_CELL_FLOOR_PT = 6.0
+_TITLE_CELL_HARD_MIN_PT = 5.0
+_TITLE_CELL_LINE_SPACING = 1.1
+
+
 class ConsultingLayoutMixin:
     """Consulting report-sheet layout methods. Expects CrossSectionRenderer attributes."""
+
+    def _consulting_font_scale(self) -> float:
+        """Multiplier applied to every explicit consulting point size."""
+        size = max(float(self.profile.export_font_size), _CONSULTING_BASE_FONT_PT)
+        return size / _CONSULTING_BASE_FONT_PT
+
+    def _fs(self, base: float) -> float:
+        """Scale a design-time point size by the profile's ``export_font_size``."""
+        return float(base) * self._consulting_font_scale()
+
+    @staticmethod
+    def _consulting_display_title(label: str | None) -> str:
+        """Section title for the subtitle band and TITLE cell.
+
+        A label that already says "section" (the app default "Borehole
+        Cross-Section", or "CROSS SECTION B-B'") is printed as-is instead of
+        becoming "CROSS SECTION BOREHOLE CROSS-SECTION".
+        """
+        text = (label or "").strip()
+        if "section" in text.lower():
+            return text
+        return consulting_section_title(text)
 
     def _render_consulting_section(
         self,
@@ -109,7 +149,9 @@ class ConsultingLayoutMixin:
         fig.patch.set_facecolor(CONSULTING_FIGURE_BG)
         # right=0.95 leaves room for the twin RL axis label; at 0.97 it fell
         # off the fixed letter page and was silently dropped from PNG/PDF.
-        top = 0.97 - _vertical_header_reserve_fraction(ctx.summary, page_height_in=8.5)
+        top = 0.97 - _vertical_header_reserve_fraction(
+            ctx.summary, page_height_in=8.5, font_pt=self._fs(_HEADER_FONT_PT)
+        )
         fig.subplots_adjust(left=0.06, right=0.95, top=top, bottom=0.04)
         grid = GridSpec(3, 1, figure=fig, height_ratios=[58, 12, 22], hspace=0.12)
         ax = fig.add_subplot(grid[0, 0])
@@ -123,7 +165,7 @@ class ConsultingLayoutMixin:
         with mpl.rc_context(
             export_font_rc(
                 self.profile.export_font_family,
-                max(self.profile.export_font_size, 9.0),
+                max(self.profile.export_font_size, _CONSULTING_BASE_FONT_PT),
             )
         ):
             if lithology_codes is None:
@@ -206,8 +248,8 @@ class ConsultingLayoutMixin:
                 if self.profile.y_axis_mode == "depth_below_collar"
                 else "ELEVATION (m)"
             )
-            ax.set_xlabel("DISTANCE (m)", fontsize=10, labelpad=2, color=LABEL_COLOR)
-            ax.set_ylabel(y_label, fontsize=10, labelpad=6, color=LABEL_COLOR)
+            ax.set_xlabel("DISTANCE (m)", fontsize=self._fs(10), labelpad=2, color=LABEL_COLOR)
+            ax.set_ylabel(y_label, fontsize=self._fs(10), labelpad=6, color=LABEL_COLOR)
             ax.set_aspect("auto")
             for spine in ax.spines.values():
                 spine.set_color("#374151")
@@ -235,7 +277,7 @@ class ConsultingLayoutMixin:
             if self.profile.show_dual_y_axes:
                 ax_right = ax.twinx()
                 ax_right.set_ylim(ax.get_ylim())
-                ax_right.set_ylabel(y_label, fontsize=10, labelpad=6, color=LABEL_COLOR)
+                ax_right.set_ylabel(y_label, fontsize=self._fs(10), labelpad=6, color=LABEL_COLOR)
                 for spine in ax_right.spines.values():
                     spine.set_color("#374151")
                     spine.set_linewidth(1.0)
@@ -315,7 +357,7 @@ class ConsultingLayoutMixin:
                 ),
                 ha="center",
                 va="bottom",
-                fontsize=7,
+                fontsize=self._fs(7),
                 color=OVERLAP_MARKER_COLOR,
             )
             footer_y += 0.02
@@ -342,9 +384,9 @@ class ConsultingLayoutMixin:
             ax.yaxis.set_minor_locator(MultipleLocator(minor_y))
             ax.xaxis.set_minor_locator(MultipleLocator(5.0))
             ax.grid(True, which="minor", color=REPORT_GRID_COLOR, alpha=0.45, linewidth=0.35, zorder=0)
-            ax.tick_params(axis="both", which="major", labelsize=8)
+            ax.tick_params(axis="both", which="major", labelsize=self._fs(8))
             if ax_right is not None:
-                ax_right.tick_params(axis="y", which="major", labelsize=8)
+                ax_right.tick_params(axis="y", which="major", labelsize=self._fs(8))
 
     def _draw_well_columns(
         self,
@@ -461,7 +503,7 @@ class ConsultingLayoutMixin:
                 transform=header_transform,
                 ha="center",
                 va="bottom",
-                fontsize=8,
+                fontsize=self._fs(8),
                 fontweight="bold",
                 color=LABEL_COLOR,
                 clip_on=False,
@@ -500,7 +542,7 @@ class ConsultingLayoutMixin:
                 transform=start_transform,
                 ha="left",
                 va="top",
-                fontsize=8,
+                fontsize=self._fs(8),
                 fontweight="bold",
                 color=LABEL_COLOR,
                 clip_on=False,
@@ -516,7 +558,7 @@ class ConsultingLayoutMixin:
                 transform=end_transform,
                 ha="right",
                 va="top",
-                fontsize=8,
+                fontsize=self._fs(8),
                 fontweight="bold",
                 color=LABEL_COLOR,
                 clip_on=False,
@@ -560,7 +602,7 @@ class ConsultingLayoutMixin:
                     f"{int(tick_m)}",
                     ha="center",
                     va="top",
-                    fontsize=7,
+                    fontsize=self._fs(7),
                     color=LABEL_COLOR,
                     transform=ax_scale.transAxes,
                 )
@@ -579,7 +621,7 @@ class ConsultingLayoutMixin:
                 "Metres",
                 ha="left",
                 va="center",
-                fontsize=7,
+                fontsize=self._fs(7),
                 color=LABEL_COLOR,
                 transform=ax_scale.transAxes,
             )
@@ -589,20 +631,20 @@ class ConsultingLayoutMixin:
                 f"SCALE {map_scale}",
                 ha="center",
                 va="center",
-                fontsize=7,
+                fontsize=self._fs(7),
                 fontweight="bold",
                 color=LABEL_COLOR,
                 transform=ax_scale.transAxes,
             )
 
-        section_title = consulting_section_title(title_block.section_label or self.title)
+        section_title = self._consulting_display_title(title_block.section_label or self.title)
         ax_center.text(
             0.5,
             0.58,
             section_title,
             ha="center",
             va="center",
-            fontsize=9,
+            fontsize=self._fs(9),
             fontweight="bold",
             color=LABEL_COLOR,
             transform=ax_center.transAxes,
@@ -630,7 +672,7 @@ class ConsultingLayoutMixin:
                 ve_text,
                 ha="center",
                 va="center",
-                fontsize=8,
+                fontsize=self._fs(8),
                 color=LABEL_COLOR,
                 transform=ax_center.transAxes,
             )
@@ -642,7 +684,7 @@ class ConsultingLayoutMixin:
             "NOTES:",
             ha="left",
             va="top",
-            fontsize=8,
+            fontsize=self._fs(8),
             fontweight="bold",
             color=LABEL_COLOR,
             transform=ax_notes.transAxes,
@@ -660,7 +702,7 @@ class ConsultingLayoutMixin:
                 "\n".join(lines),
                 ha="left",
                 va="top",
-                fontsize=6.5,
+                fontsize=self._fs(6.5),
                 color=LABEL_COLOR,
                 transform=ax_notes.transAxes,
                 linespacing=1.15,
@@ -717,7 +759,7 @@ class ConsultingLayoutMixin:
             meta_rows.append(("PROJECT", title_block.project_number))
         section_label = title_block.section_label or self.title
         if section_label:
-            meta_rows.append(("TITLE", consulting_section_title(section_label)))
+            meta_rows.append(("TITLE", self._consulting_display_title(section_label)))
         if title_block.source:
             meta_rows.append(("SOURCE", title_block.source))
         if title_block.map_scale:
@@ -740,7 +782,7 @@ class ConsultingLayoutMixin:
                 right_x,
                 0.88,
                 "PREPARED FOR",
-                fontsize=8,
+                fontsize=self._fs(8),
                 fontweight="bold",
                 color=LABEL_COLOR,
                 transform=ax.transAxes,
@@ -749,7 +791,7 @@ class ConsultingLayoutMixin:
                 right_x,
                 0.78,
                 title_block.prepared_for,
-                fontsize=8,
+                fontsize=self._fs(8),
                 color=LABEL_COLOR,
                 transform=ax.transAxes,
             )
@@ -759,7 +801,7 @@ class ConsultingLayoutMixin:
                 right_x,
                 0.48,
                 "PREPARED BY",
-                fontsize=8,
+                fontsize=self._fs(8),
                 fontweight="bold",
                 color=LABEL_COLOR,
                 transform=ax.transAxes,
@@ -768,7 +810,7 @@ class ConsultingLayoutMixin:
                 right_x,
                 0.38,
                 title_block.prepared_by,
-                fontsize=8,
+                fontsize=self._fs(8),
                 color=LABEL_COLOR,
                 transform=ax.transAxes,
             )
@@ -965,13 +1007,13 @@ class ConsultingLayoutMixin:
 
         n_rows = max(len(group) for group in column_groups)
         step = min(0.10, max(0.055, (content_top - header_h - content_bottom) / max(n_rows, 1)))
-        font_size = 7.5 if step >= 0.08 else 6.5
+        font_size = self._fs(7.5) if step >= 0.08 else self._fs(6.5)
         y_header = content_top
         header = ax.text(
             content_left,
             y_header,
             "LEGEND",
-            fontsize=8.5,
+            fontsize=self._fs(8.5),
             fontweight="bold",
             color=LABEL_COLOR,
             transform=ax.transAxes,
@@ -1100,6 +1142,79 @@ class ConsultingLayoutMixin:
         )
         ax.add_artist(ab)
 
+    def _fit_title_cell_text(
+        self,
+        ax,
+        text: str,
+        *,
+        x: float,
+        y_centre: float,
+        cell_right: float,
+        row_height: float,
+        max_chars: int,
+    ) -> tuple[list[str], float, float]:
+        """Lines, point size and line step (axes fraction) that keep ``text`` in its cell.
+
+        The value is measured with the figure's renderer. It stays on one line
+        at the base size when it fits; otherwise the size steps down to
+        ``_TITLE_CELL_FLOOR_PT`` and, only when that is still too wide, the text
+        wraps at a size whose lines fit the row height, so a long TITLE never
+        crosses the cell rule. A short value renders exactly as before.
+        """
+        base_pt = self._fs(_TITLE_CELL_BASE_PT)
+        floor_pt = self._fs(_TITLE_CELL_FLOOR_PT)
+        hard_min_pt = self._fs(_TITLE_CELL_HARD_MIN_PT)
+        step_pt = self._fs(0.5)
+        try:
+            probe = ax.text(
+                x, y_centre, text, fontsize=base_pt, va="center", ha="left", transform=ax.transAxes
+            )
+        except Exception:  # pragma: no cover - defensive
+            return textwrap.wrap(text, width=max_chars) or [""], base_pt, 0.0
+        try:
+            pad_px = 1.5 * ax.figure.dpi / 72.0
+            origin = ax.transAxes.transform((0.0, 0.0))
+            right_px = ax.transAxes.transform((cell_right, 0.0))[0] - pad_px
+            ax_height_px = ax.transAxes.transform((0.0, 1.0))[1] - origin[1]
+            row_px = row_height * ax_height_px - 2.0 * pad_px
+
+            pt = base_pt
+            while True:
+                probe.set_fontsize(pt)
+                extent = probe.get_window_extent()
+                if extent.x1 <= right_px:
+                    return [text], pt, 0.0
+                if pt - step_pt < floor_pt - 1e-9:
+                    break
+                pt -= step_pt
+
+            # Too wide even at the floor: wrap, shrinking below the floor only
+            # when the wrapped lines would not fit the row height.
+            pt = floor_pt
+            while True:
+                probe.set_fontsize(pt)
+                extent = probe.get_window_extent()
+                avail_px = right_px - extent.x0
+                chars = max(8, int(len(text) * avail_px / max(extent.width, 1.0)))
+                lines = textwrap.wrap(text, width=chars) or [text]
+                line_px = extent.height * _TITLE_CELL_LINE_SPACING
+                max_lines = max(1, int(row_px / line_px))
+                if len(lines) <= max_lines or pt - step_pt < hard_min_pt - 1e-9:
+                    if len(lines) > max_lines:
+                        lines = lines[:max_lines]
+                        if len(lines[-1]) > 3:
+                            lines[-1] = lines[-1][: max(3, len(lines[-1]) - 1)] + "…"
+                    return lines, pt, line_px / ax_height_px
+                pt -= step_pt
+        except Exception:
+            logger.debug("Title cell measurement unavailable; using character wrap", exc_info=True)
+            wrapped = textwrap.wrap(text, width=max_chars) or [""]
+            return wrapped, (self._fs(6.5) if len(wrapped) > 1 else base_pt), min(
+                0.10, (row_height * 0.7) / max(len(wrapped), 1)
+            )
+        finally:
+            probe.remove()
+
     def _draw_title_block_metadata_table(
         self,
         ax,
@@ -1148,27 +1263,30 @@ class ConsultingLayoutMixin:
                 table_left + 0.01,
                 row_bottom + row_height * 0.5,
                 label,
-                fontsize=7,
+                fontsize=self._fs(7),
                 fontweight="bold",
                 va="center",
                 color=LABEL_COLOR,
                 transform=ax.transAxes,
                 clip_on=True,
             )
-            wrapped = textwrap.wrap(str(value), width=max_chars) or [""]
-            max_lines = max(2, int(row_height / 0.09))
-            if len(wrapped) > max_lines:
-                wrapped = wrapped[:max_lines]
-                if len(wrapped[-1]) > 3:
-                    wrapped[-1] = wrapped[-1][: max(3, len(wrapped[-1]) - 1)] + "…"
-            line_gap = min(0.10, (row_height * 0.7) / max(len(wrapped), 1))
+            value_x = table_left + label_col_w + 0.012
+            wrapped, value_pt, line_gap = self._fit_title_cell_text(
+                ax,
+                str(value),
+                x=value_x,
+                y_centre=row_bottom + row_height * 0.5,
+                cell_right=table_left + table_width,
+                row_height=row_height,
+                max_chars=max_chars,
+            )
             text_top = row_bottom + row_height * 0.5 + (len(wrapped) - 1) * line_gap * 0.5
             for line_index, line in enumerate(wrapped):
                 ax.text(
-                    table_left + label_col_w + 0.012,
+                    value_x,
                     text_top - line_index * line_gap,
                     line,
-                    fontsize=6.5 if len(wrapped) > 1 else 7,
+                    fontsize=value_pt,
                     va="center",
                     ha="left",
                     color=LABEL_COLOR,

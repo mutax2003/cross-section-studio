@@ -414,7 +414,7 @@ def render_sidebar() -> SidebarState:
         show_hatches = st.toggle(
             "Hatch patterns",
             key="show_hatches",
-            help="USGS-style hatch patterns on lithology fills. Off = solid BH-log colours.",
+            help="Lithology patterns from the legend template (dots = sandy, lines = silty, + = clay loam, cobbles = gravel). Off = solid colours only, which merges units that share a colour.",
         )
         if "section_title" not in st.session_state:
             st.session_state.section_title = "Borehole Cross-Section"

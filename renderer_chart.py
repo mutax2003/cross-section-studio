@@ -29,6 +29,26 @@ class _LabelSpec:
     draw_leader: bool = False
 
 
+# Reading / chemistry settings the caller's profile keeps on the chart layout.
+# Everything else (cosmetics, axes, columns) stays pinned to CHART_PROFILE.
+_PARAMETER_PROFILE_FIELDS: tuple[str, ...] = (
+    "show_parameter_markers",
+    "show_parameter_labels",
+    "show_parameter_legend_text",
+    "parameter_interpolate_segments",
+    "parameter_interpolate_across_gaps",
+    "parameter_draw_markers",
+    "parameter_marker",
+    "parameter_marker_size",
+    "parameter_draw_leaders",
+    "parameter_label_include_units",
+    "chemistry_color_mode",
+    "chemistry_threshold_green_max",
+    "chemistry_threshold_yellow_max",
+    "chemistry_label_style",
+)
+
+
 class ChartLayoutMixin:
     """Legacy debug chart layout."""
 
@@ -41,8 +61,17 @@ class ChartLayoutMixin:
         water_levels: Sequence[WaterLevel] | None = None,
         lithology_codes: Sequence[str] | None = None,
     ) -> Figure:
-        chart_profile = CHART_PROFILE
         original = self.profile
+        # The stock chart profile has readings off; keep the caller's
+        # parameter / chemistry settings so environmental readings draw.
+        parameter_updates = {
+            name: getattr(original, name)
+            for name in _PARAMETER_PROFILE_FIELDS
+            if getattr(original, name) != getattr(CHART_PROFILE, name)
+        }
+        chart_profile = (
+            CHART_PROFILE.model_copy(update=parameter_updates) if parameter_updates else CHART_PROFILE
+        )
         self.profile = chart_profile
         try:
             fig_width = 13.5 if self.show_legend else 12.0
@@ -92,6 +121,8 @@ class ChartLayoutMixin:
                 profile_lookup=profile_lookup,
                 column_half_m=track_half,
             )
+            if self.parameter_series_legend and self.profile.show_parameter_legend_text:
+                self._draw_compact_parameter_legend(ax)
 
             collar_depths = collar_depths or {}
             labels = self._resolve_label_collisions(

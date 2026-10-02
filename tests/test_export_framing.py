@@ -264,3 +264,16 @@ def test_portrait_export_keeps_the_right_axis_label_on_the_page() -> None:
     mpl_renderer = figure.canvas.get_renderer()
     right = [ax.yaxis.label for ax in figure.axes if ax.yaxis.get_label_position() == "right" and ax.yaxis.label.get_text()]
     assert right and all(lbl.get_window_extent(mpl_renderer).x1 <= figure.bbox.x1 for lbl in right)
+
+
+def test_export_filename_does_not_repeat_the_section_title() -> None:
+    from export_framing import build_export_filename
+
+    stem = build_export_filename(
+        pattern="section_title",
+        section_title="Test Section A-A'",
+        transect_label="Test Section A-A' MW-01→MW-04",
+        include_transect_label=True,
+    )
+    assert stem.count("Test_Section") == 1, stem
+    assert "MW-01" in stem and "MW-04" in stem

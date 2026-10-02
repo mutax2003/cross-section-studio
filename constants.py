@@ -46,10 +46,12 @@ POLYGON_EDGE_COLOR = "#2C2C2C"
 # Agreed display scheme (meeting 1 Oct 2026): each soil group shares one base
 # colour and a hatch marks the secondary component only —
 #   sandy = dots, silty = 45° lines, gravel = stone/cobble, "+" = loam mixes;
-# the dominant units (Clay, Silt, Sand, Loam, Topsoil, Organics, Coal) stay
-# plain so boreholes and well screens read clearly over them.
+# the dominant units (Clay, Silt, Loam, Topsoil, Organics, Coal) stay plain so
+# boreholes and well screens read clearly over them. Sand is the exception:
+# it carries the same sparse dot stipple as the other sandy units.
 # Matplotlib hatch strings (repeat chars for density): / \ | - + x o O . *
-# Densities follow Sheryl's CAD template (Cross_Section_Litho_Legend_261001):
+# Densities follow Sheryl's CAD template (Cross_Section_Litho_Legend_261002,
+# which supersedes 261001 by adding the Sand stipple):
 # sparse marks, not dense hatching. matplotlib has no isolated plus mark, so
 # "+" draws its sparsest grid.
 HATCH_SANDY = "."
@@ -70,7 +72,7 @@ _BASE_LITHOLOGY_HATCHES: dict[str, str] = {
     "Clay Loam": HATCH_PLUS,
     "Loam": "",
     "Silty Loam": HATCH_SILTY,
-    # Sand group (#FFE39F) — Sand itself is dotted (A. Liu, 1 Oct 2026)
+    # Sand group (#FFE39F) — Sand itself is dotted (template 261002)
     "Sand": HATCH_SANDY,
     "Loamy Sand": HATCH_SILTY,
     "Silty Sand": HATCH_SILTY,

@@ -23,7 +23,7 @@ Optional: `elevation_datum`, `inclination_deg`, `azimuth_deg`, `stick_up_m` (met
 | `to_depth` | float | Metres below collar |
 | `lithology_code` | text | Prefer USGS-style codes (Sand, Clay, Topsoil, …) |
 
-Lithology colours and hatches follow the scheme agreed on 1 Oct 2026: one base colour per soil group (clay `#967259`, loam `#C68642`, sand `#FFE39F`, rock `#4C516D`) with a hatch for the secondary component only (sandy = dots — including Sand itself — silty = 45° lines, gravel = cobbles, `+` = the clay-loam mixes Clay Loam and Silty Clay Loam), at the sparse densities of Sheryl's CAD template; Clay, Silt, Loam, Topsoil, Organics and Coal are plain (Coal is the only black unit). Full table: `data/bh_log_lithology_legend.json` + `constants.py`. Survey123 swatches: `python scripts/export_lithology_swatches.py --width W --height H --zip out.zip`.
+Lithology colours and hatches follow the scheme agreed on 1 Oct 2026: one base colour per soil group (clay `#967259`, loam `#C68642`, sand `#FFE39F`, rock `#4C516D`) with a hatch for the secondary component only (sandy = dots — including Sand itself — silty = 45° lines, gravel = cobbles, `+` = the clay-loam mixes Clay Loam and Silty Clay Loam), at the sparse densities of Sheryl's CAD template (Cross_Section_Litho_Legend_261002); Clay, Silt, Loam, Topsoil, Organics and Coal are plain (Coal is the only black unit). Full table: `data/bh_log_lithology_legend.json` + `constants.py`. Survey123 swatches: `python scripts/export_lithology_swatches.py --width W --height H --zip out.zip`.
 
 Optional: `hatch_pattern`, `unit_order` (1 = shallowest; when the same code repeats in one hole, blank values are auto-assigned from depth order by default — required only if auto-assign is disabled).
 

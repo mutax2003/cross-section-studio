@@ -979,7 +979,9 @@ def test_agreed_lithology_scheme_groups_and_hatches() -> None:
     assert hatch("Silty Clay Loam") == hatch("Clay Loam") == HATCH_PLUS
     assert hatch("Sand and Gravel") == hatch("Gravel") == HATCH_GRAVEL
     assert hatch("Silty Sand") == hatch("Loamy Sand") == HATCH_SILTY
-    assert hatch("Sand") == HATCH_SANDY  # Sand is dotted (requested 1 Oct 2026)
+    # Template 261002: Sand carries the same stipple as the other sandy units
+    # (same dot density as Sandy Clay, Sandy Clay Loam and Sandstone).
+    assert hatch("Sand") == hatch("Sandy Clay") == hatch("Sandy Clay Loam") == hatch("Sandstone") == HATCH_SANDY
     assert hatch("Clay") == hatch("Silt") == hatch("Loam") == hatch("Topsoil") == ""
 
     def luminance(code):
@@ -1218,3 +1220,24 @@ def test_unknown_lithology_codes_get_distinct_fallback_styles() -> None:
     assert all(s.color.startswith("#") and len(s.hatch) >= 2 for s in styles.values())
     assert len({(s.color, s.hatch) for s in styles.values()}) >= 3  # not one grey for all
     assert get_lithology_style("CL") == get_lithology_style("cl")  # stable per code
+
+
+# Fill colours read from the client CAD template Cross_Section_Litho_Legend_261002.
+_CAD_TEMPLATE_261002_COLOURS = {
+    "Clay": "#967259", "Silt": "#8D5524", "Loam": "#C68642", "Sand": "#FFE39F",
+    "Topsoil": "#534230", "Organics": "#38220F", "Fill": "#854442", "Gravel": "#D9D9D9",
+    "Mudstone": "#4C516D", "Drilling Waste": "#808080", "Other": "#4D5D53",
+    "No Recovery": "#FFFFFF", "Bentonite": "#BFBFBF", "Coal": "#000000", "Refuse": "#8C973D",
+    "Sandy Clay": "#967259", "Silty Clay": "#967259", "Silty Clay Loam": "#967259",
+    "Sand and Gravel": "#FFE39F", "Loamy Sand": "#FFE39F", "Sandy Clay Loam": "#C68642",
+    "Silty Loam": "#C68642", "Clay Loam": "#C68642", "Sandstone": "#4C516D", "Siltstone": "#4C516D",
+}
+
+
+def test_palette_matches_cad_template_261002() -> None:
+    mismatched = {
+        code: (expected, get_lithology_style(code).color.upper())
+        for code, expected in _CAD_TEMPLATE_261002_COLOURS.items()
+        if get_lithology_style(code).color.upper() != expected
+    }
+    assert not mismatched, mismatched

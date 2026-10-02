@@ -23,6 +23,9 @@ from tests.conftest import assert_valid_svg, run_pipeline
 
 matplotlib.use("Agg")
 
+# Densify mechanics use a stock-pitch pattern (Gravel "O"); Sand's template
+# stipple is fine enough that ordinary thin beds no longer need densifying.
+THIN_CODE = "Gravel"
 THIN_TOP = 5.0
 THIN_BOTTOM = 5.3
 THICK_TOP = 8.0
@@ -38,13 +41,13 @@ def _section_inputs(thin_top: float = THIN_TOP) -> tuple[list[Collar], list[Lith
     lithologies = [
         Lithology(hole_id="BH-01", from_depth=0.0, to_depth=thin_top, lithology_code="Clay"),
         Lithology(
-            hole_id="BH-01", from_depth=thin_top, to_depth=thin_bottom, lithology_code="Sand"
+            hole_id="BH-01", from_depth=thin_top, to_depth=thin_bottom, lithology_code=THIN_CODE
         ),
         Lithology(
             hole_id="BH-01", from_depth=thin_bottom, to_depth=THICK_TOP, lithology_code="Clay"
         ),
         Lithology(
-            hole_id="BH-01", from_depth=THICK_TOP, to_depth=THICK_BOTTOM, lithology_code="Sand"
+            hole_id="BH-01", from_depth=THICK_TOP, to_depth=THICK_BOTTOM, lithology_code=THIN_CODE
         ),
         Lithology(hole_id="BH-01", from_depth=THICK_BOTTOM, to_depth=15.0, lithology_code="Clay"),
         Lithology(hole_id="BH-02", from_depth=0.0, to_depth=15.0, lithology_code="Clay"),
@@ -79,7 +82,7 @@ def _render(
 
 def _sand_collection(figure) -> ThinUnitHatchCollection:
     ax = figure.axes[0]
-    sand = get_lithology_style("Sand")
+    sand = get_lithology_style(THIN_CODE)
     matches = [
         collection
         for collection in ax.collections
@@ -157,7 +160,7 @@ def test_thin_sand_interval_gets_denser_hatch_than_thick_one() -> None:
     assert heights_in is not None
     assert heights_in[thin_index] < THIN_UNIT_MIN_HEIGHT_IN < heights_in[thick_index]
     resolved = collection.resolved_hatches
-    base = get_lithology_style("Sand").hatch
+    base = get_lithology_style(THIN_CODE).hatch
     assert resolved[thick_index] == base
     expected_factor = thin_unit_densify_factor(float(heights_in[thin_index]))
     assert expected_factor >= THIN_UNIT_MIN_DENSIFY
@@ -180,7 +183,7 @@ def test_thin_hatch_resolution_is_stable_across_dpi() -> None:
         outcomes.append(tuple(collection.resolved_hatches))
     assert len(set(outcomes)) == 1
     assert len(outcomes[0][thin_index]) > 1
-    assert outcomes[0][thick_index] == "."
+    assert outcomes[0][thick_index] == get_lithology_style(THIN_CODE).hatch
     matplotlib.pyplot.close(figure)
 
 
@@ -188,7 +191,7 @@ def test_thin_densification_can_be_disabled_via_threshold() -> None:
     _, figure = _render(thin_min_height_in=0.0)
     collection = _sand_collection(figure)
     figure.canvas.draw()
-    assert collection.resolved_hatches == [".", "."]
+    assert collection.resolved_hatches == [get_lithology_style(THIN_CODE).hatch] * 2
     matplotlib.pyplot.close(figure)
 
 
@@ -260,15 +263,18 @@ def test_multi_char_base_hatch_factors() -> None:
     assert thin_unit_densify_factor(0.03, base_hatch="xxx") == 1
     # Two-char bases are thin only below half the threshold, then capped at 2x.
     half = THIN_UNIT_MIN_HEIGHT_IN / 2
-    for base in ("**", "/.", ".."):
+    for base in ("**", "\\\\", "OO"):
         assert thin_unit_densify_factor(0.08, base_hatch=base) == 1
         assert thin_unit_densify_factor(half, base_hatch=base) == 1
         assert thin_unit_densify_factor(half - 1e-3, base_hatch=base) == 2
         assert thin_unit_densify_factor(0.0, base_hatch=base) == 2
         assert densify_hatch(base, 2) == base * 2
-    # Single-char behaviour is unchanged by passing the base explicitly.
+    # Stock-pitch single-char bases behave like the default.
     for height in (0.0, 0.01, 0.05, 0.08, 0.099, 0.1, 0.5):
-        assert thin_unit_densify_factor(height, base_hatch=".") == thin_unit_densify_factor(height)
+        assert thin_unit_densify_factor(height, base_hatch="O") == thin_unit_densify_factor(height)
+    # Template stipple ('.', 14 rows/in) only densifies far thinner beds.
+    assert thin_unit_densify_factor(0.05, base_hatch=".") == 1
+    assert thin_unit_densify_factor(0.04, base_hatch=".") >= 2
 
 
 def test_thin_bed_with_multi_char_hatch_is_not_over_densified() -> None:
@@ -313,7 +319,7 @@ def test_draw_leaves_figure_not_stale() -> None:
     collection = _sand_collection(figure)
     figure.canvas.draw()
     assert any(len(h) > 1 for h in collection.resolved_hatches), "thin bed was densified"
-    assert collection.get_hatch() == get_lithology_style("Sand").hatch
+    assert collection.get_hatch() == get_lithology_style(THIN_CODE).hatch
     assert not collection.stale
     assert not figure.stale
     renderer.to_png_bytes(figure, dpi=150)
@@ -327,8 +333,12 @@ def test_legend_swatch_hatch_keeps_marks_on_short_swatches() -> None:
     dotted)."""
     from renderer_common import legend_swatch_hatch
 
-    assert legend_swatch_hatch(".", 0.11) == ".."
-    assert legend_swatch_hatch(".", 0.25) == "."
+    # Stock-pitch marks (1/6 in rows) densify on a 0.11 in swatch...
+    assert legend_swatch_hatch("O", 0.11) == "OO"
+    assert legend_swatch_hatch("O", 0.25) == "O"
+    # ...the template's fine Sand stipple (1/14 in rows) already fits.
+    assert legend_swatch_hatch(".", 0.11) == "."
+    assert legend_swatch_hatch(".", 0.05) == ".."
     assert legend_swatch_hatch("xxx", 0.05) == "xxx"  # already dense: capped
     assert legend_swatch_hatch("", 0.05) == ""
     assert legend_swatch_hatch(None, 0.05) is None

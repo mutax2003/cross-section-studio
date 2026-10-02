@@ -32,6 +32,10 @@ from constants import (  # noqa: E402
     USGS_LITHOLOGY_COLORS,
     get_lithology_style,
 )
+from hatch_patterns import install as install_template_hatches  # noqa: E402
+
+# Same marks as the app's figures (template 261002 stipple, dashes, plus marks).
+install_template_hatches()
 
 _DPI = 100
 

@@ -9,9 +9,14 @@ import pandas as pd
 from matplotlib.collections import PolyCollection
 from matplotlib.ticker import FuncFormatter, Locator, MaxNLocator
 
+import hatch_patterns
 from constants import get_lithology_style
 from models import ScreenInterval
 from render_theme import SCREEN_INTERVAL_HATCH, TRACK_BORDER_COLOR, TRACK_FILL_COLOR
+
+# Draw '.', '/' and '+' as the client legend template's marks (fine stipple,
+# short silty dashes, isolated plus marks) in every figure and export.
+hatch_patterns.install()
 
 
 class _ExaggeratedAxisLocator(Locator):
@@ -85,7 +90,7 @@ def thin_unit_densify_factor(
     height_in: float,
     *,
     min_height_in: float = THIN_UNIT_MIN_HEIGHT_IN,
-    base_hatch: str | None = ".",
+    base_hatch: str | None = None,
 ) -> int:
     """Hatch repeat factor for an interval drawn ``height_in`` inches tall.
 
@@ -106,13 +111,16 @@ def thin_unit_densify_factor(
     if max_factor < 2:
         # Base is already at least half the cap: a single repeat would exceed it.
         return 1
-    threshold_in = min_height_in / density
+    # Template marks ('.', '/', '+') sit closer than matplotlib's stock 1/6 in
+    # rows; scale the thin threshold and spacing by the pattern's own pitch.
+    pitch_scale = hatch_patterns.STOCK_ROWS_PER_INCH / hatch_patterns.rows_per_inch(base_hatch)
+    threshold_in = min_height_in * pitch_scale / density
     if not np.isfinite(height_in) or height_in >= threshold_in:
         return 1
     min_factor = max(1, -(-THIN_UNIT_MIN_DENSIFY // density))  # ceil division
     if height_in <= 0.0:
         return max_factor
-    row_spacing_in = BASE_HATCH_ROW_SPACING_IN / density
+    row_spacing_in = BASE_HATCH_ROW_SPACING_IN * pitch_scale / density
     needed = int(np.ceil(row_spacing_in / height_in))
     return int(min(max_factor, max(min_factor, needed)))
 

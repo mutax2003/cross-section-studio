@@ -1125,6 +1125,8 @@ class CrossSectionRenderer(
         water = getattr(self, "_water_labels", None) or []
         if water and all(annotation.figure is figure for _kind, annotation, _c in water):
             self._resolve_water_label_collisions(figure)
+        # Fitted title-block / band text was measured at the render size.
+        self.refit_consulting_fitted_text(figure)
         return figure
 
     def _export_dpi(self, default: int = 300) -> int:

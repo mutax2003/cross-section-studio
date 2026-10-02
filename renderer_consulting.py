@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import textwrap
 from collections.abc import Sequence
 
@@ -62,22 +63,28 @@ def _vertical_header_reserve_fraction(
     axes_width_in: float = 11.0 * 0.89,
     font_pt: float = _HEADER_FONT_PT,
 ) -> float:
-    """Page-height fraction to keep free above the plot for vertical hole IDs.
+    """Page-height fraction to keep free above the plot for hole-ID headers.
 
     The plot starts at the page top, so the header pass cannot stagger
     outward. When two horizontal rows cannot hold every ID (dense well
     fields), the headers are drawn vertically and need the longest ID's
-    length above the axes; otherwise nothing is reserved.
+    length above the axes. The stock top margin holds two horizontal tiers
+    at the design size (``_HEADER_FONT_PT``); when ``export_font_size``
+    enlarges the headers, the extra tier height is reserved so the second
+    tier does not run off the page. At the design size nothing is reserved.
     """
     if hole_summary is None or hole_summary.empty:
         return 0.0
     ids = [str(h) for h in hole_summary["hole_id"]]
     char_width_in = font_pt * 0.62 / 72.0
     widths_in = [len(h) * char_width_in + 0.08 for h in ids]
-    if sum(widths_in) <= 2.0 * axes_width_in:
-        return 0.0
-    longest_in = max(widths_in) + 0.15
-    return min(longest_in / page_height_in, 0.16)
+    if sum(widths_in) > 2.0 * axes_width_in:
+        longest_in = max(widths_in) + 0.15
+        return min(longest_in / page_height_in, 0.16)
+    tiers = 1 if sum(widths_in) <= axes_width_in else 2
+    # Header pass tier step is the text height (~1.3 x font) plus 1 pt.
+    growth_in = tiers * max(font_pt - _HEADER_FONT_PT, 0.0) * 1.3 / 72.0
+    return min(growth_in / page_height_in, 0.16)
 
 
 # Consulting sheets are designed at this base size; ``export_font_size`` scales
@@ -91,6 +98,17 @@ _TITLE_CELL_BASE_PT = 7.0
 _TITLE_CELL_FLOOR_PT = 6.0
 _TITLE_CELL_HARD_MIN_PT = 5.0
 _TITLE_CELL_LINE_SPACING = 1.1
+
+# Subtitle band title: start size and the smallest sizes tried before wrapping.
+_BAND_TITLE_BASE_PT = 9.0
+_BAND_TITLE_FLOOR_PT = 7.0
+_BAND_TITLE_HARD_MIN_PT = 6.0
+# Vertical room (axes fraction) for the band title between the rule at 0.38
+# and the top of the band, centred on the design position y=0.58.
+_BAND_TITLE_ROW_HEIGHT = 0.38
+
+# A label that already names a (cross) section as a word is printed as-is.
+_SECTION_WORD_RE = re.compile(r"\bsection\b", re.IGNORECASE)
 
 
 class ConsultingLayoutMixin:
@@ -109,12 +127,13 @@ class ConsultingLayoutMixin:
     def _consulting_display_title(label: str | None) -> str:
         """Section title for the subtitle band and TITLE cell.
 
-        A label that already says "section" (the app default "Borehole
-        Cross-Section", or "CROSS SECTION B-B'") is printed as-is instead of
-        becoming "CROSS SECTION BOREHOLE CROSS-SECTION".
+        A label that already says "section" as a word (the app default
+        "Borehole Cross-Section", or "CROSS SECTION B-B'") is printed as-is
+        instead of becoming "CROSS SECTION BOREHOLE CROSS-SECTION". The test
+        is word-bounded: "Intersection of Main St" still gets the prefix.
         """
         text = (label or "").strip()
-        if "section" in text.lower():
+        if _SECTION_WORD_RE.search(text):
             return text
         return consulting_section_title(text)
 
@@ -638,17 +657,25 @@ class ConsultingLayoutMixin:
             )
 
         section_title = self._consulting_display_title(title_block.section_label or self.title)
-        ax_center.text(
-            0.5,
-            0.58,
+        # Fit the band title to the centre panel: a long label shrinks, then
+        # wraps, instead of overprinting the scale bar and the notes panel.
+        self._draw_fitted_cell_text(
+            ax_center,
             section_title,
+            x=0.5,
+            y_centre=0.58,
+            # The wspace gutters (~0.128 of this panel each side) are empty;
+            # stop short of the scale-bar and notes panels themselves.
+            cell_left=-0.12,
+            cell_right=1.12,
+            row_height=_BAND_TITLE_ROW_HEIGHT,
+            max_chars=40,
             ha="center",
-            va="center",
-            fontsize=self._fs(9),
             fontweight="bold",
-            color=LABEL_COLOR,
-            transform=ax_center.transAxes,
-            wrap=True,
+            base_pt=_BAND_TITLE_BASE_PT,
+            floor_pt=_BAND_TITLE_FLOOR_PT,
+            hard_min_pt=_BAND_TITLE_HARD_MIN_PT,
+            clip_on=False,
         )
         ax_center.plot(
             [0.10, 0.90],
@@ -689,20 +716,34 @@ class ConsultingLayoutMixin:
             color=LABEL_COLOR,
             transform=ax_notes.transAxes,
         )
-        note_y = 0.68
-        line_step = 0.11
-        for index, note in enumerate(notes[:4], start=1):
+        # Geometry follows the font scale: wider text wraps sooner and each
+        # line advances by its (scaled) height, so enlarged notes do not
+        # overprint each other. When the scaled notes would run below the
+        # panel, the notes size steps back toward the design size (clamp).
+        font_scale = self._consulting_font_scale()
+        shown = [f"{index}. {note}" for index, note in enumerate(notes[:4], start=1)]
+        scale = font_scale
+        while True:
+            line_step = 0.11 * scale**1.05
+            wrap_width = max(24, int(58 / scale))
+            wrapped_notes = [textwrap.wrap(n, width=wrap_width) or [n] for n in shown]
+            n_lines = sum(len(lines) for lines in wrapped_notes)
+            note_y = 0.68 - 0.18 * (scale - 1.0)
+            if scale <= 1.0 or note_y - line_step * n_lines >= -0.02:
+                break
+            scale = max(1.0, scale - 0.05)
+        notes_pt = 6.5 * scale if scale > 1.0 else self._fs(6.5)
+        for lines in wrapped_notes:
             # Wrap ourselves and advance by the number of lines: matplotlib's
             # wrap=True kept a fixed step, so a two-line note printed its
             # second line over the next note.
-            lines = textwrap.wrap(f"{index}. {note}", width=58) or [f"{index}. {note}"]
             ax_notes.text(
                 0.04,
                 note_y,
                 "\n".join(lines),
                 ha="left",
                 va="top",
-                fontsize=self._fs(6.5),
+                fontsize=notes_pt,
                 color=LABEL_COLOR,
                 transform=ax_notes.transAxes,
                 linespacing=1.15,
@@ -777,6 +818,8 @@ class ConsultingLayoutMixin:
         if right_box is None:
             return
         right_x = right_box[0] + 0.03
+        # Label-to-value gap grows with the font scale (identical at 1.0).
+        value_extra = 0.10 * (self._consulting_font_scale() ** 1.1 - 1.0)
         if title_block.prepared_for:
             ax.text(
                 right_x,
@@ -789,7 +832,7 @@ class ConsultingLayoutMixin:
             )
             ax.text(
                 right_x,
-                0.78,
+                0.78 - value_extra,
                 title_block.prepared_for,
                 fontsize=self._fs(8),
                 color=LABEL_COLOR,
@@ -808,7 +851,7 @@ class ConsultingLayoutMixin:
             )
             ax.text(
                 right_x,
-                0.38,
+                0.38 - value_extra,
                 title_block.prepared_by,
                 fontsize=self._fs(8),
                 color=LABEL_COLOR,
@@ -967,9 +1010,13 @@ class ConsultingLayoutMixin:
         col_width_two = (usable_width - 0.02) / 2
         # Two columns when asked for, or whenever a single stack would need
         # more than eight rows (entries past the panel were silently dropped).
-        header_h = 0.14  # "LEGEND" at 8.5 pt plus a gap above the first row
+        # Row geometry follows the font scale so enlarged labels keep their
+        # line pitch (and the capacity / "+N MORE UNITS" trim stays honest).
+        scale = self._consulting_font_scale()
+        header_h = 0.14 * scale  # "LEGEND" at 8.5 pt plus a gap above the first row
+        min_step = 0.055 * scale
         two_col_possible = col_width_two >= _LEGEND_MIN_COL_WIDTH
-        rows_available = max(1, int((content_top - header_h - content_bottom) // 0.055))
+        rows_available = max(1, int((content_top - header_h - content_bottom) // min_step))
         capacity = rows_available * (2 if two_col_possible else 1)
         if len(entries) > capacity:
             # Trim lithology swatches (never the water/screen/parameter keys)
@@ -1006,8 +1053,12 @@ class ConsultingLayoutMixin:
         clip_rect = self._legend_panel_clip(ax, panel)
 
         n_rows = max(len(group) for group in column_groups)
-        step = min(0.10, max(0.055, (content_top - header_h - content_bottom) / max(n_rows, 1)))
-        font_size = self._fs(7.5) if step >= 0.08 else self._fs(6.5)
+        step = min(
+            0.10 * scale,
+            max(min_step, (content_top - header_h - content_bottom) / max(n_rows, 1)),
+        )
+        font_size = self._fs(7.5) if step >= 0.08 * scale else self._fs(6.5)
+        swatch_h = 0.04 * scale
         y_header = content_top
         header = ax.text(
             content_left,
@@ -1044,9 +1095,9 @@ class ConsultingLayoutMixin:
                         display = label[: max_label_chars - 1] + "…"
                 if kind == "swatch":
                     rect = Rectangle(
-                        (col_left, y - 0.022),
+                        (col_left, y - swatch_h * 0.55),
                         swatch_w,
-                        0.04,
+                        swatch_h,
                         facecolor=style["facecolor"],
                         edgecolor=style["edgecolor"],
                         linewidth=0.6,
@@ -1152,22 +1203,37 @@ class ConsultingLayoutMixin:
         cell_right: float,
         row_height: float,
         max_chars: int,
+        cell_left: float | None = None,
+        ha: str = "left",
+        fontweight: str | None = None,
+        base_pt: float | None = None,
+        floor_pt: float | None = None,
+        hard_min_pt: float | None = None,
     ) -> tuple[list[str], float, float]:
         """Lines, point size and line step (axes fraction) that keep ``text`` in its cell.
 
-        The value is measured with the figure's renderer. It stays on one line
-        at the base size when it fits; otherwise the size steps down to
-        ``_TITLE_CELL_FLOOR_PT`` and, only when that is still too wide, the text
-        wraps at a size whose lines fit the row height, so a long TITLE never
-        crosses the cell rule. A short value renders exactly as before.
+        The value is measured with the figure's renderer at the figure's
+        current size. It stays on one line at the base size when it fits;
+        otherwise the size steps down to the floor and, only when that is
+        still too wide, the text wraps at a size whose lines fit the row
+        height, so a long TITLE never crosses the cell rule. A short value
+        renders exactly as before. ``cell_left`` bounds centred / right-aligned
+        text on the left as well; the design sizes default to the TITLE cell's.
         """
-        base_pt = self._fs(_TITLE_CELL_BASE_PT)
-        floor_pt = self._fs(_TITLE_CELL_FLOOR_PT)
-        hard_min_pt = self._fs(_TITLE_CELL_HARD_MIN_PT)
+        base_pt = self._fs(_TITLE_CELL_BASE_PT if base_pt is None else base_pt)
+        floor_pt = self._fs(_TITLE_CELL_FLOOR_PT if floor_pt is None else floor_pt)
+        hard_min_pt = self._fs(_TITLE_CELL_HARD_MIN_PT if hard_min_pt is None else hard_min_pt)
         step_pt = self._fs(0.5)
         try:
             probe = ax.text(
-                x, y_centre, text, fontsize=base_pt, va="center", ha="left", transform=ax.transAxes
+                x,
+                y_centre,
+                text,
+                fontsize=base_pt,
+                va="center",
+                ha=ha,
+                fontweight=fontweight,
+                transform=ax.transAxes,
             )
         except Exception:  # pragma: no cover - defensive
             return textwrap.wrap(text, width=max_chars) or [""], base_pt, 0.0
@@ -1175,14 +1241,22 @@ class ConsultingLayoutMixin:
             pad_px = 1.5 * ax.figure.dpi / 72.0
             origin = ax.transAxes.transform((0.0, 0.0))
             right_px = ax.transAxes.transform((cell_right, 0.0))[0] - pad_px
+            left_px = (
+                None
+                if cell_left is None
+                else ax.transAxes.transform((cell_left, 0.0))[0] + pad_px
+            )
             ax_height_px = ax.transAxes.transform((0.0, 1.0))[1] - origin[1]
             row_px = row_height * ax_height_px - 2.0 * pad_px
+
+            def _fits(extent) -> bool:
+                return extent.x1 <= right_px and (left_px is None or extent.x0 >= left_px)
 
             pt = base_pt
             while True:
                 probe.set_fontsize(pt)
                 extent = probe.get_window_extent()
-                if extent.x1 <= right_px:
+                if _fits(extent):
                     return [text], pt, 0.0
                 if pt - step_pt < floor_pt - 1e-9:
                     break
@@ -1194,7 +1268,7 @@ class ConsultingLayoutMixin:
             while True:
                 probe.set_fontsize(pt)
                 extent = probe.get_window_extent()
-                avail_px = right_px - extent.x0
+                avail_px = right_px - (extent.x0 if left_px is None else left_px)
                 chars = max(8, int(len(text) * avail_px / max(extent.width, 1.0)))
                 lines = textwrap.wrap(text, width=chars) or [text]
                 line_px = extent.height * _TITLE_CELL_LINE_SPACING
@@ -1214,6 +1288,110 @@ class ConsultingLayoutMixin:
             )
         finally:
             probe.remove()
+
+    def _draw_fitted_cell_text(
+        self,
+        ax,
+        text: str,
+        *,
+        x: float,
+        y_centre: float,
+        cell_right: float,
+        row_height: float,
+        max_chars: int,
+        cell_left: float | None = None,
+        ha: str = "left",
+        fontweight: str | None = None,
+        base_pt: float | None = None,
+        floor_pt: float | None = None,
+        hard_min_pt: float | None = None,
+        color: str = LABEL_COLOR,
+        clip_on: bool = True,
+        register: bool = True,
+    ) -> list:
+        """Fit ``text`` to its cell and draw it; remember the cell for a re-fit.
+
+        Fitting measures pixels at the figure's current size, so a page
+        resize at export (letter portrait is narrower than the 11×8.5 render
+        size) would leave the fitted lines too wide. Every fitted cell is
+        recorded on the figure so ``refit_consulting_fitted_text`` can redo
+        the fit once the export page size is applied.
+        """
+        spec = {
+            "x": x,
+            "y_centre": y_centre,
+            "cell_right": cell_right,
+            "row_height": row_height,
+            "max_chars": max_chars,
+            "cell_left": cell_left,
+            "ha": ha,
+            "fontweight": fontweight,
+            "base_pt": base_pt,
+            "floor_pt": floor_pt,
+            "hard_min_pt": hard_min_pt,
+        }
+        wrapped, value_pt, line_gap = self._fit_title_cell_text(ax, text, **spec)
+        text_top = y_centre + (len(wrapped) - 1) * line_gap * 0.5
+        artists = []
+        for line_index, line in enumerate(wrapped):
+            artists.append(
+                ax.text(
+                    x,
+                    text_top - line_index * line_gap,
+                    line,
+                    fontsize=value_pt,
+                    fontweight=fontweight,
+                    va="center",
+                    ha=ha,
+                    color=color,
+                    transform=ax.transAxes,
+                    clip_on=clip_on,
+                )
+            )
+        if register:
+            registry = getattr(ax.figure, "_css_fitted_cells", None)
+            if registry is None:
+                registry = ax.figure._css_fitted_cells = []
+            registry.append(
+                {
+                    "ax": ax,
+                    "text": text,
+                    "spec": spec,
+                    "color": color,
+                    "clip_on": clip_on,
+                    "artists": artists,
+                    "size": tuple(ax.figure.get_size_inches()),
+                }
+            )
+        return artists
+
+    def refit_consulting_fitted_text(self, figure: Figure) -> None:
+        """Re-run every recorded cell fit after the figure size changed.
+
+        Called from the export preparation pass; a figure still at the size
+        the cells were fitted at is left untouched (same artists, same pixels).
+        """
+        registry = getattr(figure, "_css_fitted_cells", None)
+        if not registry:
+            return
+        size = tuple(figure.get_size_inches())
+        for cell in registry:
+            if cell["size"] == size or cell["ax"].figure is not figure:
+                continue
+            for artist in cell["artists"]:
+                try:
+                    artist.remove()
+                except (ValueError, NotImplementedError):  # pragma: no cover - defensive
+                    pass
+            cell["artists"] = self._draw_fitted_cell_text(
+                cell["ax"],
+                cell["text"],
+                color=cell["color"],
+                clip_on=cell["clip_on"],
+                register=False,
+                **cell["spec"],
+            )
+            cell["size"] = size
 
     def _draw_title_block_metadata_table(
         self,
@@ -1235,11 +1413,14 @@ class ConsultingLayoutMixin:
             table_width -= 2 * inset
             table_height -= 2 * inset
 
-        label_col_w = min(0.09, table_width * 0.28)
+        # The label column grows with the font scale (capped at the panel
+        # share) so "FIGURE NO." at a larger size does not cross the rule.
+        scale = self._consulting_font_scale()
+        label_col_w = min(0.09 * scale, table_width * 0.28)
         value_col_w = table_width - label_col_w
         row_height = table_height / max(len(rows), 1)
         # Character budget from panel fraction; consulting sheets are typically wide.
-        max_chars = max(28, int(value_col_w * 170))
+        max_chars = max(28, int(value_col_w * 170 / scale))
 
         for index, (label, value) in enumerate(rows):
             row_bottom = table_bottom + (len(rows) - index - 1) * row_height
@@ -1259,19 +1440,21 @@ class ConsultingLayoutMixin:
                 transform=ax.transAxes,
                 clip_on=False,
             )
-            ax.text(
-                table_left + 0.01,
-                row_bottom + row_height * 0.5,
+            # Row labels are fitted to their column too: at the design size
+            # every label fits at 7 pt and renders exactly as before.
+            self._draw_fitted_cell_text(
+                ax,
                 label,
-                fontsize=self._fs(7),
+                x=table_left + 0.01,
+                y_centre=row_bottom + row_height * 0.5,
+                cell_right=table_left + label_col_w,
+                row_height=row_height,
+                max_chars=max(4, int(label_col_w * 170 / scale)),
                 fontweight="bold",
-                va="center",
-                color=LABEL_COLOR,
-                transform=ax.transAxes,
-                clip_on=True,
+                hard_min_pt=_TITLE_CELL_HARD_MIN_PT,
             )
             value_x = table_left + label_col_w + 0.012
-            wrapped, value_pt, line_gap = self._fit_title_cell_text(
+            self._draw_fitted_cell_text(
                 ax,
                 str(value),
                 x=value_x,
@@ -1280,19 +1463,6 @@ class ConsultingLayoutMixin:
                 row_height=row_height,
                 max_chars=max_chars,
             )
-            text_top = row_bottom + row_height * 0.5 + (len(wrapped) - 1) * line_gap * 0.5
-            for line_index, line in enumerate(wrapped):
-                ax.text(
-                    value_x,
-                    text_top - line_index * line_gap,
-                    line,
-                    fontsize=value_pt,
-                    va="center",
-                    ha="left",
-                    color=LABEL_COLOR,
-                    transform=ax.transAxes,
-                    clip_on=True,
-                )
 
         top_y = table_bottom + len(rows) * row_height
         for x_pos in (table_left, table_left + table_width):

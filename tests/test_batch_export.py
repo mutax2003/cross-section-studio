@@ -189,3 +189,26 @@ def test_build_batch_zip_uniquifies_colliding_and_derived_stems() -> None:
 def test_batch_transect_spec_requires_distinct_holes() -> None:
     with pytest.raises(ValueError, match="distinct"):
         parse_batch_transect_lines("A | BH-01, BH-01")
+
+
+def test_batch_end_labels_use_section_letters_not_hole_ids() -> None:
+    """End labels sit beside the edge holes' own names; using the hole IDs
+    printed each edge hole twice on every batch sheet."""
+    from batch_export import _consulting_for_spec
+    from models import ConsultingTitleBlock
+
+    base = ConsultingTitleBlock(
+        section_label="A-A'",
+        transect_start_primary="A",
+        transect_start_secondary="WEST",
+        transect_end_primary="A'",
+        transect_end_secondary="EAST",
+    )
+    block = _consulting_for_spec(base, label="B-B'", hole_ids=("BH26-04", "BH26-05", "BH26-06"))
+    assert (block.transect_start_primary, block.transect_end_primary) == ("B", "B'")
+    # The base section's compass words do not describe this transect.
+    assert block.transect_start_secondary == block.transect_end_secondary == ""
+
+    free = _consulting_for_spec(None, label="North transect", hole_ids=("BH-1", "BH-2"))
+    assert free.transect_start_primary == free.transect_end_primary == ""
+    assert "BH-1" not in (free.transect_start_label, free.transect_end_label)

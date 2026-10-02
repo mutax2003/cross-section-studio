@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import threading
 import zipfile
 from collections import OrderedDict
@@ -109,25 +110,41 @@ def parse_batch_transect_lines(text: str) -> list[BatchTransectSpec]:
     return specs
 
 
+_SECTION_ENDS_RE = re.compile(r"^\s*([A-Za-z0-9]+)\s*[-\u2013]\s*([A-Za-z0-9]+['\u2032\u2019]*)\s*$")
+
+
+def _section_end_letters(label: str) -> tuple[str, str]:
+    """``"B-B'"`` → ``("B", "B'")``; anything else → no end letters.
+
+    The end labels sit beside the edge boreholes' own names, so hole IDs must
+    not be used here (they printed twice on every batch sheet).
+    """
+    match = _SECTION_ENDS_RE.match(label or "")
+    if match is None:
+        return "", ""
+    return match.group(1), match.group(2)
+
+
 def _consulting_for_spec(
     base: ConsultingTitleBlock | None,
     *,
     label: str,
     hole_ids: Sequence[str],
 ) -> ConsultingTitleBlock | None:
+    start, end = _section_end_letters(label)
+    # The base sheet's compass words describe the base section's direction,
+    # not this transect's, so they are cleared rather than copied.
+    ends = {
+        "transect_start_primary": start,
+        "transect_end_primary": end,
+        "transect_start_secondary": "",
+        "transect_end_secondary": "",
+        "transect_start_label": "",
+        "transect_end_label": "",
+    }
     if base is None:
-        return ConsultingTitleBlock(
-            section_label=label,
-            transect_start_primary=hole_ids[0],
-            transect_end_primary=hole_ids[-1],
-        )
-    return base.model_copy(
-        update={
-            "section_label": label or base.section_label,
-            "transect_start_primary": hole_ids[0],
-            "transect_end_primary": hole_ids[-1],
-        }
-    )
+        return ConsultingTitleBlock(section_label=label, **ends)
+    return base.model_copy(update={"section_label": label or base.section_label, **ends})
 
 
 def prepare_batch_section_request(

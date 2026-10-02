@@ -272,9 +272,10 @@ def render_configure_step(
         )
     has_warnings = quality_report is not None and quality_report.warning_count > 0
     warnings_default = not is_consulting_layout
+    if "override_warnings_checkbox" not in st.session_state:
+        st.session_state["override_warnings_checkbox"] = warnings_default
     override_warnings = st.checkbox(
         "Allow generate with warnings",
-        value=warnings_default,
         key="override_warnings_checkbox",
         help="Consulting report preset defaults to blocking export when QA warnings are present.",
     )
@@ -283,9 +284,10 @@ def render_configure_step(
             "QA warnings are present. Enable **Allow generate with warnings** above to proceed, "
             "or resolve them in Validate."
         )
+    if "fail_on_overlaps_checkbox" not in st.session_state:
+        st.session_state["fail_on_overlaps_checkbox"] = is_consulting_layout
     fail_on_overlaps = st.checkbox(
         "Block export on polygon overlaps",
-        value=is_consulting_layout,
         key="fail_on_overlaps_checkbox",
         help="When enabled, generation fails if inter-hole fence polygons overlap.",
     )
@@ -387,13 +389,13 @@ def render_configure_step(
                     if parameter_interpolate_segments_default is None
                     else parameter_interpolate_segments_default
                 )
+                # Seed through session state only (no value= on the widgets):
+                # passing both makes Streamlit warn on every rerun.
+                if "show_parameter_labels_toggle" not in st.session_state:
+                    st.session_state.show_parameter_labels_toggle = label_default
+                if "parameter_interpolate_segments_toggle" not in st.session_state:
+                    st.session_state.parameter_interpolate_segments_toggle = segments_default
                 if prefer_chemistry:
-                    if "show_parameter_labels_toggle" not in st.session_state:
-                        st.session_state.show_parameter_labels_toggle = label_default
-                    if "parameter_interpolate_segments_toggle" not in st.session_state:
-                        st.session_state.parameter_interpolate_segments_toggle = (
-                            segments_default
-                        )
                     if st.session_state.get("_chem_toggle_preset") != prefer_chemistry:
                         st.session_state.show_parameter_labels_toggle = label_default
                         st.session_state.parameter_interpolate_segments_toggle = (
@@ -402,13 +404,11 @@ def render_configure_step(
                         st.session_state._chem_toggle_preset = prefer_chemistry
                 show_parameter_labels = st.toggle(
                     "Show parameter value labels",
-                    value=label_default,
                     key="show_parameter_labels_toggle",
                     disabled=prefer_chemistry and show_parameter_labels_default is not None,
                 )
                 parameter_interpolate_segments = st.toggle(
                     "Interpolate parameter between adjacent holes",
-                    value=segments_default,
                     key="parameter_interpolate_segments_toggle",
                     disabled=(
                         prefer_chemistry and parameter_interpolate_segments_default is not None

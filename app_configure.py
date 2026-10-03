@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -20,8 +21,33 @@ from app_common import (
 )
 from app_services import cached_configure_preflight, cached_recommend_transects
 from app_upload import queue_session_values
-from models import CorrelationOverride, ParseResult, subset_parse_result
+from batch_export import validate_batch_transect_lines
+from models import Collar, CorrelationOverride, ParseResult, subset_parse_result
 from render_profiles import ChemistryLabelStyle
+
+OVERRIDE_WARNINGS_LABEL = "Generate even if data checks found warnings"
+FAIL_ON_OVERLAPS_LABEL = "Stop if matched layers overlap"
+MATCH_LAYERS_BY_HAND_LABEL = "Match layers by hand"
+# Interpretation radio labels in the sidebar; hints must quote them exactly.
+OBSERVED_LOGS_ONLY_LABEL = "Observed logs only"
+CONTACT_LINES_ONLY_LABEL = "Contact lines only"
+LOW_MATCH_HINT = (
+    "Few layers match between some holes. To review the logs without joining layers, "
+    f"choose '{OBSERVED_LOGS_ONLY_LABEL}' or '{CONTACT_LINES_ONLY_LABEL}' under "
+    "Interpretation in the sidebar."
+)
+OVERLAP_GATE_MESSAGE = (
+    f"Some matched layers overlap. Check '{MATCH_LAYERS_BY_HAND_LABEL}' or untick "
+    f"'{FAIL_ON_OVERLAPS_LABEL}'."
+)
+
+
+def override_warnings_label(warning_count: int) -> str:
+    """Checkbox label with the current warning count next to it."""
+    if warning_count <= 0:
+        return OVERRIDE_WARNINGS_LABEL
+    noun = "warning" if warning_count == 1 else "warnings"
+    return f"{OVERRIDE_WARNINGS_LABEL} ({warning_count} {noun})"
 
 
 @dataclass(frozen=True)
@@ -45,6 +71,7 @@ class ConfigureState:
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
     chemistry_label_style: ChemistryLabelStyle = "plain"
+    placeholder_blocks_masl_water: bool = False
 
     @property
     def blocked_reason(self) -> str | None:
@@ -55,18 +82,23 @@ class ConfigureState:
             return "fix the blocking data errors in Validate"
         if self.placeholder_blocks_interp:
             return (
-                "collar elevations are placeholders — switch to relative depth "
-                "or borehole-only mode"
+                "collar elevations are missing — enter the site elevation under "
+                "Data → Workbook format, or switch to depth below ground"
+            )
+        if self.placeholder_blocks_masl_water:
+            return (
+                "water levels are given as elevations but collar elevations are "
+                "missing — add surveyed elevations or switch to depth below ground"
             )
         if self.fail_on_overlaps and self.has_overlap_warnings:
             return (
-                "polygon overlaps are blocking export — resolve the correlation "
-                "or untick 'Block export on polygon overlaps' in Configure"
+                "some matched layers overlap — check 'Match layers by hand' "
+                "or untick 'Stop if matched layers overlap' in Configure"
             )
         if self.has_warnings and not self.override_warnings:
-            return "tick 'Allow generate with warnings' in Configure"
+            return "tick 'Generate even if data checks found warnings' in Configure"
         if self.transect_selection is None:
-            return "choose a transect in Configure"
+            return "choose a section line in Configure"
         return "resolve the Configure / Validate issues"
 
 
@@ -76,7 +108,7 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
     legend_codes = st.session_state.section_lithology_codes or st.session_state.unique_lithology_codes
     _render_lithology_legend(legend_codes)
 
-    _sidebar_heading("Transect selection")
+    _sidebar_heading("Section line")
     specs = tuple(getattr(parse_result, "section_specs", ()) or ())
     if specs:
         _render_workbook_section_picker(specs)
@@ -84,22 +116,23 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
     selected_holes: list[str] = []
     coordinate_text = ""
     if transect_mode == "Recommended":
-        if st.session_state.transect_candidates is None:
-            st.session_state.transect_candidates = cached_recommend_transects(
-                parse_result.collars,
-                parse_result.lithologies,
-                3,
-            )
-        candidates = st.session_state.transect_candidates
+        candidates = load_transect_candidates(parse_result)
         if candidates:
-            labels = [
-                f"{' → '.join(candidate.hole_ids)} (score {candidate.score:.1f})"
-                for candidate in candidates
-            ]
-            choice = st.selectbox("Recommended transects", options=labels, index=0)
-            selected_holes = list(candidates[labels.index(choice)].hole_ids)
+            described = describe_transect_candidates(candidates, parse_result.collars)
+            labels = [label for label, _candidate in described]
+            choice = st.selectbox(
+                "Suggested section lines",
+                options=labels,
+                index=0,
+                help=(
+                    "Best first. Offset is how far a hole sits off a straight line from "
+                    "the first hole to the last; small offsets give a truer section. "
+                    "Lines with only 2 holes show little between them and are listed last."
+                ),
+            )
+            selected_holes = list(described[labels.index(choice)][1].hole_ids)
         else:
-            st.info("Not enough holes for recommendations.")
+            st.info("Not enough holes to suggest a section line.")
     elif transect_mode == "By hole sequence":
         if "hole_sequence_multiselect" not in st.session_state:
             # A workbook with a Sections tab starts on its first section.
@@ -119,11 +152,82 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
             for collar in parse_result.collars[: min(4, len(parse_result.collars))]
         )
         coordinate_text = st.text_area(
-            "Transect coordinates (easting northing per line)",
+            "Section line points (easting northing, one point per line)",
             value=default_coords,
             height=160,
         )
     return selected_holes, coordinate_text
+
+
+# Candidates fetched for both the Recommended picker and "Fill from
+# recommended" in the batch panel; more than are shown so 2-hole lines can be
+# pushed below better ones.
+RECOMMENDED_CANDIDATES_FETCH = 8
+MIN_USEFUL_SECTION_HOLES = 3
+
+
+def load_transect_candidates(parse_result: ParseResult) -> list:
+    """Suggested section lines, computed on first use and kept for the session."""
+    if st.session_state.get("transect_candidates") is None:
+        st.session_state.transect_candidates = cached_recommend_transects(
+            parse_result.collars,
+            parse_result.lithologies,
+            RECOMMENDED_CANDIDATES_FETCH,
+        )
+    return list(st.session_state.transect_candidates or [])
+
+
+def max_offset_from_straight_m(
+    collars: Sequence[Collar],
+    hole_ids: Sequence[str],
+) -> float:
+    """Largest distance of any hole from the straight line first hole → last hole."""
+    lookup = {collar.hole_id: collar for collar in collars}
+    points = [(lookup[h].easting, lookup[h].northing) for h in hole_ids if h in lookup]
+    if len(points) < 3:
+        return 0.0
+    (x0, y0), (x1, y1) = points[0], points[-1]
+    dx, dy = x1 - x0, y1 - y0
+    length = math.hypot(dx, dy)
+    if length == 0.0:
+        return max(math.hypot(x - x0, y - y0) for x, y in points)
+    return max(abs(dy * (x - x0) - dx * (y - y0)) / length for x, y in points)
+
+
+def _format_metres(value: float) -> str:
+    return f"{value:.0f} m" if value >= 10 else f"{value:.1f} m".replace(".0 m", " m")
+
+
+def describe_transect_candidates(
+    candidates: Sequence,
+    collars: Sequence[Collar],
+) -> list[tuple[str, object]]:
+    """Plain-language label per suggested line, lines with < 3 holes ranked last.
+
+    e.g. ``"MW-01 → MW-05 · 4 holes · 120 m long · max offset 6 m"``.
+    """
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: len(candidate.hole_ids) < MIN_USEFUL_SECTION_HOLES,
+    )
+    described: list[tuple[str, object]] = []
+    seen: set[str] = set()
+    for candidate in ranked:
+        hole_ids = tuple(candidate.hole_ids)
+        parts = [f"{hole_ids[0]} → {hole_ids[-1]}", f"{len(hole_ids)} holes"]
+        length = getattr(candidate, "length_m", None)
+        if length:
+            parts.append(f"{_format_metres(float(length))} long")
+        if len(hole_ids) < MIN_USEFUL_SECTION_HOLES:
+            parts.append("only 2 holes")
+        else:
+            parts.append(f"max offset {_format_metres(max_offset_from_straight_m(collars, hole_ids))}")
+        label = " · ".join(parts)
+        if label in seen:  # same ends and size: name the middle holes
+            label = f"{label} (via {', '.join(hole_ids[1:-1])})"
+        seen.add(label)
+        described.append((label, candidate))
+    return described
 
 
 def _render_workbook_section_picker(specs) -> None:
@@ -149,7 +253,7 @@ def _render_workbook_section_picker(specs) -> None:
         key="workbook_section_choice",
         help=(
             "Each row of the Sections tab is one section line. Pick one to preview it; "
-            "use Multi-transect batch ZIP under Configure to export every section."
+            "use 'Several section lines (batch ZIP)' under Configure to export every section."
         ),
     )
     if choice is None:
@@ -211,12 +315,22 @@ def render_configure_step(
     elevation_mode_default: str | None = None,
 ) -> ConfigureState:
     st.subheader("Configure", anchor=False)
-    st.caption("Choose elevation mode, transect readiness, and export gates before generating.")
+    st.caption("Check the section line, elevations and data-check settings before generating.")
     all_hole_ids = [collar.hole_id for collar in parse_result.collars]
-    _render_plan_minimap(parse_result, selected_holes, transect_mode)
+    if transect_mode == "By hole sequence":
+        if "hole_sequence_multiselect" not in st.session_state:
+            st.session_state.hole_sequence_multiselect = default_hole_sequence(all_hole_ids)
+        selected_holes = list(st.session_state.get("hole_sequence_multiselect") or selected_holes)
+    preflight_selection = _active_transect_selection(
+        parse_result,
+        transect_mode,
+        selected_holes,
+        coordinate_text,
+        offset_warning_m,
+    )
+    _render_plan_minimap(parse_result, preflight_selection)
     if transect_mode == "By hole sequence":
         _render_hole_sequence_order(all_hole_ids)
-        selected_holes = list(st.session_state.get("hole_sequence_multiselect") or selected_holes)
     blocking = quality_report is not None and quality_report.has_blocking_errors
     output_preset_key = st.session_state.get("output_preset")
     if (
@@ -262,34 +376,38 @@ def render_configure_step(
         )
     if placeholder_blocks_interp:
         st.error(
-            "All collar elevations use the profile placeholder. Set site elevation in the sidebar "
-            "or ingest survey RL before generating an interpreted section."
+            "Collar elevations are missing. Enter the site elevation under "
+            "Data → Workbook format, or switch to depth below ground."
         )
     if placeholder_blocks_masl_water:
         st.error(
-            "Water uses elevation_masl with placeholder collar RL. Switch elevation mode to "
-            "relative (mbgs), provide surveyed collar elevations, or store Water as depth."
+            "Water levels are given as elevations, but collar elevations are missing. "
+            "Add surveyed elevations or switch to depth below ground."
         )
-    has_warnings = quality_report is not None and quality_report.warning_count > 0
+    warning_count = int(quality_report.warning_count) if quality_report is not None else 0
+    has_warnings = warning_count > 0
     warnings_default = not is_consulting_layout
     if "override_warnings_checkbox" not in st.session_state:
         st.session_state["override_warnings_checkbox"] = warnings_default
+    # The count sits in the label; the warnings themselves are listed in
+    # Validate on the same screen, so they are not repeated here.
     override_warnings = st.checkbox(
-        "Allow generate with warnings",
+        override_warnings_label(warning_count),
         key="override_warnings_checkbox",
-        help="Consulting report preset defaults to blocking export when QA warnings are present.",
+        help=(
+            "Data checks are listed under Validate. The consulting report style starts "
+            "with this off so warnings are reviewed before a client figure is made."
+        ),
     )
-    if has_warnings and not override_warnings:
-        st.warning(
-            "QA warnings are present. Enable **Allow generate with warnings** above to proceed, "
-            "or resolve them in Validate."
-        )
     if "fail_on_overlaps_checkbox" not in st.session_state:
         st.session_state["fail_on_overlaps_checkbox"] = is_consulting_layout
     fail_on_overlaps = st.checkbox(
-        "Block export on polygon overlaps",
+        FAIL_ON_OVERLAPS_LABEL,
         key="fail_on_overlaps_checkbox",
-        help="When enabled, generation fails if inter-hole fence polygons overlap.",
+        help=(
+            "When ticked, Generate stops if the shaded layers drawn between two holes "
+            "cross over each other."
+        ),
     )
 
     environmental_parameters: tuple[str, ...] = ()
@@ -303,21 +421,12 @@ def render_configure_step(
     subset_ready = False
     has_overlap_warnings = False
 
-    preflight_selection = _active_transect_selection(
-        parse_result,
-        transect_mode,
-        selected_holes,
-        coordinate_text,
-        offset_warning_m,
-    )
     if preflight_selection is not None:
         active_ids, active_points = preflight_selection
-        section_caption = _transect_section_caption(active_ids)
+        section_label = st.session_state.get("consulting_section_label") or "A-A'"
         st.caption(
-            f"Transect: **{' → '.join(active_ids)}** ({len(active_ids)} holes)"
+            f"Section line {section_label}: **{' → '.join(active_ids)}** ({len(active_ids)} holes)"
         )
-        if section_caption:
-            st.caption(f"Section line: **{section_caption}**")
         subset_preflight = None
         try:
             subset_preflight = subset_parse_result(
@@ -326,11 +435,11 @@ def render_configure_step(
                 lithology_index=safe_lithology_index(parse_result),
             )
         except Exception as exc:
-            st.error(f"Could not build transect subset for preflight: {exc}")
+            st.error(f"Could not read the holes on this section line: {exc}")
             subset_preflight = None
 
         if subset_preflight is None:
-            st.caption("Transect subset unavailable — fix selection or workbook data before generating.")
+            st.caption("Fix the section line or the workbook data before generating.")
         else:
             subset_ready = True
             available_params = sorted(
@@ -485,7 +594,7 @@ def render_configure_step(
                 chemistry_label_style = style_choice
             elif parse_result.environmental_readings:
                 st.caption(
-                    "Environmental readings exist but none fall on the current transect holes."
+                    "Lab results exist, but none are for holes on this section line."
                 )
 
             water_levels = subset_preflight.water_levels
@@ -581,7 +690,12 @@ def render_configure_step(
                 st.warning(message)
             has_overlap_warnings = any("Polygon overlap" in message for message in preflight_warnings)
             if pair_summaries:
-                with st.expander("Correlation health preview", expanded=True):
+                # While Validate shows blocking errors, keep the heavy review
+                # panels folded: the data has to be fixed first.
+                with st.expander(
+                    "Layer matching between holes" + (" (fix data errors first)" if blocking else ""),
+                    expanded=not blocking,
+                ):
                     table_rows = [
                         {
                             "Left": summary.left_hole_id,
@@ -597,9 +711,7 @@ def render_configure_step(
                     st.dataframe(pd.DataFrame(table_rows), width="stretch", hide_index=True)
                     low_match = [s for s in pair_summaries if s.match_rate < 0.5]
                     if low_match:
-                        st.info(
-                            "Low match rate — consider borehole-only or correlation-lines mode for review."
-                        )
+                        st.info(LOW_MATCH_HINT)
                     _render_quick_correlation_links(pair_summaries, subset_preflight)
                     render_correlation_assist(pair_summaries, subset_preflight, active_ids)
 
@@ -608,14 +720,15 @@ def render_configure_step(
 
             if _session_correlation_overrides():
                 st.info(
-                    "Correlation styling locked — manual overrides are active and will persist when the transect changes."
+                    "Layers matched by hand are in use and stay in place when you change "
+                    "the section line."
                 )
 
             render_section_qa(subset_preflight, active_ids, preflight_warnings)
     else:
         st.info(
-            "Select holes under **Transect selection** in the sidebar "
-            "(By hole sequence / Recommended / coordinates)."
+            "Choose at least two holes under **Section line** in the sidebar "
+            "(pick holes in order, use a suggested line, or enter points)."
         )
 
     can_generate = (
@@ -629,92 +742,15 @@ def render_configure_step(
         and (not fail_on_overlaps or not has_overlap_warnings)
     )
     if blocking:
-        st.error("Resolve data errors before generating a cross-section.")
+        st.error("Fix the data errors listed under Validate before generating a section.")
     elif fail_on_overlaps and has_overlap_warnings:
-        st.error(
-            "Polygon overlaps detected. Resolve correlation or disable "
-            "'Block export on polygon overlaps' after manual review."
-        )
+        st.error(OVERLAP_GATE_MESSAGE)
 
-    with st.expander("Multi-transect batch ZIP", expanded=False):
-        st.caption(
-            "One transect per line: ``Label | hole1, hole2, …``. "
-            "Generate rebuilds each line (not filename copies)."
-        )
-        workbook_specs = ()
-        report = st.session_state.get("import_report")
-        if report is not None:
-            workbook_specs = tuple(getattr(report, "section_specs", ()) or ())
-        if not workbook_specs:
-            parse_result = st.session_state.get("parse_result")
-            if parse_result is not None:
-                workbook_specs = tuple(getattr(parse_result, "section_specs", ()) or ())
-        if (
-            workbook_specs
-            and not str(st.session_state.get("batch_transect_specs", "")).strip()
-            and not st.session_state.get("_batch_specs_seeded_from_sections")
-        ):
-            from parse_ops import format_section_specs_as_batch_text
-
-            st.session_state["batch_transect_specs"] = format_section_specs_as_batch_text(
-                workbook_specs
-            )
-            st.session_state["_batch_specs_seeded_from_sections"] = True
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
-            if st.button("Add current transect", key="batch_add_current"):
-                selection = preflight_selection
-                if selection is None:
-                    st.warning("Pick a transect first.")
-                else:
-                    hole_ids, _pts = selection
-                    label = (
-                        str(st.session_state.get("consulting_section_label") or "").strip()
-                        or f"{hole_ids[0]}→{hole_ids[-1]}"
-                    )
-                    line = f"{label} | {', '.join(hole_ids)}"
-                    existing = str(st.session_state.get("batch_transect_specs", "")).rstrip()
-                    st.session_state["batch_transect_specs"] = (
-                        f"{existing}\n{line}".strip() if existing else line
-                    )
-                    st.rerun()
-        with col_b:
-            if st.button("Fill from recommended", key="batch_fill_recommended"):
-                candidates = st.session_state.get("transect_candidates") or []
-                if not candidates:
-                    st.warning("Switch to Recommended mode once to load candidates.")
-                else:
-                    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                    lines: list[str] = []
-                    for idx, candidate in enumerate(candidates[:8]):
-                        letter = letters[idx] if idx < len(letters) else str(idx + 1)
-                        label = f"{letter}-{letter}'"
-                        lines.append(f"{label} | {', '.join(candidate.hole_ids)}")
-                    st.session_state["batch_transect_specs"] = "\n".join(lines)
-                    st.rerun()
-        with col_c:
-            if st.button("Load from workbook Sections", key="batch_load_sections"):
-                if not workbook_specs:
-                    st.warning("No Sections sheet rows in the uploaded workbook.")
-                else:
-                    from parse_ops import format_section_specs_as_batch_text
-
-                    st.session_state["batch_transect_specs"] = format_section_specs_as_batch_text(
-                        workbook_specs
-                    )
-                    st.session_state["_batch_specs_seeded_from_sections"] = True
-                    st.rerun()
-        st.text_area(
-            "Batch transects",
-            key="batch_transect_specs",
-            placeholder="A-A' | BH-01, BH-02, BH-03\nB-B' | BH-08, BH-09, BH-10",
-            height=120,
-            help=(
-                "Each line is rebuilt through the cross-section pipeline when you build "
-                "the multi-transect ZIP on Generate. An empty box is seeded once from the "
-                "workbook Sections sheet; use Load from workbook Sections to refresh."
-            ),
-        )
+    _render_batch_section_lines(
+        preflight_selection,
+        known_hole_ids=all_hole_ids,
+        collapsed_for_errors=blocking,
+    )
 
     return ConfigureState(
         selected_holes=selected_holes,
@@ -725,6 +761,7 @@ def render_configure_step(
         has_warnings=has_warnings,
         override_warnings=override_warnings,
         placeholder_blocks_interp=placeholder_blocks_interp,
+        placeholder_blocks_masl_water=placeholder_blocks_masl_water,
         elevation_mode=str(elevation_mode),
         fail_on_overlaps=fail_on_overlaps,
         has_overlap_warnings=has_overlap_warnings,
@@ -739,69 +776,265 @@ def render_configure_step(
     )
 
 
-def _transect_section_caption(hole_ids: Sequence[str]) -> str:
-    if len(hole_ids) < 2:
-        return ""
-    label = st.session_state.get("consulting_section_label") or "A-A'"
-    return f"{label} ({hole_ids[0]} → {hole_ids[-1]})"
+BATCH_EXPANDER_KEY = "batch_section_lines_expander"
+_SECTION_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def _batch_workbook_specs() -> tuple:
+    report = st.session_state.get("import_report")
+    specs = tuple(getattr(report, "section_specs", ()) or ()) if report is not None else ()
+    if not specs:
+        parse_result = st.session_state.get("parse_result")
+        if parse_result is not None:
+            specs = tuple(getattr(parse_result, "section_specs", ()) or ())
+    return specs
+
+
+def recommended_batch_text(candidates: Sequence, limit: int = 8) -> str:
+    """``A-A' | …`` lines for the suggested section lines (3+ holes first)."""
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: len(candidate.hole_ids) < MIN_USEFUL_SECTION_HOLES,
+    )
+    lines: list[str] = []
+    for idx, candidate in enumerate(ranked[:limit]):
+        letter = _SECTION_LETTERS[idx] if idx < len(_SECTION_LETTERS) else str(idx + 1)
+        lines.append(f"{letter}-{letter}' | {', '.join(candidate.hole_ids)}")
+    return "\n".join(lines)
+
+
+def _render_batch_section_lines(
+    preflight_selection,
+    *,
+    known_hole_ids: Sequence[str],
+    collapsed_for_errors: bool,
+) -> None:
+    """Editor for several section lines, checked line by line as typed."""
+    label = "Several section lines (batch ZIP)"
+    if collapsed_for_errors:
+        label += " (fix data errors first)"
+    # Keyed so the panel keeps its open/closed state across the reruns its
+    # own buttons trigger.
+    with st.expander(label, expanded=False, key=BATCH_EXPANDER_KEY, on_change="rerun"):
+        st.caption(
+            "One section line per row: name, then '|', then hole IDs in order "
+            "(e.g. A-A' | MW-01, MW-02, MW-03). Prepare batch ZIP on Generate redraws "
+            "each line as its own section."
+        )
+        workbook_specs = _batch_workbook_specs()
+        if (
+            workbook_specs
+            and not str(st.session_state.get("batch_transect_specs", "")).strip()
+            and not st.session_state.get("_batch_specs_seeded_from_sections")
+        ):
+            from parse_ops import format_section_specs_as_batch_text
+
+            st.session_state["batch_transect_specs"] = format_section_specs_as_batch_text(
+                workbook_specs
+            )
+            st.session_state["_batch_specs_seeded_from_sections"] = True
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            if st.button("Add current section line", key="batch_add_current"):
+                if preflight_selection is None:
+                    st.warning("Choose a section line first.")
+                else:
+                    hole_ids, _pts = preflight_selection
+                    line_label = (
+                        str(st.session_state.get("consulting_section_label") or "").strip()
+                        or f"{hole_ids[0]}→{hole_ids[-1]}"
+                    )
+                    line = f"{line_label} | {', '.join(hole_ids)}"
+                    existing = str(st.session_state.get("batch_transect_specs", "")).rstrip()
+                    st.session_state["batch_transect_specs"] = (
+                        f"{existing}\n{line}".strip() if existing else line
+                    )
+                    st.rerun()
+        with col_b:
+            if st.button("Fill from suggested lines", key="batch_fill_recommended"):
+                parse_result = st.session_state.get("parse_result")
+                candidates = load_transect_candidates(parse_result) if parse_result is not None else []
+                if not candidates:
+                    st.warning("Not enough holes to suggest section lines.")
+                else:
+                    st.session_state["batch_transect_specs"] = recommended_batch_text(candidates)
+                    st.rerun()
+        with col_c:
+            if st.button("Load from workbook Sections", key="batch_load_sections"):
+                if not workbook_specs:
+                    st.warning("The workbook has no Sections tab rows.")
+                else:
+                    from parse_ops import format_section_specs_as_batch_text
+
+                    st.session_state["batch_transect_specs"] = format_section_specs_as_batch_text(
+                        workbook_specs
+                    )
+                    st.session_state["_batch_specs_seeded_from_sections"] = True
+                    st.rerun()
+        text = st.text_area(
+            "Section lines",
+            key="batch_transect_specs",
+            placeholder="A-A' | BH-01, BH-02, BH-03\nB-B' | BH-08, BH-09, BH-10",
+            height=120,
+            help=(
+                "Each row becomes its own section in the batch ZIP. An empty box is filled "
+                "once from the workbook Sections tab; use Load from workbook Sections to refresh."
+            ),
+        )
+        _render_batch_line_status(text, known_hole_ids)
+
+
+def _render_batch_line_status(text: str, known_hole_ids: Sequence[str]) -> None:
+    statuses = validate_batch_transect_lines(str(text or ""), known_hole_ids)
+    if not statuses:
+        return
+    ready = [status for status in statuses if status.ok]
+    problems = [status for status in statuses if not status.ok]
+    summary = f"{len(ready)} of {len(statuses)} section lines ready."
+    if not problems:
+        st.success(summary)
+        return
+    st.warning(
+        summary
+        + " Lines with problems are skipped when you prepare the batch ZIP:\n\n"
+        + "\n".join(f"- {status.message}" for status in problems)
+    )
+
+
+IN_SECTION = "On section line"
+NOT_IN_SECTION = "Not on section line"
+_IN_SECTION_COLOUR = "#2E6B4F"  # app primary green
+_NOT_IN_SECTION_COLOUR = "#9AA5B1"
+_LINE_COLOUR = "#C0392B"
+PLAN_VIEW_WIDTH_PX = 640
+_PLAN_VIEW_HEIGHT_RANGE_PX = (240, 480)
 
 
 def _render_plan_minimap(
     parse_result: ParseResult,
-    selected_holes: list[str],
-    transect_mode: str,
+    selection: tuple[tuple[str, ...], tuple[tuple[float, float], ...]] | None,
 ) -> None:
-    """Plan-view collar scatter (gINT/Strater-style fence context)."""
+    """Plan view: every collar labelled, the section line drawn in hole order."""
     if not parse_result.collars:
         return
-    selected_set = set(selected_holes)
-    rows = []
-    for collar in parse_result.collars:
-        rows.append(
+    active_ids = list(selection[0]) if selection else []
+    line_points = list(selection[1]) if selection else []
+    order = {hole_id: index + 1 for index, hole_id in enumerate(active_ids)}
+    chart_df = pd.DataFrame(
+        [
             {
-                "easting": collar.easting,
-                "northing": collar.northing,
+                "Easting": collar.easting,
+                "Northing": collar.northing,
                 "hole_id": collar.hole_id,
-                "selected": collar.hole_id in selected_set,
+                "section": IN_SECTION if collar.hole_id in order else NOT_IN_SECTION,
+                "order": order.get(collar.hole_id),
             }
-        )
-    df = pd.DataFrame(rows)
-    st.markdown("**Plan view (collar locations)**")
-    chart_df = df.rename(columns={"easting": "Easting", "northing": "Northing"})
-    color_col = "selected" if transect_mode != "Recommended" else None
-    st.altair_chart(
-        _plan_view_chart(chart_df, color_col if color_col and chart_df["selected"].any() else None),
-        width="stretch",
+            for collar in parse_result.collars
+        ]
     )
-    st.caption("Collar positions from workbook — transect follows hole order or line geometry.")
+    st.markdown("**Plan view (collar locations)**")
+    st.altair_chart(
+        _plan_view_chart(chart_df, "section" if active_ids else None, line_points),
+        width="content",
+    )
+    if active_ids:
+        st.caption(
+            f"Red line: the section line, {active_ids[0]} → {active_ids[-1]}. "
+            "Green holes are on it; grey holes are not. Both axes use the same scale."
+        )
+    else:
+        st.caption("Choose at least two holes to draw the section line. Both axes use the same scale.")
 
 
-def _plan_view_chart(chart_df: pd.DataFrame, color_col: str | None):
-    """Scatter of collars on axes fitted to the data.
+def equal_scale_domains(
+    eastings: Sequence[float],
+    northings: Sequence[float],
+    *,
+    width_px: int = PLAN_VIEW_WIDTH_PX,
+    height_range_px: tuple[int, int] = _PLAN_VIEW_HEIGHT_RANGE_PX,
+) -> tuple[list[float], list[float], int]:
+    """Axis domains and chart height so 1 m east = 1 m north on screen.
+
+    Returns ``(x_domain, y_domain, height_px)``: the height follows the data's
+    shape within ``height_range_px``, then the shorter axis is widened so both
+    axes have the same metres per pixel.
+    """
+    x_low, x_high = float(min(eastings)), float(max(eastings))
+    y_low, y_high = float(min(northings)), float(max(northings))
+    x_pad = max((x_high - x_low) * 0.08, 5.0)
+    y_pad = max((y_high - y_low) * 0.08, 5.0)
+    x_low, x_high = x_low - x_pad, x_high + x_pad
+    y_low, y_high = y_low - y_pad, y_high + y_pad
+    x_span, y_span = x_high - x_low, y_high - y_low
+    min_h, max_h = height_range_px
+    height_px = int(round(min(max(width_px * y_span / x_span, min_h), max_h)))
+    metres_per_px = max(x_span / width_px, y_span / height_px)
+    x_mid, y_mid = (x_low + x_high) / 2, (y_low + y_high) / 2
+    x_half = metres_per_px * width_px / 2
+    y_half = metres_per_px * height_px / 2
+    return [x_mid - x_half, x_mid + x_half], [y_mid - y_half, y_mid + y_half], height_px
+
+
+def _plan_view_chart(
+    chart_df: pd.DataFrame,
+    color_col: str | None,
+    line_points: Sequence[tuple[float, float]] = (),
+):
+    """Collars on equal-scale axes fitted to the data, labelled by hole ID.
 
     st.scatter_chart anchors both axes at zero, so UTM collars (500000 E,
-    4500000 N) collapse into one dot in a corner.
+    4500000 N) collapse into one dot in a corner; independent axis fits would
+    distort the section line's angle and spacing.
     """
     import altair as alt
 
-    def _domain(column: str) -> list[float]:
-        low, high = float(chart_df[column].min()), float(chart_df[column].max())
-        pad = max((high - low) * 0.08, 5.0)
-        return [low - pad, high + pad]
-
-    chart = (
-        alt.Chart(chart_df)
-        .mark_circle(size=90)
-        .encode(
-            x=alt.X("Easting:Q", scale=alt.Scale(domain=_domain("Easting"), nice=False)),
-            y=alt.Y("Northing:Q", scale=alt.Scale(domain=_domain("Northing"), nice=False)),
-            tooltip=["hole_id", "Easting", "Northing"],
-        )
+    all_e = list(chart_df["Easting"]) + [point[0] for point in line_points]
+    all_n = list(chart_df["Northing"]) + [point[1] for point in line_points]
+    x_domain, y_domain, height_px = equal_scale_domains(all_e, all_n)
+    x = alt.X(
+        "Easting:Q",
+        scale=alt.Scale(domain=x_domain, nice=False, zero=False),
+        axis=alt.Axis(format="d", tickCount=6),
     )
+    y = alt.Y(
+        "Northing:Q",
+        scale=alt.Scale(domain=y_domain, nice=False, zero=False),
+        axis=alt.Axis(format="d", tickCount=6),
+    )
+    tooltip = ["hole_id", "Easting", "Northing"]
+    points = alt.Chart(chart_df).mark_circle(size=90, opacity=1).encode(x=x, y=y, tooltip=tooltip)
     if color_col:
-        chart = chart.encode(color=alt.Color(f"{color_col}:N", title="In transect"))
-    return chart.properties(height=300)
-
+        points = points.encode(
+            color=alt.Color(
+                f"{color_col}:N",
+                title=None,
+                scale=alt.Scale(
+                    domain=[IN_SECTION, NOT_IN_SECTION],
+                    range=[_IN_SECTION_COLOUR, _NOT_IN_SECTION_COLOUR],
+                ),
+                legend=alt.Legend(orient="top"),
+            )
+        )
+    labels = (
+        alt.Chart(chart_df)
+        .mark_text(align="left", baseline="bottom", dx=6, dy=-4, fontSize=11, color="#33414E")
+        .encode(x=x, y=y, text="hole_id:N")
+    )
+    layers = []
+    if len(line_points) >= 2:
+        line_df = pd.DataFrame(
+            [
+                {"Easting": easting, "Northing": northing, "step": index}
+                for index, (easting, northing) in enumerate(line_points)
+            ]
+        )
+        layers.append(
+            alt.Chart(line_df)
+            .mark_line(color=_LINE_COLOUR, strokeWidth=2)
+            .encode(x=x, y=y, order="step:Q")
+        )
+    layers += [points, labels]
+    return alt.layer(*layers).properties(width=PLAN_VIEW_WIDTH_PX, height=height_px)
 
 
 # A workbook with this many holes or fewer is usually one section listed in
@@ -824,7 +1057,7 @@ def _render_hole_sequence_order(hole_ids: list[str]) -> None:
     sequence: list[str] = list(st.session_state.hole_sequence_multiselect)
     if not sequence:
         return
-    st.markdown("**Hole order (fence sequence)**")
+    st.markdown("**Hole order along the section line**")
     for index, hole_id in enumerate(sequence):
         col_num, col_label, col_up, col_down = st.columns([0.4, 3, 0.5, 0.5])
         with col_num:
@@ -901,12 +1134,12 @@ def _render_quick_correlation_links(pair_summaries: Sequence, subset: ParseResul
         unique.append(item)
     if not unique:
         return
-    st.markdown("**Quick-add correlation overrides**")
-    st.caption("Links same lithology code between adjacent holes into session overrides.")
+    st.markdown("**Quick matches**")
+    st.caption("Join the same layer code in two neighbouring holes with one click.")
     session_overrides: list[CorrelationOverride] = list(_session_correlation_overrides())
     for index, (left_id, right_id, code, left_order, right_order) in enumerate(unique[:12]):
-        label = f"{left_id}#{left_order} ↔ {right_id}#{right_order} ({code})"
-        if st.button(f"Add: {label}", key=f"quick_corr_{index}"):
+        label = f"{left_id} layer {left_order} ↔ {right_id} layer {right_order} ({code})"
+        if st.button(f"Match {label}", key=f"quick_corr_{index}"):
             session_overrides.append(
                 CorrelationOverride(
                     left_hole_id=left_id,
@@ -920,8 +1153,11 @@ def _render_quick_correlation_links(pair_summaries: Sequence, subset: ParseResul
 
 
 def render_manual_correlation_overrides(active_ids: Sequence[str], subset: ParseResult) -> None:
-    with st.expander("Manual correlation overrides", expanded=False):
-        st.caption("Pair units between adjacent holes (unit_order on each stick).")
+    with st.expander(MATCH_LAYERS_BY_HAND_LABEL, expanded=False):
+        st.caption(
+            "Pick a layer in each of two neighbouring holes and click Link to join them "
+            "on the section. Layer numbers are the unit order from the workbook."
+        )
         pair_index = 0
         session_overrides: list[CorrelationOverride] = list(_session_correlation_overrides())
         for left_id, right_id in zip(active_ids, active_ids[1:]):
@@ -944,13 +1180,13 @@ def render_manual_correlation_overrides(active_ids: Sequence[str], subset: Parse
             col1, col2, col3 = st.columns([2, 2, 1])
             with col1:
                 left_order = st.selectbox(
-                    f"{left_id} unit",
+                    f"{left_id} layer",
                     options=left_units,
                     key=f"corr_left_{pair_index}",
                 )
             with col2:
                 right_order = st.selectbox(
-                    f"{right_id} unit",
+                    f"{right_id} layer",
                     options=right_units,
                     key=f"corr_right_{pair_index}",
                 )
@@ -968,32 +1204,39 @@ def render_manual_correlation_overrides(active_ids: Sequence[str], subset: Parse
                     st.rerun()
             pair_index += 1
         if session_overrides:
-            st.json([item.model_dump() for item in session_overrides])
-            if st.button("Clear manual overrides"):
+            st.markdown(
+                "**Matched by hand:** "
+                + "; ".join(
+                    f"{item.left_hole_id} layer {item.left_unit_order} ↔ "
+                    f"{item.right_hole_id} layer {item.right_unit_order}"
+                    for item in session_overrides
+                )
+            )
+            if st.button("Clear layers matched by hand"):
                 st.session_state.session_correlation_overrides = None
                 st.rerun()
 
 
 def render_nl_transect_input(hole_ids: list[str]) -> None:
-    """Sidebar natural-language transect control."""
+    """Sidebar control: describe the section line in words."""
     nl_text = st.text_input(
-        "Natural-language transect",
+        "Describe the section line in words",
         value=st.session_state.get("nl_transect_text", ""),
         key="nl_transect_text",
         placeholder="Section B-B' through MW-01, MW-03, MW-07",
-        help="Parses hole IDs from text. Geometry still comes from collar coordinates.",
+        help="Picks out the hole IDs you name, in order. Positions still come from the collar coordinates.",
     )
-    if st.button("Apply NL transect", key="apply_nl_transect") and nl_text.strip():
+    if st.button("Use this section line", key="apply_nl_transect") and nl_text.strip():
         parsed = _build_assistant().parse_transect_request(nl_text, hole_ids)
         if parsed is None:
-            st.warning("Could not find at least two known hole IDs in that request.")
+            st.warning("Name at least two hole IDs from the Collars tab, e.g. MW-01, MW-03.")
         else:
             st.session_state.hole_sequence_multiselect = list(parsed.hole_ids)
             st.session_state.pending_transect_mode = "By hole sequence"
             if parsed.section_label:
                 queue_consulting_section_label(parsed.section_label)
             st.success(
-                f"Transect: {' → '.join(parsed.hole_ids)}"
+                f"Section line: {' → '.join(parsed.hole_ids)}"
                 + (f" ({parsed.section_label})" if parsed.section_label else "")
             )
             st.rerun()
@@ -1005,7 +1248,7 @@ def render_correlation_assist(
     active_ids: Sequence[str],
 ) -> None:
     """AI correlation link suggestions inside correlation health expander."""
-    if st.button("Suggest correlation links", key="suggest_correlation_links"):
+    if st.button("Suggest layer matches", key="suggest_correlation_links"):
         st.session_state.ai_correlation_suggestions = (
             _build_assistant().suggest_correlation_overrides(
                 pair_summaries,
@@ -1016,14 +1259,14 @@ def render_correlation_assist(
     corr_suggestions = st.session_state.get("ai_correlation_suggestions") or ()
     if not corr_suggestions:
         return
-    st.markdown("**Suggested overrides** (review before apply)")
+    st.markdown("**Suggested layer matches** (review before accepting)")
     for suggestion in corr_suggestions:
         st.write(
-            f"{suggestion.left_hole_id} unit {suggestion.left_unit_order} ↔ "
-            f"{suggestion.right_hole_id} unit {suggestion.right_unit_order} "
+            f"{suggestion.left_hole_id} layer {suggestion.left_unit_order} ↔ "
+            f"{suggestion.right_hole_id} layer {suggestion.right_unit_order} "
             f"({suggestion.confidence:.0%}) — {suggestion.rationale}"
         )
-    if st.button("Accept correlation suggestions", key="accept_corr_suggestions"):
+    if st.button("Accept suggested matches", key="accept_corr_suggestions"):
         session_overrides = list(_session_correlation_overrides())
         existing = {
             (
@@ -1054,13 +1297,14 @@ def render_section_qa(
     active_ids: Sequence[str],
     preflight_warnings: Sequence[str],
 ) -> None:
-    """Section Q&A expander grounded on active-transect facts."""
-    with st.expander("Section Q&A", expanded=False):
+    """Section Q&A expander grounded on the active section line's facts."""
+    with st.expander("Ask about this section", expanded=False):
         st.caption(
-            "Answers use active-transect facts only (holes, water, NM, thicknesses, offsets)."
+            "Answers use only the holes on this section line: depths, water levels, "
+            "layer thicknesses and offsets."
         )
         qa_question = st.text_input(
-            "Ask about this section",
+            "Your question",
             key="section_qa_question",
             placeholder="Which wells are NM? What is clay thickness at MW-01?",
         )

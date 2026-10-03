@@ -239,27 +239,106 @@ def test_init_session_defaults_skips_clear_when_schema_current() -> None:
 
 def test_plan_view_chart_fits_axes_to_utm_collars() -> None:
     """st.scatter_chart anchored axes at zero, collapsing UTM collars into a
-    single dot; the Altair chart must bracket the data instead."""
+    single dot; the Altair chart must bracket the data instead, label every
+    collar and draw the section line through the chosen holes."""
     import pandas as pd
 
-    from app_configure import _plan_view_chart
+    from app_configure import IN_SECTION, NOT_IN_SECTION, _plan_view_chart
 
     frame = pd.DataFrame(
         {
             "hole_id": ["A", "B", "C"],
             "Easting": [500000.0, 500040.0, 500080.0],
             "Northing": [4500000.0, 4500010.0, 4500020.0],
-            "selected": [True, False, True],
+            "section": [IN_SECTION, NOT_IN_SECTION, IN_SECTION],
         }
     )
-    spec = _plan_view_chart(frame, "selected").to_dict()
-    x_domain = spec["encoding"]["x"]["scale"]["domain"]
-    y_domain = spec["encoding"]["y"]["scale"]["domain"]
+    line = [(500000.0, 4500000.0), (500080.0, 4500020.0)]
+    spec = _plan_view_chart(frame, "section", line).to_dict()
+    line_layer, point_layer, label_layer = spec["layer"]
+    x_domain = point_layer["encoding"]["x"]["scale"]["domain"]
+    y_domain = point_layer["encoding"]["y"]["scale"]["domain"]
     assert 499990 < x_domain[0] < 500000 and 500080 < x_domain[1] < 500100
     assert 4499990 < y_domain[0] < 4500000 and 4500020 < y_domain[1] < 4500040
-    assert spec["encoding"]["color"]["field"] == "selected"
-    assert "color" not in _plan_view_chart(frame, None).to_dict()["encoding"]
+    # Equal scale: metres per pixel match on both axes.
+    x_per_px = (x_domain[1] - x_domain[0]) / spec["width"]
+    y_per_px = (y_domain[1] - y_domain[0]) / spec["height"]
+    assert abs(x_per_px - y_per_px) < 1e-9
+    assert point_layer["encoding"]["color"]["field"] == "section"
+    assert label_layer["mark"]["type"] == "text"
+    assert label_layer["encoding"]["text"]["field"] == "hole_id"
+    assert line_layer["mark"]["type"] == "line"
+    assert line_layer["encoding"]["order"]["field"] == "step"
+    no_selection = _plan_view_chart(frame, None).to_dict()
+    assert len(no_selection["layer"]) == 2
+    assert "color" not in no_selection["layer"][0]["encoding"]
 
+
+def test_equal_scale_domains_keep_tall_layouts_undistorted() -> None:
+    from app_configure import equal_scale_domains
+
+    x_domain, y_domain, height = equal_scale_domains([0.0, 10.0], [0.0, 1000.0])
+    assert height == 480  # capped
+    x_per_px = (x_domain[1] - x_domain[0]) / 640
+    y_per_px = (y_domain[1] - y_domain[0]) / height
+    assert abs(x_per_px - y_per_px) < 1e-9
+    assert y_domain[0] < 0.0 and y_domain[1] > 1000.0
+
+
+def test_suggested_lines_explain_themselves_and_rank_two_hole_lines_last() -> None:
+    from app_configure import (
+        describe_transect_candidates,
+        max_offset_from_straight_m,
+        recommended_batch_text,
+    )
+    from models import Collar
+    from transect_planner import TransectCandidate
+
+    collars = [
+        Collar(hole_id=hole, easting=e, northing=n, elevation=100.0, total_depth=10.0)
+        for hole, e, n in [
+            ("MW-01", 0.0, 0.0),
+            ("MW-02", 40.0, 6.0),
+            ("MW-03", 80.0, 0.0),
+            ("MW-05", 120.0, 0.0),
+        ]
+    ]
+    assert max_offset_from_straight_m(collars, ["MW-01", "MW-02", "MW-05"]) == 6.0
+    two = TransectCandidate(("MW-01", "MW-05"), 30.0, 0.0, 3, 120.0, 0)
+    four = TransectCandidate(("MW-01", "MW-02", "MW-03", "MW-05"), 20.0, 0.0, 3, 121.2, 0)
+    described = describe_transect_candidates([two, four], collars)
+    assert [candidate for _label, candidate in described] == [four, two]
+    assert described[0][0] == "MW-01 → MW-05 · 4 holes · 121 m long · max offset 6 m"
+    assert "only 2 holes" in described[1][0]
+    assert "score" not in described[0][0]
+    assert recommended_batch_text([two, four]).splitlines() == [
+        "A-A' | MW-01, MW-02, MW-03, MW-05",
+        "B-B' | MW-01, MW-05",
+    ]
+
+
+def test_configure_gate_labels_and_reasons_use_plain_wording() -> None:
+    from app_configure import ConfigureState, override_warnings_label
+
+    assert override_warnings_label(0) == "Generate even if data checks found warnings"
+    assert override_warnings_label(1).endswith("(1 warning)")
+    assert override_warnings_label(3).endswith("(3 warnings)")
+    base = dict(
+        selected_holes=["A", "B"],
+        coordinate_text="",
+        transect_selection=None,
+        can_generate=False,
+        blocking=False,
+        has_warnings=False,
+        override_warnings=True,
+        placeholder_blocks_interp=False,
+        elevation_mode="absolute",
+        fail_on_overlaps=True,
+        has_overlap_warnings=True,
+    )
+    assert "Stop if matched layers overlap" in ConfigureState(**base).blocked_reason
+    masl = ConfigureState(**{**base, "has_overlap_warnings": False}, placeholder_blocks_masl_water=True)
+    assert "depth below ground" in masl.blocked_reason
 
 
 def test_default_hole_sequence_takes_every_hole_of_a_small_workbook() -> None:

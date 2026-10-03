@@ -98,7 +98,7 @@ def test_streamlit_generate_smoke(sample_workbook: Path) -> None:
     at.session_state["hole_sequence_multiselect"] = hole_ids[: min(4, len(hole_ids))]
     for box in at.checkbox:
         label = box.label or ""
-        if "Allow generate with warnings" in label:
+        if "Generate even if data checks found warnings" in label:
             box.set_value(True)
             break
     at.run()
@@ -135,7 +135,7 @@ def _generated_app(sample_workbook: Path):
     hole_ids = list(at.session_state["hole_ids"])
     at.session_state["hole_sequence_multiselect"] = hole_ids[: min(4, len(hole_ids))]
     for box in at.checkbox:
-        if "Allow generate with warnings" in (box.label or ""):
+        if "Generate even if data checks found warnings" in (box.label or ""):
             box.set_value(True)
             break
     at.run()
@@ -274,10 +274,10 @@ def test_stale_generate_button_is_disabled_with_the_reason_when_blocked(sample_w
     stale_button = next(b for b in at.button if b.key == "regenerate_stale")
     assert stale_button.disabled
     banner = next(m.value for m in at.markdown if m.value.startswith("<div class=\"stale-banner\""))
-    assert "polygon overlaps" in banner
+    assert "matched layers overlap" in banner
     at.session_state["_regenerate_requested"] = True  # Ctrl+G / menu path
     at.run()
-    assert any("Regenerate skipped" in w.value and "overlaps" in w.value for w in at.warning)
+    assert any("Regenerate skipped" in w.value and "overlap" in w.value for w in at.warning)
 
 
 def test_sections_tab_drop_down_drives_the_preview(tmp_path: Path) -> None:
@@ -365,3 +365,26 @@ def test_clear_then_sample_drops_project_fields_and_opens_unblocked(sample_workb
     assert at.session_state["consulting_section_label"] != "A - A' WITH CHLORIDE AVERAGES"
     assert not any("Polygon overlaps detected" in e.value for e in at.error)
     assert at.session_state.get("fail_on_overlaps_checkbox") is False
+
+
+def test_batch_section_lines_fill_from_suggestions_and_flag_bad_lines(sample_workbook: Path) -> None:
+    """Fill from suggested lines works without visiting Recommended mode, and
+    each typed line is checked on its own under the editor."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("sample.xlsx", sample_workbook.read_bytes()).run()
+    at.button(key="batch_fill_recommended").click().run()
+    assert not at.exception
+    filled = str(at.session_state["batch_transect_specs"])
+    assert filled.startswith("A-A' | ")
+    assert not any("Switch to Recommended" in w.value for w in at.warning)
+    hole_ids = list(at.session_state["hole_ids"])
+    at.session_state["batch_transect_specs"] = (
+        f"A-A' | {hole_ids[0]}, {hole_ids[1]}\nC-C' | {hole_ids[0]}, MW-99"
+    )
+    at.run()
+    assert not at.exception
+    status = [w.value for w in at.warning if "section lines ready" in w.value]
+    assert status and "1 of 2" in status[0] and "C-C': MW-99 not in Collars" in status[0]

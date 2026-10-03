@@ -130,3 +130,44 @@ def test_consulting_report_seeds_the_pinch_out_choice_the_build_uses() -> None:
         sample_figure_profile=preset.sample_figure_profile,
     )
     assert preset.allow_pinch_outs is effective.allow_pinch_outs is False
+
+
+def test_sidebar_visibility_hides_exactly_what_the_build_overrides() -> None:
+    """A control is shown only when effective_render_options honours it."""
+    from ui_output_presets import sidebar_visibility
+
+    for preset_id, config in OUTPUT_PRESETS.items():
+        vis = sidebar_visibility(preset_id)
+
+        def build(**overrides):
+            kwargs = dict(
+                report_preset=config.report_preset,
+                render_layout=config.render_layout,
+                show_ground_surface=True,
+                track_width_m=3.0,
+                show_legend=True,
+                interpolate_water_table=True,
+                allow_pinch_outs=True,
+                consulting_title_block=None,
+                sample_figure_profile=config.sample_figure_profile,
+            )
+            kwargs.update(overrides)
+            return effective_render_options(**kwargs)
+
+        ground_honoured = build(show_ground_surface=False).show_ground_surface is False
+        legend_honoured = build(show_legend=False).show_legend != build().show_legend
+        assert vis.ground_surface_editable == ground_honoured, preset_id
+        assert vis.chart_legend_editable == legend_honoured, preset_id
+        if not vis.pinch_outs_editable and not config.sample_figure_profile:
+            assert build().allow_pinch_outs is False, preset_id
+        assert vis.title_block_shown == (config.render_layout == "consulting_section")
+
+
+def test_output_style_names_are_plain() -> None:
+    from ui_output_presets import OUTPUT_PRESET_LABELS, locked_groundwater_summary
+
+    assert OUTPUT_PRESET_LABELS["gwm_fence"] == "Groundwater fence (elevation + water levels)"
+    assert OUTPUT_PRESET_LABELS["p2_chemistry_sticks"] == "Chemistry columns (depth + lab values)"
+    assert locked_groundwater_summary("section_sheet") is None
+    summary = locked_groundwater_summary("consulting_report")
+    assert summary and summary.startswith("Set by Consulting report:")

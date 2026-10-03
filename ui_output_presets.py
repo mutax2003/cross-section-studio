@@ -41,12 +41,12 @@ class OutputPresetConfig:
 
 
 OUTPUT_PRESET_LABELS: dict[str, str] = {
-    "section_sheet": "Section sheet (Strater-style)",
+    "section_sheet": "Section sheet",
     "consulting_report": "Consulting report (title block)",
-    "gwm_fence": "GWM fence (MASL + groundwater)",
-    "p2_chemistry_sticks": "P2 chemistry sticks (mbgs + chlorides)",
-    "chemistry_gw": "Chemistry + groundwater (combined)",
-    "quick_preview": "Quick preview (chart)",
+    "gwm_fence": "Groundwater fence (elevation + water levels)",
+    "p2_chemistry_sticks": "Chemistry columns (depth + lab values)",
+    "chemistry_gw": "Chemistry + groundwater (elevation)",
+    "quick_preview": "Quick preview",
 }
 
 OUTPUT_PRESETS: dict[str, OutputPresetConfig] = {
@@ -174,3 +174,121 @@ def normalize_figure_preset(raw: str | None) -> str | None:
     }
     resolved = aliases.get(key, key)
     return resolved if resolved in OUTPUT_PRESETS else None
+
+
+INTERPRETATION_LABELS: dict[str, str] = {
+    "interpolated": "Connect layers between holes",
+    "correlation_lines": "Contact lines only (no shading)",
+    "borehole_only": "Observed logs only (no fill between holes)",
+}
+
+
+def output_preset_short_name(preset: str) -> str:
+    """Display name without the parenthetical, for "Set by …" captions."""
+    label = OUTPUT_PRESET_LABELS.get(preset, OUTPUT_PRESET_LABELS["section_sheet"])
+    return label.split(" (", 1)[0]
+
+
+@dataclass(frozen=True)
+class SidebarVisibility:
+    """Which sidebar controls an output style actually honours.
+
+    Mirrors ``app_build.effective_render_options`` and the sample-figure locks so
+    the sidebar can hide (not just disable) settings the figure ignores.
+    """
+
+    interpretation_editable: bool
+    pinch_outs_editable: bool
+    ground_surface_editable: bool
+    vertical_exaggeration_editable: bool
+    groundwater_editable: bool
+    chart_legend_editable: bool
+    label_detail_editable: bool
+    parameter_text_block_editable: bool
+    chemistry_marker_size_editable: bool
+    title_block_shown: bool
+    export_shown: bool
+
+
+def sidebar_visibility(preset: str) -> SidebarVisibility:
+    config = resolve_output_preset(preset)
+    consulting = config.render_layout == "consulting_section"
+    return SidebarVisibility(
+        interpretation_editable=config.interpretation_mode is None,
+        # Generic consulting forces pinch-outs off; sample figures fix them.
+        pinch_outs_editable=not consulting,
+        # report_preset (section sheet) and consulting layouts force it on.
+        ground_surface_editable=not (config.report_preset or consulting),
+        vertical_exaggeration_editable=not (
+            config.sample_figure_profile and config.vertical_exaggeration is not None
+        ),
+        # Generic consulting forces groundwater chrome; sample figures fix it.
+        groundwater_editable=not consulting,
+        # Consulting layouts put the legend in the title block.
+        chart_legend_editable=not consulting,
+        label_detail_editable=not consulting,
+        parameter_text_block_editable=not consulting,
+        # Chemistry presets draw lab values as labels without dots.
+        chemistry_marker_size_editable=config.parameter_draw_markers is not False,
+        title_block_shown=consulting,
+        export_shown=config.render_layout != "chart",
+    )
+
+
+def _join_plain(items: list[str]) -> str:
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def locked_figure_summary(preset: str) -> str | None:
+    """One caption line describing the layer/surface settings a style fixes."""
+    config = resolve_output_preset(preset)
+    visibility = sidebar_visibility(preset)
+    parts: list[str] = []
+    if not visibility.interpretation_editable and config.interpretation_mode is not None:
+        parts.append(INTERPRETATION_LABELS[config.interpretation_mode].lower())
+    if not visibility.pinch_outs_editable:
+        parts.append(
+            "layers that end between holes "
+            + ("shown" if config.allow_pinch_outs and config.sample_figure_profile else "not drawn")
+        )
+    if not visibility.ground_surface_editable:
+        parts.append("ground surface shown")
+    if not visibility.vertical_exaggeration_editable and config.vertical_exaggeration is not None:
+        parts.append(f"vertical exaggeration {config.vertical_exaggeration:g}×")
+    if not visibility.chart_legend_editable:
+        parts.append("lithology legend in the title block")
+    if not parts:
+        return None
+    return f"Set by {output_preset_short_name(preset)}: {_join_plain(parts)}."
+
+
+def locked_groundwater_summary(preset: str) -> str | None:
+    """One caption line for the groundwater settings a style fixes (None = editable)."""
+    config = resolve_output_preset(preset)
+    if sidebar_visibility(preset).groundwater_editable:
+        return None
+    # Generic consulting forces the chrome on (see app_sidebar / app_build).
+    forced = not config.sample_figure_profile
+
+    def flag(value: bool | None) -> bool:
+        return forced if value is None else bool(value)
+
+    joined = True if forced else config.interpolate_water_table
+    on: list[str] = []
+    off: list[str] = []
+    for name, value in (
+        ("water level labels", flag(config.show_water_elevation_labels)),
+        ("groundwater legend", flag(config.show_water_legend)),
+        ("'not measured' markers for dry wells", flag(config.show_dry_well_nm)),
+    ):
+        (on if value else off).append(name)
+    pieces = [
+        "water table joined between wells" if joined else "water levels shown at wells only"
+    ]
+    if on:
+        pieces.append(_join_plain(on) + " on")
+    if off:
+        pieces.append(_join_plain(off) + " off")
+    return f"Set by {output_preset_short_name(preset)}: {'; '.join(pieces)}."

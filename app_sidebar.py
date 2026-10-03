@@ -42,7 +42,15 @@ from export_framing import ExportFramingConfig
 from ingestion import DATA_ENTRY_PROFILE_ID, NATIVE_PROFILE_ID, list_profiles
 from models import ConsultingTitleBlock
 from pipeline import DEFAULT_UNCERTAINTY_SPACING_M
-from ui_output_presets import FIGURE_PRESET_IDS, OUTPUT_PRESET_LABELS, resolve_output_preset
+from ui_output_presets import (
+    INTERPRETATION_LABELS,
+    OUTPUT_PRESET_LABELS,
+    locked_figure_summary,
+    locked_groundwater_summary,
+    output_preset_short_name,
+    resolve_output_preset,
+    sidebar_visibility,
+)
 
 
 def _render_pending_destructive() -> None:
@@ -67,13 +75,107 @@ def _render_pending_destructive() -> None:
             st.rerun()
 
 _OUTPUT_STYLE_HELP: dict[str, str] = {
-    "section_sheet": "Strater-style sheet: RL axis, hole headers, side legend. Default for general use.",
-    "consulting_report": "Client figure with footer title block, scale bar and notes; groundwater labels on.",
-    "gwm_fence": "GWM fence: interpolated MASL section with groundwater; locks interpretation, VE and water labels.",
-    "p2_chemistry_sticks": "Borehole-only mbgs columns with chloride labels (P2 client figure).",
-    "chemistry_gw": "Chloride labels and groundwater levels on one section.",
-    "quick_preview": "Fast chart for checking data; not a report figure.",
+    "section_sheet": "General-purpose sheet with an elevation axis, hole headers and a side legend. Good default.",
+    "consulting_report": "Client figure with a title block, scale bar and notes along the bottom; water levels labelled.",
+    "gwm_fence": "Elevation section with water levels, matching groundwater monitoring figures.",
+    "p2_chemistry_sticks": "Hole columns by depth below ground with lab values (e.g. chloride) beside each hole.",
+    "chemistry_gw": "Lab values and groundwater levels on one elevation section.",
+    "quick_preview": "Fast chart for checking data; not for reports.",
 }
+
+_TRANSECT_MODE_LABELS: dict[str, str] = {
+    "By hole sequence": "Pick holes in order",
+    "By coordinates": "Type map coordinates",
+    "Recommended": "Use a suggested line",
+}
+
+_PAGE_PRESET_LABELS: dict[str, str] = {
+    "auto": "Automatic (matches the output style)",
+    "tight_fence": "Section only (tight crop)",
+    "title_block": "Full sheet with title block",
+    "letter_portrait": "Letter, portrait",
+    "letter_landscape": "Letter, landscape",
+    "tabloid_landscape": "Tabloid (11 × 17), landscape",
+}
+
+_FILENAME_PATTERN_LABELS: dict[str, str] = {
+    "section_title": "Section title (e.g. Section_A-A)",
+    "project_figure_transect_rev": "Project_Figure_Section_Rev (e.g. 12345_Fig3_A-A_RevA)",
+}
+
+# Title block fields: shown up front vs. under "More title block fields".
+_TITLE_BLOCK_MAIN_KEYS: tuple[str, ...] = (
+    "consulting_figure_number",
+    "consulting_project_number",
+    "consulting_date",
+    "consulting_prepared_by",
+)
+_TITLE_BLOCK_MORE_KEYS: tuple[str, ...] = (
+    "consulting_start_primary",
+    "consulting_start_secondary",
+    "consulting_end_primary",
+    "consulting_end_secondary",
+    "consulting_start_label",
+    "consulting_end_label",
+    "consulting_map_scale",
+    "consulting_source",
+    "consulting_drawn_by",
+    "consulting_revised",
+    "consulting_prepared_for",
+    "consulting_notes",
+    "consulting_logo_for",
+    "consulting_logo_by",
+)
+
+# Export widgets live in the Export section (and margins / crop / CAD layers in
+# Advanced); Quick preview hides them, so their values are kept alive.
+_EXPORT_WIDGET_KEYS: tuple[str, ...] = (
+    "export_page_preset",
+    "export_filename_pattern",
+    "export_revision",
+    "export_dpi",
+    "export_margin_top_in",
+    "export_margin_bottom_in",
+    "export_margin_left_in",
+    "export_margin_right_in",
+    "export_fence_only",
+    "export_show_draft_watermark",
+    "export_cad_svg_layers",
+    "export_include_title_block",
+    "export_include_legend",
+    "export_include_water_table",
+    "export_include_qa_footer",
+    "export_viewport_xmin",
+    "export_viewport_ymin",
+    "export_viewport_xmax",
+    "export_viewport_ymax",
+    "export_output_dir",
+)
+
+
+def _keep_widget_state(*keys: str) -> None:
+    """Keep values of keyed widgets that are hidden this run.
+
+    Streamlit drops a widget's session value when the widget is not rendered;
+    re-assigning it keeps the user's choice for when the control comes back.
+    """
+    for key in keys:
+        if key in st.session_state:
+            st.session_state[key] = st.session_state[key]
+
+
+def _is_filled(key: str) -> bool:
+    value = st.session_state.get(key)
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def _filled_count(keys: tuple[str, ...]) -> str:
+    return f"{sum(_is_filled(key) for key in keys)} of {len(keys)} filled"
+
 
 @dataclass(frozen=True)
 class SidebarState:
@@ -137,86 +239,92 @@ def _render_borehole_column_controls() -> tuple[float, bool]:
         key="track_width_m",
         disabled=False,
         help=(
-            "Schematic width of each borehole track on the section "
-            "(not casing diameter). Typical: section sheet ~3 m, consulting ~1.2 m."
+            "Drawn width of each hole's column on the cross-section "
+            "(not the casing diameter). Typical: section sheet ~3 m, consulting report ~1.2 m."
         ),
     )
     auto_fit_track_width = st.toggle(
         "Auto-fit column width to hole spacing",
         key="auto_fit_track_width",
         disabled=False,
-        help=(
-            "When on, columns shrink so full width stays within 40% of the "
-            "closest hole spacing (avoids overlapping tracks)."
-        ),
+        help="Narrows the columns when holes are close together so they never overlap.",
     )
     return float(track_width_m), bool(auto_fit_track_width)
 
 
-def _render_export_framing_panel() -> ExportFramingConfig:
-    from ui_helpers import build_export_framing_from_mapping
-
-    st.markdown("**Export framing**")
+def _render_export_framing_panel() -> None:
+    """Export section: page, file names and what goes on the exported sheet."""
     st.selectbox(
-        "Page preset",
-        options=["auto", "tight_fence", "title_block", "letter_portrait", "letter_landscape", "tabloid_landscape"],
+        "Page size and crop",
+        options=list(_PAGE_PRESET_LABELS),
+        format_func=lambda value: _PAGE_PRESET_LABELS.get(value, value),
         key="export_page_preset",
-        help="Controls PNG/PDF crop and page size for report deliverables.",
+        help="Page size and cropping for PNG and PDF files.",
     )
     st.selectbox(
-        "Filename pattern",
-        options=["section_title", "project_figure_transect_rev"],
+        "File names",
+        options=list(_FILENAME_PATTERN_LABELS),
+        format_func=lambda value: _FILENAME_PATTERN_LABELS.get(value, value),
         key="export_filename_pattern",
     )
     st.text_input("Revision / draft tag", key="export_revision", placeholder="Rev A or DRAFT")
-    st.number_input("Export DPI", min_value=150, max_value=600, step=50, key="export_dpi")
-    margin_cols = st.columns(4)
-    with margin_cols[0]:
-        st.number_input("Margin top (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_top_in")
-    with margin_cols[1]:
-        st.number_input("Margin bottom (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_bottom_in")
-    with margin_cols[2]:
-        st.number_input("Margin left (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_left_in")
-    with margin_cols[3]:
-        st.number_input("Margin right (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_right_in")
-    st.toggle("Fence only (hide title block / legend)", key="export_fence_only")
-    st.toggle("DRAFT watermark on PNG/PDF", key="export_show_draft_watermark")
-    st.toggle("CAD-friendly SVG layers", key="export_cad_svg_layers")
+    st.number_input("Image resolution (DPI)", min_value=150, max_value=600, step=50, key="export_dpi")
+    st.toggle("Section only (no title block or legend)", key="export_fence_only")
+    st.toggle("DRAFT watermark on PNG and PDF", key="export_show_draft_watermark")
     layer_cols = st.columns(2)
     with layer_cols[0]:
         st.toggle("Include title block", key="export_include_title_block")
         st.toggle("Include lithology legend", key="export_include_legend")
     with layer_cols[1]:
         st.toggle("Include water table", key="export_include_water_table")
-        st.toggle("Include QA footer (PDF)", key="export_include_qa_footer")
-    with st.expander("Viewport crop (data coordinates)", expanded=False):
-        crop_cols = st.columns(2)
-        with crop_cols[0]:
-            st.text_input("X min", key="export_viewport_xmin", placeholder="optional")
-            st.text_input("Y min", key="export_viewport_ymin", placeholder="optional")
-        with crop_cols[1]:
-            st.text_input("X max", key="export_viewport_xmax", placeholder="optional")
-            st.text_input("Y max", key="export_viewport_ymax", placeholder="optional")
+        st.toggle("Include QA notes (PDF)", key="export_include_qa_footer")
     st.text_input(
         "Save exports to folder (optional)",
         key="export_output_dir",
         placeholder=r"P:\Projects\Job\Figures",
     )
-    return build_export_framing_from_mapping(dict(st.session_state))
+
+
+def _render_export_layout_advanced() -> None:
+    """Margins, viewport crop and CAD layers (Advanced section)."""
+    st.markdown("**Page margins and crop**")
+    margin_cols = st.columns(2)
+    with margin_cols[0]:
+        st.number_input("Top margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_top_in")
+        st.number_input("Left margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_left_in")
+    with margin_cols[1]:
+        st.number_input("Bottom margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_bottom_in")
+        st.number_input("Right margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_right_in")
+    with st.expander("Crop to an area (section distance / elevation)", expanded=False):
+        crop_cols = st.columns(2)
+        with crop_cols[0]:
+            st.text_input("Distance from", key="export_viewport_xmin", placeholder="optional")
+            st.text_input("Elevation from", key="export_viewport_ymin", placeholder="optional")
+        with crop_cols[1]:
+            st.text_input("Distance to", key="export_viewport_xmax", placeholder="optional")
+            st.text_input("Elevation to", key="export_viewport_ymax", placeholder="optional")
+    st.toggle(
+        "Layered SVG for CAD",
+        key="export_cad_svg_layers",
+        help="Groups the SVG into named layers (geology, water, labels) for CAD editing.",
+    )
 
 
 def render_sidebar() -> SidebarState:
+    from ui_helpers import build_export_framing_from_mapping
+
     apply_pending_project_seed()
     has_parsed = st.session_state.get("parse_result") is not None
 
-    with st.expander("Data source", expanded=True):
+    # ------------------------------------------------------------------ Data
+    with st.expander("Data", expanded=True):
         st.caption(
-            "Enter geology in Excel (download the template), then upload here. "
-            "Native Collars/Lithology workbooks and field exports with Lat/Long also work."
+            "Fill in the Excel template, then upload it here. Workbooks with Collars and "
+            "Lithology sheets, and field exports with latitude/longitude, also work."
         )
         render_input_template_download(
             key="sidebar_download_input_template",
-            help="Fill Collars + Lithology in Excel, then upload with the control below.",
+            help="Fill in Collars and Lithology in Excel, then upload it below.",
         )
         uploaded_name = st.session_state.get("uploaded_name")
         if uploaded_name or st.session_state.get("file_bytes"):
@@ -243,15 +351,15 @@ def render_sidebar() -> SidebarState:
             type=["xlsx"],
             key=f"workbook_uploader_{st.session_state.get('workbook_uploader_key', 0)}",
             help=(
-                "Upload a filled template, native Collars/Lithology workbook, "
-                "or field export with Lat/Long."
+                "A filled-in template, a workbook with Collars and Lithology sheets, "
+                "or a field export with latitude/longitude."
             ),
         )
         if uploaded is not None:
             st.session_state.uploaded_name = uploaded.name
 
-        # Open import settings only when they need attention (failed parse or a
-        # non-native profile); a clean native workbook keeps the sidebar short.
+        # Open the format settings only when they need attention (failed parse or
+        # a non-standard workbook); a clean workbook keeps the sidebar short.
         detection = st.session_state.get("detection_result")
         needs_import_attention = bool(st.session_state.get("file_bytes")) and (
             st.session_state.get("parse_result") is None
@@ -261,27 +369,31 @@ def render_sidebar() -> SidebarState:
             expanded=needs_import_attention,
         )
 
-    with st.expander("Section output", expanded=has_parsed):
+    # ---------------------------------------------------------- Figure style
+    with st.expander("Figure style", expanded=has_parsed):
         output_preset = st.selectbox(
             "Output style",
             options=tuple(OUTPUT_PRESET_LABELS.keys()),
             format_func=lambda key: OUTPUT_PRESET_LABELS[key],
             key="output_preset",
-            help=" ".join(
-                f"{OUTPUT_PRESET_LABELS[key]}: {text}" for key, text in _OUTPUT_STYLE_HELP.items()
+            help="  \n".join(
+                f"**{OUTPUT_PRESET_LABELS[key]}**: {text}" for key, text in _OUTPUT_STYLE_HELP.items()
             ),
         )
-        # Visible, not hidden behind (?): what this style produces / locks.
+        # Visible, not hidden behind (?): what this style produces.
         st.caption(_OUTPUT_STYLE_HELP.get(output_preset, ""))
         preset_config = resolve_output_preset(output_preset)
+        visibility = sidebar_visibility(output_preset)
+        style_name = output_preset_short_name(output_preset)
         render_layout = preset_config.render_layout
         report_preset = preset_config.report_preset
         is_consulting_layout = render_layout == "consulting_section"
         sample_figure = preset_config.sample_figure_profile
-        lock_interp = preset_config.interpretation_mode is not None
         # Generic consulting forces GW chrome; sample presets use preset flags.
         force_gw_chrome = is_consulting_layout and not sample_figure
-        interpolate_water_table = preset_config.interpolate_water_table
+        interpolate_water_table = (
+            True if force_gw_chrome else preset_config.interpolate_water_table
+        )
         show_water_elevation_labels = (
             preset_config.show_water_elevation_labels
             if preset_config.show_water_elevation_labels is not None
@@ -324,269 +436,329 @@ def render_sidebar() -> SidebarState:
                 )
             st.session_state._synced_output_preset = output_preset
 
-        if output_preset in FIGURE_PRESET_IDS:
-            st.caption(
-                "Sample-figure preset locks interpretation, elevation mode, VE, "
-                "and groundwater defaults to match client PDF style."
+        if visibility.interpretation_editable:
+            interpretation_mode = st.radio(
+                "Layers between holes",
+                options=list(INTERPRETATION_LABELS),
+                format_func=lambda value: INTERPRETATION_LABELS[value],
+                key="interpretation_mode",
+                help=(
+                    "Connect layers: shade matching layers from hole to hole. "
+                    "Contact lines: draw the boundaries only. "
+                    "Observed logs: show each hole's log with nothing in between."
+                ),
             )
+        else:
+            _keep_widget_state("interpretation_mode")
+            interpretation_mode = str(preset_config.interpretation_mode)
 
-        interpretation_mode = st.radio(
-            "Interpretation",
-            options=["interpolated", "correlation_lines", "borehole_only"],
-            format_func=lambda value: {
-                "interpolated": "Connect layers between holes",
-                "correlation_lines": "Contact lines only (no shading)",
-                "borehole_only": "Observed logs only (no inter-hole fill)",
-            }[value],
-            key="interpretation_mode",
-            disabled=lock_interp,
-            help=(
-                "Interpolated: correlate lithology between boreholes. "
-                "Contact lines: fence contacts without fill. "
-                "Observed only: stick logs without correlation."
-            ),
-        )
-        if lock_interp and preset_config.interpretation_mode is not None:
-            interpretation_mode = preset_config.interpretation_mode
-        # Generic consulting sheets always build without pinch-outs (see
-        # app_build.effective_render_options); lock the toggle rather than
-        # show a setting the figure ignores.
-        consulting_locks_pinch_outs = (
-            preset_config.render_layout == "consulting_section" and not sample_figure
-        )
-        if consulting_locks_pinch_outs:
-            st.session_state.allow_pinch_outs = False
-        allow_pinch_outs = st.toggle(
-            "Show layers that thin out between holes",
-            key="allow_pinch_outs",
-            disabled=interpretation_mode == "borehole_only"
-            or sample_figure
-            or consulting_locks_pinch_outs,
-            help=(
-                "Consulting report sheets always draw without pinch-outs."
-                if consulting_locks_pinch_outs
-                else "When off, units logged in only one hole are not inferred across the section (pinch-outs)."
-            ),
-        )
-        show_ground_surface = st.toggle(
-            "Show ground surface (collar RL)",
-            key="show_ground_surface",
-            disabled=report_preset or sample_figure,
-            help="Linear interpolation between collar elevations — not a DEM.",
-        )
-        st.markdown("**Borehole columns**")
-        track_width_m, auto_fit_track_width = _render_borehole_column_controls()
-        with st.expander("Groundwater", expanded=False):
+        # Hidden (not disabled) when the style fixes these: one caption instead.
+        if visibility.pinch_outs_editable:
+            allow_pinch_outs = st.toggle(
+                "Show layers that end between holes",
+                key="allow_pinch_outs",
+                disabled=interpretation_mode == "borehole_only",
+                help="When off, a layer logged in only one hole is not drawn toward its neighbours.",
+            )
+        else:
             if force_gw_chrome:
-                st.caption("Consulting layout forces groundwater labels, legend, and interpolation on.")
-            elif sample_figure:
-                st.caption(
-                    "Sample-figure preset sets groundwater options "
-                    f"({'on' if interpolate_water_table else 'off'} for this style)."
-                )
-            gw_locked = force_gw_chrome or sample_figure
-            interpolate_water_table = st.toggle(
-                "Interpolate water table between holes",
-                value=interpolate_water_table,
-                disabled=gw_locked,
-                help="When off, only measured water levels are shown as points.",
+                # Generic consulting builds always draw without them (app_build).
+                st.session_state.allow_pinch_outs = False
+            _keep_widget_state("allow_pinch_outs")
+            allow_pinch_outs = bool(preset_config.allow_pinch_outs and not force_gw_chrome)
+
+        if visibility.ground_surface_editable:
+            show_ground_surface = st.toggle(
+                "Show ground surface",
+                key="show_ground_surface",
+                help="A straight line joining the hole collar elevations (not a surveyed surface).",
             )
-            show_water_elevation_labels = st.toggle(
-                "Show water elevation labels",
-                value=show_water_elevation_labels,
-                disabled=gw_locked,
-            )
-            show_water_legend = st.toggle(
-                "Show groundwater legend",
-                value=show_water_legend,
-                disabled=gw_locked,
-            )
-            show_dry_well_nm = st.toggle(
-                "Show dry-well NM markers",
-                value=show_dry_well_nm,
-                disabled=gw_locked,
-            )
-            water_interpolate_across_gaps = st.toggle(
-                "Interpolate water across gaps",
-                value=water_interpolate_across_gaps,
-                disabled=gw_locked,
-                help="When off, dashed lines connect only consecutive measured holes.",
-            )
-            if sample_figure:
-                interpolate_water_table = preset_config.interpolate_water_table
-                show_water_elevation_labels = bool(show_water_elevation_labels)
-                if preset_config.show_water_elevation_labels is not None:
-                    show_water_elevation_labels = preset_config.show_water_elevation_labels
-                if preset_config.show_water_legend is not None:
-                    show_water_legend = preset_config.show_water_legend
-                if preset_config.show_dry_well_nm is not None:
-                    show_dry_well_nm = preset_config.show_dry_well_nm
-                if preset_config.water_interpolate_across_gaps is not None:
-                    water_interpolate_across_gaps = (
-                        preset_config.water_interpolate_across_gaps
-                    )
-        show_hatches = st.toggle(
-            "Hatch patterns",
-            key="show_hatches",
-            help="Lithology patterns from the legend template (dots = sandy, lines = silty, + = clay loam, cobbles = gravel). Off = solid colours only, which merges units that share a colour.",
-        )
-        if "section_title" not in st.session_state:
-            st.session_state.section_title = "Borehole Cross-Section"
-        section_title = st.text_input("Section title", key="section_title")
+        else:
+            _keep_widget_state("show_ground_surface")
+            show_ground_surface = True
+
         ve_default = float(preset_config.vertical_exaggeration or 5.0)
         if "vertical_exaggeration" not in st.session_state:
             st.session_state.vertical_exaggeration = ve_default
-        vertical_exaggeration = st.slider(
-            "Vertical exaggeration",
-            min_value=1.0,
-            max_value=20.0,
-            step=0.5,
-            key="vertical_exaggeration",
-            disabled=sample_figure and preset_config.vertical_exaggeration is not None,
-        )
-        if sample_figure and preset_config.vertical_exaggeration is not None:
-            vertical_exaggeration = float(preset_config.vertical_exaggeration)
+        if visibility.vertical_exaggeration_editable:
+            vertical_exaggeration = st.slider(
+                "Vertical exaggeration",
+                min_value=1.0,
+                max_value=20.0,
+                step=0.5,
+                key="vertical_exaggeration",
+                help="How many times the vertical scale is stretched compared with the horizontal.",
+            )
+        else:
+            _keep_widget_state("vertical_exaggeration")
+            vertical_exaggeration = float(preset_config.vertical_exaggeration or ve_default)
 
-        st.markdown("**Transect thresholds**")
+        figure_summary = locked_figure_summary(output_preset)
+        if figure_summary:
+            st.caption(figure_summary)
+
+        show_hatches = st.toggle(
+            "Hatch patterns",
+            key="show_hatches",
+            help=(
+                "Lithology patterns from the legend template (dots = sandy, lines = silty, "
+                "+ = clay loam, cobbles = gravel). Off = solid colours only, which merges "
+                "units that share a colour."
+            ),
+        )
+
+        # One title field per style. Consulting layouts print the title block's
+        # section label as the figure title, so that field is shown here as
+        # "Section title" and section_title (file names, metadata) follows it.
+        if "section_title" not in st.session_state:
+            st.session_state.section_title = "Borehole Cross-Section"
+        if is_consulting_layout:
+            if (
+                st.session_state.pop("_reset_consulting_section_label", False)
+                or "consulting_section_label" not in st.session_state
+            ):
+                st.session_state.consulting_section_label = (
+                    st.session_state.get("section_title") or "Borehole Cross-Section"
+                )
+            consulting_section_label = st.text_input(
+                "Section title",
+                key="consulting_section_label",
+                help="Printed as the figure title and used in file names.",
+            )
+            section_title = consulting_section_label or str(
+                st.session_state.get("section_title") or "Borehole Cross-Section"
+            )
+            st.session_state["section_title"] = section_title
+        else:
+            section_title = st.text_input(
+                "Section title",
+                key="section_title",
+                help="Printed on the figure and used in file names.",
+            )
+            # Same value for the consulting styles' title block (one field).
+            st.session_state["consulting_section_label"] = section_title
+
+        # Groundwater
+        if visibility.groundwater_editable:
+            with st.expander("Groundwater", expanded=False):
+                interpolate_water_table = st.toggle(
+                    "Join water table between holes",
+                    value=interpolate_water_table,
+                    help="When off, measured water levels are shown at each hole only.",
+                )
+                show_water_elevation_labels = st.toggle(
+                    "Show water level labels",
+                    value=show_water_elevation_labels,
+                )
+                show_water_legend = st.toggle(
+                    "Show groundwater legend",
+                    value=show_water_legend,
+                )
+                show_dry_well_nm = st.toggle(
+                    "Show 'not measured' markers for dry wells",
+                    value=show_dry_well_nm,
+                )
+                water_interpolate_across_gaps = st.toggle(
+                    "Join water levels across holes with no reading",
+                    value=water_interpolate_across_gaps,
+                    help="When off, the water line only joins neighbouring holes that both have a reading.",
+                )
+        else:
+            gw_summary = locked_groundwater_summary(output_preset)
+            if gw_summary:
+                st.caption(gw_summary)
+
+        # Labels and legend
+        with st.expander("Labels and legend", expanded=False):
+            if visibility.label_detail_editable:
+                st.selectbox(
+                    "Borehole label detail",
+                    options=["id_only", "id_rl_td"],
+                    format_func=lambda value: (
+                        "Hole ID only" if value == "id_only" else "Hole ID + collar elevation + total depth"
+                    ),
+                    key="column_header_detail",
+                    help="Text above each hole column.",
+                )
+            else:
+                _keep_widget_state("column_header_detail")
+            if visibility.chart_legend_editable:
+                show_legend = st.toggle(
+                    "Legend on chart",
+                    key="show_legend",
+                    help="Show the lithology legend beside the cross-section.",
+                )
+            else:
+                _keep_widget_state("show_legend")
+                show_legend = False
+            if not (visibility.label_detail_editable and visibility.chart_legend_editable):
+                st.caption(
+                    f"Set by {style_name}: hole ID only above each column; "
+                    "legend in the title block."
+                )
+            st.toggle(
+                "Two-column lithology legend",
+                key="legend_two_columns",
+                value=True,
+                help="Wrap long lithology lists into two columns.",
+            )
+            st.toggle(
+                "Show scale bar",
+                key="show_scale_bar",
+                help="Horizontal scale bar on the figure.",
+            )
+            st.toggle(
+                "Show vertical exaggeration note",
+                key="show_ve_annotation",
+                help="Prints the vertical exaggeration (e.g. 'Vertical exaggeration 5×') on the figure.",
+            )
+            if visibility.parameter_text_block_editable:
+                st.toggle(
+                    "Show lab parameters note",
+                    key="show_parameter_legend_text",
+                    help="Short 'Parameters: …' note in the lower-left corner listing the plotted lab values.",
+                )
+            else:
+                _keep_widget_state("show_parameter_legend_text")
+
+        # Chemistry: only when the workbook has lab values to plot.
+        parse_result = st.session_state.get("parse_result")
+        has_chemistry = bool(getattr(parse_result, "environmental_readings", None))
+        parameter_interpolate_across_gaps = False
+        if has_chemistry:
+            with st.expander("Chemistry", expanded=False):
+                if visibility.chemistry_marker_size_editable:
+                    st.number_input(
+                        "Chemistry dot size",
+                        min_value=4.0,
+                        max_value=64.0,
+                        step=2.0,
+                        key="parameter_marker_size",
+                        help="Size of chemistry sample dots.",
+                    )
+                else:
+                    _keep_widget_state("parameter_marker_size")
+                    st.caption(f"Set by {style_name}: lab values shown as labels without dots.")
+                st.toggle(
+                    "Connect chemistry values between holes",
+                    key="connect_chemistry_values",
+                    help="Draw dashed lines joining lab values on neighbouring holes.",
+                )
+                parameter_interpolate_across_gaps = st.toggle(
+                    "Join lab values across holes with no reading",
+                    value=False,
+                    help="When off, lines only join neighbouring holes that both have a reading.",
+                )
+        else:
+            _keep_widget_state("parameter_marker_size", "connect_chemistry_values")
+
+    # ---------------------------------------------------------- Section line
+    with st.expander("Section line", expanded=has_parsed):
         if st.session_state.pop("pending_transect_mode", None):
             st.session_state.transect_definition_mode = "By hole sequence"
         transect_mode = st.radio(
-            "Transect definition mode",
-            options=["By hole sequence", "By coordinates", "Recommended"],
+            "How to set the section line",
+            options=list(_TRANSECT_MODE_LABELS),
+            format_func=lambda value: _TRANSECT_MODE_LABELS.get(value, value),
             key="transect_definition_mode",
         )
         _apply_pending_offset_thresholds()
         offset_warning_m = st.number_input(
-            "Transect offset warning (m)",
+            "Warn when a hole is this far off the line (m)",
             min_value=1.0,
             step=5.0,
             key="offset_warning_m",
-            help="Warn when a selected borehole is farther than this from the transect line",
+            help="Flags selected holes that sit more than this many metres from the section line.",
         )
 
-    parameter_interpolate_across_gaps = False
-    warn_on_correlation_gaps = False
-    show_legend = preset_config.show_legend
-    max_offset_for_interpolation_m = float(st.session_state.offset_warning_m)
-    uncertainty_spacing_m = float(DEFAULT_UNCERTAINTY_SPACING_M)
-    uncertainty_offset_m = float(st.session_state.get("uncertainty_offset_m", 50.0))
-    selected_profile_key = "auto"
-    override_id: str | None = None
-    default_elevation_m: float | None = None
-    target_crs: str | None = "EPSG:32611"
+    # ----------------------------------------------- Title block (consulting)
     consulting_title_block: ConsultingTitleBlock | None = None
-
-    with st.expander("Advanced", expanded=False):
-        st.selectbox(
-            "Borehole label detail",
-            options=["id_only", "id_rl_td"],
-            format_func=lambda value: (
-                "Hole ID only" if value == "id_only" else "Hole ID + RL + TD"
-            ),
-            key="column_header_detail",
-            help="Section-sheet column headers. Consulting layout always uses hole ID only.",
+    if not visibility.title_block_shown:
+        # Keep typed / Project-sheet values for when a consulting style returns
+        # (file uploaders cannot be re-assigned, so logos are not kept).
+        _keep_widget_state(
+            *(key for key in _TITLE_BLOCK_MAIN_KEYS + _TITLE_BLOCK_MORE_KEYS if "logo" not in key),
         )
+    if visibility.title_block_shown:
+        _seed_title_block_defaults()
+        with st.expander(
+            f"Title block ({_filled_count(_TITLE_BLOCK_MAIN_KEYS + _TITLE_BLOCK_MORE_KEYS)})",
+            expanded=False,
+            key="sidebar_title_block_expander",
+        ):
+            consulting_title_block = _render_consulting_report_sheet(section_title)
+
+    # ---------------------------------------------------------------- Export
+    if visibility.export_shown:
+        with st.expander("Export", expanded=False):
+            _render_export_framing_panel()
+    else:
+        _keep_widget_state(*_EXPORT_WIDGET_KEYS)
+        st.caption(
+            f"{style_name} is for checking data. Pick another output style for "
+            "report files and export settings."
+        )
+
+    # -------------------------------------------------------------- Advanced
+    with st.expander("Advanced", expanded=False):
+        st.markdown("**Borehole columns**")
+        track_width_m, auto_fit_track_width = _render_borehole_column_controls()
+
+        st.markdown("**Fonts**")
         st.selectbox(
-            "Export font",
+            "Figure font",
             options=["Arial", "Calibri", "DejaVu Sans"],
             key="export_font_family",
-            help="Prefer Arial so PDF edits match drafting templates.",
+            help="Arial matches most drafting templates when the PDF is edited later.",
         )
         st.number_input(
-            "Export font size",
+            "Font size (pt)",
             min_value=6.0,
             max_value=14.0,
             step=0.5,
             key="export_font_size",
         )
-        st.number_input(
-            "Chemistry marker size",
-            min_value=4.0,
-            max_value=64.0,
-            step=2.0,
-            key="parameter_marker_size",
-            help="Matplotlib scatter size for chemistry sample dots.",
-        )
-        st.toggle(
-            "Show scale bar",
-            key="show_scale_bar",
-            help="In-plot scale (section sheet) or subtitle scale band (consulting).",
-        )
-        st.toggle(
-            "Show V.E. annotation",
-            key="show_ve_annotation",
-            help="In-plot V.E. text on section sheet; also keeps consulting subtitle VE with scale.",
-        )
-        st.toggle(
-            "Show Parameters text block",
-            key="show_parameter_legend_text",
-            help="Bottom-left 'Parameters: Chloride…' overlay on section sheet.",
-        )
-        st.toggle(
-            "Connect chemistry values",
-            key="connect_chemistry_values",
-            help="Draw dashed lines between chemistry samples on adjacent holes.",
-        )
-        parameter_interpolate_across_gaps = st.toggle(
-            "Interpolate parameters across gaps",
-            value=parameter_interpolate_across_gaps,
-            help="When off, parameter fence lines connect only consecutive holes with readings.",
-        )
-        warn_on_correlation_gaps = st.toggle(
-            "Warn on correlation gaps",
-            value=warn_on_correlation_gaps,
-            disabled=interpretation_mode == "borehole_only",
-            help="Add correlation gap notes to QA warnings when units do not match between holes.",
-        )
-        show_legend = st.toggle(
-            "Legend on chart",
-            key="show_legend",
-            disabled=is_consulting_layout,
-            help="Consulting layout places the legend in the footer title block.",
-        )
-        st.toggle(
-            "Two-column lithology legend",
-            key="legend_two_columns",
-            value=True,
-            help="Wrap long lithology code lists in two columns outside the plot.",
-        )
-        max_offset_for_interpolation_m = st.number_input(
-            "Max offset for interpolation (m)",
-            min_value=1.0,
-            step=5.0,
-            value=float(st.session_state.offset_warning_m),
-            help="Holes farther than this are excluded from inter-hole correlation polygons.",
-        )
+
+        st.markdown("**Uncertainty shading**")
+        borehole_only = interpretation_mode == "borehole_only"
         uncertainty_spacing_m = st.number_input(
-            "Uncertain zone spacing (m)",
+            "Shade as uncertain when holes are more than this far apart (m)",
             min_value=10.0,
             value=float(DEFAULT_UNCERTAINTY_SPACING_M),
             step=10.0,
-            disabled=interpretation_mode == "borehole_only",
-            help="Shade inter-hole zones when adjacent boreholes are farther apart than this.",
+            disabled=borehole_only,
         )
         uncertainty_offset_m = st.number_input(
-            "Uncertain zone offset (m)",
+            "Shade as uncertain when a hole is more than this far off the line (m)",
             min_value=1.0,
             step=5.0,
             key="uncertainty_offset_m",
-            disabled=interpretation_mode == "borehole_only",
-            help="Shade inter-hole zones when either borehole exceeds this transect offset.",
+            disabled=borehole_only,
         )
+        max_offset_for_interpolation_m = st.number_input(
+            "Don't connect layers to holes more than this far off the line (m)",
+            min_value=1.0,
+            step=5.0,
+            value=float(st.session_state.offset_warning_m),
+        )
+        warn_on_correlation_gaps = st.toggle(
+            "Warn when layers don't match between holes",
+            value=False,
+            disabled=borehole_only,
+            help="Adds a note to the checks when a layer in one hole has no match in the next.",
+        )
+
+        if visibility.export_shown:
+            _render_export_layout_advanced()
+
         if st.session_state.get("parse_result"):
+            st.markdown("**Lithology colours and patterns**")
             _render_fill_style_editor()
 
-    with st.expander("AI Assist", expanded=False):
+        st.markdown("**AI assist**")
         _render_ai_assist()
 
-    if is_consulting_layout:
-        with st.expander("Consulting report sheet", expanded=True):
-            consulting_title_block = _render_consulting_report_sheet(section_title)
-    else:
-        consulting_title_block = None
-
-    with st.expander("Export framing & deliverables", expanded=False):
-        export_framing = _render_export_framing_panel()
+    export_framing = build_export_framing_from_mapping(dict(st.session_state))
 
     st.caption(f"{CREATED_BY} · {COPYRIGHT_SHORT}")
 
@@ -647,19 +819,19 @@ def render_sidebar() -> SidebarState:
 
 
 def _render_fill_style_editor() -> None:
-    st.caption("Override BH-log fill color and hatch for a lithology code (saved locally).")
+    st.caption("Change the fill colour and pattern for a lithology code (saved on this computer).")
     style_codes = sorted(st.session_state.get("unique_lithology_codes") or [])
     if not style_codes:
-        st.info("Parse data to edit lithology fill styles.")
+        st.info("Load a workbook to edit lithology colours.")
         return
     style_code = st.selectbox("Lithology code", options=style_codes, key="style_editor_code")
     current_style = get_lithology_style(style_code)
-    style_color = st.color_picker("Fill color", value=current_style.color, key="style_editor_color")
+    style_color = st.color_picker("Fill colour", value=current_style.color, key="style_editor_color")
     style_hatch_options = sorted(set(USGS_LITHOLOGY_HATCHES.values()))
     style_hatch = st.selectbox(
         "Hatch pattern",
         options=style_hatch_options,
-        format_func=lambda hatch: hatch or "none (plain)",
+        format_func=lambda hatch: hatch or "None (solid fill)",
         index=style_hatch_options.index(current_style.hatch)
         if current_style.hatch in style_hatch_options
         else 0,
@@ -669,7 +841,7 @@ def _render_fill_style_editor() -> None:
     with save_col:
         if st.button("Save fill style", key="save_fill_style", width="stretch"):
             save_lithology_style_override(style_code, style_color, style_hatch)
-            st.success(f"Saved style for {style_code}. Use Generate Cross-Section to preview.")
+            st.success(f"Saved style for {style_code}. Use Generate section to preview.")
     with reset_col:
         if st.button(
             "Reset to scheme",
@@ -703,7 +875,7 @@ def _seed_free_llm_defaults() -> None:
 
 def _render_ai_assist() -> None:
     if llm_disabled_by_deployment():
-        st.caption("Third-party LLM assist is disabled for this deployment (`CROSS_SECTION_DISABLE_LLM`). Local rules still run.")
+        st.caption("AI assist is turned off for this installation. Local checks still run.")
         st.session_state["enable_ai_suggestions"] = False
         return
     _seed_free_llm_defaults()
@@ -711,11 +883,11 @@ def _render_ai_assist() -> None:
     st.session_state.pop("llm_api_key", None)
     st.session_state.pop("openai_api_key", None)
     st.caption(
-        "Free tier: **Groq** (console.groq.com) or **Gemini** (aistudio.google.com/apikey). "
-        "Set `GROQ_API_KEY` or `GEMINI_API_KEY` to auto-enable."
+        "Optional. A free Groq or Google Gemini key adds written QA summaries and "
+        "column-matching help. Local checks always run."
     )
     st.selectbox(
-        "LLM provider",
+        "AI provider",
         options=("groq", "gemini", "openai"),
         format_func=lambda value: {
             "groq": "Groq — free tier (recommended)",
@@ -723,7 +895,7 @@ def _render_ai_assist() -> None:
             "openai": "OpenAI — paid",
         }[value],
         key="llm_provider",
-        help="Groq and Gemini free API keys power QA narratives and mapping assist. OpenAI is optional/paid.",
+        help="Free keys: Groq at console.groq.com, Gemini at aistudio.google.com/apikey. OpenAI is paid.",
     )
     provider = str(st.session_state.get("llm_provider", DEFAULT_LLM_PROVIDER))
     # Prefer env/secrets; only show the password widget when neither is set.
@@ -737,97 +909,91 @@ def _render_ai_assist() -> None:
 
     env_only = resolve_llm_api_key(provider, None)  # type: ignore[arg-type]
     if env_only or (resolved and not st.session_state.get(runtime_key)):
-        label = "free-tier" if is_free_llm_provider(provider) else "provider"
-        st.caption(
-            f"API key loaded from environment or Streamlit secrets ({label}). Not stored in session."
-        )
+        st.caption("Using the key set up for this installation.")
         st.session_state.pop(runtime_key, None)
     else:
         entered = st.text_input(
             "API key",
             type="password",
             value="",
-            help=(
-                "Free keys: Groq at console.groq.com, Gemini at aistudio.google.com/apikey. "
-                "Prefer GROQ_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY in the environment — "
-                "widget values are kept only for this browser session run, not as durable session keys."
-            ),
+            help="Get a free key at console.groq.com (Groq) or aistudio.google.com/apikey (Gemini).",
         )
         if entered.strip():
             st.session_state[runtime_key] = entered.strip()
             if is_free_llm_provider(provider) and not st.session_state.get("enable_ai_suggestions"):
                 st.session_state.enable_ai_suggestions = True
         if st.session_state.get(runtime_key):
-            st.caption("Key held in memory for this session only (not a durable Streamlit widget key).")
+            st.caption("Key is used for this session only and isn't saved.")
             if st.button("Clear API key", key="clear_llm_api_key_runtime"):
                 st.session_state.pop(runtime_key, None)
                 st.rerun()
     st.checkbox(
-        "Enable LLM suggestions",
+        "Use AI suggestions",
         value=False,
         key="enable_ai_suggestions",
-        help="Uses the selected provider when an API key is set. Local checks always work. Free keys auto-enable once.",
+        help="Uses the selected provider once a key is set. Turns on by itself the first time a free key is found.",
     )
 
 
 def _render_import_settings(*, expanded: bool = False) -> tuple[str, str | None, float, str | None]:
-    with st.expander("Workbook import", expanded=expanded):
+    with st.expander("Workbook format", expanded=expanded):
         profile_options = {profile.id: profile.label for profile in list_profiles()}
-        profile_options[NATIVE_PROFILE_ID] = "Native platform (Collars + Lithology)"
-        profile_options[DATA_ENTRY_PROFILE_ID] = "Cross Section input template (Data Entry)"
+        profile_options[NATIVE_PROFILE_ID] = "Standard workbook (Collars + Lithology)"
+        profile_options[DATA_ENTRY_PROFILE_ID] = "Cross Section Studio template"
         auto_profile = st.session_state.get("detection_result")
         default_profile_index = 0
         profile_ids = ["auto"] + list(profile_options.keys())
         if auto_profile is not None and auto_profile.profile_id in profile_options:
             default_profile_index = profile_ids.index(auto_profile.profile_id)
         selected_profile_key = st.selectbox(
-            "Import profile",
+            "Workbook format",
             options=profile_ids,
             format_func=lambda key: "Auto-detect" if key == "auto" else profile_options[key],
             index=min(default_profile_index, len(profile_ids) - 1),
         )
-        override_id = st.text_input(
-            "Profile override (optional)",
-            value="advantage_phase2_2026" if auto_profile and not auto_profile.is_native else "",
-            help="e.g. advantage_phase2_2026 for per-site coordinate offsets",
-        ).strip() or None
         default_elevation_m = st.number_input(
             "Default collar elevation (m)",
             min_value=0.0,
             value=None,
             step=1.0,
-            placeholder=f"Blank = placeholder ({DEFAULT_PROFILE_ELEVATION_M:.0f} m, flagged)",
+            placeholder=f"Blank = {DEFAULT_PROFILE_ELEVATION_M:.0f} m, flagged as unsurveyed",
             help=(
-                "For field exports without an RL/elevation column. Leave blank to use the "
-                "profile placeholder (flagged as unsurveyed); enter the surveyed site "
-                "elevation for absolute (MASL) sections."
+                "For field exports without a collar elevation column. Leave blank to use a "
+                "placeholder (flagged as unsurveyed); enter the surveyed site elevation for "
+                "sections in metres above sea level."
             ),
         )
-        target_crs = st.text_input(
-            "Target CRS (EPSG)",
-            value="EPSG:32611",
-            help="UTM zone for Lat/Long field exports (Alberta default: 32611)",
-        ).strip() or None
         st.session_state.auto_assign_unit_order = st.checkbox(
-            "Auto-assign layer order from depth on import",
+            "Number layers down each hole automatically",
             value=bool(st.session_state.get("auto_assign_unit_order", True)),
-            help="Assigns stratigraphic order 1..n per hole when duplicate lithology codes lack unit_order.",
+            help="Orders layers 1, 2, 3… from the top of each hole when the workbook gives no layer order.",
         )
+        # Rarely needed; kept out of the way so a client-specific value is never
+        # applied by default (blank = the detected format's own settings).
+        with st.expander("Advanced import options", expanded=False):
+            target_crs = st.text_input(
+                "Map coordinate system (EPSG code)",
+                value="EPSG:32611",
+                help=(
+                    "Used to convert latitude/longitude in field exports to metres. "
+                    "Default: UTM zone 11N (Alberta)."
+                ),
+            ).strip() or None
+            override_id = st.text_input(
+                "Site-specific import settings (optional)",
+                value="",
+                placeholder="Leave blank",
+                help="Name of a saved site adjustment (e.g. per-hole coordinate corrections) you were given.",
+            ).strip() or None
         if st.session_state.get("parse_result") is not None:
-            if st.button("Re-parse workbook", key="reparse_workbook"):
+            if st.button("Re-read workbook", key="reparse_workbook"):
                 st.session_state.parse_signature = None
                 st.rerun()
     return selected_profile_key, override_id, default_elevation_m, target_crs
 
 
-def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
-    st.markdown("**Report sheet (consulting)**")
-    # Init keyed widgets only when absent so Project metadata seeding is not overwritten.
-    if (
-        st.session_state.pop("_reset_consulting_section_label", False)
-        or "consulting_section_label" not in st.session_state
-    ):
-        st.session_state.consulting_section_label = section_title or "Borehole Cross-Section"
+def _seed_title_block_defaults() -> None:
+    """Init keyed title-block widgets only when absent (keeps Project-sheet seeding)."""
     if "consulting_map_scale" not in st.session_state:
         st.session_state.consulting_map_scale = "1:1000"
     if "consulting_notes" not in st.session_state:
@@ -851,49 +1017,62 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
         if key not in st.session_state:
             st.session_state[key] = ""
 
-    consulting_section_label = st.text_input("Section label", key="consulting_section_label")
-    transect_start_label = st.text_input("Transect start label", key="consulting_start_label")
-    transect_end_label = st.text_input("Transect end label", key="consulting_end_label")
-    transect_cols = st.columns(2)
-    with transect_cols[0]:
-        transect_start_primary = st.text_input("Start primary (e.g. B)", key="consulting_start_primary")
-        transect_start_secondary = st.text_input(
-            "Start secondary (e.g. SOUTHWEST)",
-            key="consulting_start_secondary",
-        )
-    with transect_cols[1]:
-        transect_end_primary = st.text_input("End primary (e.g. B')", key="consulting_end_primary")
-        transect_end_secondary = st.text_input(
-            "End secondary (e.g. NORTHEAST)",
-            key="consulting_end_secondary",
-        )
-    map_scale = st.text_input("Map scale", key="consulting_map_scale")
-    figure_number = st.text_input("Figure number", key="consulting_figure_number")
-    project_number = st.text_input("Project number", key="consulting_project_number")
-    source = st.text_input("Source", key="consulting_source")
+
+def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
+    """Title block fields. The section label is edited as "Section title" under
+    Figure style (one field); ``section_title`` follows it."""
+    _seed_title_block_defaults()
+    consulting_section_label = str(st.session_state.get("consulting_section_label") or "")
+    figure_number = st.text_input("Figure no.", key="consulting_figure_number")
+    project_number = st.text_input("Project no.", key="consulting_project_number")
     report_date = st.text_input("Date", key="consulting_date")
-    drawn_by = st.text_input("Drawn by", key="consulting_drawn_by")
-    revised = st.text_input("Revised", key="consulting_revised")
-    prepared_for = st.text_input("Prepared for", key="consulting_prepared_for")
     prepared_by = st.text_input("Prepared by", key="consulting_prepared_by")
-    notes_text = st.text_area("Notes", key="consulting_notes")
-    logo_for = st.file_uploader(
-        "Logo — prepared for (PNG)",
-        type=["png"],
-        key="consulting_logo_for",
-    )
-    logo_by = st.file_uploader(
-        "Logo — prepared by (PNG)",
-        type=["png"],
-        key="consulting_logo_by",
-    )
-    st.caption(
-        "Optional Excel sheets: **Screens** (hole_id, from_depth, to_depth) and "
-        "**Gradients** (hole_id, direction)."
-    )
+    with st.expander(
+        f"More title block fields ({_filled_count(_TITLE_BLOCK_MORE_KEYS)})",
+        expanded=False,
+        key="sidebar_title_block_more_expander",
+    ):
+        st.caption("Section line ends (printed at each end of the cross-section)")
+        transect_cols = st.columns(2)
+        with transect_cols[0]:
+            transect_start_primary = st.text_input("Start letter (e.g. B)", key="consulting_start_primary")
+            transect_start_secondary = st.text_input(
+                "Start direction (e.g. SOUTHWEST)",
+                key="consulting_start_secondary",
+            )
+        with transect_cols[1]:
+            transect_end_primary = st.text_input("End letter (e.g. B')", key="consulting_end_primary")
+            transect_end_secondary = st.text_input(
+                "End direction (e.g. NORTHEAST)",
+                key="consulting_end_secondary",
+            )
+        transect_start_label = st.text_input(
+            "Start label (used if no start letter)", key="consulting_start_label"
+        )
+        transect_end_label = st.text_input("End label (used if no end letter)", key="consulting_end_label")
+        map_scale = st.text_input("Map scale", key="consulting_map_scale")
+        source = st.text_input("Source", key="consulting_source")
+        drawn_by = st.text_input("Drawn by", key="consulting_drawn_by")
+        revised = st.text_input("Revised", key="consulting_revised")
+        prepared_for = st.text_input("Prepared for", key="consulting_prepared_for")
+        notes_text = st.text_area("Notes", key="consulting_notes", help="One note per line.")
+        logo_for = st.file_uploader(
+            "Client logo (PNG)",
+            type=["png"],
+            key="consulting_logo_for",
+        )
+        logo_by = st.file_uploader(
+            "Your company logo (PNG)",
+            type=["png"],
+            key="consulting_logo_by",
+        )
+        st.caption(
+            "Optional workbook sheets: **Screens** (hole_id, from_depth, to_depth) and "
+            "**Gradients** (hole_id, direction)."
+        )
     report_ai_cols = st.columns(2)
     with report_ai_cols[0]:
-        if st.button("Suggest report fields", key="suggest_report_fields"):
+        if st.button("Suggest title block", key="suggest_report_fields"):
             report_holes = list(st.session_state.get("hole_ids") or [])
             label_for_context = consulting_section_label or section_title
             if st.session_state.parse_result is not None:
@@ -919,7 +1098,7 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
             )
     with report_ai_cols[1]:
         if st.session_state.get("ai_report_suggestion") and st.button(
-            "Accept report suggestion",
+            "Use suggestion",
             key="accept_report_fields",
         ):
             _apply_report_suggestion(st.session_state.ai_report_suggestion)

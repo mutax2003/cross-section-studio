@@ -101,3 +101,36 @@ def test_black_mode_uses_neutral_label_colour() -> None:
     text = result.svg_bytes.decode("utf-8", errors="ignore").lower()
     assert CHEMISTRY_LABEL_BLACK.lower() in text
     assert CHEMISTRY_LABEL_RED.lower() not in text
+
+
+def _relative_luminance(hex_color: str) -> float:
+    channels = [int(hex_color.lstrip("#")[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+    linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def test_label_colours_meet_wcag_aa_contrast_on_white() -> None:
+    from render_theme import CHEMISTRY_FIXED_COLORS
+
+    for name, hex_color in CHEMISTRY_FIXED_COLORS.items():
+        ratio = 1.05 / (_relative_luminance(hex_color) + 0.05)
+        assert ratio >= 4.5, f"{name} {hex_color} is {ratio:.2f}:1 on white"
+
+
+def test_threshold_key_states_bands_in_words() -> None:
+    from render_theme import chemistry_threshold_key
+
+    assert chemistry_threshold_key(100.0, 300.0, "mg/L") == (
+        "green ≤ 100 · orange 100–300 · red > 300 mg/L"
+    )
+    assert chemistry_threshold_key(0.5, 2.0) == "green ≤ 0.5 · orange 0.5–2 · red > 2"
+
+
+def test_threshold_mode_draws_key_but_black_mode_does_not() -> None:
+    threshold = _minimal_chemistry_section(
+        chemistry_color_mode="threshold", green_max=100.0, yellow_max=250.0
+    )
+    text = threshold.svg_bytes.decode("utf-8", errors="ignore")
+    assert "Label colour:" in text
+    black = _minimal_chemistry_section(chemistry_color_mode="black")
+    assert "Label colour:" not in black.svg_bytes.decode("utf-8", errors="ignore")

@@ -9,6 +9,7 @@ from typing import TypedDict
 import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
+from matplotlib.offsetbox import AnchoredOffsetbox, HPacker, TextArea
 from matplotlib.patheffects import withStroke
 from matplotlib.transforms import offset_copy
 
@@ -18,6 +19,8 @@ from render_theme import (
     CHEMISTRY_LABEL_BLACK,
     LABEL_COLOR,
     chemistry_label_color,
+    chemistry_threshold_bands,
+    chemistry_threshold_key,
     parameter_series_colors,
 )
 from renderer_water import _GW_MARKER_MAP
@@ -227,6 +230,16 @@ class RendererChemistryMixin:
             if h in profile_lookup
         ]
         self.parameter_series_legend = []
+        # Units of readings whose label colour came from the threshold bands
+        # (not a workbook colour); drives the on-figure threshold key.
+        threshold_units: set[str] = set()
+        threshold_active = (
+            label_values
+            and self.profile.chemistry_color_mode == "threshold"
+            and self.profile.chemistry_threshold_green_max is not None
+            and self.profile.chemistry_threshold_yellow_max is not None
+        )
+        self.chemistry_threshold_key_text = None
         # Stable per parameter name (chloride keeps its colour on every
         # section), with collisions on one sheet resolved to distinct colours.
         series_colors = parameter_series_colors(by_parameter)
@@ -313,6 +326,8 @@ class RendererChemistryMixin:
                             yellow_max=self.profile.chemistry_threshold_yellow_max,
                         )
                         marker_labels.append((x_profile, y, label_text, label_color))
+                        if threshold_active and reading.label_color not in CHEMISTRY_FIXED_COLORS:
+                            threshold_units.add((reading.unit or "").strip())
 
             if draw_markers:
                 if not marker_xs:
@@ -478,6 +493,48 @@ class RendererChemistryMixin:
                     "label": legend_label,
                 }
             )
+        if threshold_units:
+            self._draw_chemistry_threshold_key(ax, threshold_units, font_size)
+
+    def _draw_chemistry_threshold_key(self, ax, units: set[str], font_size: float) -> None:
+        """State the threshold bands in words on the figure (threshold mode only).
+
+        Colour alone must not carry the band (WCAG 1.4.1): each band is named
+        and given its range, e.g. ``green ≤ 100 · orange 100–300 · red > 300 mg/L``,
+        with the name drawn in the band colour as a secondary cue.
+        """
+        green_max = float(self.profile.chemistry_threshold_green_max)
+        yellow_max = float(self.profile.chemistry_threshold_yellow_max)
+        named_units = sorted(unit for unit in units if unit)
+        unit = named_units[0] if len(named_units) == 1 else ""
+        self.chemistry_threshold_key_text = chemistry_threshold_key(green_max, yellow_max, unit)
+        text_props = {"fontsize": font_size, "color": LABEL_COLOR}
+        parts: list[TextArea] = [TextArea("Label colour:", textprops=text_props)]
+        bands = chemistry_threshold_bands(green_max, yellow_max)
+        for index, (name, hex_color, span) in enumerate(bands):
+            parts.append(
+                TextArea(name, textprops={**text_props, "color": hex_color, "fontweight": "bold"})
+            )
+            suffix = span if index == len(bands) - 1 else f"{span} \u00b7"
+            parts.append(TextArea(suffix, textprops=text_props))
+        if unit:
+            parts.append(TextArea(unit, textprops=text_props))
+        box = AnchoredOffsetbox(
+            loc="lower left",
+            child=HPacker(children=parts, align="baseline", pad=0, sep=3),
+            pad=0.25,
+            borderpad=0.4,
+            frameon=True,
+            # Sit above the compact parameter legend line when that is shown.
+            bbox_to_anchor=(0.0, 0.06 if self.profile.show_parameter_legend_text else 0.0),
+            bbox_transform=ax.transAxes,
+        )
+        box.patch.set_facecolor("white")
+        box.patch.set_edgecolor("#9CA3AF")
+        box.patch.set_linewidth(0.5)
+        box.patch.set_alpha(0.92)
+        box.set_zorder(9.5)
+        ax.add_artist(box)
 
     def _draw_parameter_fence(
         self,

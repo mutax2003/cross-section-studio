@@ -40,7 +40,7 @@ python scripts/e2e_smoke_direct.py && \
 python scripts/smoke_test.py
 ```
 
-**Equivalents:** `python scripts/agent_supervisor.py verify` or `powershell -File scripts/run_verify_batch.ps1` (writes under `orchestration_reports/`).
+**Equivalent:** `python scripts/agent_supervisor.py verify`. Batch wrapper (10 sequential verify cycles by default, not a single gate run): `powershell -File scripts/run_verify_batch.ps1` (writes under `orchestration_reports/`).
 
 Canonical list: `VERIFY_COMMANDS` in `scripts/agent_supervisor.py`. Mirror CI: `.github/workflows/e2e.yml`.
 

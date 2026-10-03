@@ -23,7 +23,7 @@ For each adjacent pair, match intervals using hashable keys (not code-only union
 
 1. **`('order', unit_order, lithology_code)`** when `unit_order` is set on the interval
 2. **`('code', lithology_code)`** when the code appears exactly once in that hole
-3. **`('pos', index, lithology_code)`** for duplicate codes without `unit_order` (does not match across holes)
+3. **`('pos', index, lithology_code)`** for duplicate codes without `unit_order` (index is the hole-local sorted position; matches across holes only when the duplicate code sits at the same sorted index in both holes)
 
 Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) or skipped.
 

@@ -48,8 +48,13 @@ def test_filter_water_levels_respects_selection() -> None:
 def test_consulting_gw_unknown_series_uses_blue_triangle() -> None:
     color, marker, label = consulting_gw_series_style("event-a", series_index=1)
     assert marker == "v"
-    assert color == CONSULTING_GW_BLUE_SHADES[1]
+    assert color in CONSULTING_GW_BLUE_SHADES
     assert label == "event-a"
+    # Consecutive unknown series get distinct shades (light then deep first,
+    # so two series are easy to tell apart).
+    shades = [consulting_gw_series_style(f"s{i}", series_index=i)[0] for i in range(4)]
+    assert len(set(shades)) == 4
+    assert shades[:2] == [CONSULTING_GW_BLUE_SHADES[0], CONSULTING_GW_BLUE_SHADES[3]]
 
 
 def test_connect_group_keeps_nests_separate_in_svg() -> None:

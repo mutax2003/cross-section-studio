@@ -9,6 +9,7 @@ import pytest
 
 from app_version import (
     DEFAULT_UPDATE_MANIFEST_URL,
+    MAX_UPDATE_MANIFEST_BYTES,
     about_version_markdown,
     check_for_updates,
     fetch_release_manifest,
@@ -144,13 +145,13 @@ def test_fetch_release_manifest_allows_github_https(
     payload = {"version": "9.9.9", "url": "https://github.com/org/app.zip", "sha256": "ab"}
 
     class _FakeResponse:
-        def __enter__(self) -> "_FakeResponse":
+        def __enter__(self) -> _FakeResponse:
             return self
 
         def __exit__(self, *args: object) -> None:
             return None
 
-        def read(self) -> bytes:
+        def read(self, size: int = -1) -> bytes:
             return json.dumps(payload).encode("utf-8")
 
     def fake_urlopen(request: object, *, timeout_s: float = 0.0) -> _FakeResponse:
@@ -342,3 +343,36 @@ def test_load_help_about_includes_version() -> None:
     text = load_help_markdown("about")
     assert get_version() in text
     assert "## Version" in text
+
+
+def test_check_for_updates_survives_deeply_nested_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CROSS_SECTION_ALLOW_DEV_UPDATE", "1")
+    monkeypatch.setenv("CROSS_SECTION_UPDATE_MANIFEST_URL", "")
+    manifest = tmp_path / "release-manifest.json"
+    manifest.write_text("[" * 3000 + "]" * 3000, encoding="utf-8")
+    result = check_for_updates(manifest.as_uri())
+    assert result.error is not None
+    assert result.update_available is False
+
+
+def test_fetch_release_manifest_rejects_oversized_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CROSS_SECTION_ALLOW_DEV_UPDATE", "1")
+    monkeypatch.setenv("CROSS_SECTION_UPDATE_MANIFEST_URL", "")
+    manifest = tmp_path / "release-manifest.json"
+    manifest.write_text("{" + " " * (MAX_UPDATE_MANIFEST_BYTES + 8) + "}", encoding="utf-8")
+    with pytest.raises(ValueError, match="too large"):
+        fetch_release_manifest(manifest.as_uri())
+
+
+def test_is_newer_orders_prereleases_per_semver() -> None:
+    assert is_newer("0.2.0", "0.2.0-rc1")          # final beats its rc
+    assert is_newer("0.2.0-rc2", "0.2.0-rc1")
+    assert not is_newer("0.2.0-rc1", "0.2.0")      # rc is not newer than final
+    assert not is_newer("0.2.0+build5", "0.2.0")   # build metadata ignored
+    assert is_newer("0.2.0-rc1.2", "0.2.0-rc1.1")
+    assert is_newer("0.2.0-rc.b", "0.2.0-rc.1")    # numeric identifiers sort first
+    assert parse_semver("0.2.0-rc1") == (0, 2, 0)  # public 3-tuple unchanged

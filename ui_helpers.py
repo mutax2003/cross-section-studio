@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Sequence
 
+from app_identity import APP_NAME, COPYRIGHT_NOTICE, CREATED_BY
 from models import Collar, Lithology, ScreenInterval, Transect
 from projection import (
     DEFAULT_OFFSET_WARNING_M,
@@ -17,6 +18,17 @@ from projection import (
 
 _SVG_HEIGHT_RE = re.compile(r'height="([0-9.]+)', re.IGNORECASE)
 _SVG_VIEWBOX_RE = re.compile(r'viewBox="[^"]*\s+[^"]*\s+[^"]*\s+([0-9.]+)"', re.IGNORECASE)
+_SVG_WIDTH_RE = re.compile(r'<svg\b[^>]*?\swidth=["\']([0-9.]+)\s*(pt|px)?["\']', re.IGNORECASE)
+_SVG_VIEWBOX_WIDTH_RE = re.compile(
+    r'<svg\b[^>]*?\sviewBox=["\'][^"\'\s,]+[\s,]+[^"\'\s,]+[\s,]+([0-9.]+)', re.IGNORECASE
+)
+_SVG_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+# Cap zoomed previews so a bogus SVG width cannot request a gigapixel <img>.
+_MAX_PREVIEW_WIDTH_PX = 12000
+_PT_TO_PX = 96.0 / 72.0
+
+# Preview zoom choices -> scale of the SVG's natural CSS-pixel width (None = fit).
+PREVIEW_ZOOM_OPTIONS: dict[str, float | None] = {"Fit width": None, "100%": 1.0, "150%": 1.5}
 
 
 @dataclass(frozen=True)
@@ -24,6 +36,7 @@ class SvgDisplayMeta:
     valid: bool
     height: int
     encoded: str
+    natural_width_px: int = 0
 
 
 def escape_html(text: str | int | float) -> str:
@@ -76,7 +89,52 @@ def svg_display_meta(
             height = max(min_height, min(max_height, scaled))
             break
     encoded = base64.b64encode(svg_bytes).decode("ascii") if valid else ""
-    return SvgDisplayMeta(valid=valid, height=height, encoded=encoded)
+    return SvgDisplayMeta(
+        valid=valid,
+        height=height,
+        encoded=encoded,
+        natural_width_px=_svg_natural_width_px(text) if valid else 0,
+    )
+
+
+def _svg_natural_width_px(text: str) -> int:
+    """CSS-pixel width the browser gives the SVG at 100% (matplotlib writes pt).
+
+    Returns 0 (fit-to-width) when no usable width can be read.
+    """
+    text = _SVG_COMMENT_RE.sub("", text)
+    match = _SVG_WIDTH_RE.search(text)
+    if match:
+        scale = _PT_TO_PX if (match.group(2) or "").lower() == "pt" else 1.0
+        width = _safe_float(match.group(1))
+        if width:
+            return min(int(round(width * scale)), _MAX_PREVIEW_WIDTH_PX)
+    match = _SVG_VIEWBOX_WIDTH_RE.search(text)
+    width = _safe_float(match.group(1)) if match else None
+    return min(int(round(width)), _MAX_PREVIEW_WIDTH_PX) if width else 0
+
+
+def _safe_float(raw: str) -> float | None:
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def preview_img_style(zoom: str | None, natural_width_px: int) -> tuple[str, bool]:
+    """Return (img inline style, zoomed?) for a preview zoom choice.
+
+    Unknown choices or an unknown natural width fall back to fit-to-width.
+    ``object-fit:contain`` overrides Streamlit's markdown ``scale-down`` default,
+    which would otherwise draw the SVG at natural size centred inside the
+    enlarged box instead of scaling it up.
+    """
+    scale = PREVIEW_ZOOM_OPTIONS.get(zoom or "")
+    if scale is None or natural_width_px <= 0:
+        return "width:100%;height:auto;display:block;object-fit:contain;", False
+    width = int(round(natural_width_px * scale))
+    return f"width:{width}px;max-width:none;height:auto;display:block;object-fit:contain;", True
 
 
 def workflow_stage(
@@ -104,9 +162,9 @@ def workflow_stage(
 
 def legend_hatch_background(hatch: str) -> str:
     """Return a CSS background-image stack approximating matplotlib hatch chars."""
-    if not hatch:
+    token = (hatch or "").strip()[:1]
+    if not token:
         return "none"
-    token = hatch.strip()[0]
     line = "repeating-linear-gradient(0deg, #334155 0 1px, transparent 1px 5px)"
     slash = "repeating-linear-gradient(45deg, #334155 0 1px, transparent 1px 5px)"
     backslash = "repeating-linear-gradient(-45deg, #334155 0 1px, transparent 1px 5px)"
@@ -117,7 +175,11 @@ def legend_hatch_background(hatch: str) -> str:
         return backslash
     if token in {"-", "_"}:
         return line
-    if token in {".", "o", "O", "*", "+", "x"}:
+    if token in {"o", "O"}:  # gravel / cobble
+        return "radial-gradient(circle, transparent 1.6px, #334155 1.7px 2.4px, transparent 2.5px)"
+    if token in {"+", "x"}:
+        return f"{line}, repeating-linear-gradient(90deg, #334155 0 1px, transparent 1px 5px)"
+    if token in {".", "*"}:
         return (
             f"{dot}, "
             f"radial-gradient(circle, #334155 0.6px, transparent 0.7px)"
@@ -278,6 +340,9 @@ def export_metadata_payload(
         "hole_count": hole_count,
         "transect_label": transect_label,
         "qa_notes": list(overlap_warnings[:20]),
+        "generated_by": APP_NAME,
+        "created_by": CREATED_BY,
+        "copyright": COPYRIGHT_NOTICE,
     }
     if consulting_fields:
         payload.update(consulting_fields)

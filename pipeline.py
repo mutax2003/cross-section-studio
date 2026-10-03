@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import math
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Iterator, Sequence
+from typing import get_args
 
 import pandas as pd
 
@@ -18,6 +20,7 @@ from constants import (
 from export_framing import ExportFramingConfig, merge_framing_into_profile_updates
 from lithology_codes import collect_lithology_codes
 from models import (
+    _XML_ILLEGAL,
     MAX_WATER_SERIES,
     Collar,
     ConsultingTitleBlock,
@@ -36,7 +39,12 @@ from models import (
     WaterLevel,
 )
 from projection import DEFAULT_OFFSET_WARNING_M, project_boreholes, transect_azimuth_deg
-from render_profiles import profile_for_layout, profile_with_elevation_mode
+from render_profiles import (
+    ChemistryLabelStyle,
+    LayoutMode,
+    profile_for_layout,
+    profile_with_elevation_mode,
+)
 from render_theme import filter_water_levels_for_plot
 from renderer import CrossSectionRenderer
 from stratigraphy import (
@@ -203,8 +211,8 @@ def compute_section_geometry(
 ) -> SectionGeometry:
     """Project boreholes, build stratigraphy, and collect overlap/correlation QA."""
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
-    if offset_warning_m <= 0:
-        raise ValueError("offset_warning_m must be positive")
+    if not math.isfinite(offset_warning_m) or offset_warning_m <= 0:
+        raise ValueError("offset_warning_m must be a positive finite number")
     if len(transect_points) < 2:
         raise ValueError("At least two transect points are required")
     transect = Transect(points=list(transect_points))
@@ -218,9 +226,12 @@ def compute_section_geometry(
     if projected.empty:
         raise ValueError("No lithology intervals were projected for the selected transect")
 
-    interpolation_df = _filter_projected_for_interpolation(
-        projected,
-        max_offset_for_interpolation_m,
+    # Borehole-only sections draw every projected log: the interpolation offset
+    # limit must not reject them (it used to fail with "fewer than two holes").
+    interpolation_df = (
+        projected
+        if interpretation_mode == "borehole_only"
+        else _filter_projected_for_interpolation(projected, max_offset_for_interpolation_m)
     )
 
     correlation_summaries: list[CorrelationPairSummary] = []
@@ -293,6 +304,15 @@ def compute_section_geometry(
     )
 
 
+
+def _check_render_layout(render_layout: str) -> None:
+    """Reject unknown layouts; profile_for_layout would silently fall back."""
+    if render_layout not in get_args(LayoutMode):
+        raise ValueError(
+            f"render_layout must be one of {get_args(LayoutMode)} (got {render_layout!r})"
+        )
+
+
 def build_cross_section(
     collars: Sequence[Collar],
     lithologies: Sequence[Lithology],
@@ -344,6 +364,7 @@ def build_cross_section(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
+    chemistry_label_style: ChemistryLabelStyle | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
     auto_fit_track_width: bool = True,
@@ -358,12 +379,15 @@ def build_cross_section(
     """Project, build stratigraphy, render. Returns ``CrossSectionResult`` (also unpackable as a 7-tuple)."""
     export_formats = _normalize_export_formats(export_formats)
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
-    if vertical_exaggeration <= 0:
-        raise ValueError("vertical_exaggeration must be positive")
-    if uncertainty_spacing_m <= 0:
-        raise ValueError("uncertainty_spacing_m must be positive")
-    if uncertainty_offset_m <= 0:
-        raise ValueError("uncertainty_offset_m must be positive")
+    if not math.isfinite(vertical_exaggeration) or vertical_exaggeration <= 0:
+        raise ValueError("vertical_exaggeration must be a positive finite number")
+    if not math.isfinite(uncertainty_spacing_m) or uncertainty_spacing_m <= 0:
+        raise ValueError("uncertainty_spacing_m must be a positive finite number")
+    if not math.isfinite(uncertainty_offset_m) or uncertainty_offset_m <= 0:
+        raise ValueError("uncertainty_offset_m must be a positive finite number")
+    if not math.isfinite(track_width_m) or track_width_m <= 0:
+        raise ValueError("track_width_m must be a positive finite number")
+    _check_render_layout(render_layout)
     geometry = compute_section_geometry(
         collars,
         lithologies,
@@ -419,6 +443,7 @@ def build_cross_section(
         chemistry_color_mode=chemistry_color_mode,
         chemistry_threshold_green_max=chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
+        chemistry_label_style=chemistry_label_style,
         render_layout=render_layout,
         track_width_m=track_width_m,
         auto_fit_track_width=auto_fit_track_width,
@@ -474,6 +499,7 @@ def render_cross_section_from_geometry(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
+    chemistry_label_style: ChemistryLabelStyle | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
     auto_fit_track_width: bool = True,
@@ -493,14 +519,14 @@ def render_cross_section_from_geometry(
     """
     export_formats = _normalize_export_formats(export_formats)
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
-    if vertical_exaggeration <= 0:
-        raise ValueError("vertical_exaggeration must be positive")
-    if uncertainty_spacing_m <= 0:
-        raise ValueError("uncertainty_spacing_m must be positive")
-    if uncertainty_offset_m <= 0:
-        raise ValueError("uncertainty_offset_m must be positive")
-    if track_width_m <= 0:
-        raise ValueError("track_width_m must be positive")
+    if not math.isfinite(vertical_exaggeration) or vertical_exaggeration <= 0:
+        raise ValueError("vertical_exaggeration must be a positive finite number")
+    if not math.isfinite(uncertainty_spacing_m) or uncertainty_spacing_m <= 0:
+        raise ValueError("uncertainty_spacing_m must be a positive finite number")
+    if not math.isfinite(uncertainty_offset_m) or uncertainty_offset_m <= 0:
+        raise ValueError("uncertainty_offset_m must be a positive finite number")
+    if not math.isfinite(track_width_m) or track_width_m <= 0:
+        raise ValueError("track_width_m must be a positive finite number")
 
     projected = geometry.projected
     polygons = geometry.polygons
@@ -527,6 +553,7 @@ def render_cross_section_from_geometry(
         max_offset_m=max_offset,
     )
 
+    _check_render_layout(render_layout)
     base_profile = profile_for_layout(render_layout)  # type: ignore[arg-type]
     profile_updates: dict[str, object] = {
         "show_ground_surface": show_ground_surface,
@@ -557,7 +584,13 @@ def render_cross_section_from_geometry(
         ("chemistry_color_mode", chemistry_color_mode),
         ("chemistry_threshold_green_max", chemistry_threshold_green_max),
         ("chemistry_threshold_yellow_max", chemistry_threshold_yellow_max),
+        ("chemistry_label_style", chemistry_label_style),
     )
+    if chemistry_label_style is not None and chemistry_label_style not in get_args(ChemistryLabelStyle):
+        raise ValueError(
+            f"chemistry_label_style must be one of {get_args(ChemistryLabelStyle)} "
+            f"(got {chemistry_label_style!r})"
+        )
     if environmental_parameters:
         profile_updates["show_parameter_markers"] = True
     if render_layout == "consulting_section" and interpretation_mode == "borehole_only":
@@ -603,6 +636,10 @@ def render_cross_section_from_geometry(
     qa_lines = overlap_warnings
     if export_framing is not None and not export_framing.include_qa_footer:
         qa_lines = ()
+    # Scrub XML-1.0-illegal control characters so the SVG backend cannot emit
+    # unparseable documents (hole_ids are scrubbed at model validation).
+    title = _XML_ILLEGAL.sub("", title)
+    disclaimer = _XML_ILLEGAL.sub("", disclaimer)
     renderer = CrossSectionRenderer(
         vertical_exaggeration=vertical_exaggeration,
         scale_bar_length_m=auto_scale_bar_m(x_span),

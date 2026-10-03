@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
+import threading
 import zipfile
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Sequence
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
+from export_framing import _sanitize_stem
 from models import Collar, ConsultingTitleBlock, ParseResult
 from parse_ops import subset_parse_result
 from pipeline import (
-    ALL_EXPORT_FORMATS,
     SectionGeometry,
     compute_section_geometry,
     render_cross_section_from_geometry,
@@ -26,24 +29,28 @@ BATCH_DEFAULT_EXPORT_FORMATS = frozenset({"png", "pdf"})
 
 _GEOMETRY_MEMO_MAX = 8
 _geometry_memo: OrderedDict[str, SectionGeometry] = OrderedDict()
+_geometry_memo_lock = threading.Lock()
 
 
 def _memo_section_geometry(cache_key: str, factory) -> SectionGeometry:
     """Process-local LRU for multi-transect ZIP rebuilds (no Streamlit cache)."""
-    cached = _geometry_memo.get(cache_key)
-    if cached is not None:
-        _geometry_memo.move_to_end(cache_key)
-        return cached
+    with _geometry_memo_lock:
+        cached = _geometry_memo.get(cache_key)
+        if cached is not None:
+            _geometry_memo.move_to_end(cache_key)
+            return cached
     geometry = factory()
-    _geometry_memo[cache_key] = geometry
-    while len(_geometry_memo) > _GEOMETRY_MEMO_MAX:
-        _geometry_memo.popitem(last=False)
+    with _geometry_memo_lock:
+        _geometry_memo[cache_key] = geometry
+        while len(_geometry_memo) > _GEOMETRY_MEMO_MAX:
+            _geometry_memo.popitem(last=False)
     return geometry
 
 
 def clear_batch_geometry_memo() -> None:
     """Clear the process-local geometry memo (tests / long-running workers)."""
-    _geometry_memo.clear()
+    with _geometry_memo_lock:
+        _geometry_memo.clear()
 
 
 @dataclass(frozen=True)
@@ -55,8 +62,10 @@ class BatchTransectSpec:
     transect_points: tuple[tuple[float, float], ...] | None = None
 
     def __post_init__(self) -> None:
-        if len(self.hole_ids) < 2:
-            raise ValueError(f"Batch transect {self.label!r}: requires at least two holes")
+        if len(set(self.hole_ids)) < 2:
+            raise ValueError(
+                f"Batch transect {self.label!r}: requires at least two distinct holes"
+            )
         if self.transect_points is not None and len(self.transect_points) < 2:
             raise ValueError(f"Batch transect {self.label!r}: transect_points needs ≥2 points")
 
@@ -101,26 +110,69 @@ def parse_batch_transect_lines(text: str) -> list[BatchTransectSpec]:
     return specs
 
 
+_SECTION_ENDS_RE = re.compile(r"^\s*([A-Za-z0-9]+)\s*[-\u2013]\s*([A-Za-z0-9]+['\u2032\u2019]*)\s*$")
+
+
+_TITLE_SECTION_LABEL_RE = re.compile(r"\b([A-Za-z0-9]{1,3})\s*[-\u2013]\s*\1['\u2032\u2019]")
+
+
+def _section_end_letters(label: str) -> tuple[str, str]:
+    """``"B-B'"`` → ``("B", "B'")``; anything else → no end letters.
+
+    The end labels sit beside the edge boreholes' own names, so hole IDs must
+    not be used here (they printed twice on every batch sheet).
+    """
+    match = _SECTION_ENDS_RE.match(label or "")
+    if match is None:
+        return "", ""
+    return match.group(1), match.group(2)
+
+
 def _consulting_for_spec(
     base: ConsultingTitleBlock | None,
     *,
     label: str,
     hole_ids: Sequence[str],
 ) -> ConsultingTitleBlock | None:
+    start, end = _section_end_letters(label)
+    # The base sheet's compass words describe the base section's direction,
+    # not this transect's, so they are cleared rather than copied.
+    ends = {
+        "transect_start_primary": start,
+        "transect_end_primary": end,
+        "transect_start_secondary": "",
+        "transect_end_secondary": "",
+        "transect_start_label": "",
+        "transect_end_label": "",
+    }
     if base is None:
-        return ConsultingTitleBlock(
-            section_label=label,
-            transect_start_primary=hole_ids[0],
-            transect_end_primary=hole_ids[-1],
-        )
-    return base.model_copy(
-        update={
-            "section_label": label or base.section_label,
-            "transect_start_primary": hole_ids[0],
-            "transect_end_primary": hole_ids[-1],
-        }
-    )
+        return ConsultingTitleBlock(section_label=label, **ends)
+    return base.model_copy(update={"section_label": label or base.section_label, **ends})
 
+
+
+def _batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
+    """Title for one batch transect.
+
+    The base title usually names the base section ("Site X A-A'"); swap that
+    label for this line's instead of appending ("Site X A-A' — B-B'").
+    """
+    title = base_request.section_title
+    if not label:
+        return title
+    block = base_request.consulting_title_block
+    base_label = (block.section_label if block else "").strip()
+    if base_label and base_label != label and base_label in title:
+        return title.replace(base_label, label)
+    if label in title:
+        return title
+    # No title block (section-sheet styles): look for an "A-A'" style label.
+    match = _TITLE_SECTION_LABEL_RE.search(title)
+    if match is not None and _SECTION_ENDS_RE.match(label):
+        return title[: match.start()] + label + title[match.end() :]
+    if label in title:
+        return title
+    return f"{title} — {label}"
 
 def prepare_batch_section_request(
     parse_result: ParseResult,
@@ -129,7 +181,7 @@ def prepare_batch_section_request(
 ) -> tuple[ParseResult, SectionBuildRequest]:
     """Subset workbook data and clone the base request for one batch transect."""
     subset = subset_parse_result(parse_result, spec.hole_ids)
-    if len(subset.collars) < 2:
+    if len({collar.hole_id for collar in subset.collars}) < 2:
         raise ValueError(
             f"Batch transect {spec.label!r}: need ≥2 collars with data "
             f"(got {len(subset.collars)})"
@@ -139,9 +191,7 @@ def prepare_batch_section_request(
     points = spec.transect_points or transect_points_from_collars(
         parse_result.collars, spec.hole_ids
     )
-    title = base_request.section_title
-    if spec.label and spec.label not in title:
-        title = f"{base_request.section_title} — {spec.label}"
+    title = _batch_section_title(base_request, spec.label)
     consulting = _consulting_for_spec(
         base_request.consulting_title_block,
         label=spec.label,
@@ -177,7 +227,11 @@ def build_one_transect_exports(
     subset, request = prepare_batch_section_request(parse_result, base_request, spec)
     formats = export_formats or BATCH_DEFAULT_EXPORT_FORMATS
     hole_ids = tuple(collar.hole_id for collar in subset.collars)
-    geometry_key = request.geometry_cache_key(hole_ids)
+    # Key must cover the geology data too — geometry_cache_key hashes only the
+    # request (transect/mode/overrides), and a re-uploaded workbook must not
+    # serve stale polygons from the process-local memo.
+    subset_digest = hashlib.sha256(subset.model_dump_json().encode("utf-8")).hexdigest()
+    geometry_key = subset_digest + "|" + request.geometry_cache_key(hole_ids)
 
     def _compute() -> SectionGeometry:
         return compute_section_geometry(
@@ -241,6 +295,7 @@ def build_one_transect_exports(
         chemistry_color_mode=request.chemistry_color_mode,
         chemistry_threshold_green_max=request.chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=request.chemistry_threshold_yellow_max,
+        chemistry_label_style=request.chemistry_label_style,
         render_layout=request.render_layout,
         track_width_m=request.track_width_m,
         auto_fit_track_width=request.auto_fit_track_width,
@@ -361,14 +416,29 @@ def build_batch_zip(
 ) -> bytes:
     """Zip multiple transect exports. Each entry is (stem, svg, png, pdf)."""
     buffer = BytesIO()
+    used: dict[str, int] = {}
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for stem, svg_bytes, png_bytes, pdf_bytes in entries:
+            # Sanitize (labels may carry path separators) and uniquify — zipfile
+            # writes duplicate names silently and extractors keep only one.
+            safe = _sanitize_stem(str(stem))
+            key = safe.lower()
+            count = used.get(key, 0)
+            used[key] = count + 1
+            if count:
+                base = safe
+                safe = f"{base}_{count + 1}"
+                while safe.lower() in used:
+                    count += 1
+                    used[key] = count + 1
+                    safe = f"{base}_{count + 1}"
+                used[safe.lower()] = 1
             if svg_bytes:
-                archive.writestr(f"{stem}.svg", svg_bytes)
+                archive.writestr(f"{safe}.svg", svg_bytes)
             if png_bytes:
-                archive.writestr(f"{stem}.png", png_bytes)
+                archive.writestr(f"{safe}.png", png_bytes)
             if pdf_bytes:
-                archive.writestr(f"{stem}.pdf", pdf_bytes)
+                archive.writestr(f"{safe}.pdf", pdf_bytes)
         if binder_pdf:
             archive.writestr("report_binder.pdf", binder_pdf)
     buffer.seek(0)

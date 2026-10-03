@@ -5,13 +5,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ingestion import export_platform_workbook, parse_depth_interval
-from paths import advantage_platform_workbook, advantage_source_workbook
+from ingestion import export_platform_workbook, parse_depth_interval  # noqa: E402
+from paths import advantage_platform_workbook, advantage_source_workbook  # noqa: E402
 
 OUTPUT = advantage_platform_workbook()
 SOURCE = advantage_source_workbook()
@@ -36,9 +34,11 @@ def test_parse_depth_interval() -> None:
     assert parse_depth_interval("2.50-4.00m") == (2.5, 4.0)
 
 
-def test_convert_advantage_export() -> None:
+def test_convert_advantage_export(tmp_path: Path) -> None:
+    # Convert into tmp_path: the committed fixture must not be rewritten by tests.
+    converted = tmp_path / "advantage_phase2_platform.xlsx"
     assert SOURCE.exists(), "Commit data/fixtures/advantage_phase2_source.xlsx (synthetic CI fixture)"
-    collars, lithology = convert_advantage_export(SOURCE, OUTPUT)
+    collars, lithology = convert_advantage_export(SOURCE, converted)
     assert len(collars) == 23
     assert len(lithology) == 70
     assert set(collars.columns) == {"hole_id", "easting", "northing", "elevation", "total_depth"}
@@ -56,7 +56,7 @@ def test_convert_advantage_export() -> None:
 
     from models import DataParser
 
-    result = DataParser().parse_file(OUTPUT)
+    result = DataParser().parse_file(converted)
     assert len(result.collars) == 23
     assert len(result.lithologies) == 70
 

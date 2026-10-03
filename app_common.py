@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import TYPE_CHECKING, Any, Sequence
-
-from dataclasses import dataclass, replace
+from collections.abc import Sequence
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any
 
 import streamlit as st
 
@@ -19,7 +19,11 @@ if TYPE_CHECKING:
 from ai_quality import analyze_parsed_data, load_lithology_aliases
 from app_services import cached_ingest_workbook
 from app_state import clear_section_output_state
-from constants import DEFAULT_LITHOLOGY_COLOR, USGS_LITHOLOGY_HATCHES, get_lithology_style, normalize_hex_colour
+from constants import (
+    DEFAULT_LITHOLOGY_COLOR,
+    get_lithology_style,
+    normalize_hex_colour,
+)
 from ingestion import ImportReport
 from models import (
     ConsultingTitleBlock,
@@ -31,10 +35,12 @@ from models import (
 )
 from section_build_request import SectionBuildRequest
 from ui_helpers import (
+    PREVIEW_ZOOM_OPTIONS,
     active_transect_selection,
     dedupe_messages,
     escape_html,
     legend_hatch_background,
+    preview_img_style,
     svg_display_meta,
 )
 
@@ -76,20 +82,27 @@ def llm_suggestions_available() -> bool:
     return bool(_llm_api_key_for_provider(provider_kind))
 
 
-def _render_workflow_stepper(stage: int) -> None:
+def _workflow_stepper_html(stage: int) -> str:
     steps_html = []
     for index, label in enumerate(_WORKFLOW_LABELS):
         if index < stage:
             css_class = "workflow-step done"
+            prefix = "✓ "
         elif index == stage:
             css_class = "workflow-step active"
+            prefix = f"{index + 1}. "
         else:
             css_class = "workflow-step"
+            prefix = f"{index + 1}. "
         steps_html.append(
             f'<div class="{css_class}" role="listitem" aria-current="{"step" if index == stage else "false"}">'
-            f"{index + 1}. {escape_html(label)}</div>"
+            f"{prefix}{escape_html(label)}</div>"
         )
-    st.markdown(f'<div class="workflow" role="list">{"".join(steps_html)}</div>', unsafe_allow_html=True)
+    return f'<div class="workflow" role="list">{"".join(steps_html)}</div>'
+
+
+def _render_workflow_stepper(stage: int) -> None:
+    st.markdown(_workflow_stepper_html(stage), unsafe_allow_html=True)
 
 
 def _render_hero(stage: int) -> None:
@@ -105,11 +118,11 @@ def _render_hero(stage: int) -> None:
 <div class="{hero_class}">
   <h1>Cross Section Studio</h1>
   {tagline}
+  {_workflow_stepper_html(stage)}
 </div>
 """,
         unsafe_allow_html=True,
     )
-    _render_workflow_stepper(stage)
 
 
 def _render_sticky_generate_strip(
@@ -137,7 +150,7 @@ def _render_sticky_generate_strip(
         if has_svg:
             if st.button(
                 "Regenerate",
-                type="primary",
+                type="primary" if is_stale else "secondary",
                 disabled=not can_generate,
                 key="sticky_regenerate",
                 width="stretch",
@@ -180,11 +193,10 @@ def _render_profile_chips(
     png_ready: bool = False,
     pdf_ready: bool = False,
 ) -> None:
-    mode_label = (
-        "Observed only"
-        if interpretation_mode == "borehole_only"
-        else "Interpolated fence"
-    )
+    mode_label = {
+        "borehole_only": "Observed only",
+        "correlation_lines": "Contact lines only",
+    }.get(interpretation_mode, "Interpolated fence")
     chips = [
         f'<span class="chip brand">{escape_html(mode_label)}</span>',
         f'<span class="chip">VE {escape_html(vertical_exaggeration)}×</span>',
@@ -207,8 +219,10 @@ def _render_profile_chips(
     chips.append(
         f'<span class="chip {"warn" if is_stale else ""}">{freshness}</span>'
     )
-    export_bits = [f"PNG {'✓' if png_ready else '—'}", f"PDF {'✓' if pdf_ready else '—'}"]
-    chips.append(f'<span class="chip">{" · ".join(export_bits)}</span>')
+    if png_ready and pdf_ready:
+        chips.append('<span class="chip brand">PNG/PDF ready</span>')
+    else:
+        chips.append('<span class="chip">PNG/PDF not prepared</span>')
     st.markdown(f'<div class="profile-header">{"".join(chips)}</div>', unsafe_allow_html=True)
 
 
@@ -228,10 +242,11 @@ def _render_lithology_legend(codes: list[str]) -> None:
         st.caption("Legend appears after you generate a cross-section.")
         return
     rows = []
+    show_hatches = bool(st.session_state.get("show_hatches", True))
     for code in sorted(codes):
         style = get_lithology_style(code)
-        hatch = style.hatch or USGS_LITHOLOGY_HATCHES.get(code, "..")
-        hatch_bg = legend_hatch_background(hatch)
+        # Match the figure: hatches off in the sidebar means plain swatches here too.
+        hatch_bg = legend_hatch_background(style.hatch if show_hatches else "")
         color = normalize_hex_colour(style.color) or DEFAULT_LITHOLOGY_COLOR
         rows.append(
             f'<div class="legend-row">'
@@ -243,7 +258,7 @@ def _render_lithology_legend(codes: list[str]) -> None:
     st.markdown("".join(rows), unsafe_allow_html=True)
 
 
-def _display_svg(svg_bytes: bytes) -> None:
+def _display_svg(svg_bytes: bytes, alt_text: str = "Cross-section profile") -> None:
     """Render SVG in Streamlit (st.image does not support SVG via PIL)."""
     cached = st.session_state.get("svg_display_meta")
     if cached is None or st.session_state.svg_bytes != svg_bytes:
@@ -252,17 +267,32 @@ def _display_svg(svg_bytes: bytes) -> None:
     if not cached.valid:
         st.error("Renderer produced invalid or empty SVG output.")
         return
-    st.markdown(
-        f'<div class="svg-frame" role="img" aria-label="Cross-section profile" '
-        f'style="min-height:{cached.height}px;">',
-        unsafe_allow_html=True,
+    # Without a readable natural width every choice would render fit-to-width.
+    zoom = cached.natural_width_px and st.segmented_control(
+        "Preview size",
+        list(PREVIEW_ZOOM_OPTIONS),
+        default="Fit width",
+        key="svg_preview_zoom",
+        label_visibility="collapsed",
+        help="Fit width shows the whole sheet; 100% / 150% show the figure at "
+        "native size or larger so small labels can be checked before export.",
     )
+    img_style, zoomed = preview_img_style(zoom, cached.natural_width_px)
+    frame_attrs = (
+        'class="svg-frame svg-frame--zoomed" tabindex="0" '
+        'role="region" aria-label="Zoomed figure preview, scrollable"'
+        if zoomed
+        else 'class="svg-frame"'
+    )
+    # One markdown block: Streamlit auto-closes a lone <div>, so splitting this
+    # across calls renders an empty bordered frame with the image outside it.
     st.markdown(
+        f"<div {frame_attrs}>"
         f'<img src="data:image/svg+xml;base64,{cached.encoded}" '
-        'style="width:100%;height:auto;display:block;" alt="Cross-section profile" />',
+        f'style="{img_style}" alt="{escape_html(alt_text)}" />'
+        "</div>",
         unsafe_allow_html=True,
     )
-    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _render_overlap_warnings(warnings: Sequence[str]) -> None:
@@ -490,12 +520,11 @@ def _llm_api_key_for_provider(provider_kind: str) -> str:
     try:
         secrets = getattr(st, "secrets", None)
         if secrets is not None:
+            # Only this provider's key: a generic fallback once sent an
+            # OPENAI_API_KEY from secrets to Groq as its bearer token.
             for secret_key in (
                 f"{provider_kind}_api_key",
                 f"{str(provider_kind).upper()}_API_KEY",
-                "GROQ_API_KEY",
-                "GEMINI_API_KEY",
-                "OPENAI_API_KEY",
             ):
                 try:
                     value = str(secrets.get(secret_key, "") or "").strip()

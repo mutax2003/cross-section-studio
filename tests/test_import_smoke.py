@@ -89,3 +89,10 @@ def test_import_app_modules() -> None:
         assert callable(app_menubar.render_menubar)
         assert callable(app_version.get_version)
         assert callable(app_version.check_for_updates)
+
+
+def test_hatches_default_on_to_match_legend_template() -> None:
+    """Template 261002 distinguishes same-colour units only by hatch."""
+    import app_state
+
+    assert app_state.DEFAULT_SESSION["show_hatches"] is True

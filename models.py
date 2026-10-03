@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import re
 from typing import Literal
 
 import pandas as pd
@@ -32,6 +34,20 @@ MAX_WATER_SERIES = 4
 InterpretationMode = Literal["borehole_only", "interpolated", "correlation_lines"]
 
 
+# XML 1.0 disallows these control characters; matplotlib's SVG backend would
+# emit them verbatim and produce unparseable documents.
+_XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _clean_text(value: object) -> str:
+    text = _XML_ILLEGAL.sub("", str(value)).strip()
+    if text.startswith("="):
+        # A leading '=' is a spreadsheet formula; written back out by the
+        # cleaned export it would execute in Excel.
+        raise ValueError(f"text cannot start with '=' (formula): {text[:40]!r}")
+    return text
+
+
 class Collar(BaseModel, frozen=True):
     hole_id: str
     easting: float
@@ -48,13 +64,41 @@ class Collar(BaseModel, frozen=True):
     def strip_hole_id(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("hole_id is required")
-        return str(value).strip()
+        return _clean_text(value)
+
+    @field_validator("elevation_datum", mode="before")
+    @classmethod
+    def blank_datum_to_none(cls, value: object) -> str | None:
+        # Excel hands back NaN for a cleared cell and int for e.g. "2013".
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        text = _clean_text(value)
+        return text or None
+
+    @field_validator("easting", "northing", "elevation", "total_depth")
+    @classmethod
+    def require_finite(cls, value: float, info) -> float:
+        if not math.isfinite(value):
+            raise ValueError(f"{info.field_name} must be a finite number")
+        return value
 
     @field_validator("total_depth")
     @classmethod
     def validate_total_depth(cls, value: float) -> float:
         if value < 0:
             raise ValueError("total_depth must be non-negative")
+        return value
+
+    @field_validator("inclination_deg", "azimuth_deg", "stick_up_m", mode="before")
+    @classmethod
+    def blank_optional_to_none(cls, value: object, info) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if math.isnan(float(value)):
+                return None
+            if math.isinf(float(value)):
+                raise ValueError(f"{info.field_name} must be a finite number")
         return value
 
     @field_validator("stick_up_m")
@@ -77,17 +121,27 @@ class Lithology(BaseModel, frozen=True):
 
     @field_validator("hole_id", "lithology_code", mode="before")
     @classmethod
-    def strip_strings(cls, value: object) -> str:
+    def strip_strings(cls, value: object, info) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("required string field is missing")
-        return str(value).strip()
+        text = _clean_text(value)
+        if not text:
+            raise ValueError(f"{info.field_name} is blank")
+        return text
+
+    @field_validator("from_depth", "to_depth")
+    @classmethod
+    def require_finite(cls, value: float, info) -> float:
+        if not math.isfinite(value):
+            raise ValueError(f"{info.field_name} must be a finite number")
+        return value
 
     @field_validator("hatch_pattern", mode="before")
     @classmethod
     def optional_string(cls, value: object) -> str | None:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return None
-        text = str(value).strip()
+        text = _clean_text(value)
         return text or None
 
     @field_validator("unit_order", mode="before")
@@ -103,7 +157,7 @@ class Lithology(BaseModel, frozen=True):
             if not value.is_integer():
                 raise ValueError("unit_order must be a whole number")
             return int(value)
-        text = str(value).strip()
+        text = _clean_text(value)
         if not text:
             return None
         try:
@@ -139,14 +193,14 @@ class WaterLevel(BaseModel, frozen=True):
     def strip_hole_id(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("hole_id is required")
-        return str(value).strip()
+        return _clean_text(value)
 
     @field_validator("series_id", mode="before")
     @classmethod
     def default_series_id(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return "default"
-        text = str(value).strip()
+        text = _clean_text(value)
         return text or "default"
 
     @field_validator("series_label", "connect_group", mode="before")
@@ -154,14 +208,14 @@ class WaterLevel(BaseModel, frozen=True):
     def strip_series_label(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return ""
-        return str(value).strip()
+        return _clean_text(value)
 
     @field_validator("status", mode="before")
     @classmethod
     def normalize_status(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return "measured"
-        text = str(value).strip().lower()
+        text = _clean_text(value).lower()
         if not text:
             return "measured"
         if text in {"dry", "d"}:
@@ -179,12 +233,14 @@ class WaterLevel(BaseModel, frozen=True):
     def optional_string(cls, value: object) -> str | None:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return None
-        text = str(value).strip()
+        text = _clean_text(value)
         return text or None
 
     @field_validator("depth")
     @classmethod
     def validate_depth(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("depth must be a finite number")
         if value < 0:
             raise ValueError("depth must be non-negative")
         return value
@@ -200,7 +256,14 @@ class ScreenInterval(BaseModel, frozen=True):
     def strip_hole_id(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("hole_id is required")
-        return str(value).strip()
+        return _clean_text(value)
+
+    @field_validator("from_depth", "to_depth")
+    @classmethod
+    def require_finite(cls, value: float, info) -> float:
+        if not math.isfinite(value):
+            raise ValueError(f"{info.field_name} must be a finite number")
+        return value
 
     @model_validator(mode="after")
     def validate_depths(self) -> ScreenInterval:
@@ -218,14 +281,14 @@ class VerticalGradient(BaseModel, frozen=True):
     def strip_hole_id(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("hole_id is required")
-        return str(value).strip()
+        return _clean_text(value)
 
     @field_validator("direction", mode="before")
     @classmethod
     def normalize_direction(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return "up"
-        text = str(value).strip().lower()
+        text = _clean_text(value).lower()
         if text in {"up", "u", "↑"}:
             return "up"
         if text in {"down", "d", "↓"}:
@@ -241,12 +304,20 @@ class DeviationReading(BaseModel, frozen=True):
     inclination_deg: float
     azimuth_deg: float
 
+    @field_validator("depth", "inclination_deg", "azimuth_deg")
+    @classmethod
+    def require_finite(cls, value: float, info) -> float:
+        # A blank survey cell would otherwise NaN the whole hole's geometry.
+        if not math.isfinite(value):
+            raise ValueError(f"{info.field_name} must be a finite number")
+        return value
+
     @field_validator("hole_id", mode="before")
     @classmethod
     def strip_hole_id(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("hole_id is required")
-        return str(value).strip()
+        return _clean_text(value)
 
 
 class CorrelationOverride(BaseModel, frozen=True):
@@ -260,7 +331,7 @@ class CorrelationOverride(BaseModel, frozen=True):
     @field_validator("left_hole_id", "right_hole_id", mode="before")
     @classmethod
     def strip_ids(cls, value: object) -> str:
-        return str(value).strip()
+        return _clean_text(value)
 
 
 class Fault(BaseModel, frozen=True):
@@ -277,6 +348,11 @@ class Unconformity(BaseModel, frozen=True):
     elevation_profile: list[tuple[float, float]] = Field(min_length=2)
 
 
+# Fixed label colours a logger may pick in the workbook (one hex each in
+# render_theme); blue is reserved for groundwater elevations.
+LABEL_COLOR_NAMES: tuple[str, ...] = ("green", "red", "black", "orange")
+
+
 class EnvironmentalReading(BaseModel, frozen=True):
     """Environmental / lab sample on a point depth or depth interval."""
 
@@ -288,11 +364,24 @@ class EnvironmentalReading(BaseModel, frozen=True):
     to_depth: float | None = None
     unit: str = ""
     value_label: str = ""
+    label_color: str = ""  # "", green, red, black or orange (fixed hex each)
 
     @field_validator("hole_id", "parameter", mode="before")
     @classmethod
     def strip_text(cls, value: object) -> str:
-        return str(value).strip()
+        return _clean_text(value)
+
+    @field_validator("label_color", mode="before")
+    @classmethod
+    def normalise_label_color(cls, value: object) -> str:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ""
+        text = _clean_text(value).casefold()
+        if text == "" or text in LABEL_COLOR_NAMES:
+            return text
+        if text == "blue":
+            raise ValueError("label_color 'blue' is reserved for groundwater elevations")
+        raise ValueError(f"label_color must be green, red, black or orange (got {text!r})")
 
     @model_validator(mode="after")
     def validate_depth_fields(self) -> EnvironmentalReading:
@@ -338,7 +427,7 @@ class RasterLogStrip(BaseModel, frozen=True):
     @field_validator("hole_id", mode="before")
     @classmethod
     def strip_hole_id(cls, value: object) -> str:
-        return str(value).strip()
+        return _clean_text(value)
 
 
 class ConsultingTitleBlock(BaseModel, frozen=True):
@@ -403,7 +492,7 @@ class WorkbookSectionSpec(BaseModel, frozen=True):
     def strip_label(cls, value: object) -> str:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             raise ValueError("section_label is required")
-        text = str(value).strip()
+        text = _clean_text(value)
         if not text:
             raise ValueError("section_label is required")
         if any(ch in text for ch in ("\n", "\r", "|")):
@@ -417,9 +506,12 @@ class WorkbookSectionSpec(BaseModel, frozen=True):
             raise ValueError("hole_ids is required")
         if isinstance(value, str):
             raise ValueError("hole_ids must be a sequence of hole IDs")
-        holes = tuple(str(item).strip() for item in value if str(item).strip())
+        holes = tuple(_clean_text(item) for item in value if _clean_text(item))
         if len(holes) < 2:
             raise ValueError("section requires at least two hole_ids")
+        duplicates = sorted({h for h in holes if holes.count(h) > 1})
+        if duplicates:
+            raise ValueError(f"hole_id listed more than once: {', '.join(duplicates)}")
         for hole in holes:
             if any(ch in hole for ch in (",", ";", "|", "\n", "\r")) or "→" in hole or "->" in hole:
                 raise ValueError(
@@ -445,17 +537,17 @@ class ParseResult(BaseModel, frozen=True):
 
 # Re-exports for backward-compatible imports
 from parse_ops import (  # noqa: E402
-    apply_unit_order_fix,
-    assign_missing_unit_orders,
-    format_section_specs_as_batch_text,
-    geology_sheet_counts,
-    holes_with_duplicate_lithology_codes,
-    lithologies_by_hole,
-    lithology_has_unit_order_column,
-    parse_bundle_from_json,
-    parse_result_to_json_bundle,
-    subset_json_bundle,
-    subset_parse_result,
+    apply_unit_order_fix,  # noqa: F401
+    assign_missing_unit_orders,  # noqa: F401
+    format_section_specs_as_batch_text,  # noqa: F401
+    geology_sheet_counts,  # noqa: F401
+    holes_with_duplicate_lithology_codes,  # noqa: F401
+    lithologies_by_hole,  # noqa: F401
+    lithology_has_unit_order_column,  # noqa: F401
+    parse_bundle_from_json,  # noqa: F401
+    parse_result_to_json_bundle,  # noqa: F401
+    subset_json_bundle,  # noqa: F401
+    subset_parse_result,  # noqa: F401
 )
 
 

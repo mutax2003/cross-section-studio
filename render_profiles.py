@@ -12,6 +12,8 @@ WaterSymbol = Literal["circle", "triangle", "diamond"]
 ScaleBarPosition = Literal["bottom_left", "bottom_right"]
 ColumnHeaderDetail = Literal["id_only", "id_rl_td"]
 ChemistryColorMode = Literal["black", "threshold"]
+# How a value label is kept legible over hatched fills.
+ChemistryLabelStyle = Literal["plain", "box", "dot", "stroke"]
 
 
 class CrossSectionRenderProfile(BaseModel, frozen=True):
@@ -74,6 +76,7 @@ class CrossSectionRenderProfile(BaseModel, frozen=True):
     chemistry_color_mode: ChemistryColorMode = "black"
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
+    chemistry_label_style: ChemistryLabelStyle = "plain"
     x_major_grid_m: float = 10.0
     y_axis_label: str = ""
 

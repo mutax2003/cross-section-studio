@@ -64,7 +64,9 @@ OUTPUT_PRESETS: dict[str, OutputPresetConfig] = {
     "consulting_report": OutputPresetConfig(
         render_layout="consulting_section",
         report_preset=False,
-        allow_pinch_outs=True,
+        # Generic consulting builds force pinch-outs off (app_build); seed the
+        # toggle to match so the sidebar shows what the figure uses.
+        allow_pinch_outs=False,
         show_ground_surface=True,
         interpolate_water_table=True,
         show_legend=False,

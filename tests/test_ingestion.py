@@ -12,21 +12,20 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from models import DataParser
-from ingestion import (
+from ingestion import (  # noqa: E402
     NATIVE_PROFILE_ID,
     DepthParser,
     FieldExportAdapter,
     FormatDetector,
-    ImportProfile,
+    export_platform_workbook,
+    ingest_workbook,
     load_override,
     load_profile,
-    ingest_workbook,
     parse_depth_interval,
-    export_platform_workbook,
 )
-from tests.conftest import make_workbook_bytes
-from paths import advantage_platform_workbook, advantage_source_workbook
+from models import DataParser  # noqa: E402
+from paths import advantage_platform_workbook, advantage_source_workbook  # noqa: E402
+from tests.conftest import make_workbook_bytes  # noqa: E402
 
 SOURCE = advantage_source_workbook()
 OUTPUT = advantage_platform_workbook()
@@ -822,3 +821,281 @@ def test_sections_sheet_parses_and_seeds_batch_lines(tmp_path: Path) -> None:
     assert [spec.label for spec in specs] == ["A-A'", "B-B'", "C-C'"]
     assert specs[0].hole_ids == ("MW-01", "MW-02", "MW-03")
 
+
+
+def test_converted_field_export_keeps_placeholder_elevation_flag(tmp_path: Path) -> None:
+    """convert_workbook writes the profile placeholder RL; a re-import must
+    still flag it (it used to come back as if surveyed, silently)."""
+    from ingestion import export_platform_workbook
+
+    source = ROOT / "data" / "fixtures" / "advantage_phase2_source.xlsx"
+    first, first_report = ingest_workbook(source)
+    assert first_report.uses_placeholder_elevation
+
+    converted = tmp_path / "converted.xlsx"
+    export_platform_workbook(source, converted)
+    _again, again_report = ingest_workbook(converted)
+    assert again_report.uses_placeholder_elevation
+    assert any("placeholder" in warning.lower() for warning in again_report.warnings)
+
+    surveyed = tmp_path / "surveyed.xlsx"
+    export_platform_workbook(source, surveyed, elevation_m=612.5)
+    _s, surveyed_report = ingest_workbook(surveyed)
+    assert not surveyed_report.uses_placeholder_elevation
+
+
+def _edit_converted_collars(converted: Path, out: Path, edit) -> Path:
+    import openpyxl
+
+    book = openpyxl.load_workbook(converted)
+    sheet = book["Collars"]
+    header = [cell.value for cell in sheet[1]]
+    for row in range(2, sheet.max_row + 1):
+        edit(sheet, row, header)
+    book.save(out)
+    return out
+
+
+def test_placeholder_tag_edited_in_excel_never_drops_or_misflags_collars(tmp_path: Path) -> None:
+    """Users fix converter placeholders by clearing the tag or typing surveyed
+    RLs; neither may drop collars, keep a stale flag, or print a stale datum."""
+    from io import BytesIO
+
+    from ingestion import export_platform_workbook
+    from workbook_template import export_cleaned_workbook_bytes
+
+    source = ROOT / "data" / "fixtures" / "advantage_phase2_source.xlsx"
+    converted = tmp_path / "converted.xlsx"
+    export_platform_workbook(source, converted)
+    base, _ = ingest_workbook(converted)
+
+    def clear_tag(sheet, row, header):
+        sheet.cell(row, header.index("elevation_datum") + 1).value = None
+
+    cleared, cleared_report = ingest_workbook(
+        _edit_converted_collars(converted, tmp_path / "cleared.xlsx", clear_tag)
+    )
+    assert len(cleared.collars) == len(base.collars)
+    assert not cleared_report.uses_placeholder_elevation
+
+    def flat_survey(sheet, row, header):
+        sheet.cell(row, header.index("elevation") + 1).value = 612.5
+
+    flat, flat_report = ingest_workbook(
+        _edit_converted_collars(converted, tmp_path / "flat.xlsx", flat_survey)
+    )
+    assert not flat_report.uses_placeholder_elevation
+    assert all(collar.elevation_datum is None for collar in flat.collars)
+
+    def own_datum(sheet, row, header):
+        sheet.cell(row, header.index("elevation_datum") + 1).value = "Placeholders removed - CGVD2013"
+        sheet.cell(row, header.index("elevation") + 1).value = 100.0
+
+    own, own_report = ingest_workbook(
+        _edit_converted_collars(converted, tmp_path / "own.xlsx", own_datum)
+    )
+    assert not own_report.uses_placeholder_elevation
+    assert own.collars[0].elevation_datum == "Placeholders removed - CGVD2013"
+
+    # Validate's cleaned export must carry the tag through a re-import.
+    _, base_report = ingest_workbook(converted)
+    cleaned = export_cleaned_workbook_bytes(base, project_metadata=base_report.project_metadata)
+    _again, again_report = ingest_workbook(BytesIO(cleaned))
+    assert again_report.uses_placeholder_elevation
+
+
+def _hostile_workbook(collars, lithology, extra: dict | None = None, **names) -> BytesIO:
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        pd.DataFrame(collars).to_excel(
+            writer, sheet_name=names.get("collars_sheet", "Collars"), index=False
+        )
+        pd.DataFrame(lithology).to_excel(
+            writer, sheet_name=names.get("lithology_sheet", "Lithology"), index=False
+        )
+        for sheet, rows in (extra or {}).items():
+            pd.DataFrame(rows).to_excel(writer, sheet_name=sheet, index=False)
+    buffer.seek(0)
+    return buffer
+
+
+_TWO_COLLARS = [
+    {"hole_id": "BH1", "easting": 0, "northing": 0, "elevation": 100, "total_depth": 10},
+    {"hole_id": "BH2", "easting": 50, "northing": 0, "elevation": 100, "total_depth": 10},
+]
+_TWO_LITH = [
+    {"hole_id": hole, "from_depth": 0, "to_depth": 10, "lithology_code": "Clay"}
+    for hole in ("BH1", "BH2")
+]
+
+
+def test_lowercase_tab_names_and_whitespace_headers_parse_like_the_canonical_ones() -> None:
+    """Detection is case/whitespace-insensitive; the parser must read the same
+    sheet and header it detected instead of failing on the literal name."""
+    result, _ = ingest_workbook(
+        _hostile_workbook(
+            _TWO_COLLARS, _TWO_LITH, collars_sheet="collars", lithology_sheet="lithology"
+        )
+    )
+    assert len(result.collars) == 2 and len(result.lithologies) == 2
+
+    collars = [
+        {**row, "Hole  ID": row.pop("hole_id"), "Total\tDepth": row.pop("total_depth")}
+        for row in [dict(r) for r in _TWO_COLLARS]
+    ]
+    lith = [{**row, "To  Depth": row.pop("to_depth")} for row in [dict(r) for r in _TWO_LITH]]
+    result, _ = ingest_workbook(_hostile_workbook(collars, lith))
+    assert len(result.collars) == 2 and len(result.lithologies) == 2
+
+
+def test_numeric_hole_ids_survive_a_blank_row_in_lithology() -> None:
+    """pandas reads 1, <blank>, 2 as floats; "1.0" must not fail to match "1"."""
+    collars = [{**row, "hole_id": index + 1} for index, row in enumerate(_TWO_COLLARS)]
+    lith = [
+        {"hole_id": 1, "from_depth": 0, "to_depth": 10, "lithology_code": "Clay"},
+        {"hole_id": None, "from_depth": None, "to_depth": None, "lithology_code": None},
+        {"hole_id": 2, "from_depth": 0, "to_depth": 10, "lithology_code": "Clay"},
+    ]
+    result, _ = ingest_workbook(_hostile_workbook(collars, lith))
+    assert [c.hole_id for c in result.collars] == ["1", "2"]
+    assert len(result.lithologies) == 2 and not result.errors
+
+
+def test_spreadsheet_formulas_are_rejected_and_never_written_back_live() -> None:
+    from openpyxl import load_workbook
+
+    from workbook_template import export_cleaned_workbook_bytes
+
+    hostile = [dict(_TWO_COLLARS[0], hole_id='=HYPERLINK("http://evil","BH1")'), _TWO_COLLARS[1]]
+    result, _ = ingest_workbook(_hostile_workbook(hostile, _TWO_LITH))
+    # Written by openpyxl as a formula with no cached value -> reads back blank:
+    # the row must be reported, not silently dropped.
+    assert len(result.collars) == 1
+    assert any("Collars row 2" in error and "blank" in error for error in result.errors)
+
+    # Text that merely starts with "=" (typed into Excel as a string).
+    from models import Collar
+
+    with pytest.raises(ValueError, match="formula"):
+        Collar(hole_id="=1+1", easting=0, northing=0, elevation=1, total_depth=1)
+
+    clean, report = ingest_workbook(_hostile_workbook(_TWO_COLLARS, _TWO_LITH))
+    exported = export_cleaned_workbook_bytes(
+        clean, project_metadata={"client_name": "=cmd|' /C calc'!A0"}
+    )
+    project = load_workbook(BytesIO(exported))["Project"]
+    formula_cells = [c for row in project.iter_rows() for c in row if str(c.value).startswith("=")]
+    assert formula_cells and all(c.data_type == "s" for c in formula_cells)
+
+
+def test_structure_and_survey_row_problems_are_row_errors_not_aborts() -> None:
+    extra = {
+        "Faults": [
+            {"name": "F1", "x_profile": None, "elevation": 5},
+            {"name": "F1", "x_profile": 10, "elevation": 5},
+        ],
+        "Unconformities": [{"name": "U1", "x_profile": 1, "elevation": None}],
+        "Deviations": [{"hole_id": "BH1", "depth": 5, "inclination_deg": None, "azimuth_deg": 0}],
+    }
+    result, _ = ingest_workbook(_hostile_workbook(_TWO_COLLARS, _TWO_LITH, extra))
+    assert len(result.collars) == 2  # workbook still loads
+    assert not result.deviation_readings  # NaN survey would NaN the hole geometry
+    joined = "\n".join(result.errors)
+    assert "Faults sheet" in joined and "Unconformities sheet" in joined
+    assert "Deviations row for 'BH1': inclination_deg" in joined
+
+
+def test_oversized_formatted_workbook_is_rejected_before_parsing(tmp_path: Path) -> None:
+    """A million empty-but-styled rows used to tie the parser up for ~18 s."""
+    from parsing import WorkbookTooLargeError, check_workbook_row_counts
+
+    buffer = _hostile_workbook(_TWO_COLLARS, _TWO_LITH)
+    check_workbook_row_counts(buffer)  # normal workbook passes
+    assert buffer.tell() == 0  # stream rewound for the real reader
+
+    with pytest.raises(WorkbookTooLargeError, match="rows \\(limit 10\\)"):
+        check_workbook_row_counts(_hostile_workbook(_TWO_COLLARS * 6, _TWO_LITH), limit=10)
+
+
+def test_sections_rows_naming_unknown_holes_are_reported_not_silently_dropped() -> None:
+    """A Sections row with a misspelt hole used to vanish with only a log line,
+    which read as 'the program did not read that tab'."""
+    sections = [
+        {"section_label": "A-A'", "hole_ids": "BH1, BH2"},
+        {"section_label": "B-B'", "hole_ids": "BH1, BH-99"},
+        {"section_label": "C-C'", "hole_ids": "BH1"},
+        {"section_label": "D-D'", "hole_ids": "BH1, BH2, BH1"},
+        {"section_label": "Custom", "hole_ids": "BH2, BH1"},
+    ]
+    result, report = ingest_workbook(_hostile_workbook(_TWO_COLLARS, _TWO_LITH, {"Sections": sections}))
+    assert [spec.label for spec in result.section_specs] == ["A-A'", "Custom"]  # "Custom" is a valid label
+    joined = "\n".join(result.errors)
+    assert "Sections row 3 (B-B'): unknown collar(s) BH-99" in joined
+    assert "Sections row 4" in joined
+    assert "Sections row 5" in joined and "listed more than once: BH1" in joined
+
+
+def test_cleaned_export_keeps_every_ingested_field() -> None:
+    """Deviated-hole angles, hatch patterns, water styling and the structural
+    sheets (Deviations, Faults, Unconformities) used to vanish on re-upload."""
+    from workbook_template import export_cleaned_workbook_bytes
+
+    collars = [
+        {**_TWO_COLLARS[0], "inclination_deg": -85.0, "azimuth_deg": 45.0, "stick_up_m": 0.6},
+        {**_TWO_COLLARS[1], "inclination_deg": -90.0, "azimuth_deg": 0.0},
+    ]
+    lith = [{**row, "hatch_pattern": "///"} for row in _TWO_LITH]
+    extra = {
+        "Water": [{"hole_id": "BH1", "depth": 2.5, "series_id": "s1", "color": "#ff0000", "marker": "v"}],
+        "Deviations": [{"hole_id": "BH1", "depth": 5.0, "inclination_deg": -80.0, "azimuth_deg": 40.0}],
+        "Faults": [{"name": "F1", "x_profile": 0.0, "elevation": 95.0}, {"name": "F1", "x_profile": 50.0, "elevation": 90.0}],
+        "Unconformities": [{"name": "U1", "x_profile": 0.0, "elevation": 97.0}, {"name": "U1", "x_profile": 50.0, "elevation": 96.0}],
+    }
+    first, report = ingest_workbook(_hostile_workbook(collars, lith, extra))
+    assert first.deviation_readings and first.faults and first.unconformities
+    again, _ = ingest_workbook(BytesIO(export_cleaned_workbook_bytes(first, project_metadata=report.project_metadata)))
+    assert [(c.inclination_deg, c.azimuth_deg, c.stick_up_m) for c in again.collars] == [
+        (c.inclination_deg, c.azimuth_deg, c.stick_up_m) for c in first.collars
+    ]
+    assert [i.hatch_pattern for i in again.lithologies] == ["///", "///"]
+    assert (again.water_levels[0].color, again.water_levels[0].marker) == ("#ff0000", "v")
+    assert again.deviation_readings == first.deviation_readings
+    assert again.faults == first.faults and again.unconformities == first.unconformities
+
+
+def test_data_entry_project_number_row_is_a_field_not_a_block_header() -> None:
+    from workbook_template import parse_data_entry_sheet
+
+    sheets = parse_data_entry_sheet(
+        pd.DataFrame([["PROJECT / CLIENT METADATA", "value"], ["project_number", "P-123"], ["client_name", "ACME"]])
+    )
+    assert sheets.project.get("project_number") == "P-123" and sheets.project.get("client_name") == "ACME"
+
+
+def test_row_cap_still_applies_without_a_dimension_tag(tmp_path: Path) -> None:
+    """Write-only workbooks carry no <dimension>; openpyxl then reports
+    max_row=None and the cap used to be skipped."""
+    import openpyxl
+
+    from parsing import WorkbookTooLargeError, check_workbook_row_counts
+
+    book = openpyxl.Workbook(write_only=True)
+    sheet = book.create_sheet("Collars")
+    for _ in range(30):
+        sheet.append(["x"])
+    path = tmp_path / "nodim.xlsx"
+    book.save(path)
+    assert openpyxl.load_workbook(path, read_only=True)["Collars"].max_row is None
+    with pytest.raises(WorkbookTooLargeError):
+        check_workbook_row_counts(path, limit=20)
+    check_workbook_row_counts(path, limit=40)
+
+
+def test_bad_collar_row_does_not_cascade_into_unknown_hole_errors() -> None:
+    collars = [{**_TWO_COLLARS[0], "elevation": "1,110"}, _TWO_COLLARS[1]]
+    lith = _TWO_LITH + [{"hole_id": "BH1", "from_depth": 10, "to_depth": 12, "lithology_code": "Sand"}]
+    result, _ = ingest_workbook(_hostile_workbook(collars, lith, {"Water": [{"hole_id": "BH1", "depth": 2.0}]}))
+    assert len(result.collars) == 1
+    collar_errors = [e for e in result.errors if e.startswith("Collars row 2")]
+    assert len(collar_errors) == 1 and "pydantic.dev" not in collar_errors[0]
+    assert not any("unknown hole_id 'BH1'" in e for e in result.errors)  # the collar error explains them

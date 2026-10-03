@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -24,6 +25,7 @@ def convert_legend(source: Path | None = None, output: Path | None = None) -> Pa
 
 
 def main() -> None:
+    argparse.ArgumentParser(description=__doc__).parse_args()
     path = convert_legend()
     print(f"Wrote {path} ({len(json.loads(path.read_text(encoding='utf-8')))} codes)")
 

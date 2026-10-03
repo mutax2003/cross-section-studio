@@ -16,6 +16,7 @@ from desktop_updater import (
     _acquire_apply_lock,
     _extract_zip_to,
     _normalize_version_text,
+    _ps_quote,
     _release_apply_lock,
     _require_expected_version,
     _sha256_file,
@@ -25,6 +26,7 @@ from desktop_updater import (
     apply_update_from_zip,
     auto_install_allowed,
     download_update_zip,
+    parse_apply_argv,
     schedule_sidecar_apply,
     updates_dir,
 )
@@ -471,8 +473,11 @@ def test_write_apply_script_has_rollback_and_log(
         wait_pid=0,
         relaunch=False,
         expected_version=TEST_VERSION,
+        expected_sha256="A" * 64,
     )
-    body = script.read_text(encoding="utf-8")
+    # PS 5.1 needs the BOM to read UTF-8 paths correctly.
+    assert script.read_bytes().startswith(b"\xef\xbb\xbf")
+    body = script.read_text(encoding="utf-8-sig")
     assert "try {" in body
     assert "catch {" in body
     assert "$backedUp" in body
@@ -493,7 +498,10 @@ def test_write_apply_script_has_rollback_and_log(
     assert "Expand-ZipConfined" in body
     assert "Unsafe zip member path" in body
     assert "expected_version is required" in body
-    assert f'$expectedVersion = "{TEST_VERSION}"' in body
+    assert f"$expectedVersion = '{TEST_VERSION}'" in body
+    assert f"$expectedSha256 = '{'a' * 64}'" in body
+    assert "Get-FileHash" in body
+    assert "SHA-256 mismatch" in body
     assert "VERSION mismatch after extract" in body
     # Segment-level .. rejection must stay in the PS sidecar (parity with Python).
     assert "$part -eq '..'" in body or '$part -eq ".."' in body
@@ -671,7 +679,7 @@ def test_download_update_zip_allows_github_https(
         def read(self, size: int = -1) -> bytes:
             return self._buf.read(size)
 
-        def __enter__(self) -> "_FakeResponse":
+        def __enter__(self) -> _FakeResponse:
             return self
 
         def __exit__(self, *args: object) -> None:
@@ -758,7 +766,7 @@ def test_download_update_zip_allowlist_env_replaces_defaults(
         def read(self, size: int = -1) -> bytes:
             return self._buf.read(size)
 
-        def __enter__(self) -> "_FakeResponse":
+        def __enter__(self) -> _FakeResponse:
             return self
 
         def __exit__(self, *args: object) -> None:
@@ -900,3 +908,145 @@ def test_redirect_handler_rejects_evil_hops(
         joined = urljoin(req.full_url, loc)
         with pytest.raises(ValueError):
             handler.redirect_request(req, _DummyFP(), 302, "Found", {}, joined)
+
+
+def test_ps_quote_is_inert_single_quoted_literal() -> None:
+    assert _ps_quote("C:\\a'b") == "'C:\\a''b'"
+    assert _ps_quote("plain") == "'plain'"
+    # $ and backtick must survive verbatim inside single quotes.
+    assert _ps_quote("$(calc)`x") == "'$(calc)`x'"
+
+
+def test_parse_apply_argv_expected_sha256() -> None:
+    ns = parse_apply_argv(
+        [
+            "--apply-update",
+            "--zip",
+            "z.zip",
+            "--install-dir",
+            "d",
+            "--expected-version",
+            TEST_VERSION,
+            "--expected-sha256",
+            "a" * 64,
+        ]
+    )
+    assert ns is not None
+    assert ns.expected_sha256 == "a" * 64
+    default = parse_apply_argv(
+        ["--apply-update", "--zip", "z.zip", "--install-dir", "d", "--expected-version", TEST_VERSION]
+    )
+    assert default is not None
+    assert default.expected_sha256 is None
+
+
+def test_apply_update_from_zip_verifies_sha_at_apply_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lad"))
+    monkeypatch.setattr("paths.is_frozen", lambda: True)
+    install = tmp_path / "CrossSectionStudio"
+    install.mkdir()
+    (install / "CrossSectionStudio.exe").write_bytes(b"MZ-old")
+    zip_path = tmp_path / "update.zip"
+    _make_zip(zip_path)
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        apply_update_from_zip(
+            zip_path,
+            install,
+            expected_version=TEST_VERSION,
+            wait_pid=0,
+            relaunch=False,
+            expected_sha256="0" * 64,
+        )
+    # Untouched install, and the mismatch is diagnosable from the apply log
+    # (the detached fallback apply has stderr at DEVNULL).
+    assert (install / "CrossSectionStudio.exe").read_bytes() == b"MZ-old"
+    assert "SHA-256 mismatch" in apply_log_path().read_text(encoding="utf-8")
+
+    apply_update_from_zip(
+        zip_path,
+        install,
+        expected_version=TEST_VERSION,
+        wait_pid=0,
+        relaunch=False,
+        expected_sha256=_sha256_file(zip_path).upper(),
+    )
+    assert (install / "CrossSectionStudio.exe").read_bytes() == b"MZ-new"
+
+
+def _cap_result(url_digest: tuple[str, str]) -> UpdateCheckResult:
+    url, digest = url_digest
+    return UpdateCheckResult(
+        current_version="0.1.0",
+        latest_version="0.1.1",
+        update_available=True,
+        download_url=url,
+        sha256=digest,
+        notes=None,
+        manifest_url="https://github.com/org/repo/releases/latest/download/manifest.json",
+    )
+
+
+def test_download_update_zip_rejects_oversized_content_length(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lad"))
+    monkeypatch.setattr("paths.is_frozen", lambda: True)
+    monkeypatch.setattr("desktop_updater.MAX_UPDATE_ZIP_BYTES", 10)
+
+    class _FakeResponse:
+        headers = {"Content-Length": "11"}
+
+        def read(self, size: int = -1) -> bytes:
+            return b""
+
+        def __enter__(self) -> "_FakeResponse":  # noqa: UP037
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "desktop_updater._urlopen_update", lambda *a, **k: _FakeResponse()
+    )
+    result = _cap_result(
+        ("https://objects.githubusercontent.com/x/y.zip", "a" * 64)
+    )
+    with pytest.raises(ValueError, match="too large"):
+        download_update_zip(result, timeout_s=5.0)
+
+
+def test_download_update_zip_caps_stream_without_content_length(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lad"))
+    monkeypatch.setattr("paths.is_frozen", lambda: True)
+    monkeypatch.setattr("desktop_updater.MAX_UPDATE_ZIP_BYTES", 10)
+
+    class _FakeResponse:
+        headers: dict[str, str] = {}
+
+        def __init__(self) -> None:
+            self._served = 0
+
+        def read(self, size: int = -1) -> bytes:
+            self._served += 1
+            return b"x" * 8 if self._served <= 4 else b""
+
+        def __enter__(self) -> "_FakeResponse":  # noqa: UP037
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "desktop_updater._urlopen_update", lambda *a, **k: _FakeResponse()
+    )
+    result = _cap_result(
+        ("https://objects.githubusercontent.com/x/y.zip", "a" * 64)
+    )
+    with pytest.raises(ValueError, match="exceeded"):
+        download_update_zip(result, timeout_s=5.0)
+    assert not list(updates_dir().glob("*.zip"))

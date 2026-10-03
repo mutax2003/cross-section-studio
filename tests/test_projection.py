@@ -142,3 +142,35 @@ def test_project_boreholes_uses_deviation_survey() -> None:
     deviated = project_boreholes([collar], lithologies, transect, deviation_readings=readings)
     assert deviated.iloc[0]["x_profile"] > vertical.iloc[0]["x_profile"]
     assert deviated.iloc[0]["bottom_elevation"] > vertical.iloc[0]["bottom_elevation"]
+
+
+def test_hole_exactly_on_the_offset_threshold_is_kept_on_a_rotated_transect() -> None:
+    """A 37° transect gives an offset of 50.00000000000019 m for a hole that
+    is exactly 50 m away; the threshold compare must tolerate that."""
+    import math
+
+    from projection import select_and_order_holes_near_transect
+
+    angle = math.radians(37.0)
+    direction = (math.cos(angle), math.sin(angle))
+    normal = (-direction[1], direction[0])
+    transect = Transect(points=[(0.0, 0.0), (200.0 * direction[0], 200.0 * direction[1])])
+    collars = [
+        Collar(
+            hole_id="ON-LINE",
+            easting=20.0 * direction[0],
+            northing=20.0 * direction[1],
+            elevation=100.0,
+            total_depth=5.0,
+        ),
+        Collar(
+            hole_id="ON-LIMIT",
+            easting=100.0 * direction[0] + 50.0 * normal[0],
+            northing=100.0 * direction[1] + 50.0 * normal[1],
+            elevation=100.0,
+            total_depth=5.0,
+        ),
+    ]
+    assert select_and_order_holes_near_transect(collars, transect, 50.0) == ("ON-LINE", "ON-LIMIT")
+    # Clearly past the limit is still excluded.
+    assert select_and_order_holes_near_transect(collars, transect, 49.9) == ()

@@ -6,6 +6,12 @@ from dataclasses import dataclass
 
 import streamlit as st
 
+from ai_assistant import (
+    DEFAULT_LLM_PROVIDER,
+    is_free_llm_provider,
+    preferred_llm_provider_from_env,
+    resolve_llm_api_key,
+)
 from app_common import (
     _apply_pending_offset_thresholds,
     _apply_report_suggestion,
@@ -16,25 +22,58 @@ from app_common import (
     _report_context_from_selection,
     llm_disabled_by_deployment,
 )
-from ai_assistant import (
-    DEFAULT_LLM_PROVIDER,
-    is_free_llm_provider,
-    preferred_llm_provider_from_env,
-    resolve_llm_api_key,
-)
+from app_identity import COPYRIGHT_SHORT, CREATED_BY
 from app_upload import (
+    DESTRUCTIVE_PROMPTS,
     apply_pending_project_seed,
-    clear_workbook_session,
-    load_sample_workbook,
     render_input_template_download,
+    request_destructive,
+    run_destructive,
 )
-from constants import USGS_LITHOLOGY_HATCHES, get_lithology_style, save_lithology_style_override
+from constants import (
+    DEFAULT_PROFILE_ELEVATION_M,
+    USGS_LITHOLOGY_HATCHES,
+    clear_lithology_style_override,
+    get_lithology_style,
+    has_lithology_style_override,
+    save_lithology_style_override,
+)
 from export_framing import ExportFramingConfig
 from ingestion import DATA_ENTRY_PROFILE_ID, NATIVE_PROFILE_ID, list_profiles
 from models import ConsultingTitleBlock
 from pipeline import DEFAULT_UNCERTAINTY_SPACING_M
-from ui_output_presets import OUTPUT_PRESET_LABELS, FIGURE_PRESET_IDS, resolve_output_preset
+from ui_output_presets import FIGURE_PRESET_IDS, OUTPUT_PRESET_LABELS, resolve_output_preset
 
+
+def _render_pending_destructive() -> None:
+    action = st.session_state.get("_pending_destructive")
+    if action not in DESTRUCTIVE_PROMPTS:
+        return
+    if st.session_state.get("svg_bytes") is None:
+        # The section the prompt protected is gone (new upload, clear, ...):
+        # a leftover Confirm must never wipe whatever is generated next.
+        st.session_state.pop("_pending_destructive", None)
+        return
+    confirm_label, question = DESTRUCTIVE_PROMPTS[action]
+    st.warning(question + " Download anything you need first.")
+    confirm_col, cancel_col = st.columns(2)
+    with confirm_col:
+        if st.button(confirm_label, key="confirm_destructive", type="primary", width="stretch"):
+            st.session_state.pop("_pending_destructive", None)
+            run_destructive(action)
+    with cancel_col:
+        if st.button("Cancel", key="cancel_destructive", width="stretch"):
+            st.session_state.pop("_pending_destructive", None)
+            st.rerun()
+
+_OUTPUT_STYLE_HELP: dict[str, str] = {
+    "section_sheet": "Strater-style sheet: RL axis, hole headers, side legend. Default for general use.",
+    "consulting_report": "Client figure with footer title block, scale bar and notes; groundwater labels on.",
+    "gwm_fence": "GWM fence: interpolated MASL section with groundwater; locks interpretation, VE and water labels.",
+    "p2_chemistry_sticks": "Borehole-only mbgs columns with chloride labels (P2 client figure).",
+    "chemistry_gw": "Chloride labels and groundwater levels on one section.",
+    "quick_preview": "Fast chart for checking data; not a report figure.",
+}
 
 @dataclass(frozen=True)
 class SidebarState:
@@ -66,7 +105,7 @@ class SidebarState:
     uncertainty_offset_m: float
     selected_profile_key: str
     override_id: str | None
-    default_elevation_m: float
+    default_elevation_m: float | None
     target_crs: str | None
     output_preset: str
     sample_figure_profile: bool
@@ -182,18 +221,23 @@ def render_sidebar() -> SidebarState:
         uploaded_name = st.session_state.get("uploaded_name")
         if uploaded_name or st.session_state.get("file_bytes"):
             st.caption(f"Loaded: {uploaded_name or 'workbook.xlsx'}")
-        action_cols = st.columns(2)
-        with action_cols[0]:
-            if st.button("Clear workbook", key="sidebar_clear_workbook"):
-                clear_workbook_session()
-                st.rerun()
-        with action_cols[1]:
-            if st.button("Try sample project", key="sidebar_try_sample"):
-                try:
-                    load_sample_workbook()
-                    st.rerun()
-                except FileNotFoundError as exc:
-                    st.error(str(exc))
+        # Stacked full-width: two columns in the 300px sidebar truncated both
+        # labels ('Clear wor…'), which is risky for a destructive action.
+        if st.button(
+            "Try sample project",
+            key="sidebar_try_sample",
+            width="stretch",
+            icon=":material/science:",
+        ):
+            request_destructive("sample")
+        if st.button(
+            "Clear workbook",
+            key="sidebar_clear_workbook",
+            width="stretch",
+            icon=":material/delete:",
+        ):
+            request_destructive("clear")
+        _render_pending_destructive()
         uploaded = st.file_uploader(
             "Upload Excel workbook",
             type=["xlsx"],
@@ -206,8 +250,15 @@ def render_sidebar() -> SidebarState:
         if uploaded is not None:
             st.session_state.uploaded_name = uploaded.name
 
+        # Open import settings only when they need attention (failed parse or a
+        # non-native profile); a clean native workbook keeps the sidebar short.
+        detection = st.session_state.get("detection_result")
+        needs_import_attention = bool(st.session_state.get("file_bytes")) and (
+            st.session_state.get("parse_result") is None
+            or (detection is not None and detection.profile_id != NATIVE_PROFILE_ID)
+        )
         selected_profile_key, override_id, default_elevation_m, target_crs = _render_import_settings(
-            expanded=bool(uploaded) or bool(st.session_state.get("file_bytes")),
+            expanded=needs_import_attention,
         )
 
     with st.expander("Section output", expanded=has_parsed):
@@ -216,13 +267,12 @@ def render_sidebar() -> SidebarState:
             options=tuple(OUTPUT_PRESET_LABELS.keys()),
             format_func=lambda key: OUTPUT_PRESET_LABELS[key],
             key="output_preset",
-            help=(
-                "GWM fence: interpolated MASL section with groundwater. "
-                "P2 sticks: borehole-only mbgs columns with chloride labels. "
-                "Chemistry + groundwater: chlorides and water levels together. "
-                "Consulting report: generic title-block layout."
+            help=" ".join(
+                f"{OUTPUT_PRESET_LABELS[key]}: {text}" for key, text in _OUTPUT_STYLE_HELP.items()
             ),
         )
+        # Visible, not hidden behind (?): what this style produces / locks.
+        st.caption(_OUTPUT_STYLE_HELP.get(output_preset, ""))
         preset_config = resolve_output_preset(output_preset)
         render_layout = preset_config.render_layout
         report_preset = preset_config.report_preset
@@ -298,11 +348,25 @@ def render_sidebar() -> SidebarState:
         )
         if lock_interp and preset_config.interpretation_mode is not None:
             interpretation_mode = preset_config.interpretation_mode
+        # Generic consulting sheets always build without pinch-outs (see
+        # app_build.effective_render_options); lock the toggle rather than
+        # show a setting the figure ignores.
+        consulting_locks_pinch_outs = (
+            preset_config.render_layout == "consulting_section" and not sample_figure
+        )
+        if consulting_locks_pinch_outs:
+            st.session_state.allow_pinch_outs = False
         allow_pinch_outs = st.toggle(
             "Show layers that thin out between holes",
             key="allow_pinch_outs",
-            disabled=interpretation_mode == "borehole_only" or sample_figure,
-            help="When off, units logged in only one hole are not inferred across the section (pinch-outs).",
+            disabled=interpretation_mode == "borehole_only"
+            or sample_figure
+            or consulting_locks_pinch_outs,
+            help=(
+                "Consulting report sheets always draw without pinch-outs."
+                if consulting_locks_pinch_outs
+                else "When off, units logged in only one hole are not inferred across the section (pinch-outs)."
+            ),
         )
         show_ground_surface = st.toggle(
             "Show ground surface (collar RL)",
@@ -364,7 +428,7 @@ def render_sidebar() -> SidebarState:
         show_hatches = st.toggle(
             "Hatch patterns",
             key="show_hatches",
-            help="USGS-style hatch patterns on lithology fills. Off = solid BH-log colours.",
+            help="Lithology patterns from the legend template (dots = sandy, lines = silty, + = clay loam, cobbles = gravel). Off = solid colours only, which merges units that share a colour.",
         )
         if "section_title" not in st.session_state:
             st.session_state.section_title = "Borehole Cross-Section"
@@ -408,12 +472,12 @@ def render_sidebar() -> SidebarState:
     uncertainty_offset_m = float(st.session_state.get("uncertainty_offset_m", 50.0))
     selected_profile_key = "auto"
     override_id: str | None = None
-    default_elevation_m = 100.0
+    default_elevation_m: float | None = None
     target_crs: str | None = "EPSG:32611"
     consulting_title_block: ConsultingTitleBlock | None = None
 
     with st.expander("Advanced", expanded=False):
-        column_header_detail = st.selectbox(
+        st.selectbox(
             "Borehole label detail",
             options=["id_only", "id_rl_td"],
             format_func=lambda value: (
@@ -422,20 +486,20 @@ def render_sidebar() -> SidebarState:
             key="column_header_detail",
             help="Section-sheet column headers. Consulting layout always uses hole ID only.",
         )
-        export_font_family = st.selectbox(
+        st.selectbox(
             "Export font",
             options=["Arial", "Calibri", "DejaVu Sans"],
             key="export_font_family",
             help="Prefer Arial so PDF edits match drafting templates.",
         )
-        export_font_size = st.number_input(
+        st.number_input(
             "Export font size",
             min_value=6.0,
             max_value=14.0,
             step=0.5,
             key="export_font_size",
         )
-        parameter_marker_size = st.number_input(
+        st.number_input(
             "Chemistry marker size",
             min_value=4.0,
             max_value=64.0,
@@ -443,22 +507,22 @@ def render_sidebar() -> SidebarState:
             key="parameter_marker_size",
             help="Matplotlib scatter size for chemistry sample dots.",
         )
-        show_scale_bar = st.toggle(
+        st.toggle(
             "Show scale bar",
             key="show_scale_bar",
             help="In-plot scale (section sheet) or subtitle scale band (consulting).",
         )
-        show_ve_annotation = st.toggle(
+        st.toggle(
             "Show V.E. annotation",
             key="show_ve_annotation",
             help="In-plot V.E. text on section sheet; also keeps consulting subtitle VE with scale.",
         )
-        show_parameter_legend_text = st.toggle(
+        st.toggle(
             "Show Parameters text block",
             key="show_parameter_legend_text",
             help="Bottom-left 'Parameters: Chloride…' overlay on section sheet.",
         )
-        connect_chemistry_values = st.toggle(
+        st.toggle(
             "Connect chemistry values",
             key="connect_chemistry_values",
             help="Draw dashed lines between chemistry samples on adjacent holes.",
@@ -480,7 +544,7 @@ def render_sidebar() -> SidebarState:
             disabled=is_consulting_layout,
             help="Consulting layout places the legend in the footer title block.",
         )
-        legend_two_columns = st.toggle(
+        st.toggle(
             "Two-column lithology legend",
             key="legend_two_columns",
             value=True,
@@ -523,6 +587,8 @@ def render_sidebar() -> SidebarState:
 
     with st.expander("Export framing & deliverables", expanded=False):
         export_framing = _render_export_framing_panel()
+
+    st.caption(f"{CREATED_BY} · {COPYRIGHT_SHORT}")
 
     return SidebarState(
         uploaded=uploaded,
@@ -593,14 +659,28 @@ def _render_fill_style_editor() -> None:
     style_hatch = st.selectbox(
         "Hatch pattern",
         options=style_hatch_options,
+        format_func=lambda hatch: hatch or "none (plain)",
         index=style_hatch_options.index(current_style.hatch)
         if current_style.hatch in style_hatch_options
         else 0,
         key="style_editor_hatch",
     )
-    if st.button("Save fill style", key="save_fill_style"):
-        save_lithology_style_override(style_code, style_color, style_hatch)
-        st.success(f"Saved style for {style_code}. Use Generate Cross-Section to preview.")
+    save_col, reset_col = st.columns(2)
+    with save_col:
+        if st.button("Save fill style", key="save_fill_style", width="stretch"):
+            save_lithology_style_override(style_code, style_color, style_hatch)
+            st.success(f"Saved style for {style_code}. Use Generate Cross-Section to preview.")
+    with reset_col:
+        if st.button(
+            "Reset to scheme",
+            key="reset_fill_style",
+            width="stretch",
+            disabled=not has_lithology_style_override(style_code),
+            help="Remove the saved override so this code uses the agreed colour and hatch.",
+        ):
+            clear_lithology_style_override(style_code)
+            st.success(f"{style_code} uses the agreed scheme again.")
+            st.rerun()
 
 
 def _seed_free_llm_defaults() -> None:
@@ -714,9 +794,14 @@ def _render_import_settings(*, expanded: bool = False) -> tuple[str, str | None,
         default_elevation_m = st.number_input(
             "Default collar elevation (m)",
             min_value=0.0,
-            value=100.0,
+            value=None,
             step=1.0,
-            help="Used for field exports without RL/elevation column",
+            placeholder=f"Blank = placeholder ({DEFAULT_PROFILE_ELEVATION_M:.0f} m, flagged)",
+            help=(
+                "For field exports without an RL/elevation column. Leave blank to use the "
+                "profile placeholder (flagged as unsurveyed); enter the surveyed site "
+                "elevation for absolute (MASL) sections."
+            ),
         )
         target_crs = st.text_input(
             "Target CRS (EPSG)",
@@ -738,7 +823,10 @@ def _render_import_settings(*, expanded: bool = False) -> tuple[str, str | None,
 def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
     st.markdown("**Report sheet (consulting)**")
     # Init keyed widgets only when absent so Project metadata seeding is not overwritten.
-    if "consulting_section_label" not in st.session_state:
+    if (
+        st.session_state.pop("_reset_consulting_section_label", False)
+        or "consulting_section_label" not in st.session_state
+    ):
         st.session_state.consulting_section_label = section_title or "Borehole Cross-Section"
     if "consulting_map_scale" not in st.session_state:
         st.session_state.consulting_map_scale = "1:1000"

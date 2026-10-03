@@ -8,7 +8,7 @@ import time
 import streamlit as st
 
 from app_state import clear_ai_session_state, clear_section_output_state
-from app_upload import load_sample_workbook
+from app_upload import request_destructive
 from paths import cross_section_input_template, help_topic_path
 from ui_output_presets import resolve_output_preset
 
@@ -174,102 +174,99 @@ def _menu_item(label: str, *, key: str, shortcut: str | None = None) -> bool:
 
 def render_menubar() -> None:
     """Render File / Edit / View / Help popovers and process menu intents."""
-    st.markdown(
-        '<div class="app-menubar" aria-label="Application menu">',
-        unsafe_allow_html=True,
-    )
-    c_file, c_edit, c_view, c_help, c_hint = st.columns([1, 1, 1, 1, 4])
+    # Keyed container: a raw <div> via st.markdown is auto-closed and wraps
+    # nothing, so the .app-menubar chrome never applied to the menus.
+    menubar = st.container(key="app_menubar")
+    with menubar:
+        c_file, c_edit, c_view, c_help, c_hint = st.columns([1, 1, 1, 1, 4])
 
-    with c_file:
-        with st.popover("File", use_container_width=True):
-            st.caption(
-                "Enter data in Excel (Help → Workbook & data entry), then "
-                "**Upload Excel workbook** in the sidebar. Load sample skips prep."
-            )
-            if _menu_item("Load sample project", key="menu_file_sample", shortcut="Ctrl+Shift+O"):
-                try:
-                    load_sample_workbook()
+        with c_file:
+            with st.popover("File", use_container_width=True):
+                st.caption(
+                    "Enter data in Excel (Help → Workbook & data entry), then "
+                    "**Upload Excel workbook** in the sidebar. Load sample skips prep."
+                )
+                if _menu_item("Load sample project", key="menu_file_sample", shortcut="Ctrl+Shift+O"):
+                    # Asks in the sidebar first when it would discard a section.
+                    request_destructive("sample")
                     st.rerun()
-                except FileNotFoundError as exc:
-                    st.error(str(exc))
-            template_path = cross_section_input_template()
-            if template_path.is_file():
-                st.download_button(
-                    "Download template",
-                    data=template_path.read_bytes(),
-                    file_name=template_path.name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="menu_file_download_template",
-                    width="stretch",
-                )
-            if _menu_item("Clear section output", key="menu_file_clear", shortcut="Ctrl+Shift+C"):
-                clear_section_output_state()
-                st.success("Cleared generated SVG/PNG/PDF.")
-                st.rerun()
-            if _menu_item("Generate cross-section", key="menu_file_generate", shortcut="Ctrl+G"):
-                st.session_state["_regenerate_requested"] = True
-                st.rerun()
-            st.caption("Geology is not edited in-app — use the Excel template, then the sidebar uploader.")
+                template_path = cross_section_input_template()
+                if template_path.is_file():
+                    st.download_button(
+                        "Download template",
+                        data=template_path.read_bytes(),
+                        file_name=template_path.name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="menu_file_download_template",
+                        width="stretch",
+                    )
+                if _menu_item("Clear section output", key="menu_file_clear", shortcut="Ctrl+Shift+C"):
+                    clear_section_output_state()
+                    st.success("Cleared generated SVG/PNG/PDF.")
+                    st.rerun()
+                if _menu_item("Generate cross-section", key="menu_file_generate", shortcut="Ctrl+G"):
+                    st.session_state["_regenerate_requested"] = True
+                    st.rerun()
+                st.caption("Geology is not edited in-app — use the Excel template, then the sidebar uploader.")
 
-    with c_edit:
-        with st.popover("Edit", use_container_width=True):
-            st.caption("Session assist state")
-            if _menu_item("Clear AI suggestions", key="menu_edit_clear_ai"):
-                clear_ai_session_state()
-                st.success("Cleared AI narratives and suggestions.")
-                st.rerun()
-            st.caption("Transect, style, and title fields stay in the sidebar.")
+        with c_edit:
+            with st.popover("Edit", use_container_width=True):
+                st.caption("Session assist state")
+                if _menu_item("Clear AI suggestions", key="menu_edit_clear_ai"):
+                    clear_ai_session_state()
+                    st.success("Cleared AI narratives and suggestions.")
+                    st.rerun()
+                st.caption("Transect, style, and title fields stay in the sidebar.")
 
-    with c_view:
-        with st.popover("View", use_container_width=True):
-            st.caption("Display toggles")
-            if _menu_item("Toggle hatch patterns", key="menu_view_hatches", shortcut="Ctrl+H"):
-                st.session_state["show_hatches"] = not bool(
-                    st.session_state.get("show_hatches", False)
-                )
-                st.rerun()
-            if _menu_item("Toggle legend on chart", key="menu_view_legend"):
-                if _is_consulting_layout():
-                    st.info("Consulting layout owns the footer legend — switch output style to toggle.")
-                else:
-                    st.session_state["show_legend"] = not bool(
-                        st.session_state.get("show_legend", True)
+        with c_view:
+            with st.popover("View", use_container_width=True):
+                st.caption("Display toggles")
+                if _menu_item("Toggle hatch patterns", key="menu_view_hatches", shortcut="Ctrl+H"):
+                    st.session_state["show_hatches"] = not bool(
+                        st.session_state.get("show_hatches", False)
                     )
                     st.rerun()
-            if _menu_item("Toggle ground surface", key="menu_view_ground"):
-                st.session_state["show_ground_surface"] = not bool(
-                    st.session_state.get("show_ground_surface", True)
-                )
-                st.rerun()
+                if _menu_item("Toggle legend on chart", key="menu_view_legend"):
+                    if _is_consulting_layout():
+                        st.info("Consulting layout owns the footer legend — switch output style to toggle.")
+                    else:
+                        st.session_state["show_legend"] = not bool(
+                            st.session_state.get("show_legend", True)
+                        )
+                        st.rerun()
+                if _menu_item("Toggle ground surface", key="menu_view_ground"):
+                    st.session_state["show_ground_surface"] = not bool(
+                        st.session_state.get("show_ground_surface", True)
+                    )
+                    st.rerun()
 
-    with c_help:
-        with st.popover("Help", use_container_width=True):
-            if _menu_item("Getting started", key="menu_help_start", shortcut="Ctrl+Shift+/"):
-                _set_help_topic("getting-started")
-                st.rerun()
-            if _menu_item("Generate & exports", key="menu_help_exports"):
-                _set_help_topic("generate-exports")
-                st.rerun()
-            if _menu_item("Consulting UX (gINT/Strater)", key="menu_help_consulting_ux"):
-                _set_help_topic("consulting-ux")
-                st.rerun()
-            if _menu_item("Keyboard shortcuts", key="menu_help_keys", shortcut="Ctrl+/"):
-                _set_help_topic("keyboard-shortcuts")
-                st.rerun()
-            if _menu_item("Workbook & data entry", key="menu_help_workbook"):
-                _set_help_topic("workbook-quick")
-                st.rerun()
-            if _menu_item("About", key="menu_help_about"):
-                _set_help_topic("about")
-                st.rerun()
-            if _menu_item("Check for updates", key="menu_help_updates"):
-                st.session_state["_menu_check_updates"] = True
-                st.rerun()
+        with c_help:
+            with st.popover("Help", use_container_width=True):
+                if _menu_item("Getting started", key="menu_help_start", shortcut="Ctrl+Shift+/"):
+                    _set_help_topic("getting-started")
+                    st.rerun()
+                if _menu_item("Generate & exports", key="menu_help_exports"):
+                    _set_help_topic("generate-exports")
+                    st.rerun()
+                if _menu_item("Consulting UX (gINT/Strater)", key="menu_help_consulting_ux"):
+                    _set_help_topic("consulting-ux")
+                    st.rerun()
+                if _menu_item("Keyboard shortcuts", key="menu_help_keys", shortcut="Ctrl+/"):
+                    _set_help_topic("keyboard-shortcuts")
+                    st.rerun()
+                if _menu_item("Workbook & data entry", key="menu_help_workbook"):
+                    _set_help_topic("workbook-quick")
+                    st.rerun()
+                if _menu_item("About", key="menu_help_about"):
+                    _set_help_topic("about")
+                    st.rerun()
+                if _menu_item("Check for updates", key="menu_help_updates"):
+                    st.session_state["_menu_check_updates"] = True
+                    st.rerun()
 
-    with c_hint:
-        st.caption("Menus · F1 or Ctrl+/ for shortcuts")
+        with c_hint:
+            st.caption("Menus · F1 or Ctrl+/ for shortcuts")
 
-    st.markdown("</div>", unsafe_allow_html=True)
 
     # One-shot topic so native dialog dismiss does not reopen forever.
     topic = st.session_state.pop(MENU_HELP_TOPIC_KEY, None)
@@ -298,46 +295,53 @@ def render_menubar() -> None:
                     st.info("You are on the latest published version.")
 
     _render_accelerator_buttons()
-    # Parent-document listener persists across Streamlit reruns; avoid remounting the iframe.
-    if not st.session_state.get("_shortcut_bridge_mounted"):
+    # Mount on EVERY run: an element not rendered in a run is removed by
+    # Streamlit, and a detached iframe's listener can no longer reach the page
+    # (shortcuts used to die after the first rerun). Same srcdoc each run, so
+    # React keeps the node; the JS swaps in a fresh listener when it remounts.
+    with st.container(key="shortcut_bridge"):
         _inject_shortcut_bridge()
-        st.session_state["_shortcut_bridge_mounted"] = True
 
 
 def _render_accelerator_buttons() -> None:
-    """Hidden buttons targeted by the keyboard bridge (must stay in the DOM)."""
-    st.markdown('<div class="app-menu-accels" aria-hidden="true">', unsafe_allow_html=True)
-    b1, b2, b3, b4, b5, b6 = st.columns(6)
-    with b1:
-        if st.button(ACCEL_SAMPLE, key="menu_accel_sample"):
-            try:
-                load_sample_workbook()
-            except FileNotFoundError as exc:
-                st.session_state["_menu_accel_error"] = str(exc)
-            st.rerun()
-    with b2:
-        if st.button(ACCEL_GENERATE, key="menu_accel_generate"):
-            st.session_state["_regenerate_requested"] = True
-            st.rerun()
-    with b3:
-        if st.button(ACCEL_CLEAR, key="menu_accel_clear"):
-            clear_section_output_state()
-            st.rerun()
-    with b4:
-        if st.button(ACCEL_HATCHES, key="menu_accel_hatches"):
-            st.session_state["show_hatches"] = not bool(
-                st.session_state.get("show_hatches", False)
-            )
-            st.rerun()
-    with b5:
-        if st.button(ACCEL_HELP_KEYS, key="menu_accel_help_keys"):
-            _set_help_topic("keyboard-shortcuts")
-            st.rerun()
-    with b6:
-        if st.button(ACCEL_HELP_START, key="menu_accel_help_start"):
-            _set_help_topic("getting-started")
-            st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+    """Hidden buttons targeted by the keyboard bridge (must stay in the DOM).
+
+    A keyed container gets a stable ``st-key-menu_accels`` class that the CSS
+    visually hides (clip, not ``display:none``, so the bridge's text lookup
+    and ``click()`` keep working). A raw ``<div>`` via ``st.markdown`` cannot
+    wrap later elements — Streamlit auto-closes it immediately.
+    """
+    with st.container(key="menu_accels"):
+        b1, b2, b3, b4, b5, b6 = st.columns(6)
+        with b1:
+            if st.button(ACCEL_SAMPLE, key="menu_accel_sample"):
+                try:
+                    request_destructive("sample")
+                except FileNotFoundError as exc:
+                    st.session_state["_menu_accel_error"] = str(exc)
+                st.rerun()
+        with b2:
+            if st.button(ACCEL_GENERATE, key="menu_accel_generate"):
+                st.session_state["_regenerate_requested"] = True
+                st.rerun()
+        with b3:
+            if st.button(ACCEL_CLEAR, key="menu_accel_clear"):
+                clear_section_output_state()
+                st.rerun()
+        with b4:
+            if st.button(ACCEL_HATCHES, key="menu_accel_hatches"):
+                st.session_state["show_hatches"] = not bool(
+                    st.session_state.get("show_hatches", False)
+                )
+                st.rerun()
+        with b5:
+            if st.button(ACCEL_HELP_KEYS, key="menu_accel_help_keys"):
+                _set_help_topic("keyboard-shortcuts")
+                st.rerun()
+        with b6:
+            if st.button(ACCEL_HELP_START, key="menu_accel_help_start"):
+                _set_help_topic("getting-started")
+                st.rerun()
     err = st.session_state.pop("_menu_accel_error", None)
     if err:
         st.error(err)
@@ -378,7 +382,7 @@ def _inject_shortcut_bridge() -> None:
     return false;
   }}
   function clickLabel(label) {{
-    const root = window.parent.document;
+    const root = doc;
     const buttons = root.querySelectorAll('button');
     for (const btn of buttons) {{
       const text = (btn.innerText || btn.textContent || '').trim();
@@ -416,20 +420,12 @@ def _inject_shortcut_bridge() -> None:
     clickLabel(LABELS[action]);
   }}
   const doc = window.parent.document;
-  function disarmAccelButtons() {{
-    const buttons = doc.querySelectorAll('button');
-    for (const btn of buttons) {{
-      const text = (btn.innerText || btn.textContent || '').trim();
-      if (text.indexOf('☰accel·') === 0) {{
-        btn.tabIndex = -1;
-        btn.setAttribute('aria-hidden', 'true');
-      }}
-    }}
+  // Replace any listener left by a previous (possibly detached) bridge.
+  if (doc._cssMenuAccelHandler) {{
+    doc.removeEventListener('keydown', doc._cssMenuAccelHandler, true);
   }}
-  disarmAccelButtons();
-  if (doc._cssMenuAccelBound) return;
+  doc._cssMenuAccelHandler = onKey;
   doc.addEventListener('keydown', onKey, true);
-  doc._cssMenuAccelBound = true;
 }})();
 </script>
 """,

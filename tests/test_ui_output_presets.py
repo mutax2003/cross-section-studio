@@ -111,3 +111,22 @@ def test_normalize_figure_preset_aliases() -> None:
     assert normalize_figure_preset("advantage_p2") == "p2_chemistry_sticks"
     assert normalize_figure_preset("section_style") is None
     assert normalize_figure_preset("") is None
+
+
+def test_consulting_report_seeds_the_pinch_out_choice_the_build_uses() -> None:
+    """The preset seeded the toggle on while the build forced pinch-outs off,
+    so Consulting report and GWM fence rendered identically under an
+    "on" toggle."""
+    preset = resolve_output_preset("consulting_report")
+    effective = effective_render_options(
+        report_preset=False,
+        render_layout=preset.render_layout,
+        show_ground_surface=True,
+        track_width_m=3.0,
+        show_legend=False,
+        interpolate_water_table=preset.interpolate_water_table,
+        allow_pinch_outs=preset.allow_pinch_outs,
+        consulting_title_block=None,
+        sample_figure_profile=preset.sample_figure_profile,
+    )
+    assert preset.allow_pinch_outs is effective.allow_pinch_outs is False

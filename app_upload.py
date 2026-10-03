@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import zipfile
 from io import BytesIO
 
 import streamlit as st
@@ -38,8 +39,19 @@ class _BytesUpload:
         return self._data
 
 
+def _forget_previous_transect() -> None:
+    """A new workbook must not inherit the last one's hole order or sheet label."""
+    st.session_state.pop("hole_sequence_multiselect", None)
+    st.session_state.pop("workbook_section_choice", None)
+    st.session_state.pop("_workbook_section_applied", None)
+    st.session_state["_reset_consulting_section_label"] = True
+    # Project-seeded title block fields belong to the workbook being dropped.
+    st.session_state["_reset_project_seed"] = True
+
+
 def clear_workbook_session() -> None:
     """Clear parse/session workbook state and any leftover section SVG/PNG/PDF."""
+    _forget_previous_transect()
     for key in SESSION_PARSE_KEYS:
         if key in DEFAULT_SESSION:
             st.session_state[key] = DEFAULT_SESSION[key]
@@ -97,6 +109,44 @@ def render_input_template_download(*, key: str, help: str | None = None) -> None
     )
 
 
+def _friendly_workbook_error(exc: Exception) -> str:
+    """Plain-language upload/parse failure with a next step (raw text goes in a details expander)."""
+    text = str(exc)
+    lowered = text.lower()
+    if isinstance(exc, zipfile.BadZipFile) or "format cannot be determined" in lowered or "not a zip file" in lowered:
+        return (
+            "This file isn't a readable Excel workbook (.xlsx). It may be a renamed CSV or .xls "
+            "file, or damaged. Open it in Excel, choose **Save As → Excel Workbook (.xlsx)**, "
+            "then upload it again."
+        )
+    if "Could not detect a supported workbook format" in text:
+        found = text.split("Sheets found:", 1)[-1].strip() if "Sheets found:" in text else ""
+        sheets = f" (sheets in this file: {found})" if found else ""
+        return (
+            f"No **Collars** sheet was found{sheets}. Add a Collars sheet with hole_id, easting, "
+            "northing, elevation and total_depth, or start from **Download template**. "
+            "See Help → Workbook quick reference."
+        )
+    if "Missing required sheet" in text:
+        return f"{text}. Add the missing sheet(s), or start from **Download template**."
+    if "rows (limit" in text:
+        return f"The workbook is too large to read: {text}"
+    if "xlrd" in lowered or "ole2" in lowered or "encrypted" in lowered:
+        return (
+            "This looks like an old .xls or a password-protected workbook. Open it in Excel, "
+            "remove the password if any, and **Save As → Excel Workbook (.xlsx)**."
+        )
+    if "io.excel." in lowered:
+        return (
+            "This file isn't an Excel workbook (it may be a ZIP or another format renamed to "
+            ".xlsx). Save it from Excel as an .xlsx workbook and upload again."
+        )
+    return (
+        "The workbook couldn't be read. Check that Collars and Lithology use the template "
+        "headers, then upload it again."
+    )
+
+
 def render_workbook_recovery(*, key_prefix: str = "recovery") -> None:
     """Clear / retry controls when workbook bytes exist but parse_result is missing."""
     cols = st.columns([1, 3])
@@ -106,8 +156,8 @@ def render_workbook_recovery(*, key_prefix: str = "recovery") -> None:
             st.rerun()
     with cols[1]:
         st.caption(
-            "Parse failed or did not complete — leftover section output was cleared. "
-            "Clear the workbook, fix the file, or try the sample project again."
+            "The workbook couldn't be loaded. Fix the file in Excel and upload it again, "
+            "clear it, or try the sample project."
         )
 
 
@@ -126,9 +176,17 @@ def load_sample_workbook() -> None:
             "Run: python scripts/generate_sample_data.py"
         )
     data = sample_path.read_bytes()
+    # The demo must never open on a blocked Generate: the sample has pinch-out
+    # overlaps, which the consulting preset blocks by default.
+    queue_session_values(fail_on_overlaps_checkbox=False)
     st.session_state.file_bytes = data
     st.session_state.uploaded_name = sample_path.name
     st.session_state.file_hash = hashlib.sha256(data).hexdigest()[:24]
+    st.session_state.batch_transect_specs = ""
+    st.session_state._batch_specs_seeded_from_sections = False
+    st.session_state.pop("workbook_section_choice", None)
+    st.session_state.pop("_workbook_section_applied", None)
+    _forget_previous_transect()
     st.session_state.parse_result = None
     st.session_state.parse_signature = None
     st.session_state.detection_result = None
@@ -139,6 +197,36 @@ def load_sample_workbook() -> None:
     st.session_state["workbook_uploader_key"] = (
         st.session_state.get("workbook_uploader_key", 0) + 1
     )
+
+
+
+DESTRUCTIVE_PROMPTS = {
+    "clear": ("Clear workbook", "Clear the workbook and discard the generated section?"),
+    "sample": ("Load sample", "Load the sample project and discard the generated section?"),
+}
+
+
+def run_destructive(action: str) -> None:
+    if action == "clear":
+        clear_workbook_session()
+        st.rerun()
+    try:
+        load_sample_workbook()
+        st.rerun()
+    except FileNotFoundError as exc:
+        st.error(str(exc))
+
+
+def request_destructive(action: str) -> None:
+    """Act immediately unless it would discard a generated section; then confirm.
+
+    Shared by the sidebar, File menu and Ctrl+Shift+O so no entry point can
+    discard a section silently; the sidebar renders the pending prompt.
+    """
+    if st.session_state.get("svg_bytes") is None:
+        run_destructive(action)
+        return
+    st.session_state["_pending_destructive"] = action
 
 
 def render_welcome_card() -> None:
@@ -234,8 +322,46 @@ def _seed_consulting_fields_from_project_metadata(project: dict[str, str]) -> No
         st.session_state[_PENDING_PROJECT_SEED_KEY] = pending
 
 
+# Widget keys the Project tab (or the Section picker) seeds; cleared together
+# when the workbook goes away so nothing leaks onto the next one.
+PROJECT_SEEDED_KEYS: tuple[str, ...] = (
+    "consulting_prepared_for",
+    "consulting_prepared_by",
+    "consulting_project_number",
+    "consulting_section_label",
+    "consulting_date",
+    "consulting_drawn_by",
+    "consulting_source",
+    "consulting_map_scale",
+    "consulting_notes",
+    "consulting_start_label",
+    "consulting_start_primary",
+    "consulting_start_secondary",
+    "consulting_end_label",
+    "consulting_end_primary",
+    "consulting_end_secondary",
+    "section_title",
+)
+
+
+def queue_session_values(**values: object) -> None:
+    """Set widget-backed session values on the NEXT run, before widgets exist.
+
+    Writing a widget key after its widget was drawn raises; the sidebar
+    applies this queue first thing each run.
+    """
+    pending = st.session_state.get(_PENDING_PROJECT_SEED_KEY)
+    if not isinstance(pending, dict):
+        pending = {}
+    pending.update(values)
+    st.session_state[_PENDING_PROJECT_SEED_KEY] = pending
+
+
 def apply_pending_project_seed() -> None:
     """Apply queued Project metadata before sidebar widgets are created."""
+    if st.session_state.pop("_reset_project_seed", False):
+        for key in PROJECT_SEEDED_KEYS:
+            st.session_state.pop(key, None)
     pending = st.session_state.pop(_PENDING_PROJECT_SEED_KEY, None)
     if not isinstance(pending, dict):
         return
@@ -256,7 +382,7 @@ def handle_workbook_upload(
     *,
     selected_profile_key: str,
     override_id: str | None,
-    default_elevation_m: float,
+    default_elevation_m: float | None,
     target_crs: str | None,
 ) -> ParseResult | None:
     """Detect format, parse workbook when needed, return current parse result."""
@@ -265,6 +391,11 @@ def handle_workbook_upload(
     if bytes_changed:
         st.session_state.file_bytes = file_bytes
         st.session_state.file_hash = hashlib.sha256(file_bytes).hexdigest()[:24]
+        st.session_state.batch_transect_specs = ""
+        st.session_state._batch_specs_seeded_from_sections = False
+        st.session_state.pop("workbook_section_choice", None)
+        st.session_state.pop("_workbook_section_applied", None)
+        _forget_previous_transect()
         st.session_state.parse_result = None
         st.session_state.quality_report = None
         st.session_state.transect_candidates = None
@@ -293,16 +424,18 @@ def handle_workbook_upload(
         except Exception as exc:
             st.session_state.detection_result = None
             clear_section_output_state()
-            st.session_state.upload_banner_error = f"Failed to inspect workbook: {exc}"
+            st.session_state.upload_banner_error = _friendly_workbook_error(exc)
+            st.session_state.upload_banner_error_detail = str(exc)
             st.session_state.pop("upload_banner_success", None)
             st.session_state.pop("upload_banner_caption", None)
 
     detection = st.session_state.detection_result
     if detection is not None:
-        st.caption(
-            f"Detected format: **{detection.label}** "
-            f"({detection.confidence:.0%} confidence)"
-        )
+        if st.session_state.get("svg_bytes") is None:
+            st.caption(
+                f"Detected format: **{detection.label}** "
+                f"({detection.confidence:.0%} confidence)"
+            )
         if detection.profile_id != NATIVE_PROFILE_ID:
             st.info(
                 "Field Data sheet (if present) is not used for stratigraphy. "
@@ -366,11 +499,26 @@ def handle_workbook_upload(
                 info_parts.append(
                     "Seeded consulting report fields from Project metadata."
                 )
+                from workbook_template import _sample_project
+
+                sample = _sample_project()
+                stale = [
+                    key
+                    for key in ("client_name", "project_number", "report_date", "section_title")
+                    if str(project_metadata.get(key, "")).strip() == sample.get(key, "")
+                ]
+                if stale:
+                    st.session_state.upload_banner_caution = (
+                        "The Project tab still holds the template's sample values for "
+                        f"{', '.join(stale)} (e.g. {sample['client_name']}); they will print on "
+                        "the title block — update them before issuing figures."
+                    )
             st.session_state.upload_banner_success = (
                 f"Loaded **{len(hole_ids)}** boreholes and "
                 f"**{len(parse_result.lithologies)}** lithology intervals."
             )
             st.session_state.upload_banner_info = " ".join(info_parts) if info_parts else None
+            st.session_state.upload_banner_skipped = list(parse_result.errors) or None
             st.session_state.upload_banner_caption = (
                 f"Suggested transect offset threshold: **{st.session_state.suggested_offset_m:.0f} m** "
                 "(applied to sidebar warnings)."
@@ -390,18 +538,35 @@ def handle_workbook_upload(
             st.session_state.quality_report = None
             st.session_state.parse_signature = None
             clear_section_output_state()
-            st.session_state.upload_banner_error = f"Failed to parse workbook: {exc}"
+            st.session_state.upload_banner_error = _friendly_workbook_error(exc)
+            st.session_state.upload_banner_error_detail = str(exc)
             st.session_state.pop("upload_banner_success", None)
             st.session_state.pop("upload_banner_info", None)
             st.session_state.pop("upload_banner_caption", None)
-            return None
+            # Fall through: the banner block below is what shows the error.
 
     error_banner = st.session_state.pop("upload_banner_error", None)
     if error_banner:
         st.error(error_banner)
+        detail = st.session_state.pop("upload_banner_error_detail", None)
+        if detail:
+            with st.expander("Technical details"):
+                st.code(detail, language=None)
     success_banner = st.session_state.pop("upload_banner_success", None)
     if success_banner:
         st.success(success_banner)
+    skipped = st.session_state.pop("upload_banner_skipped", None)
+    if skipped:
+        st.warning(
+            f"**{len(skipped)} row(s) were not imported**, so the section won't include them. "
+            "Fix these rows in Excel and upload again (for example, add the hole to Collars "
+            "or correct the hole_id spelling)."
+        )
+        with st.expander(f"Show skipped rows ({len(skipped)})"):
+            st.markdown("\n".join(f"- {message}" for message in skipped[:50]))
+    caution = st.session_state.pop("upload_banner_caution", None)
+    if caution:
+        st.warning(caution)
     info_banner = st.session_state.pop("upload_banner_info", None)
     if info_banner:
         st.info(info_banner)

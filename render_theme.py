@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from models import LABEL_COLOR_NAMES
+
 SURFACE_COLOR = "#2F5D3A"
 SKY_FILL_COLOR = "#E8F4FC"
 STICK_COLOR = "#1F2937"
@@ -30,15 +32,58 @@ PARAMETER_READING_COLOR = "#EA580C"
 PARAMETER_TEXT_COLOR = "#DC2626"
 CHEMISTRY_LABEL_BLACK = "#111827"
 CHEMISTRY_LABEL_GREEN = "#059669"
-CHEMISTRY_LABEL_YELLOW = "#CA8A04"
 CHEMISTRY_LABEL_RED = "#DC2626"
+CHEMISTRY_LABEL_ORANGE = "#EA580C"
+# Fixed label colours a logger can pick in the workbook (meeting 1 Oct 2026):
+# one hex per name, no shades; blue is reserved for groundwater elevations.
+CHEMISTRY_FIXED_COLORS: dict[str, str] = {
+    "green": CHEMISTRY_LABEL_GREEN,
+    "red": CHEMISTRY_LABEL_RED,
+    "black": CHEMISTRY_LABEL_BLACK,
+    "orange": CHEMISTRY_LABEL_ORANGE,
+}
+CHEMISTRY_LABEL_COLOR_NAMES: tuple[str, ...] = LABEL_COLOR_NAMES
+assert tuple(CHEMISTRY_FIXED_COLORS) == LABEL_COLOR_NAMES
+# Series (marker/stick) colours per parameter. No blue: that is groundwater.
 PARAMETER_PALETTE: tuple[str, ...] = (
     "#EA580C",
     "#7C3AED",
     "#059669",
     "#DC2626",
-    "#2563EB",
+    "#B45309",
 )
+
+
+def parameter_series_colors(parameters) -> dict[str, str]:
+    """Colour per parameter for one section: the stable hashed slot when free,
+    else the next unused palette entry, so two parameters on a sheet never
+    share a colour while a parameter keeps its colour wherever possible."""
+    assigned: dict[str, str] = {}
+    used: set[str] = set()
+    for name in sorted(parameters, key=lambda p: p.strip().casefold()):
+        preferred = parameter_series_color(name)
+        colour = preferred
+        if colour in used:
+            start = PARAMETER_PALETTE.index(preferred)
+            for step in range(1, len(PARAMETER_PALETTE)):
+                candidate = PARAMETER_PALETTE[(start + step) % len(PARAMETER_PALETTE)]
+                if candidate not in used:
+                    colour = candidate
+                    break
+        assigned[name] = colour
+        used.add(colour)
+    return assigned
+
+
+def parameter_series_color(parameter: str) -> str:
+    """Stable colour for a parameter name, the same on every section.
+
+    Colours used to follow the order parameters appeared on a section, so
+    chloride could change colour between cross-sections of one project.
+    """
+    key = parameter.strip().casefold()
+    digest = sum((index + 1) * ord(char) for index, char in enumerate(key))
+    return PARAMETER_PALETTE[digest % len(PARAMETER_PALETTE)]
 CONSULTING_SURFACE_COLOR = "#8B6914"
 CONSULTING_NM_COLOR = "#64748B"
 DEFAULT_CONSULTING_NOTES: tuple[str, ...] = (
@@ -60,6 +105,9 @@ CONSULTING_GW_BLUE_SHADES: tuple[str, ...] = (
     "#0055CC",  # mid
     "#003399",  # deep
 )
+
+# Consecutive series alternate light/deep so neighbours are easy to tell apart.
+_GW_CONTRAST_ORDER: tuple[int, ...] = (0, 3, 1, 2)
 
 CONSULTING_GW_SERIES_STYLES: dict[str, tuple[str, str, str]] = {
     "2024-05": (CONSULTING_GW_BLUE_SHADES[0], "v", "May 2024"),
@@ -84,7 +132,9 @@ def consulting_gw_series_style(
         color, marker, label = CONSULTING_GW_SERIES_STYLES[series_id]
         return color, marker, level_label or label
     if series_index is not None:
-        shade = CONSULTING_GW_BLUE_SHADES[int(series_index) % len(CONSULTING_GW_BLUE_SHADES)]
+        shade = CONSULTING_GW_BLUE_SHADES[
+            _GW_CONTRAST_ORDER[int(series_index) % len(_GW_CONTRAST_ORDER)]
+        ]
         return shade, "v", level_label or series_id
     return CONSULTING_WATER_COLOR, "v", level_label or series_id
 
@@ -102,7 +152,8 @@ def chemistry_label_color(
     if value <= green_max:
         return CHEMISTRY_LABEL_GREEN
     if value <= yellow_max:
-        return CHEMISTRY_LABEL_YELLOW
+        # Orange replaces yellow (hard to read on white) — meeting 1 Oct 2026.
+        return CHEMISTRY_LABEL_ORANGE
     return CHEMISTRY_LABEL_RED
 
 

@@ -2,23 +2,36 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
+
 import streamlit as st
-import streamlit.components.v1 as components
 
 from app_common import _display_svg, _render_overlap_warnings, _render_profile_chips
-from app_services import cached_build_section_bundle, cached_build_section_exports, cached_parse_request
+from app_services import (
+    cached_build_section_bundle,
+    cached_build_section_exports,
+    cached_parse_request,
+)
 from batch_export import (
     BATCH_DEFAULT_EXPORT_FORMATS,
-    ALL_EXPORT_FORMATS,
     build_batch_zip,
     build_multi_transect_exports,
     export_binder_pdf,
     parse_batch_transect_lines,
 )
 from docx_export import build_figure_docx_bytes
-from export_framing import ExportFramingConfig, build_export_filename, build_report_package_bytes, png_clipboard_html, save_exports_to_directory
+from export_framing import (
+    ExportFramingConfig,
+    build_export_filename,
+    build_report_package_bytes,
+    png_clipboard_html,
+    save_exports_to_directory,
+)
 from models import ConsultingTitleBlock
-from ui_helpers import export_metadata_payload, sanitize_filename
+from pipeline import ALL_EXPORT_FORMATS
+from ui_helpers import escape_html, export_metadata_payload, sanitize_filename
 
 try:
     from ops_audit import audit_event as _audit_event
@@ -86,7 +99,12 @@ def _cached_docx_bytes(
     section_title: str,
     metadata: dict[str, object],
 ) -> bytes:
-    cache_token = st.session_state.get("render_cache_key")
+    # The Word pack embeds the caption and metadata, so they are part of the key.
+    cache_token = (
+        st.session_state.get("render_cache_key"),
+        str(st.session_state.get("ai_figure_caption") or ""),
+        json.dumps(metadata, sort_keys=True, default=str),
+    )
     if st.session_state.get("_figure_docx_cache_token") == cache_token:
         return st.session_state.get("figure_docx_bytes") or b""
     docx_bytes = _build_docx_if_ready(
@@ -140,6 +158,7 @@ def _format_download(
     ready: bool,
     primary: bool = False,
     key: str | None = None,
+    help: str | None = None,
 ) -> None:
     stale_suffix = " (stale)" if is_stale and ready else ""
     kwargs: dict[str, object] = {
@@ -154,6 +173,8 @@ def _format_download(
         kwargs["type"] = "primary"
     if key:
         kwargs["key"] = key
+    if help:
+        kwargs["help"] = help
     if ready:
         kwargs["on_click"] = _audit_section_export
         kwargs["kwargs"] = {"fmt": fmt, "section_title": section_title}
@@ -166,6 +187,7 @@ def _export_stem(
     export_framing: ExportFramingConfig | None,
     consulting_title_block: ConsultingTitleBlock | None,
     transect_label: str | None,
+    include_transect_label: bool = False,
 ) -> str:
     framing = export_framing or ExportFramingConfig()
     figure_number = consulting_title_block.figure_number if consulting_title_block else ""
@@ -178,6 +200,7 @@ def _export_stem(
         transect_label=transect_label or section_title,
         revision=framing.export_revision,
         draft=framing.show_draft_watermark,
+        include_transect_label=include_transect_label,
     )
 
 
@@ -229,6 +252,9 @@ def _render_batch_export(
     if parse_result is None or not request_json:
         st.info("Generate at least one section before building the multi-transect ZIP.")
         return
+    batch_token = hashlib.sha256(
+        f"{request_json}\x00{specs_raw}\x00{include_svg}\x00{section_title}".encode()
+    ).hexdigest()
     if st.button("Build multi-transect ZIP", key="prepare_batch_zip"):
         try:
             base_request = cached_parse_request(request_json)
@@ -248,6 +274,7 @@ def _render_batch_export(
                             export_framing=export_framing,
                             consulting_title_block=consulting_title_block,
                             transect_label=label,
+                            include_transect_label=True,
                         )
                     ),
                     svg_bytes,
@@ -261,11 +288,17 @@ def _render_batch_export(
                 entries,
                 binder_pdf=export_binder_pdf(pdfs, cover_title=section_title) or None,
             )
+            st.session_state["_batch_package_token"] = batch_token
             st.success(f"Packaged {len(entries)} rebuilt transect(s).")
         except Exception as exc:  # noqa: BLE001 — surface any rebuild failure in UI
             st.error(f"Multi-transect export failed: {exc}")
             return
     batch_payload = st.session_state.get("batch_package_bytes")
+    if batch_payload and st.session_state.get("_batch_package_token") != batch_token:
+        # Specs, output style, or title changed since this ZIP was built.
+        st.session_state.pop("batch_package_bytes", None)
+        st.session_state.pop("_batch_package_token", None)
+        batch_payload = None
     if batch_payload:
         st.download_button(
             "Download multi-transect ZIP",
@@ -288,50 +321,22 @@ def render_profile_and_downloads(
     transect_label: str | None = None,
     export_framing: ExportFramingConfig | None = None,
     consulting_title_block: ConsultingTitleBlock | None = None,
+    can_generate: bool = True,
+    blocked_reason: str | None = None,
 ) -> None:
     """Render profile chips, SVG, and SVG/PNG/PDF downloads."""
     if st.session_state.svg_bytes is None:
         return
 
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("Cross-Section Profile")
     png_ready = bool(st.session_state.get("png_bytes"))
     pdf_ready = bool(st.session_state.get("pdf_bytes"))
     rasters_ready = png_ready and pdf_ready
-    _render_profile_chips(
-        interpretation_mode=interpretation_mode,
-        vertical_exaggeration=vertical_exaggeration,
-        hole_count=st.session_state.section_hole_count,
-        polygon_count=st.session_state.section_polygon_count,
-        is_stale=is_stale,
-        preset_label=preset_label,
-        render_layout=render_layout,
-        transect_label=transect_label,
-        png_ready=png_ready,
-        pdf_ready=pdf_ready,
-    )
-    if is_stale:
-        st.markdown(
-            '<div class="stale-banner" tabindex="0">Settings changed since the last build — '
-            "click <strong>Generate Cross-Section</strong> to refresh before download.</div>",
-            unsafe_allow_html=True,
-        )
-        if parse_result_available and st.button(
-            "Generate Cross-Section",
-            type="primary",
-            key="regenerate_stale",
-        ):
-            st.session_state["_regenerate_requested"] = True
-            st.rerun()
-    _render_overlap_warnings(st.session_state.polygon_overlap_warnings)
-    _display_svg(st.session_state.svg_bytes)
-    st.markdown("</div>", unsafe_allow_html=True)
-
     base = _export_stem(
         section_title=section_title,
         export_framing=export_framing,
         consulting_title_block=consulting_title_block,
         transect_label=transect_label,
+        include_transect_label=True,
     )
     svg_bytes, png_data, pdf_data = _session_export_triple()
     metadata = export_metadata_payload(
@@ -343,64 +348,117 @@ def render_profile_and_downloads(
         overlap_warnings=st.session_state.get("polygon_overlap_warnings") or [],
         consulting_fields=_consulting_field_map(consulting_title_block),
     )
-
-    st.markdown("**Quick downloads**")
-    dl_col1, dl_col2, dl_col3 = st.columns(3)
-    with dl_col1:
-        _format_download(
-            label="SVG (CAD / review)",
-            data=st.session_state.svg_bytes or b"",
-            file_name=f"{base}.svg",
-            mime="image/svg+xml",
-            fmt="svg",
-            section_title=section_title,
-            is_stale=is_stale,
-            ready=True,
-            primary=True,
-        )
-    with dl_col2:
-        _format_download(
-            label="PNG (Word / slides)",
-            data=png_data or b"",
-            file_name=f"{base}.png",
-            mime="image/png",
-            fmt="png",
-            section_title=section_title,
-            is_stale=is_stale,
-            ready=rasters_ready,
-        )
-    with dl_col3:
-        _format_download(
-            label="PDF (print)",
-            data=pdf_data or b"",
-            file_name=f"{base}.pdf",
-            mime="application/pdf",
-            fmt="pdf",
-            section_title=section_title,
-            is_stale=is_stale,
-            ready=rasters_ready,
-        )
-
-    if not is_stale and parse_result_available and not rasters_ready:
-        st.info(
-            "SVG is ready. Click **Prepare deliverables** once to build PNG, PDF, "
-            "Word, clipboard, and package options (one draw)."
-        )
-        if st.button(
-            "Prepare deliverables (PNG · PDF · Word · package)",
-            type="primary",
-            key="prepare_both_exports",
-            width="stretch",
-        ):
-            if _ensure_both_exports():
-                st.rerun()
-    elif is_stale:
-        st.caption("Regenerate before preparing or downloading deliverables.")
+    if is_stale:
+        raster_help = "Settings changed — click Generate Cross-Section first."
+    elif not rasters_ready:
+        raster_help = "Click Prepare deliverables to build PNG and PDF (one draw)."
     else:
-        st.caption(
-            "SVG after Generate · PNG/PDF for reports · package ZIP for handoff. "
-            "Framing (page size, DPI, DRAFT, CAD SVG tag) is in the sidebar."
+        raster_help = None
+
+    # Keyed container: a raw <div> via st.markdown is auto-closed and wraps
+    # nothing, so the .section-card chrome never applied to this section.
+    with st.container(key="section_card"):
+        _render_profile_chips(
+            interpretation_mode=interpretation_mode,
+            vertical_exaggeration=vertical_exaggeration,
+            hole_count=st.session_state.section_hole_count,
+            polygon_count=st.session_state.section_polygon_count,
+            is_stale=is_stale,
+            preset_label=preset_label,
+            render_layout=render_layout,
+            transect_label=transect_label,
+            png_ready=png_ready,
+            pdf_ready=pdf_ready,
         )
+        if is_stale:
+            if can_generate:
+                hint = "click <strong>Generate Cross-Section</strong> to refresh before download."
+            else:
+                hint = f"to refresh, {escape_html(blocked_reason or 'resolve the Configure issues')}."
+            st.markdown(
+                f'<div class="stale-banner" role="status">Settings changed since the last build — '
+                f"{hint}</div>",
+                unsafe_allow_html=True,
+            )
+            # An enabled button that silently does nothing is worse than a
+            # disabled one with the reason in the banner above.
+            if parse_result_available and st.button(
+                "Generate Cross-Section",
+                type="secondary",
+                key="regenerate_stale",
+                disabled=not can_generate,
+            ):
+                st.session_state["_regenerate_requested"] = True
+                st.rerun()
+
+        # Downloads sit with the figure (document-viewer toolbar), PDF first —
+        # it is what goes into client binders. One primary action per state:
+        # Prepare before rasters exist, then Download PDF.
+        dl_col1, dl_col2, dl_col3 = st.columns(3)
+        with dl_col1:
+            _format_download(
+                label="Download PDF · print",
+                data=pdf_data or b"",
+                file_name=f"{base}.pdf",
+                mime="application/pdf",
+                fmt="pdf",
+                section_title=section_title,
+                is_stale=is_stale,
+                ready=rasters_ready,
+                primary=rasters_ready and not is_stale,
+                help=raster_help,
+            )
+        with dl_col2:
+            _format_download(
+                label="Download PNG · Word/slides",
+                data=png_data or b"",
+                file_name=f"{base}.png",
+                mime="image/png",
+                fmt="png",
+                section_title=section_title,
+                is_stale=is_stale,
+                ready=rasters_ready,
+                help=raster_help,
+            )
+        with dl_col3:
+            _format_download(
+                label="Download SVG · CAD/review",
+                data=st.session_state.svg_bytes or b"",
+                file_name=f"{base}.svg",
+                mime="image/svg+xml",
+                fmt="svg",
+                section_title=section_title,
+                is_stale=is_stale,
+                ready=True,
+                help="Settings changed — click Generate Cross-Section first." if is_stale else None,
+            )
+        if not is_stale and parse_result_available and not rasters_ready:
+            if st.button(
+                "Prepare deliverables (PNG · PDF · Word · package)",
+                type="primary",
+                key="prepare_both_exports",
+                width="stretch",
+                help="Builds PNG and PDF in one draw, then unlocks Word, report ZIP and folder save.",
+            ):
+                with st.spinner("Building PNG, PDF and Word…"):
+                    prepared = _ensure_both_exports()
+                if prepared:
+                    st.rerun()
+
+        _render_overlap_warnings(st.session_state.polygon_overlap_warnings)
+        _display_svg(
+            st.session_state.svg_bytes,
+            alt_text=(
+                f"{section_title}: {transect_label or 'cross-section'}, "
+                f"{st.session_state.section_hole_count} boreholes, "
+                f"vertical exaggeration {vertical_exaggeration:g}×"
+            ),
+        )
+        if not is_stale and rasters_ready:
+            st.caption(
+                "PNG/PDF for reports · SVG for CAD · package ZIP for handoff. "
+                "Framing (page size, DPI, DRAFT, CAD SVG tag) is in the sidebar."
+            )
 
     if not is_stale and rasters_ready and parse_result_available:
         st.markdown("**Drafter package**")
@@ -423,18 +481,19 @@ def render_profile_and_downloads(
             else:
                 st.caption("Word pack needs python-docx.")
             if png_data:
-                components.html(png_clipboard_html(png_data), height=48)
+                st.iframe(png_clipboard_html(png_data), height=48)
         with pack2:
             if st.button("Build report ZIP", key="build_report_package", width="stretch"):
                 svg_bytes, png_bytes, pdf_bytes = _session_export_triple()
-                st.session_state["report_package_bytes"] = build_report_package_bytes(
-                    stem=base,
-                    svg_bytes=svg_bytes,
-                    png_bytes=png_bytes,
-                    pdf_bytes=pdf_bytes,
-                    metadata=metadata,
-                    docx_bytes=docx_bytes or None,
-                )
+                with st.spinner("Packaging report ZIP…"):
+                    st.session_state["report_package_bytes"] = build_report_package_bytes(
+                        stem=base,
+                        svg_bytes=svg_bytes,
+                        png_bytes=png_bytes,
+                        pdf_bytes=pdf_bytes,
+                        metadata=metadata,
+                        docx_bytes=docx_bytes or None,
+                    )
             zip_payload = st.session_state.get("report_package_bytes")
             if zip_payload:
                 st.download_button(
@@ -449,21 +508,43 @@ def render_profile_and_downloads(
                 st.caption("ZIP = SVG + PNG + PDF + metadata (+ Word).")
         with pack3:
             output_dir = str(st.session_state.get("export_output_dir", "")).strip()
-            if output_dir:
+            target = Path(output_dir).expanduser() if output_dir else None
+            if target is not None and not target.is_absolute():
+                # A relative path would land in the server's working directory.
+                st.warning(
+                    f"'{output_dir}' is not a full folder path. "
+                    "Enter one like P:\\Projects\\Job\\Figures."
+                )
+            elif target is not None:
                 if st.button("Save to project folder", key="save_exports_folder", width="stretch"):
                     svg_bytes, png_bytes, pdf_bytes = _session_export_triple()
-                    written = save_exports_to_directory(
-                        output_dir,
-                        stem=base,
-                        svg_bytes=svg_bytes,
-                        png_bytes=png_bytes,
-                        pdf_bytes=pdf_bytes,
-                        metadata=metadata,
-                        docx_bytes=docx_bytes or None,
-                    )
-                    st.success(f"Saved {len(written)} file(s) to {output_dir}")
+                    try:
+                        with st.spinner("Saving files…"):
+                            written = save_exports_to_directory(
+                                str(target),
+                                stem=base,
+                                svg_bytes=svg_bytes,
+                                png_bytes=png_bytes,
+                                pdf_bytes=pdf_bytes,
+                                metadata=metadata,
+                                docx_bytes=docx_bytes or None,
+                            )
+                    except PermissionError:
+                        st.error(f"No permission to write to {target}. Choose a folder you can write to.")
+                    except ValueError as exc:
+                        st.error(str(exc))
+                    except OSError:
+                        st.error(
+                            f"Couldn't create or write to {target}. Check that the drive or network "
+                            "share is connected and the path is spelled correctly."
+                        )
+                    else:
+                        st.success(f"Saved {len(written)} file(s) to **{target.resolve()}**")
             else:
-                st.caption("Set **Export output folder** in sidebar framing to save files.")
+                st.caption(
+                    "Set **Save exports to folder** under sidebar **Export framing & deliverables** "
+                    "to save files directly."
+                )
 
     _render_batch_export(
         section_title=section_title,

@@ -16,12 +16,12 @@ from ui_helpers import (
     active_transect_selection,
     dedupe_messages,
     escape_html,
+    holes_missing_lithology,
     legend_hatch_background,
     parse_coordinate_lines,
     sanitize_filename,
     svg_display_height,
     svg_is_valid,
-    holes_missing_lithology,
     workflow_stage,
 )
 
@@ -235,3 +235,39 @@ def test_init_session_defaults_skips_clear_when_schema_current() -> None:
     init_session_defaults(session)
     assert session["parse_result"] == "keep-me"
     assert session["svg_bytes"] == b"<svg/>"
+
+
+def test_plan_view_chart_fits_axes_to_utm_collars() -> None:
+    """st.scatter_chart anchored axes at zero, collapsing UTM collars into a
+    single dot; the Altair chart must bracket the data instead."""
+    import pandas as pd
+
+    from app_configure import _plan_view_chart
+
+    frame = pd.DataFrame(
+        {
+            "hole_id": ["A", "B", "C"],
+            "Easting": [500000.0, 500040.0, 500080.0],
+            "Northing": [4500000.0, 4500010.0, 4500020.0],
+            "selected": [True, False, True],
+        }
+    )
+    spec = _plan_view_chart(frame, "selected").to_dict()
+    x_domain = spec["encoding"]["x"]["scale"]["domain"]
+    y_domain = spec["encoding"]["y"]["scale"]["domain"]
+    assert 499990 < x_domain[0] < 500000 and 500080 < x_domain[1] < 500100
+    assert 4499990 < y_domain[0] < 4500000 and 4500020 < y_domain[1] < 4500040
+    assert spec["encoding"]["color"]["field"] == "selected"
+    assert "color" not in _plan_view_chart(frame, None).to_dict()["encoding"]
+
+
+
+def test_default_hole_sequence_takes_every_hole_of_a_small_workbook() -> None:
+    """A 7-hole B-B' workbook opened on only its first 4 holes."""
+    from app_configure import default_hole_sequence
+
+    seven = [f"BH-{i}" for i in range(1, 8)]
+    assert default_hole_sequence(seven) == seven
+    many = [f"BH-{i}" for i in range(1, 24)]
+    assert default_hole_sequence(many) == many[:4]
+    assert default_hole_sequence(["A", "B"]) == ["A", "B"]

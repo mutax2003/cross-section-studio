@@ -54,7 +54,25 @@ _LOGOUT_CLEAR_KEYS = (
     "ai_column_suggestions",
     "section_qa_answer",
     "ai_figure_caption",
+    "export_output_dir",
+    "enable_ai_suggestions",
 )
+# Prefix-matched on Sign out: per-provider runtime LLM keys.
+_LOGOUT_CLEAR_PREFIXES = ("_llm_api_key_runtime",)
+
+_AUTH_WINDOW_SECONDS = 300.0
+
+
+@st.cache_resource(show_spinner=False)
+def _auth_throttle_store() -> dict[str, dict]:
+    """Failed sign-ins per client, shared by every browser session.
+
+    cache_resource lives for the server process (and survives Streamlit
+    re-importing this module), so reconnecting cannot reset the count.
+    Keyed by client IP, or one shared bucket when the runtime cannot tell
+    clients apart.
+    """
+    return {"failures": {}, "lock_until": {}}
 
 
 def _auth_required() -> bool:
@@ -104,6 +122,46 @@ def _clear_sensitive_session_on_logout(session: Any | None = None) -> None:
     for key in _LOGOUT_CLEAR_KEYS:
         if key in target:
             target[key] = None
+    for key in [k for k in list(target.keys()) if str(k).startswith(_LOGOUT_CLEAR_PREFIXES)]:
+        target[key] = None
+
+
+def _client_bucket() -> str:
+    """Throttle key for the connecting client; one shared bucket if unknown."""
+    try:
+        address = getattr(st.context, "ip_address", None)
+    except Exception:  # pragma: no cover - older runtimes
+        address = None
+    # Only a real address string separates clients; test doubles and None
+    # share one bucket rather than each getting a fresh count.
+    if isinstance(address, str) and address.strip():
+        return address.strip()
+    return "shared"
+
+
+def _record_failed_attempt(bucket: str, now: float) -> float:
+    """Record a failure; return the lock-until time (0.0 if still allowed)."""
+    store = _auth_throttle_store()
+    recent = [
+        stamp for stamp in store["failures"].get(bucket, []) if now - stamp < _AUTH_WINDOW_SECONDS
+    ]
+    recent.append(now)
+    if len(recent) >= _MAX_AUTH_ATTEMPTS:
+        store["failures"][bucket] = []
+        store["lock_until"][bucket] = now + _LOCKOUT_SECONDS
+        return store["lock_until"][bucket]
+    store["failures"][bucket] = recent
+    return 0.0
+
+
+def _lock_until(bucket: str) -> float:
+    return float(_auth_throttle_store()["lock_until"].get(bucket, 0.0))
+
+
+def _clear_throttle(bucket: str) -> None:
+    store = _auth_throttle_store()
+    store["failures"].pop(bucket, None)
+    store["lock_until"].pop(bucket, None)
 
 
 def render_logout_control() -> None:
@@ -139,8 +197,9 @@ def require_auth() -> None:
     if st.session_state.get("_auth_ok"):
         return
 
-    lock_until = float(st.session_state.get("_auth_lock_until") or 0.0)
+    bucket = _client_bucket()
     now = time.monotonic()
+    lock_until = _lock_until(bucket)
     locked = now < lock_until
 
     st.title("Cross Section Studio")
@@ -156,14 +215,10 @@ def require_auth() -> None:
         if ok:
             st.session_state["_auth_ok"] = True
             st.session_state.pop("_auth_password_input", None)
-            st.session_state.pop("_auth_failures", None)
-            st.session_state.pop("_auth_lock_until", None)
+            _clear_throttle(bucket)
             st.rerun()
-        failures = int(st.session_state.get("_auth_failures") or 0) + 1
-        st.session_state["_auth_failures"] = failures
-        if failures >= _MAX_AUTH_ATTEMPTS:
-            st.session_state["_auth_lock_until"] = time.monotonic() + _LOCKOUT_SECONDS
-            st.session_state["_auth_failures"] = 0
+        # Process-wide: a fresh browser session must not reset the count.
+        if _record_failed_attempt(bucket, time.monotonic()):
             st.error("Invalid password. Account temporarily locked.")
         else:
             st.error("Invalid password.")

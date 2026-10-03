@@ -5,6 +5,8 @@ from __future__ import annotations
 from io import BytesIO
 from typing import Mapping
 
+from app_identity import AUTHOR, COPYRIGHT_NOTICE, ORGANIZATION
+
 
 def build_figure_docx_bytes(
     *,
@@ -23,6 +25,10 @@ def build_figure_docx_bytes(
         ) from exc
 
     document = Document()
+    document.core_properties.author = f"{AUTHOR}, {ORGANIZATION}"
+    document.core_properties.last_modified_by = f"{AUTHOR}, {ORGANIZATION}"
+    document.core_properties.comments = COPYRIGHT_NOTICE
+    document.core_properties.title = title or "Cross Section"
     document.add_heading(title or "Cross Section", level=1)
     if caption:
         document.add_paragraph(caption)

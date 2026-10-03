@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import replace
 from io import BytesIO
-from typing import Any, Callable
+from typing import Any
 
 import streamlit as st
 
@@ -23,8 +24,8 @@ from pipeline import (
     ALL_EXPORT_FORMATS,
     SectionGeometry,
     compute_section_geometry,
-    render_cross_section_from_geometry,
     filter_projected_for_interpolation,
+    render_cross_section_from_geometry,
     validate_interpretation_mode,
 )
 from projection import off_transect_warnings, project_boreholes
@@ -565,6 +566,7 @@ def _run_build_cross_section(
         chemistry_color_mode=request.chemistry_color_mode,
         chemistry_threshold_green_max=request.chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=request.chemistry_threshold_yellow_max,
+        chemistry_label_style=request.chemistry_label_style,
         render_layout=request.render_layout,
         track_width_m=request.track_width_m,
         auto_fit_track_width=request.auto_fit_track_width,
@@ -895,6 +897,7 @@ def cached_configure_preflight(
         correlation_overrides=overrides,
         offset_warning_m=offset_warning_m,
         max_offset_for_interpolation_m=max_offset_for_interpolation_m,
+        deviation_readings=tuple(subset.deviation_readings),
     )
     geometry_json = json.dumps(
         preflight_request.geometry_cache_payload(),

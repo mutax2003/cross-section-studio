@@ -19,7 +19,9 @@ from app_common import (
     safe_lithology_index,
 )
 from app_services import cached_configure_preflight, cached_recommend_transects
+from app_upload import queue_session_values
 from models import CorrelationOverride, ParseResult, subset_parse_result
+from render_profiles import ChemistryLabelStyle
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,30 @@ class ConfigureState:
     chemistry_color_mode: str = "black"
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
+    chemistry_label_style: ChemistryLabelStyle = "plain"
+
+    @property
+    def blocked_reason(self) -> str | None:
+        """Why Generate is disabled, in the user's terms; None when it can run."""
+        if self.can_generate:
+            return None
+        if self.blocking:
+            return "fix the blocking data errors in Validate"
+        if self.placeholder_blocks_interp:
+            return (
+                "collar elevations are placeholders — switch to relative depth "
+                "or borehole-only mode"
+            )
+        if self.fail_on_overlaps and self.has_overlap_warnings:
+            return (
+                "polygon overlaps are blocking export — resolve the correlation "
+                "or untick 'Block export on polygon overlaps' in Configure"
+            )
+        if self.has_warnings and not self.override_warnings:
+            return "tick 'Allow generate with warnings' in Configure"
+        if self.transect_selection is None:
+            return "choose a transect in Configure"
+        return "resolve the Configure / Validate issues"
 
 
 def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], transect_mode: str) -> tuple[list[str], str]:
@@ -51,6 +77,9 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
     _render_lithology_legend(legend_codes)
 
     _sidebar_heading("Transect selection")
+    specs = tuple(getattr(parse_result, "section_specs", ()) or ())
+    if specs:
+        _render_workbook_section_picker(specs)
     render_nl_transect_input(hole_ids)
     selected_holes: list[str] = []
     coordinate_text = ""
@@ -73,7 +102,12 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
             st.info("Not enough holes for recommendations.")
     elif transect_mode == "By hole sequence":
         if "hole_sequence_multiselect" not in st.session_state:
-            st.session_state.hole_sequence_multiselect = hole_ids[: min(4, len(hole_ids))]
+            # A workbook with a Sections tab starts on its first section.
+            st.session_state.hole_sequence_multiselect = (
+                [h for h in specs[0].hole_ids if h in hole_ids]
+                if specs
+                else default_hole_sequence(hole_ids)
+            )
         selected_holes = st.multiselect(
             "Hole sequence",
             options=hole_ids,
@@ -90,6 +124,72 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
             height=160,
         )
     return selected_holes, coordinate_text
+
+
+def _render_workbook_section_picker(specs) -> None:
+    """Drive the on-screen preview from the workbook's Sections tab.
+
+    One drop-down per named section line: choosing one sets the hole order,
+    switches to "By hole sequence" and labels the sheet, so a moved line only
+    needs its row in the Sections tab changed. "Custom" leaves the manual
+    controls as they are.
+    """
+    # Options are row indices (None = Custom) so a row labelled "Custom" or a
+    # duplicate label can still be chosen; duplicates show their row number.
+    seen: dict[str, int] = {}
+    display: dict[int | None, str] = {None: "Custom"}
+    for index, spec in enumerate(specs):
+        seen[spec.label] = seen.get(spec.label, 0) + 1
+        display[index] = spec.label if seen[spec.label] == 1 else f"{spec.label} (row {index + 2})"
+    choice = st.selectbox(
+        "Section (from workbook Sections tab)",
+        options=list(display),
+        index=0,
+        format_func=lambda key: display[key],
+        key="workbook_section_choice",
+        help=(
+            "Each row of the Sections tab is one section line. Pick one to preview it; "
+            "use Multi-transect batch ZIP under Configure to export every section."
+        ),
+    )
+    if choice is None:
+        st.session_state.pop("_workbook_section_applied", None)
+        return
+    spec = specs[choice]
+    known = set(st.session_state.get("hole_ids") or [])
+    holes = [hole for hole in spec.hole_ids if hole in known]
+    if len(holes) < 2:
+        st.warning(f"Section {spec.label!r} needs at least two holes that exist in Collars.")
+        return
+    already = st.session_state.get("_workbook_section_applied") == choice
+    if already and list(st.session_state.get("hole_sequence_multiselect") or []) == holes:
+        return  # applied and untouched
+    if already:
+        # The user edited the hole list after picking this section: say so
+        # rather than pretending the caption still describes the row.
+        st.caption(f"Hole order edited by hand; re-select {display[choice]!r} to restore the row.")
+        return
+    st.session_state.hole_sequence_multiselect = holes
+    st.session_state.pending_transect_mode = "By hole sequence"
+    queue_consulting_section_label(spec.label)
+    st.session_state["_workbook_section_applied"] = choice
+    st.rerun()
+
+
+def queue_consulting_section_label(label: str | None) -> None:
+    """Set the sheet label on the NEXT run, before its text_input exists.
+
+    Assigning the widget key directly raises once the sidebar has drawn the
+    "Section label" box (consulting layouts), so it goes through the pending
+    project seed that the sidebar applies first. None restores the default.
+    """
+    if label is None:
+        st.session_state["_reset_consulting_section_label"] = True
+        return
+    # Both the consulting sheet label and the figure/file title: exports name
+    # files and metadata from section_title, which otherwise kept the
+    # previous section's name.
+    queue_session_values(consulting_section_label=label, section_title=label)
 
 
 def render_configure_step(
@@ -110,7 +210,7 @@ def render_configure_step(
     parameter_interpolate_segments_default: bool | None = None,
     elevation_mode_default: str | None = None,
 ) -> ConfigureState:
-    st.subheader("Configure")
+    st.subheader("Configure", anchor=False)
     st.caption("Choose elevation mode, transect readiness, and export gates before generating.")
     all_hole_ids = [collar.hole_id for collar in parse_result.collars]
     _render_plan_minimap(parse_result, selected_holes, transect_mode)
@@ -172,9 +272,11 @@ def render_configure_step(
         )
     has_warnings = quality_report is not None and quality_report.warning_count > 0
     warnings_default = not is_consulting_layout
+    if "override_warnings_checkbox" not in st.session_state:
+        st.session_state["override_warnings_checkbox"] = warnings_default
     override_warnings = st.checkbox(
         "Allow generate with warnings",
-        value=warnings_default,
+        key="override_warnings_checkbox",
         help="Consulting report preset defaults to blocking export when QA warnings are present.",
     )
     if has_warnings and not override_warnings:
@@ -182,9 +284,11 @@ def render_configure_step(
             "QA warnings are present. Enable **Allow generate with warnings** above to proceed, "
             "or resolve them in Validate."
         )
+    if "fail_on_overlaps_checkbox" not in st.session_state:
+        st.session_state["fail_on_overlaps_checkbox"] = is_consulting_layout
     fail_on_overlaps = st.checkbox(
         "Block export on polygon overlaps",
-        value=is_consulting_layout,
+        key="fail_on_overlaps_checkbox",
         help="When enabled, generation fails if inter-hole fence polygons overlap.",
     )
 
@@ -195,6 +299,7 @@ def render_configure_step(
     chemistry_color_mode: str = "black"
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
+    chemistry_label_style = "plain"
     subset_ready = False
     has_overlap_warnings = False
 
@@ -284,13 +389,13 @@ def render_configure_step(
                     if parameter_interpolate_segments_default is None
                     else parameter_interpolate_segments_default
                 )
+                # Seed through session state only (no value= on the widgets):
+                # passing both makes Streamlit warn on every rerun.
+                if "show_parameter_labels_toggle" not in st.session_state:
+                    st.session_state.show_parameter_labels_toggle = label_default
+                if "parameter_interpolate_segments_toggle" not in st.session_state:
+                    st.session_state.parameter_interpolate_segments_toggle = segments_default
                 if prefer_chemistry:
-                    if "show_parameter_labels_toggle" not in st.session_state:
-                        st.session_state.show_parameter_labels_toggle = label_default
-                    if "parameter_interpolate_segments_toggle" not in st.session_state:
-                        st.session_state.parameter_interpolate_segments_toggle = (
-                            segments_default
-                        )
                     if st.session_state.get("_chem_toggle_preset") != prefer_chemistry:
                         st.session_state.show_parameter_labels_toggle = label_default
                         st.session_state.parameter_interpolate_segments_toggle = (
@@ -299,13 +404,11 @@ def render_configure_step(
                         st.session_state._chem_toggle_preset = prefer_chemistry
                 show_parameter_labels = st.toggle(
                     "Show parameter value labels",
-                    value=label_default,
                     key="show_parameter_labels_toggle",
                     disabled=prefer_chemistry and show_parameter_labels_default is not None,
                 )
                 parameter_interpolate_segments = st.toggle(
                     "Interpolate parameter between adjacent holes",
-                    value=segments_default,
                     key="parameter_interpolate_segments_toggle",
                     disabled=(
                         prefer_chemistry and parameter_interpolate_segments_default is not None
@@ -321,17 +424,17 @@ def render_configure_step(
                 st.markdown("**Parameter label colour**")
                 color_mode_choice = st.radio(
                     "Chemistry value labels",
-                    options=["All black (default)", "Green / yellow / red thresholds"],
+                    options=["All black (default)", "Green / orange / red thresholds"],
                     index=0,
                     key="chemistry_color_mode_radio",
                     help=(
                         "Black labels for data presentation. Threshold mode colours each "
-                        "value green, yellow, or red using site-specific limits set below."
+                        "value green, orange, or red using site-specific limits set below."
                     ),
                 )
                 chemistry_color_mode = (
                     "threshold"
-                    if color_mode_choice == "Green / yellow / red thresholds"
+                    if color_mode_choice == "Green / orange / red thresholds"
                     else "black"
                 )
                 chemistry_threshold_green_max = None
@@ -351,7 +454,7 @@ def render_configure_step(
                     with threshold_cols[1]:
                         chemistry_threshold_yellow_max = float(
                             st.number_input(
-                                "Yellow ≤",
+                                "Orange ≤",
                                 min_value=0.0,
                                 value=250.0,
                                 step=1.0,
@@ -359,7 +462,27 @@ def render_configure_step(
                             )
                         )
                     if chemistry_threshold_yellow_max < chemistry_threshold_green_max:
-                        st.warning("Yellow threshold should be ≥ green threshold.")
+                        st.warning("Orange threshold should be ≥ green threshold.")
+                if any(r.label_color for r in parse_result.environmental_readings):
+                    st.caption(
+                        "Rows with a **label_color** (green / red / black / orange) in the "
+                        "Environmental sheet keep that colour; the setting above applies to the rest."
+                    )
+                style_labels = {
+                    "plain": "Plain coloured text",
+                    "box": "White box behind the label",
+                    "dot": "Coloured dot, black text",
+                    "stroke": "Outlined (white halo) text",
+                }
+                style_choice = st.selectbox(
+                    "Label readability over hatched fills",
+                    options=list(style_labels),
+                    format_func=lambda key: style_labels[key],
+                    index=0,
+                    key="chemistry_label_style_select",
+                    help="Keeps coloured values legible over hatched lithology fills.",
+                )
+                chemistry_label_style = style_choice
             elif parse_result.environmental_readings:
                 st.caption(
                     "Environmental readings exist but none fall on the current transect holes."
@@ -408,7 +531,8 @@ def render_configure_step(
                     )
                     if not selected_water_series_ids:
                         st.caption(
-                            "No water series selected — groundwater markers will not be plotted."
+                            "No water series selected — all groundwater series will be plotted. "
+                            "Select specific series to limit the markers."
                         )
             else:
                 st.caption(
@@ -611,13 +735,15 @@ def render_configure_step(
         chemistry_color_mode=chemistry_color_mode,
         chemistry_threshold_green_max=chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
+        chemistry_label_style=chemistry_label_style,
     )
 
 
 def _transect_section_caption(hole_ids: Sequence[str]) -> str:
     if len(hole_ids) < 2:
         return ""
-    return f"A–A′ ({hole_ids[0]} → {hole_ids[-1]})"
+    label = st.session_state.get("consulting_section_label") or "A-A'"
+    return f"{label} ({hole_ids[0]} → {hole_ids[-1]})"
 
 
 def _render_plan_minimap(
@@ -643,22 +769,58 @@ def _render_plan_minimap(
     st.markdown("**Plan view (collar locations)**")
     chart_df = df.rename(columns={"easting": "Easting", "northing": "Northing"})
     color_col = "selected" if transect_mode != "Recommended" else None
-    if color_col and chart_df["selected"].any():
-        st.scatter_chart(
-            chart_df,
-            x="Easting",
-            y="Northing",
-            color="selected",
-        )
-    else:
-        st.scatter_chart(chart_df, x="Easting", y="Northing")
+    st.altair_chart(
+        _plan_view_chart(chart_df, color_col if color_col and chart_df["selected"].any() else None),
+        width="stretch",
+    )
     st.caption("Collar positions from workbook — transect follows hole order or line geometry.")
 
+
+def _plan_view_chart(chart_df: pd.DataFrame, color_col: str | None):
+    """Scatter of collars on axes fitted to the data.
+
+    st.scatter_chart anchors both axes at zero, so UTM collars (500000 E,
+    4500000 N) collapse into one dot in a corner.
+    """
+    import altair as alt
+
+    def _domain(column: str) -> list[float]:
+        low, high = float(chart_df[column].min()), float(chart_df[column].max())
+        pad = max((high - low) * 0.08, 5.0)
+        return [low - pad, high + pad]
+
+    chart = (
+        alt.Chart(chart_df)
+        .mark_circle(size=90)
+        .encode(
+            x=alt.X("Easting:Q", scale=alt.Scale(domain=_domain("Easting"), nice=False)),
+            y=alt.Y("Northing:Q", scale=alt.Scale(domain=_domain("Northing"), nice=False)),
+            tooltip=["hole_id", "Easting", "Northing"],
+        )
+    )
+    if color_col:
+        chart = chart.encode(color=alt.Color(f"{color_col}:N", title="In transect"))
+    return chart.properties(height=300)
+
+
+
+# A workbook with this many holes or fewer is usually one section listed in
+# order (e.g. a B-B' test workbook), so start with all of them; larger
+# multi-transect workbooks start on the first few holes.
+ALL_HOLES_DEFAULT_MAX = 10
+PARTIAL_DEFAULT_HOLES = 4
+
+
+def default_hole_sequence(hole_ids: list[str]) -> list[str]:
+    """Initial "By hole sequence" selection when the workbook has no Sections tab."""
+    if len(hole_ids) <= ALL_HOLES_DEFAULT_MAX:
+        return list(hole_ids)
+    return list(hole_ids[:PARTIAL_DEFAULT_HOLES])
 
 def _render_hole_sequence_order(hole_ids: list[str]) -> None:
     """Numbered hole order with Up/Down (first-class fence sequence)."""
     if "hole_sequence_multiselect" not in st.session_state:
-        st.session_state.hole_sequence_multiselect = hole_ids[: min(4, len(hole_ids))]
+        st.session_state.hole_sequence_multiselect = default_hole_sequence(hole_ids)
     sequence: list[str] = list(st.session_state.hole_sequence_multiselect)
     if not sequence:
         return
@@ -679,7 +841,8 @@ def _render_hole_sequence_order(hole_ids: list[str]) -> None:
                 sequence[index + 1], sequence[index] = sequence[index], sequence[index + 1]
                 st.session_state.hole_sequence_multiselect = sequence
                 st.rerun()
-    st.caption(f"Section A–A′: **{sequence[0]} → {sequence[-1]}**")
+    section_label = st.session_state.get("consulting_section_label") or "A-A'"
+    st.caption(f"Section {section_label}: **{sequence[0]} → {sequence[-1]}**")
 
 
 def _unit_orders_for_code(subset: ParseResult, hole_id: str, code: str) -> list[int]:
@@ -828,7 +991,7 @@ def render_nl_transect_input(hole_ids: list[str]) -> None:
             st.session_state.hole_sequence_multiselect = list(parsed.hole_ids)
             st.session_state.pending_transect_mode = "By hole sequence"
             if parsed.section_label:
-                st.session_state.consulting_section_label = parsed.section_label
+                queue_consulting_section_label(parsed.section_label)
             st.success(
                 f"Transect: {' → '.join(parsed.hole_ids)}"
                 + (f" ({parsed.section_label})" if parsed.section_label else "")

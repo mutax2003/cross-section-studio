@@ -7,6 +7,7 @@ Configure → Generate (SVG-first) in Streamlit.
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -18,6 +19,7 @@ OUTPUT = ROOT / "data" / "test_workbook.xlsx"
 
 
 def main() -> Path:
+    argparse.ArgumentParser(description=__doc__).parse_args()
     project = pd.DataFrame(
         [
             {"field": "client_name", "value": "Cross Section Studio QA"},

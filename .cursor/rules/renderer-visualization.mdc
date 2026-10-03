@@ -62,18 +62,18 @@ Set via `CrossSectionRenderer(interpretation_mode=...)` or `pipeline.build_cross
 
 ## Section-Sheet Layers (z-order, Strater-like)
 
-1. **Sky fill** — light fill above interpolated ground surface (`show_sky_fill`)
-2. **Fence polygons** — BH Log colors/hatches; lower alpha (`fence_alpha` ~0.58) so tracks read in front
-3. **Uncertainty zones** — amber shading when spacing/offset thresholds exceeded
+1. **Uncertainty zones** — amber shading when spacing/offset thresholds exceeded (bottom-most, zorder 0)
+2. **Sky fill** — light fill above interpolated ground surface (`show_sky_fill`)
+3. **Fence polygons** — BH Log colors/hatches; lower alpha (`fence_alpha` ~0.58) so tracks read in front
 4. **Track lithology** — wide bordered rectangles per interval inside each borehole track
 5. **Track borders** — white column outline from collar to TD
 6. **Contact ticks** — horizontal lines at interval tops/bottoms across track width
 7. **Deviated centerlines** — dotted polyline through interval midpoints when deviation survey present
-8. **Raster log strips** — optional placeholder/image column (`RasterLogStrip` model)
+8. **Raster log strips** — optional image column (`RasterLogStrip` model): `image_bytes` rendered via `imshow` (zorder 2); hatched placeholder rectangles otherwise (zorder 1, beneath fence polygons and track lithology)
 9. **Ground surface** — thick green/brown polyline
 10. **Water table** — symbol per hole (circle/triangle/diamond) + optional dashed interpolation
 11. **EOL bars** — horizontal end-of-log marker at TD
-12. **Column headers** — hole ID, RL or depth label, TD above each track
+12. **Column headers** — hole ID, RL or depth label, TD per track (below the plot in `elevation_rl` mode; above it in `depth_below_collar` mode)
 13. **Faults / unconformities / parameter markers** (`_draw_parameter_readings`, filtered by `environmental_parameters`)
 14. **Overlap markers** — when `overlap_pairs` provided
 15. **Scale bar** + **VE annotation** (`V.E. N×`)
@@ -106,11 +106,11 @@ Fence-first layout matching consulting cross-section figures (`render_layout="co
 **Title block:** lithology swatches + GW symbol key + project metadata (`ConsultingTitleBlock` via `SectionBuildRequest.consulting_title_block`).
 
 Wire via `pipeline.build_cross_section(render_layout="consulting_section", consulting_title_block=...)`.
-Streamlit: layout radio **Consulting section** + **Report sheet (consulting)** expander.
+Streamlit: sidebar **Output style** selectbox preset **Consulting report (title block)** + **Consulting report sheet** expander.
 
 ## Visual Requirements
 
-- Fill polygons via `matplotlib.patches.Polygon` using `constants.get_lithology_style()` (BH Log palette)
+- Fill polygons via `matplotlib.collections.PolyCollection` using `constants.get_lithology_style()` (BH Log palette)
 - User overrides via `paths.lithology_styles_path()` (user data dir, not repo `data/`)
 - Expose **`vertical_exaggeration`** (Y-axis multiplier) and **`scale_bar_length_m`**
 - Hatch patterns toggled via `show_hatches` (applies under consulting palette too; parity scripts use hatches on)

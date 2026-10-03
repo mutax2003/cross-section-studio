@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
+from html import escape
 from io import BytesIO
-from typing import Any, Callable, Sequence
+from typing import Any
 
 import pandas as pd
 import streamlit as st
 
-from ai_quality import save_lithology_alias
 from ai_assistant import AIAssistant
+from ai_quality import save_lithology_alias
 from app_common import (
     _apply_auto_unit_order_fix,
     _build_assistant,
@@ -492,7 +494,42 @@ def _render_validate_details(
         st.warning(message)
 
 
-def render_validate_step() -> None:
+def render_next_step_coach(
+    *,
+    selection: tuple | None = None,
+    blocked_reason: str | None = None,
+) -> None:
+    """'Next:' hint that matches the current state.
+
+    Call after the Configure step has run and pass its transect selection:
+    the session's ``transect_selection`` is the last *generated* one, which
+    can differ from what Configure currently shows.
+    """
+    quality_report = st.session_state.get("quality_report")
+    if quality_report is None or quality_report.has_blocking_errors:
+        return
+    if selection and selection[0]:
+        holes = " → ".join(escape(str(hole)) for hole in selection[0])
+        if blocked_reason:
+            coach = (
+                f"<strong>Next:</strong> transect {holes} is selected — "
+                f"{escape(blocked_reason)}, then click "
+                "<strong>Generate Cross-Section</strong>."
+            )
+        else:
+            coach = (
+                f"<strong>Next:</strong> transect {holes} is selected — click "
+                "<strong>Generate Cross-Section</strong> above."
+            )
+    else:
+        coach = (
+            "<strong>Next:</strong> choose holes under <strong>Transect selection</strong> "
+            "in the sidebar, then click <strong>Generate Cross-Section</strong>."
+        )
+    st.markdown(f'<div class="next-step-coach" role="note">{coach}</div>', unsafe_allow_html=True)
+
+
+def render_validate_step(*, show_coach: bool = True) -> None:
     """Render Data Health panel when a parse result is in session."""
     if st.session_state.parse_result is None:
         return
@@ -505,7 +542,7 @@ def render_validate_step() -> None:
         st.warning("No quality report available. Re-parse the workbook.")
         return
 
-    st.subheader("Data Health")
+    st.subheader("Data Health", anchor=False)
     st.caption(llm_assist_status_caption())
 
     active_transect = st.session_state.get("transect_selection")
@@ -531,14 +568,13 @@ def render_validate_step() -> None:
     compact = not quality_report.has_blocking_errors
     status_label = _health_status_label(quality_report.error_count, quality_report.warning_count)
     if compact:
-        st.markdown(
-            '<div class="next-step-coach" tabindex="0">'
-            "<strong>Next:</strong> pick holes in sidebar <strong>Transect selection</strong> "
-            "→ Configure → <strong>Generate Cross-Section</strong> "
-            "(SVG ready; Prepare for PNG/PDF)."
-            "</div>",
-            unsafe_allow_html=True,
-        )
+        if show_coach:
+            render_next_step_coach()
+        if parse_result is not None and parse_result.errors:
+            st.warning(
+                f"{len(parse_result.errors)} workbook row(s) were skipped on import — "
+                "see **Data Health details**."
+            )
         if quality_report.warning_count or quality_report.info_count:
             st.markdown(
                 f"**{status_label}** — "
@@ -547,7 +583,7 @@ def render_validate_step() -> None:
                 f"**{quality_report.info_count} info**"
             )
         else:
-            st.markdown(f"**Data health OK** — no blocking issues detected.")
+            st.markdown("**Data health OK** — no blocking issues detected.")
         details_loaded = st.session_state.get("validate_details_loaded")
         if quality_report.warning_count and not details_loaded:
             top_warnings = [
@@ -557,10 +593,13 @@ def render_validate_step() -> None:
             ][:3]
             for issue in top_warnings:
                 st.warning(f"**{issue.severity}** — {issue.message}")
-            st.caption(
-                "Enable **Allow generate with warnings** in Configure to proceed, "
-                "or open Data Health details below to review all issues."
-            )
+            if st.session_state.get("override_warnings_checkbox", True):
+                st.caption("Open Data Health details below to review all issues.")
+            else:
+                st.caption(
+                    "Enable **Allow generate with warnings** in Configure to proceed, "
+                    "or open Data Health details below to review all issues."
+                )
 
     assistant: AIAssistant | None = None
     if quality_report.has_blocking_errors:

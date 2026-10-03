@@ -232,3 +232,97 @@ def test_save_lithology_style_rejects_non_hex(tmp_path, monkeypatch) -> None:
         save_lithology_style_override("Clay", "red; background:url(x)", "..")
     save_lithology_style_override("Clay", "#38220F", "---")
     assert "#38220F" in (tmp_path / "styles.json").read_text(encoding="utf-8")
+
+
+def test_ops_auth_logout_clears_runtime_llm_keys_and_export_folder() -> None:
+    from ops_auth import _clear_sensitive_session_on_logout
+
+    session = {
+        "_llm_api_key_runtime_groq": "gsk_live",
+        "_llm_api_key_runtime": "sk-live",
+        "export_output_dir": "/home/previous-user/out",
+        "enable_ai_suggestions": True,
+        "keep_me": "ok",
+    }
+    _clear_sensitive_session_on_logout(session)
+    assert session["_llm_api_key_runtime_groq"] is None
+    assert session["_llm_api_key_runtime"] is None
+    assert session["export_output_dir"] is None
+    assert session["enable_ai_suggestions"] is None
+    assert session["keep_me"] == "ok"
+
+
+def test_redact_secrets_scrubs_groq_keys() -> None:
+    from ops_logging import redact_secrets
+
+    text = redact_secrets("provider=groq key gsk_AbCdEfGhIjKlMnOpQrSt failed")
+    assert "gsk_AbCd" not in text and "gsk_[redacted]" in text
+
+
+def test_launcher_binds_loopback_only() -> None:
+    import launcher
+
+    captured: dict[str, list[str]] = {}
+
+    class _Cli:
+        @staticmethod
+        def main() -> int:
+            import sys
+
+            captured["argv"] = list(sys.argv)
+            return 0
+
+    import streamlit.web
+
+    original = getattr(streamlit.web, "cli", None)
+    streamlit.web.cli = _Cli  # type: ignore[attr-defined]
+    try:
+        assert launcher._run_streamlit("app.py", 8501) == 0
+    finally:
+        if original is not None:
+            streamlit.web.cli = original
+    assert "--server.address=127.0.0.1" in captured["argv"]
+
+
+def test_llm_secret_lookup_never_borrows_another_providers_key(monkeypatch) -> None:
+    """secrets.toml holding only OPENAI_API_KEY must not be sent to Groq."""
+    import app_common
+
+    class _Secrets(dict):
+        def get(self, key, default=None):
+            return super().get(key, default)
+
+    monkeypatch.setattr(app_common.st, "secrets", _Secrets(OPENAI_API_KEY="sk-openai-only"))
+    monkeypatch.setattr(app_common.st, "session_state", {})
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert app_common._llm_api_key_for_provider("groq") == ""
+    assert app_common._llm_api_key_for_provider("openai") == "sk-openai-only"
+
+
+def test_auth_lockout_survives_a_fresh_browser_session(monkeypatch) -> None:
+    """Five failures used to lock only that websocket session; reconnecting
+    reset the count. The throttle is now shared across sessions."""
+    from streamlit.testing.v1 import AppTest
+
+    import ops_auth
+
+    monkeypatch.setenv("CROSS_SECTION_AUTH_PASSWORD", "hunter2")
+    store = ops_auth._auth_throttle_store()
+    store["failures"].clear()
+    store["lock_until"].clear()
+    try:
+        first = AppTest.from_file(str(Path("app.py").resolve()), default_timeout=120)
+        first.run()
+        for _ in range(ops_auth._MAX_AUTH_ATTEMPTS):
+            first.text_input[0].set_value("wrong")
+            [b for b in first.button if b.label == "Sign in"][0].click().run()
+        assert any("locked" in e.value for e in first.error)
+
+        fresh = AppTest.from_file(str(Path("app.py").resolve()), default_timeout=120)
+        fresh.run()
+        assert any("Too many failed attempts" in w.value for w in fresh.warning)
+        assert not fresh.text_input  # no password box while locked
+    finally:
+        store["failures"].clear()
+        store["lock_until"].clear()

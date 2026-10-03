@@ -123,3 +123,245 @@ def test_render_hero_compact_after_upload() -> None:
 
     # Smoke: compact class applied for stage >= 1 (no Streamlit run required for logic)
     assert callable(_render_hero)
+
+
+def _generated_app(sample_workbook: Path):
+    """AppTest with the sample uploaded and one section generated."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("sample.xlsx", sample_workbook.read_bytes()).run()
+    hole_ids = list(at.session_state["hole_ids"])
+    at.session_state["hole_sequence_multiselect"] = hole_ids[: min(4, len(hole_ids))]
+    for box in at.checkbox:
+        if "Allow generate with warnings" in (box.label or ""):
+            box.set_value(True)
+            break
+    at.run()
+    [btn for btn in at.button if btn.label == "Generate Cross-Section"][0].click().run()
+    assert at.session_state["svg_bytes"]
+    return at
+
+
+def test_clear_workbook_asks_before_discarding_a_generated_section(sample_workbook: Path) -> None:
+    at = _generated_app(sample_workbook)
+    [btn for btn in at.button if btn.label == "Clear workbook"][0].click().run()
+    assert not at.exception
+    # Nothing discarded yet: a confirmation is shown instead.
+    assert at.session_state["svg_bytes"]
+    assert any("discard the generated section" in w.value for w in at.warning)
+
+    [btn for btn in at.button if btn.key == "cancel_destructive"][0].click().run()
+    assert at.session_state["svg_bytes"], "Cancel must keep the section"
+    assert not any(btn.key == "confirm_destructive" for btn in at.button)
+
+    [btn for btn in at.button if btn.label == "Clear workbook"][0].click().run()
+    [btn for btn in at.button if btn.key == "confirm_destructive"][0].click().run()
+    assert not at.exception
+    assert at.session_state["parse_result"] is None
+    assert at.session_state["svg_bytes"] is None
+
+
+def test_generate_action_and_state_aware_coach_sit_above_validate(sample_workbook: Path) -> None:
+    """UX regressions: Generate is at the top of the page (not ~2.5 screens
+    down), the 'Next:' hint reflects the picked transect, and the stepper is
+    inside the hero (it rendered outside, white-on-white)."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("sample.xlsx", sample_workbook.read_bytes()).run()
+    at.run()
+    assert not at.exception
+    markdown = [m.value for m in at.markdown]
+    hero = next(value for value in markdown if "<h1>Cross Section Studio</h1>" in value)
+    assert "workflow-step" in hero, "stepper must render inside the hero"
+    assert "✓ Upload" in hero
+    coach = next(value for value in markdown if 'class="next-step-coach"' in value)
+    assert "is selected" in coach and "Generate Cross-Section" in coach
+
+    def walk(node):
+        yield node
+        for child in getattr(node, "children", {}).values():
+            yield from walk(child)
+
+    flat = list(walk(at.main))
+    generate_index = next(
+        i for i, node in enumerate(flat)
+        if getattr(node, "type", "") == "button" and node.label == "Generate Cross-Section"
+    )
+    health_index = next(
+        i for i, node in enumerate(flat)
+        if getattr(node, "type", "") in {"subheader", "heading"} and "Data Health" in str(node.value)
+    )
+    assert generate_index < health_index, "Generate must render above Validate's Data Health"
+
+
+def test_preview_zoom_switches_to_scrollable_native_size_frame(sample_workbook: Path) -> None:
+    at = _generated_app(sample_workbook)
+
+    def frame_html() -> str:
+        return next(md.value for md in at.markdown if "<img src=\"data:image/svg" in md.value)
+
+    assert 'class="svg-frame"' in frame_html()
+    assert "width:100%" in frame_html()
+    at.session_state["svg_preview_zoom"] = "150%"
+    at.run()
+    assert not at.exception
+    html_150 = frame_html()
+    assert "svg-frame--zoomed" in html_150 and 'tabindex="0"' in html_150
+    natural = at.session_state["svg_display_meta"].natural_width_px
+    assert natural > 0
+    assert f"width:{round(natural * 1.5)}px" in html_150
+
+
+def test_menu_load_sample_asks_before_discarding_a_generated_section(sample_workbook: Path) -> None:
+    at = _generated_app(sample_workbook)
+    for key in ("menu_file_sample", "menu_accel_sample"):
+        at.button(key=key).click().run()
+        assert not at.exception
+        assert at.session_state["svg_bytes"], f"{key} discarded the section without asking"
+        assert at.session_state["_pending_destructive"] == "sample"
+        at.button(key="cancel_destructive").click().run()
+
+
+def test_stale_destructive_prompt_is_dropped_once_its_section_is_gone(sample_workbook: Path) -> None:
+    at = _generated_app(sample_workbook)
+    [btn for btn in at.button if btn.label == "Clear workbook"][0].click().run()
+    assert at.session_state["_pending_destructive"] == "clear"
+    # Section disappears another way (new upload, menu clear...): the old
+    # Confirm must not linger to wipe whatever is generated next.
+    at.session_state["svg_bytes"] = None
+    at.run()
+    assert "_pending_destructive" not in at.session_state
+    assert not [btn for btn in at.button if btn.key == "confirm_destructive"]
+
+
+def test_parse_failure_is_shown_on_screen_with_technical_details() -> None:
+    """A workbook the parser rejects used to leave the page silent: the error
+    was stored and the function returned before the banner block rendered."""
+    from streamlit.testing.v1 import AppTest
+
+    from tests.conftest import make_workbook_bytes
+
+    broken = make_workbook_bytes(
+        [{"hole_id": "BH1", "easting": 0, "northing": 0, "elevation": 100}],  # no total_depth
+        [{"hole_id": "BH1", "from_depth": 0, "to_depth": 5, "lithology_code": "Clay"}],
+    )
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("broken.xlsx", broken).run()
+    assert not at.exception
+    assert at.session_state["parse_result"] is None
+    assert any("total_depth" in e.value or "Collars" in e.value for e in at.error), [
+        e.value for e in at.error
+    ]
+    assert any("Technical details" in x.label for x in at.expander)
+
+
+def test_stale_generate_button_is_disabled_with_the_reason_when_blocked(sample_workbook: Path) -> None:
+    """After a section exists, a settings change marks it stale; if Generate
+    is blocked the stale button used to stay enabled and silently do nothing."""
+    at = _generated_app(sample_workbook)
+    # Pinch-outs on the sample produce polygon overlaps; blocking on them
+    # disables Generate. Changing VE then marks the existing section stale.
+    at.session_state["allow_pinch_outs"] = True
+    at.session_state["fail_on_overlaps_checkbox"] = True
+    at.session_state["vertical_exaggeration"] = 3.0
+    at.run()
+    assert not at.exception
+    stale_button = next(b for b in at.button if b.key == "regenerate_stale")
+    assert stale_button.disabled
+    banner = next(m.value for m in at.markdown if m.value.startswith("<div class=\"stale-banner\""))
+    assert "polygon overlaps" in banner
+    at.session_state["_regenerate_requested"] = True  # Ctrl+G / menu path
+    at.run()
+    assert any("Regenerate skipped" in w.value and "overlaps" in w.value for w in at.warning)
+
+
+def test_sections_tab_drop_down_drives_the_preview(tmp_path: Path) -> None:
+    """Pick a named section from the workbook's Sections tab: the hole order,
+    mode and sheet label follow, so a moved line only needs the tab edited."""
+    import pandas as pd
+    from streamlit.testing.v1 import AppTest
+
+    collars = pd.DataFrame(
+        [{"hole_id": f"BH-0{i}", "easting": i * 10.0, "northing": 0.0, "elevation": 100.0, "total_depth": 8.0} for i in range(1, 6)]
+    )
+    lith = pd.DataFrame(
+        [{"hole_id": f"BH-0{i}", "from_depth": 0.0, "to_depth": 8.0, "lithology_code": "Clay"} for i in range(1, 6)]
+    )
+    sections = pd.DataFrame(
+        [{"section_label": "A-A'", "hole_ids": "BH-01, BH-02, BH-03"}, {"section_label": "B-B'", "hole_ids": "BH-03 → BH-04 → BH-05"}]
+    )
+    workbook = tmp_path / "sections.xlsx"
+    with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
+        collars.to_excel(writer, sheet_name="Collars", index=False)
+        lith.to_excel(writer, sheet_name="Lithology", index=False)
+        sections.to_excel(writer, sheet_name="Sections", index=False)
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("sections.xlsx", workbook.read_bytes()).run()
+    assert not at.exception
+    picker = at.selectbox(key="workbook_section_choice")
+    assert len(picker.options) == 3  # Custom + two rows (options are row indices)
+    # First section is the default preview.
+    assert at.session_state["hole_sequence_multiselect"] == ["BH-01", "BH-02", "BH-03"]
+    picker.select(1).run()  # row index 1 = B-B'
+    at.run()
+    assert not at.exception
+    assert at.session_state["hole_sequence_multiselect"] == ["BH-03", "BH-04", "BH-05"]
+    assert at.session_state["consulting_section_label"] == "B-B'"
+    assert at.session_state["section_title"] == "B-B'"  # file names and metadata follow
+
+    # Picking a section while the Consulting layout (with its "Section label"
+    # text box) is active used to raise StreamlitWidgetAlreadyInstantiatedError.
+    at.session_state["output_preset"] = "consulting_report"
+    at.run()
+    at.selectbox(key="workbook_section_choice").select(0).run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["hole_sequence_multiselect"] == ["BH-01", "BH-02", "BH-03"]
+    assert at.session_state["consulting_section_label"] == "A-A'"
+
+    # A new workbook must not inherit the previous one's hole order or label.
+    plain = tmp_path / "plain.xlsx"
+    with pd.ExcelWriter(plain, engine="openpyxl") as writer:
+        collars.to_excel(writer, sheet_name="Collars", index=False)
+        lith.to_excel(writer, sheet_name="Lithology", index=False)
+    at.file_uploader[0].upload("plain.xlsx", plain.read_bytes()).run()
+    at.run()
+    assert not at.exception
+    assert not [sb for sb in at.selectbox if sb.key == "workbook_section_choice"]
+    assert at.session_state["consulting_section_label"] != "A-A'"
+    # A small workbook without a Sections tab starts with every hole.
+    assert at.session_state.get("hole_sequence_multiselect") == ["BH-01", "BH-02", "BH-03", "BH-04", "BH-05"]
+
+
+def test_clear_then_sample_drops_project_fields_and_opens_unblocked(sample_workbook: Path) -> None:
+    """The title block fields seeded from a Project tab leaked onto the next
+    workbook, and the demo opened on a blocked Generate under the consulting
+    preset (its pinch-out overlaps are blocked by default)."""
+    from streamlit.testing.v1 import AppTest
+
+    from workbook_template import build_input_template_bytes
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("template.xlsx", build_input_template_bytes()).run()
+    assert not at.exception
+    # One-shot upload banner: read it on the run that shows it.
+    assert any("template's sample values" in w.value for w in at.warning)
+    at.run()
+    assert at.session_state["consulting_section_label"] == "A - A' WITH CHLORIDE AVERAGES"
+    at.session_state["output_preset"] = "consulting_report"
+    at.run()
+    [btn for btn in at.button if btn.label == "Clear workbook"][0].click().run()
+    [btn for btn in at.button if btn.label == "Try sample project"][0].click().run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["consulting_section_label"] != "A - A' WITH CHLORIDE AVERAGES"
+    assert not any("Polygon overlaps detected" in e.value for e in at.error)
+    assert at.session_state.get("fail_on_overlaps_checkbox") is False

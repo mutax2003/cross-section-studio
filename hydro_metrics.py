@@ -6,8 +6,8 @@ profile is a schematic annotation (Δh/Δx), not a calibrated flow model.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Mapping, Sequence
 
 from models import WaterLevel
 
@@ -73,7 +73,9 @@ def horizontal_gradients_along_profile(
     series_id: str | None = None,
     connect_group: str | None = None,
 ) -> tuple[HorizontalGradientSegment, ...]:
-    """Compute Δh/Δx between consecutive transect holes that both have measured heads.
+    """Compute Δh/Δx between consecutive measured holes along the transect.
+
+    Unmeasured (dry/NM) holes are skipped, so a pair may span intermediate holes.
 
     Only levels with status ``measured`` participate. Optional ``series_id`` /
     ``connect_group`` filters match renderer nesting (blank connect_group = shared).

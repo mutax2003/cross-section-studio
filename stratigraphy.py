@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import logging
 from collections import Counter, defaultdict
+from collections.abc import Hashable, Sequence
 from dataclasses import dataclass
-from typing import Hashable, Sequence
-
-from models import CorrelationOverride
 
 import numpy as np
 import pandas as pd
+from shapely.errors import GEOSException
 from shapely.geometry import Polygon
 from shapely.strtree import STRtree
+
+from models import CorrelationOverride
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +151,19 @@ def _make_polygon(
     *,
     is_pinch_out: bool = False,
 ) -> GeologicalPolygon | None:
-    polygon = Polygon(coords)
+    try:
+        polygon = Polygon(coords)
+    except (GEOSException, ValueError) as exc:
+        # Non-finite coordinates (e.g. NaN collar elevation) — warn-and-skip,
+        # matching the platform's graceful-degradation rule.
+        logger.warning(
+            "Invalid polygon coordinates for %s between %s and %s: %s",
+            lithology_code,
+            hole_pair[0],
+            hole_pair[1],
+            exc,
+        )
+        return None
     if not polygon.is_valid:
         repaired = polygon.buffer(0)
         if repaired.is_empty or not repaired.is_valid:

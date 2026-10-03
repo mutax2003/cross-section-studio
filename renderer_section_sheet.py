@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -11,6 +11,7 @@ from matplotlib.figure import Figure
 from lithology_codes import collect_lithology_codes
 from models import WaterLevel
 from render_theme import AXES_BG, FIGURE_BG, GRID_COLOR, LABEL_COLOR
+from renderer_common import apply_true_value_y_axis
 from stratigraphy import GeologicalPolygon
 
 
@@ -120,6 +121,7 @@ class SectionSheetLayoutMixin:
             hole_summary,
             collar_lookup,
             profile_lookup=profile_lookup,
+            column_half_m=track_half,
         )
         if self.parameter_series_legend and self.profile.show_parameter_legend_text:
             self._draw_compact_parameter_legend(ax)
@@ -140,7 +142,11 @@ class SectionSheetLayoutMixin:
             else "Elevation (m RL)"
         )
         ax.set_ylabel(y_label, fontsize=10, labelpad=8)
-        ax.set_title(self.title, fontsize=14, fontweight="bold", pad=14, color=LABEL_COLOR)
+        # Data are plotted at value*VE; label the axis with the true values.
+        apply_true_value_y_axis(ax, ve)
+        # Depth mode draws the hole headers above the axes; lift the title clear.
+        title_pad = 14 if self.profile.y_axis_mode == "elevation_rl" else 48
+        ax.set_title(self.title, fontsize=14, fontweight="bold", pad=title_pad, color=LABEL_COLOR)
         ax.set_aspect("auto")
         if self.profile.show_grid:
             ax.grid(True, linestyle="--", alpha=0.35, color=GRID_COLOR, zorder=0)
@@ -164,7 +170,7 @@ class SectionSheetLayoutMixin:
             fig.supxlabel(
                 "Distance along transect (m)",
                 fontsize=10,
-                y=0.03,
+                y=0.058,
                 color=LABEL_COLOR,
             )
         else:

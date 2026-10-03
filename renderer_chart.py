@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,6 +15,7 @@ from lithology_codes import collect_lithology_codes
 from models import WaterLevel
 from render_profiles import CHART_PROFILE
 from render_theme import AXES_BG, FIGURE_BG, GRID_COLOR, LABEL_COLOR, STICK_COLOR, SURFACE_COLOR
+from renderer_common import apply_true_value_y_axis
 from stratigraphy import GeologicalPolygon
 
 
@@ -26,6 +27,28 @@ class _LabelSpec:
     dx: float = 0.0
     dy: float = 0.0
     draw_leader: bool = False
+
+
+# Reading / chemistry settings the caller's profile keeps on the chart layout.
+# Everything else (cosmetics, axes, columns) stays pinned to CHART_PROFILE.
+_PARAMETER_PROFILE_FIELDS: tuple[str, ...] = (
+    "show_parameter_markers",
+    "show_parameter_labels",
+    "show_parameter_legend_text",
+    "parameter_interpolate_segments",
+    "parameter_interpolate_across_gaps",
+    "parameter_draw_markers",
+    "parameter_marker",
+    "parameter_marker_size",
+    "parameter_draw_leaders",
+    "parameter_label_include_units",
+    "chemistry_color_mode",
+    "chemistry_threshold_green_max",
+    "chemistry_threshold_yellow_max",
+    "chemistry_label_style",
+    # Elevation-mode radio in the sidebar (RL vs depth below collar).
+    "y_axis_mode",
+)
 
 
 class ChartLayoutMixin:
@@ -40,8 +63,17 @@ class ChartLayoutMixin:
         water_levels: Sequence[WaterLevel] | None = None,
         lithology_codes: Sequence[str] | None = None,
     ) -> Figure:
-        chart_profile = CHART_PROFILE
         original = self.profile
+        # The stock chart profile has readings off; keep the caller's
+        # parameter / chemistry settings so environmental readings draw.
+        parameter_updates = {
+            name: getattr(original, name)
+            for name in _PARAMETER_PROFILE_FIELDS
+            if getattr(original, name) != getattr(CHART_PROFILE, name)
+        }
+        chart_profile = (
+            CHART_PROFILE.model_copy(update=parameter_updates) if parameter_updates else CHART_PROFILE
+        )
         self.profile = chart_profile
         try:
             fig_width = 13.5 if self.show_legend else 12.0
@@ -89,7 +121,10 @@ class ChartLayoutMixin:
                 hole_summary,
                 collar_lookup,
                 profile_lookup=profile_lookup,
+                column_half_m=track_half,
             )
+            if self.parameter_series_legend and self.profile.show_parameter_legend_text:
+                self._draw_compact_parameter_legend(ax)
 
             collar_depths = collar_depths or {}
             labels = self._resolve_label_collisions(
@@ -136,7 +171,15 @@ class ChartLayoutMixin:
                 self._draw_legend(ax, style_cache, lithology_codes, polygons)
 
             ax.set_xlabel("Distance along transect (m)", fontsize=10, labelpad=8)
-            ax.set_ylabel("Elevation (m)", fontsize=10, labelpad=8)
+            depth_mode = self.profile.y_axis_mode == "depth_below_collar"
+            ax.set_ylabel(
+                "Depth below collar (m)" if depth_mode else "Elevation (m)",
+                fontsize=10,
+                labelpad=8,
+            )
+            apply_true_value_y_axis(ax, ve)
+            if depth_mode:
+                ax.invert_yaxis()
             ax.set_title(self.title, fontsize=13, fontweight="bold", pad=12, color=LABEL_COLOR)
             ax.set_aspect("auto")
             ax.grid(True, linestyle="--", alpha=0.35, color=GRID_COLOR, zorder=0)
@@ -174,26 +217,6 @@ class ChartLayoutMixin:
         collection = LineCollection(segments, colors=STICK_COLOR, linewidths=4.0, zorder=5)
         ax.add_collection(collection)
         ax.scatter(x_values, top_y, marker="v", s=49, c=SURFACE_COLOR, zorder=7)
-        x_to_collar = dict(
-            zip(
-                hole_summary["x_profile"].to_numpy(dtype=float),
-                hole_summary["collar_elevation"].to_numpy(dtype=float),
-                strict=True,
-            )
-        )
-        for x_profile, top in zip(x_values, top_y, strict=True):
-            collar_rl = x_to_collar.get(float(x_profile))
-            if collar_rl is None:
-                continue
-            ax.annotate(
-                f"{float(collar_rl):.1f} m RL",
-                xy=(float(x_profile), float(top)),
-                xytext=(6, 4),
-                textcoords="offset points",
-                fontsize=7,
-                color=LABEL_COLOR,
-                zorder=8,
-            )
 
     def _build_borehole_labels(
         self,
@@ -204,11 +227,15 @@ class ChartLayoutMixin:
         for row in hole_summary.itertuples(index=False):
             depth = collar_depths.get(row.hole_id)
             depth_text = f"{depth:.1f} m TD" if depth is not None else ""
+            # The collar RL rides in the header box: as a separate label it
+            # sat under the box and only "m RL" showed.
+            rl_text = f"{float(row.collar_elevation):.1f} m RL"
+            lines = [str(row.hole_id), depth_text, rl_text]
             labels.append(
                 _LabelSpec(
                     x=float(row.x_profile),
                     y=float(row.collar_elevation),
-                    text=f"{row.hole_id}\n{depth_text}".strip(),
+                    text="\n".join(line for line in lines if line),
                 )
             )
         return labels

@@ -21,6 +21,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
+from models import LABEL_COLOR_NAMES
+
 INSTRUCTIONS_SHEET = "Instructions"
 PROJECT_SHEET = "Project"
 DATA_ENTRY_SHEET = "Data Entry"
@@ -84,7 +86,9 @@ ENVIRONMENTAL_COLUMNS = (
     "to_depth",
     "unit",
     "value_label",
+    "label_color",
 )
+LABEL_COLOR_CHOICES = LABEL_COLOR_NAMES
 SCREEN_COLUMNS = ("hole_id", "from_depth", "to_depth")
 GRADIENT_COLUMNS = ("hole_id", "direction")
 SECTION_COLUMNS = ("section_label", "hole_ids")
@@ -96,7 +100,6 @@ TABLE_SECTIONS: dict[str, tuple[str, ...]] = {
     "ENVIRONMENTAL": ENVIRONMENTAL_COLUMNS,
     "SCREENS": SCREEN_COLUMNS,
     "GRADIENTS": GRADIENT_COLUMNS,
-    "SECTIONS": SECTION_COLUMNS,
 }
 
 _HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
@@ -297,6 +300,7 @@ def _sample_environmental() -> list[dict[str, object]]:
             "to_depth": "",
             "unit": "mg/L",
             "value_label": "<5 mg/L",
+            "label_color": "green",
         },
         {
             "hole_id": "MW-01",
@@ -397,6 +401,7 @@ def _column_hints() -> dict[str, dict[str, str]]:
             "to_depth": "Interval base (m) if not using depth",
             "unit": "e.g. mg/L",
             "value_label": "Optional figure text (e.g. <5 mg/L)",
+            "label_color": "Optional: green, red, black or orange (blue is reserved for groundwater)",
         },
         SCREENS_SHEET: {
             "hole_id": "Must match Collars.hole_id",
@@ -434,7 +439,7 @@ def _instructions_lines() -> list[str]:
         "4. Optionally fill Water, Environmental, Screens, Gradients, and Sections.",
         "5. Upload this file in Cross Section Studio (Upload step).",
         "6. On Configure, pick the transect holes, groundwater series (max 4), and lab parameters to plot.",
-        "7. Optional: set chemistry label colour to green/yellow/red thresholds on Configure.",
+        "7. Optional: colour chemistry labels per row (label_color) or by green/orange/red thresholds on Configure.",
         "",
         "TAB GUIDE",
         "• Instructions — this guide.",
@@ -442,7 +447,7 @@ def _instructions_lines() -> list[str]:
         "• Collars — required. Coordinates and collar elevation (RL).",
         "• Lithology — required. Stick-log intervals; hole_id must match Collars.",
         "• Water — optional. Groundwater as depth below collar OR elevation_masl (not both on one row). Use series_id for snapshots; connect_group for shallow/deep nests.",
-        "• Environmental — optional. Lab/field parameters at a point depth or depth interval. Units belong in the legend; threshold colours are set in the app Configure step.",
+        "• Environmental — optional. Lab/field parameters at a point depth or depth interval. Units belong in the legend; label_color (green/red/black/orange) sets each value's colour on the figure.",
         "• Screens — optional. Screened intervals (consulting hatch bands).",
         "• Gradients — optional. Vertical gradient arrows (direction = up or down).",
         "• Sections — optional. Named transects (section_label + hole_ids) that seed Configure multi-transect batch lines.",
@@ -456,7 +461,8 @@ def _instructions_lines() -> list[str]:
         "ENVIRONMENTAL RULES",
         "• Use depth for a point sample, OR from_depth + to_depth for an interval — not both.",
         "• value_label is optional display text on the figure (e.g. <5 mg/L for non-detects).",
-        "• Select parameters and optional G/Y/R thresholds on Configure after upload.",
+        "• label_color is optional: green, red, black or orange (one fixed colour each; blue is reserved for groundwater). Blank = black, or G/Y/R thresholds if set on Configure.",
+        "• Select parameters on Configure after upload.",
         "",
         "WATER RULES",
         "• Up to four series_id values can be plotted; pick them on Configure.",
@@ -604,7 +610,7 @@ def parse_data_entry_sheet(frame: pd.DataFrame) -> DataEntrySheets:
             mode = "table_header"
             continue
 
-        if upper.startswith("PROJECT"):
+        if upper.startswith("PROJECT") and _normalize_key(first) not in project_fields:
             mode = "project"
             current_section = None
             continue
@@ -725,16 +731,45 @@ def _write_dataframe_sheet(
     worksheet.cell(row=1, column=hint_col, value=status).font = _HINT_FONT
     _autosize_columns(worksheet)
     if sheet_name == GRADIENTS_SHEET:
-        validation = DataValidation(
-            type="list",
-            formula1='"up,down"',
-            allow_blank=True,
-            showDropDown=False,
+        _add_list_validation(
+            worksheet, "B", entry_end, ("up", "down"), title="Gradient direction", error="Use up or down"
         )
-        validation.error = "Use up or down"
-        validation.errorTitle = "Gradient direction"
-        worksheet.add_data_validation(validation)
-        validation.add(f"B2:B{entry_end}")
+    if sheet_name == ENVIRONMENTAL_SHEET and "label_color" in columns:
+        _add_label_color_validation(worksheet, list(columns), entry_end)
+
+
+def _add_list_validation(worksheet, column_letter: str, last_row: int, choices, *, title: str, error: str) -> None:
+    """In-cell drop-down that also REJECTS typed values outside the list.
+
+    openpyxl defaults showErrorMessage to False, which draws the arrow but
+    lets Excel accept anything typed; the row then fails only on upload.
+    """
+    validation = DataValidation(
+        type="list",
+        formula1='"' + ",".join(choices) + '"',
+        allow_blank=True,
+        showDropDown=False,
+        showErrorMessage=True,
+        showInputMessage=True,
+    )
+    validation.error = error
+    validation.errorTitle = title
+    validation.prompt = error
+    validation.promptTitle = title
+    worksheet.add_data_validation(validation)
+    validation.add(f"{column_letter}2:{column_letter}{last_row}")
+
+
+def _add_label_color_validation(worksheet, columns: list[str], last_row: int) -> None:
+    column_letter = get_column_letter(columns.index("label_color") + 1)
+    _add_list_validation(
+        worksheet,
+        column_letter,
+        last_row,
+        LABEL_COLOR_CHOICES,
+        title="Label colour",
+        error="Use green, red, black or orange (blue is reserved for groundwater)",
+    )
 
 
 def _write_project_sheet(writer: pd.ExcelWriter) -> None:
@@ -956,7 +991,7 @@ def _load_project_sheet_metadata(source: str | Path | BinaryIO | BytesIO) -> dic
         key = _normalize_key(row[field_col])
         if key in project_fields:
             value = str(row[value_col]).strip()
-            if value and value.lower() != "nan":
+            if value and value.lower() != "nan" and not value.startswith("="):
                 result[key] = value
     if "figure_preset" not in result and "section_style" in result:
         result["figure_preset"] = result["section_style"]
@@ -982,6 +1017,16 @@ def load_project_metadata(source: str | Path | BinaryIO | BytesIO) -> dict[str, 
     merged = dict(from_data_entry)
     merged.update(from_project)
     return merged
+
+
+def _neutralise_formula_cells(book) -> None:
+    """Store any '=...' text as a literal string so a re-opened export never
+    executes user-supplied formulas (openpyxl treats such strings as formulas)."""
+    for sheet in book.worksheets:
+        for row in sheet.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    cell.data_type = "s"
 
 
 def export_cleaned_workbook_bytes(
@@ -1016,6 +1061,18 @@ def export_cleaned_workbook_bytes(
         }
         for collar in parse_result.collars
     ]
+    # Keep datum text (incl. converter placeholder tags) only when present, so
+    # plain cleaned exports keep the template's column layout.
+    if any(collar.elevation_datum for collar in parse_result.collars):
+        for row, collar in zip(collars, parse_result.collars):
+            row["elevation_datum"] = collar.elevation_datum or ""
+    # Deviated-hole angles used to be dropped here, straightening every hole
+    # on re-upload of a "cleaned" workbook.
+    for field in ("inclination_deg", "azimuth_deg"):
+        if any(getattr(collar, field) is not None for collar in parse_result.collars):
+            for row, collar in zip(collars, parse_result.collars):
+                value = getattr(collar, field)
+                row[field] = value if value is not None else ""
     lithology = []
     for interval in parse_result.lithologies:
         code = normalize_lithology_code(interval.lithology_code, aliases) if aliases else interval.lithology_code
@@ -1028,6 +1085,9 @@ def export_cleaned_workbook_bytes(
                 "unit_order": interval.unit_order if interval.unit_order is not None else "",
             }
         )
+    if any(interval.hatch_pattern for interval in parse_result.lithologies):
+        for row, interval in zip(lithology, parse_result.lithologies):
+            row["hatch_pattern"] = interval.hatch_pattern or ""
 
     seen_water: set[tuple[object, ...]] = set()
     water_rows: list[dict[str, object]] = []
@@ -1045,10 +1105,14 @@ def export_cleaned_workbook_bytes(
         water_rows.append(
             {
                 "hole_id": level.hole_id,
+                # Depth XOR elevation on re-ingest: the parser derives depth for
+                # elevation_masl rows, so writing both would reject the row.
                 "depth": (
                     ""
-                    if (level.status or "measured") in {"dry", "nm"} and level.depth == 0.0
-                    and level.elevation_masl is None
+                    if level.elevation_masl is not None
+                    or (
+                        (level.status or "measured") in {"dry", "nm"} and level.depth == 0.0
+                    )
                     else level.depth
                 ),
                 "elevation_masl": (
@@ -1060,6 +1124,15 @@ def export_cleaned_workbook_bytes(
                 "connect_group": level.connect_group or "",
             }
         )
+    for field in ("color", "marker"):
+        if any(getattr(level, field, None) for level in parse_result.water_levels):
+            kept = [level for level in parse_result.water_levels]
+            for row in water_rows:
+                match = next(
+                    (lv for lv in kept if lv.hole_id == row["hole_id"] and (lv.series_id or "") == row["series_id"]),
+                    None,
+                )
+                row[field] = (getattr(match, field, None) or "") if match else ""
 
     environmental = [
         {
@@ -1071,6 +1144,7 @@ def export_cleaned_workbook_bytes(
             "to_depth": reading.to_depth if reading.to_depth is not None else "",
             "unit": reading.unit or "",
             "value_label": reading.value_label or "",
+            "label_color": reading.label_color or "",
         }
         for reading in parse_result.environmental_readings
     ]
@@ -1092,6 +1166,35 @@ def export_cleaned_workbook_bytes(
         for item in parse_result.correlation_overrides
     ]
 
+    gradients = [
+        {"hole_id": item.hole_id, "direction": item.direction}
+        for item in parse_result.vertical_gradients
+    ]
+    sections = [
+        {"section_label": spec.label, "hole_ids": ", ".join(spec.hole_ids)}
+        for spec in parse_result.section_specs
+    ]
+
+    deviations = [
+        {
+            "hole_id": item.hole_id,
+            "depth": item.depth,
+            "inclination_deg": item.inclination_deg,
+            "azimuth_deg": item.azimuth_deg,
+        }
+        for item in parse_result.deviation_readings
+    ]
+    faults = [
+        {"name": fault.name, "x_profile": x, "elevation": y}
+        for fault in parse_result.faults
+        for x, y in fault.trace_points
+    ]
+    unconformities = [
+        {"name": surface.name, "x_profile": x, "elevation": y}
+        for surface in parse_result.unconformities
+        for x, y in surface.elevation_profile
+    ]
+
     project_rows = [{"field": key, "value": value} for key, value in project.items() if value]
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -1108,4 +1211,21 @@ def export_cleaned_workbook_bytes(
             pd.DataFrame(screens).to_excel(writer, sheet_name=SCREENS_SHEET, index=False)
         if correlations:
             pd.DataFrame(correlations).to_excel(writer, sheet_name="Correlations", index=False)
+        if gradients:
+            pd.DataFrame(gradients).to_excel(writer, sheet_name=GRADIENTS_SHEET, index=False)
+        if sections:
+            pd.DataFrame(sections).to_excel(writer, sheet_name=SECTIONS_SHEET, index=False)
+        # Structural interpretation sheets were silently omitted before.
+        if deviations:
+            pd.DataFrame(deviations).to_excel(writer, sheet_name="Deviations", index=False)
+        if faults:
+            pd.DataFrame(faults).to_excel(writer, sheet_name="Faults", index=False)
+        if unconformities:
+            pd.DataFrame(unconformities).to_excel(writer, sheet_name="Unconformities", index=False)
+        _neutralise_formula_cells(writer.book)
+        if environmental and ENVIRONMENTAL_SHEET in writer.book.sheetnames:
+            # Keep the colour drop-down on the round-tripped workbook too.
+            _add_label_color_validation(
+                writer.book[ENVIRONMENTAL_SHEET], list(environmental[0]), len(environmental) + 21
+            )
     return buffer.getvalue()

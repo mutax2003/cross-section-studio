@@ -58,6 +58,6 @@ When adding a new Python module imported at runtime:
 
 - `tests/test_paths.py` — frozen-friendly path resolution (incl. help topics)
 - `tests/test_launcher_port.py` — launcher port selection
-- `tests/test_import_smoke.py` — `app`, `pipeline`, `models`/`parsing`, renderer mixins, `app_menubar` import cleanly
+- `tests/test_import_smoke.py` — `pipeline`, `models`/`parsing`, renderer mixins, the `app_*` step modules (and optionally `app_menubar`/`app_version`) import cleanly
 - `tests/test_menubar.py` — help loaders + menubar smoke
 - `tests/test_ops.py` — auth / logging / audit / APM hooks

@@ -43,6 +43,10 @@ SESSION_SECTION_KEYS = (
     "report_package_bytes",
     "figure_docx_bytes",
     "batch_package_bytes",
+    "_batch_package_token",
+    "_preflight_json_key",
+    "_preflight_subset_json",
+    "_preflight_overrides_json",
 )
 
 SESSION_AI_KEYS = (
@@ -110,7 +114,9 @@ DEFAULT_SESSION: dict[str, object] = {
     "auto_fit_track_width": True,
     "allow_pinch_outs": False,
     "show_ground_surface": True,
-    "show_hatches": False,
+    # On by default: the client legend (template 261002) uses hatches to tell
+    # units that share a colour apart (Sandy Clay vs Clay, dotted Sand).
+    "show_hatches": True,
     "show_legend": True,
     "enable_ai_suggestions": False,
     "fail_on_overlaps": False,

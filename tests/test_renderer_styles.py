@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import sys
 from pathlib import Path
 
@@ -12,13 +13,25 @@ matplotlib.use("Agg")
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from constants import CONSULTING_LITHOLOGY_COLORS, USGS_LITHOLOGY_COLORS, USGS_LITHOLOGY_HATCHES, get_lithology_style
-from models import Collar, ConsultingTitleBlock, EnvironmentalReading, Lithology, ScreenInterval, VerticalGradient, WaterLevel
-from render_profiles import CHART_PROFILE, CONSULTING_SECTION_PROFILE, SECTION_SHEET_PROFILE
-from render_theme import PARAMETER_READING_COLOR, SCREEN_INTERVAL_HATCH
+from constants import (
+    CONSULTING_LITHOLOGY_COLORS,
+    USGS_LITHOLOGY_COLORS,
+    USGS_LITHOLOGY_HATCHES,
+    get_lithology_style,
+)
+from models import (
+    Collar,
+    ConsultingTitleBlock,
+    EnvironmentalReading,
+    Lithology,
+    ScreenInterval,
+    VerticalGradient,
+    WaterLevel,
+)
 from pipeline import build_cross_section
+from render_profiles import CHART_PROFILE, CONSULTING_SECTION_PROFILE, SECTION_SHEET_PROFILE
+from render_theme import SCREEN_INTERVAL_HATCH, parameter_series_color
 from renderer import CrossSectionRenderer, _resolve_parameter_label_offsets
-from stratigraphy import build_stratigraphy
 from tests.conftest import assert_valid_svg, run_pipeline
 
 
@@ -51,10 +64,9 @@ def test_every_canonical_lithology_has_color_and_hatch() -> None:
         assert code in USGS_LITHOLOGY_HATCHES
         style = get_lithology_style(code)
         assert style.color.startswith("#")
-        if code == "No Recovery":
-            assert style.hatch == ""
-        else:
-            assert len(style.hatch) >= 2
+        # Plain units (Clay, Silt, Topsoil, Coal...) carry no hatch by design;
+        # hatches are sparse single marks, as in the CAD template.
+        assert style.hatch == "" or (1 <= len(style.hatch) <= 3)
 
 
 def test_renderer_applies_hatches_to_svg() -> None:
@@ -247,13 +259,30 @@ def test_consulting_depth_mode_well_columns_render() -> None:
         polygons,
         projected,
         collar_depths={"MW-01": 10.0, "MW-02": 10.0},
-        water_levels=[],
+        # Water at MW-01 only: MW-02 is then a genuinely unmeasured hole -> NM.
+        water_levels=[WaterLevel(hole_id="MW-01", depth=3.0)],
     )
     svg_bytes = renderer.to_svg_bytes(figure)
     assert_valid_svg(svg_bytes)
     text = svg_bytes.decode("utf-8", errors="ignore")
     assert "NM" in text
     assert "#d0d5dd" in text.lower() or "#ffffff" in text.lower()
+
+    # Documented contract: no water data at all -> no NM labels anywhere.
+    dry_renderer = CrossSectionRenderer(
+        show_legend=False,
+        render_profile=depth_profile,
+        consulting_title_block=ConsultingTitleBlock(section_label="A-A'"),
+    )
+    dry_svg = dry_renderer.to_svg_bytes(
+        dry_renderer.render(
+            polygons,
+            projected,
+            collar_depths={"MW-01": 10.0, "MW-02": 10.0},
+            water_levels=[],
+        )
+    ).decode("utf-8", errors="ignore")
+    assert "NM" not in dry_svg
 
 
 def test_consulting_relative_mode_water_labels_use_mbgs() -> None:
@@ -570,7 +599,8 @@ def test_parameter_segment_mode_skips_unmeasured_gap() -> None:
     across_svg = across_renderer.to_svg_bytes(across_figure)
     assert_valid_svg(segment_svg)
     assert_valid_svg(across_svg)
-    assert PARAMETER_READING_COLOR.lower() in segment_svg.decode("utf-8", errors="ignore").lower()
+    # Series colour is fixed per parameter name, the same on every section.
+    assert parameter_series_color("Chloride").lower() in segment_svg.decode("utf-8", errors="ignore").lower()
     assert len(across_svg) > len(segment_svg)
 
 
@@ -679,3 +709,535 @@ def test_lithology_style_override_is_case_insensitive(tmp_path, monkeypatch) -> 
     assert style.hatch == ".."
     constants_mod._load_lithology_style_overrides.cache_clear()
     get_lithology_style.cache_clear()
+
+
+def test_consulting_water_labels_do_not_overlap_and_series_get_own_colours() -> None:
+    """Two series with near-identical heads at every hole: the label pass must
+    separate every number and keep it inside the plot; each series keeps its
+    own colour instead of one flat blue."""
+    import itertools
+
+    from matplotlib.text import Text
+
+    from renderer_water import _figure_renderer
+
+    collars = [
+        Collar(hole_id=f"MW-0{i}", easting=40.0 * i, northing=0.0, elevation=100.0, total_depth=10.0)
+        for i in range(1, 5)
+    ]
+    lithologies = [
+        Lithology(hole_id=collar.hole_id, from_depth=0.0, to_depth=10.0, lithology_code="Clay")
+        for collar in collars
+    ]
+    water = [
+        WaterLevel(hole_id=collar.hole_id, depth=2.0 + 0.03 * i, series_id=series)
+        for i, collar in enumerate(collars)
+        for series in ("2024-05", "2025-06")
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(40.0, 0.0), (160.0, 0.0)])
+    renderer = CrossSectionRenderer(
+        show_legend=False,
+        render_profile=CONSULTING_SECTION_PROFILE,
+        consulting_title_block=ConsultingTitleBlock(section_label="A-A'"),
+    )
+    figure = renderer.render(
+        polygons,
+        projected,
+        collar_depths={collar.hole_id: 10.0 for collar in collars},
+        water_levels=water,
+    )
+    mpl_renderer = _figure_renderer(figure)
+    labels = [annotation for _kind, annotation, _color in renderer._water_labels]
+    assert len(labels) >= 8
+    boxes = []
+    for annotation in labels:
+        annotation.update_positions(mpl_renderer)
+        boxes.append(Text.get_window_extent(annotation, mpl_renderer))
+    frame = labels[0].axes.get_window_extent(mpl_renderer)
+    for a, b in itertools.combinations(boxes, 2):
+        width = min(a.x1, b.x1) - max(a.x0, b.x0)
+        height = min(a.y1, b.y1) - max(a.y0, b.y0)
+        assert not (width > 0 and height > 0), "water labels overlap"
+    for box in boxes:
+        assert frame.x0 - 1 <= box.x0 and box.x1 <= frame.x1 + 1, "water label clipped"
+    series_colours = {entry["series_id"]: entry["color"] for entry in renderer.water_series_legend}
+    assert len(set(series_colours.values())) == 2
+
+
+def test_close_hole_id_headers_do_not_overlap() -> None:
+    """Holes 2 m apart with long IDs (like BH18-03 / BH18-02 on GWM B-B'):
+    the header pass must keep every column header readable."""
+    import itertools
+
+    from matplotlib.text import Text
+
+    from renderer_water import _figure_renderer
+
+    # Two close holes inside a long section, so they sit near each other on paper.
+    eastings = {"2017-BH09-LONG": 0.0, "2017-BH10-LONG": 2.0, "2017-BH11-LONG": 200.0}
+    ids = list(eastings)
+    collars = [
+        Collar(hole_id=hole, easting=x, northing=0.0, elevation=100.0, total_depth=8.0)
+        for hole, x in eastings.items()
+    ]
+    lithologies = [
+        Lithology(hole_id=hole, from_depth=0.0, to_depth=8.0, lithology_code="Clay") for hole in ids
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (200.0, 0.0)])
+    for profile in (CONSULTING_SECTION_PROFILE, SECTION_SHEET_PROFILE):
+        renderer = CrossSectionRenderer(show_legend=False, render_profile=profile)
+        figure = renderer.render(polygons, projected, collar_depths={hole: 8.0 for hole in ids})
+        mpl_renderer = _figure_renderer(figure)
+        boxes = [Text.get_window_extent(text, mpl_renderer) for text in renderer._header_labels]
+        assert len(boxes) == 3
+        for a, b in itertools.combinations(boxes, 2):
+            width = min(a.x1, b.x1) - max(a.x0, b.x0)
+            height = min(a.y1, b.y1) - max(a.y0, b.y0)
+            assert not (width > 0 and height > 0), f"{profile.layout}: hole-ID headers overlap"
+
+
+def _dense_header_section(n: int, spacing_m: float):
+    ids = [f"2017-BH{i:02d}-LONG" for i in range(n)]
+    collars = [
+        Collar(hole_id=hole, easting=i * spacing_m, northing=0.0, elevation=100.0, total_depth=8.0)
+        for i, hole in enumerate(ids)
+    ]
+    lithologies = [
+        Lithology(hole_id=hole, from_depth=0.0, to_depth=8.0, lithology_code="Clay") for hole in ids
+    ]
+    total = max(200.0, (n - 1) * spacing_m + 1.0)
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (total, 0.0)])
+    return ids, projected, polygons
+
+
+def _header_hits(figure, renderer) -> tuple[int, int]:
+    """(header/header overlaps, header/tick-label overlaps) in display space."""
+    import itertools
+
+    from matplotlib.text import Text
+
+    from renderer_water import _figure_renderer, _overlap_area
+
+    mpl_renderer = _figure_renderer(figure)
+    figure.draw_without_rendering()
+    boxes = [Text.get_window_extent(text, mpl_renderer) for text in renderer._header_labels]
+    ticks = [
+        label.get_window_extent(mpl_renderer)
+        for ax in figure.axes
+        for label in ax.get_xticklabels() + ax.get_yticklabels()
+        if label.get_visible() and label.get_text()
+    ]
+    pairs = sum(1 for a, b in itertools.combinations(boxes, 2) if _overlap_area(a, b) > 0)
+    tick_hits = sum(1 for box in boxes for tick in ticks if _overlap_area(box, tick) > 0)
+    return pairs, tick_hits
+
+
+def test_dense_section_sheet_headers_clear_each_other_and_tick_labels() -> None:
+    """30 long IDs 6 m apart: no horizontal stagger fits, so headers go
+    vertical rather than fusing or sitting on the distance tick labels."""
+    ids, projected, polygons = _dense_header_section(30, 6.0)
+    renderer = CrossSectionRenderer(show_legend=False, render_profile=SECTION_SHEET_PROFILE)
+    figure = renderer.render(polygons, projected, collar_depths={hole: 8.0 for hole in ids})
+    assert _header_hits(figure, renderer) == (0, 0)
+
+
+def test_header_and_water_passes_are_idempotent_and_rerun_for_export_pages() -> None:
+    """Export resizes the page after render; the label passes must re-run from
+    the drawn positions (not stack offsets) and leave the page clean."""
+    import numpy as np
+
+    from export_framing import ExportFramingConfig
+    from renderer_water import resolve_header_collisions
+
+    ids, projected, polygons = _dense_header_section(12, 8.0)
+    renderer = CrossSectionRenderer(show_legend=False, render_profile=SECTION_SHEET_PROFILE)
+    figure = renderer.render(polygons, projected, collar_depths={hole: 8.0 for hole in ids})
+
+    def positions():
+        from renderer_water import _figure_renderer
+
+        mpl_renderer = _figure_renderer(figure)
+        return np.array([t.get_window_extent(mpl_renderer).bounds for t in renderer._header_labels])
+
+    first = positions()
+    for _ in range(3):
+        resolve_header_collisions(figure, renderer._header_labels)
+    np.testing.assert_allclose(positions(), first, atol=0.5)
+
+    renderer.export_framing = ExportFramingConfig(page_preset="letter_portrait", export_dpi=72)
+    renderer.to_png_bytes(figure)
+    np.testing.assert_allclose(figure.get_size_inches(), (8.5, 11.0))
+    assert _header_hits(figure, renderer)[0] == 0
+
+
+def test_depth_mode_title_sits_clear_of_hole_headers() -> None:
+    """Depth (mbgs) sections draw hole headers above the axes, where the
+    title also sits; they used to share one line ("BH-02 Title BH-03")."""
+    from matplotlib.text import Text
+
+    from renderer_water import _figure_renderer, _overlap_area
+
+    ids = [f"BH26-{index:02d}" for index in range(10)]
+    collars = [
+        Collar(hole_id=hole, easting=index * 20.0, northing=0.0, elevation=100.0, total_depth=8.0)
+        for index, hole in enumerate(ids)
+    ]
+    lithologies = [
+        Lithology(hole_id=hole, from_depth=0.0, to_depth=8.0, lithology_code="Clay") for hole in ids
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (200.0, 0.0)])
+    profile = SECTION_SHEET_PROFILE.model_copy(update={"y_axis_mode": "depth_below_collar"})
+    renderer = CrossSectionRenderer(
+        show_legend=True, render_profile=profile, title="Borehole Cross-Section"
+    )
+    figure = renderer.render(polygons, projected, collar_depths={hole: 8.0 for hole in ids})
+    mpl_renderer = _figure_renderer(figure)
+    figure.draw_without_rendering()
+    title_box = figure.axes[0].title.get_window_extent(mpl_renderer)
+    header_boxes = [Text.get_window_extent(t, mpl_renderer) for t in renderer._header_labels]
+    assert header_boxes
+    assert all(_overlap_area(box, title_box) == 0 for box in header_boxes)
+    # With the title lifted clear, no header needs to stagger around it: one row.
+    assert len({round(box.y0) for box in header_boxes}) == 1
+    assert title_box.y0 > max(box.y1 for box in header_boxes)
+    assert title_box.y1 <= figure.bbox.y1  # still on the page
+
+
+def test_consulting_right_axis_label_stays_on_the_fixed_page() -> None:
+    """The twin RL axis label sat 6 px past the letter page edge, so PNG and
+    PDF exports silently dropped it."""
+    ids, projected, polygons = _dense_header_section(3, 40.0)
+    renderer = CrossSectionRenderer(show_legend=True, render_profile=CONSULTING_SECTION_PROFILE)
+    figure = renderer.render(polygons, projected, collar_depths={hole: 8.0 for hole in ids})
+    figure.draw_without_rendering()
+    mpl_renderer = figure.canvas.get_renderer()
+    right_labels = [
+        ax.yaxis.label
+        for ax in figure.axes
+        if ax.yaxis.get_label_position() == "right" and ax.yaxis.label.get_text().strip()
+    ]
+    assert right_labels, "consulting profile draws a right-hand RL axis label"
+    for label in right_labels:
+        assert label.get_window_extent(mpl_renderer).x1 <= figure.bbox.x1
+
+
+def test_very_long_titles_are_shortened_for_export() -> None:
+    renderer = CrossSectionRenderer(title="T" * 300)
+    assert len(renderer.title) <= 120 and renderer.title.endswith("…")
+    assert CrossSectionRenderer(title="Section A-A'").title == "Section A-A'"
+
+
+def test_consulting_groundwater_note_only_with_water_data() -> None:
+    from render_theme import DEFAULT_CONSULTING_NOTES
+
+    ids, projected, polygons = _dense_header_section(3, 40.0)
+
+    def note_texts(water):
+        renderer = CrossSectionRenderer(show_legend=True, render_profile=CONSULTING_SECTION_PROFILE)
+        figure = renderer.render(
+            polygons, projected, collar_depths={h: 8.0 for h in ids}, water_levels=water
+        )
+        return [t.get_text() for ax in figure.axes for t in ax.texts]
+
+    dry = " ".join(note_texts(None))
+    assert "GROUNDWATER BASED ON" not in dry
+    assert "masl DENOTES" in dry
+    wet = " ".join(note_texts([WaterLevel(hole_id=ids[0], depth=2.0)]))
+    assert DEFAULT_CONSULTING_NOTES[0].split(" ")[0] in wet
+
+
+def test_dense_consulting_headers_go_vertical_instead_of_overlapping() -> None:
+    """30 long IDs 6 m apart on the consulting sheet: no horizontal layout
+    fits, and the plot starts at the page top, so room is reserved for
+    vertical headers."""
+    ids, projected, polygons = _dense_header_section(30, 6.0)
+    renderer = CrossSectionRenderer(show_legend=True, render_profile=CONSULTING_SECTION_PROFILE)
+    figure = renderer.render(polygons, projected, collar_depths={hole: 8.0 for hole in ids})
+    pairs, tick_hits = _header_hits(figure, renderer)
+    assert pairs == 0 and tick_hits == 0
+    assert all(t.get_rotation() == 90 for t in renderer._header_labels)
+    assert all(t.get_window_extent(figure.canvas.get_renderer()).y1 <= figure.bbox.y1 for t in renderer._header_labels)
+
+
+def test_agreed_lithology_scheme_groups_and_hatches() -> None:
+    """Meeting 1 Oct 2026: one base colour per soil group, hatch marks the
+    secondary component, Coal is the only black unit, Topsoil sits between
+    clay/silt and organics in darkness with no hatch."""
+    from constants import HATCH_GRAVEL, HATCH_PLUS, HATCH_SANDY, HATCH_SILTY
+
+    def colour(code):
+        return get_lithology_style(code).color.upper()
+
+    def hatch(code):
+        return get_lithology_style(code).hatch
+
+    assert {colour(c) for c in ("Clay", "Sandy Clay", "Silty Clay", "Silty Clay Loam")} == {"#967259"}
+    assert {colour(c) for c in ("Sandy Clay Loam", "Clay Loam", "Loam", "Silty Loam")} == {"#C68642"}
+    assert {colour(c) for c in ("Sand", "Loamy Sand", "Silty Sand", "Sand and Gravel")} == {"#FFE39F"}
+    assert {colour(c) for c in ("Siltstone", "Sandstone", "Mudstone")} == {"#4C516D"}
+    assert hatch("Sandy Clay") == HATCH_SANDY and hatch("Silty Clay") == HATCH_SILTY
+    assert hatch("Silty Clay Loam") == hatch("Clay Loam") == HATCH_PLUS
+    assert hatch("Sand and Gravel") == hatch("Gravel") == HATCH_GRAVEL
+    assert hatch("Silty Sand") == hatch("Loamy Sand") == HATCH_SILTY
+    # Template 261002: Sand carries the same stipple as the other sandy units
+    # (same dot density as Sandy Clay, Sandy Clay Loam and Sandstone).
+    assert hatch("Sand") == hatch("Sandy Clay") == hatch("Sandy Clay Loam") == hatch("Sandstone") == HATCH_SANDY
+    assert hatch("Clay") == hatch("Silt") == hatch("Loam") == hatch("Topsoil") == ""
+
+    def luminance(code):
+        r, g, b = (int(colour(code)[i : i + 2], 16) for i in (1, 3, 5))
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    assert colour("Coal") == "#000000"
+    # Only Coal is black; Organics is the darkest *brown* (#38220F), not black.
+    assert all(colour(c) != "#000000" and luminance(c) > 25 for c in USGS_LITHOLOGY_COLORS if c != "Coal")
+    assert luminance("Organics") < luminance("Topsoil") < min(luminance("Clay"), luminance("Silt"))
+
+
+def test_consulting_first_borehole_is_drawn_in_full() -> None:
+    """The first hole projects to x = 0; the axis used to start at 0 and clip
+    the left half of its column. The axis now starts slightly negative, with
+    no negative tick labels."""
+    ids, projected, polygons = _dense_header_section(3, 40.0)
+    renderer = CrossSectionRenderer(show_legend=True, render_profile=CONSULTING_SECTION_PROFILE)
+    figure = renderer.render(polygons, projected, collar_depths={hole: 8.0 for hole in ids})
+    figure.canvas.draw()
+    ax = figure.axes[0]
+    half = renderer._track_half_width(projected["x_profile"].to_numpy(dtype=float))
+    assert ax.get_xlim()[0] <= -half  # whole first column inside the axes
+    labels = [t.get_text() for t in ax.get_xticklabels() if t.get_text()]
+    assert labels and not any(label.lstrip().startswith(("-", "−")) for label in labels)
+    assert "0" in labels
+
+
+def test_stale_excel_legend_only_overrides_listed_codes(tmp_path, monkeypatch, caplog) -> None:
+    """A leftover BH Log Lithology Legend.xlsx used to replace the whole agreed
+    scheme (dropping codes to grey); now it only overrides the codes it lists,
+    and says so."""
+    import logging
+
+    import openpyxl
+
+    import constants
+    import paths
+
+    legend = tmp_path / "BH Log Lithology Legend.xlsx"
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.append(["BH Log Lithology Legend"])  # title row; the parser reads header=1
+    sheet.append(["Colour", "", "Lithology", "RGB"])
+    sheet.append(["#38220F", "", "Clay", ""])
+    book.save(legend)
+    monkeypatch.setattr(paths, "bh_log_lithology_legend_xlsx_path", lambda: legend)
+    monkeypatch.setattr(constants, "bh_log_lithology_legend_xlsx_path", lambda: legend)
+    constants._load_bh_log_lithology_colors.cache_clear()
+    try:
+        with caplog.at_level(logging.WARNING):
+            palette = constants._build_lithology_palette()
+        assert palette["Clay"] == "#38220F"  # the listed code is overridden...
+        assert palette["Coal"] == "#000000" and palette["Silty Sand"] == "#FFE39F"  # ...the rest keep the scheme
+        assert len(palette) == len(constants.USGS_LITHOLOGY_COLORS)
+        assert any("overrides the agreed scheme" in r.message for r in caplog.records)
+    finally:
+        constants._load_bh_log_lithology_colors.cache_clear()
+
+
+def test_style_override_can_be_cleared(tmp_path, monkeypatch) -> None:
+    import constants
+    import paths
+
+    override_file = tmp_path / "lithology_styles.json"
+    monkeypatch.setattr(paths, "lithology_styles_path", lambda: override_file)
+    monkeypatch.setattr(constants, "lithology_styles_path", lambda: override_file)
+    constants._load_lithology_style_overrides.cache_clear()
+    constants.get_lithology_style.cache_clear()
+    try:
+        constants.save_lithology_style_override("topsoil", "#8B6914", "..")
+        assert constants.get_lithology_style("Topsoil").hatch == ".."
+        assert constants.has_lithology_style_override("Topsoil")
+        assert constants.clear_lithology_style_override("TOPSOIL")
+        assert not constants.has_lithology_style_override("Topsoil")
+        assert constants.get_lithology_style("Topsoil").hatch == ""  # back to the scheme
+        assert not constants.clear_lithology_style_override("Topsoil")
+    finally:
+        constants._load_lithology_style_overrides.cache_clear()
+        constants.get_lithology_style.cache_clear()
+
+
+def test_consulting_legend_holds_many_units_without_overlap_or_silent_loss() -> None:
+    """31 codes used to overrun the panel: the header overlapped the first row
+    and everything past twelve entries vanished with no indication."""
+    from matplotlib.text import Text
+
+    from renderer_water import _overlap_area
+
+    codes = sorted(USGS_LITHOLOGY_COLORS)
+    ids = [f"BH-{i:02d}" for i in range(4)]
+    collars = [
+        Collar(hole_id=h, easting=i * 25.0, northing=0.0, elevation=100.0, total_depth=float(len(codes)))
+        for i, h in enumerate(ids)
+    ]
+    lithologies = [
+        Lithology(hole_id=h, from_depth=float(k), to_depth=float(k + 1), lithology_code=code)
+        for h in ids
+        for k, code in enumerate(codes)
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (75.0, 0.0)])
+    renderer = CrossSectionRenderer(show_legend=True, render_profile=CONSULTING_SECTION_PROFILE)
+    figure = renderer.render(polygons, projected, collar_depths={h: float(len(codes)) for h in ids}, lithology_codes=codes)
+    figure.draw_without_rendering()
+    mpl_renderer = figure.canvas.get_renderer()
+    legend_ax = next(ax for ax in figure.axes if any(t.get_text() == "LEGEND" for t in ax.texts))
+    texts = [t for t in legend_ax.texts if t.get_text().strip()]
+    labels = {t.get_text() for t in texts}
+    header = next(t for t in texts if t.get_text() == "LEGEND")
+    header_box = Text.get_window_extent(header, mpl_renderer)
+    entry_boxes = [Text.get_window_extent(t, mpl_renderer) for t in texts if t is not header]
+    assert all(_overlap_area(header_box, box) == 0 for box in entry_boxes)
+    note = next(label for label in labels if label.startswith("+") and "MORE UNITS" in label)
+    shown_codes = [c for c in codes if c.upper() in labels]
+    hidden = int(note.split()[0].lstrip("+"))
+    # Every unit is either listed or counted in the note; the panel is full.
+    assert len(shown_codes) + hidden == len(codes)
+    assert len(shown_codes) >= 10
+    panel = legend_ax.get_window_extent(mpl_renderer)
+    assert all(box.y0 >= panel.y0 - 1 and box.y1 <= panel.y1 + 1 for box in entry_boxes)
+    for a, b in itertools.combinations(entry_boxes, 2):
+        assert _overlap_area(a, b) == 0
+
+
+def _consulting_figure(n_holes: int = 3, spacing: float = 40.0, **profile_updates):
+    ids, projected, polygons = _dense_header_section(n_holes, spacing)
+    title_block = ConsultingTitleBlock(
+        section_label="A-A'",
+        transect_start_label="A",
+        transect_start_secondary="WEST",
+        transect_end_label="A'",
+        transect_end_secondary="EAST",
+        notes=(
+            "GROUNDWATER BASED ON GROUNDWATER MONITORING WELL OBSERVATIONS ONLY, SEE TABLE 2.",
+            "masl DENOTES METRES ABOVE SEA LEVEL.",
+            "LITHOLOGY BETWEEN BOREHOLES IS INFERRED AND SCHEMATIC ONLY.",
+        ),
+    )
+    renderer = CrossSectionRenderer(
+        show_legend=True,
+        render_profile=CONSULTING_SECTION_PROFILE.model_copy(update=profile_updates),
+        consulting_title_block=title_block,
+    )
+    figure = renderer.render(polygons, projected, collar_depths={h: 8.0 for h in ids})
+    figure.draw_without_rendering()
+    return renderer, figure
+
+
+def _texts_outside_page(figure) -> list[str]:
+    mpl_renderer = figure.canvas.get_renderer()
+    outside = []
+    for ax in figure.axes:
+        for text in ax.texts:
+            if not text.get_text().strip() or not text.get_visible():
+                continue
+            box = text.get_window_extent(mpl_renderer)
+            if box.x0 < figure.bbox.x0 - 0.5 or box.x1 > figure.bbox.x1 + 0.5 or box.y1 > figure.bbox.y1 + 0.5:
+                outside.append(text.get_text())
+    return outside
+
+
+def test_consulting_end_labels_print_on_the_page() -> None:
+    """'A / WEST' and 'A' / EAST' sat above the page edge on every letter
+    sheet and were silently cut from PNG and PDF."""
+    _, figure = _consulting_figure()
+    labels = [t.get_text() for ax in figure.axes for t in ax.texts]
+    assert any("WEST" in label for label in labels) and any("EAST" in label for label in labels)
+    assert not [t for t in _texts_outside_page(figure) if "WEST" in t or "EAST" in t]
+    # ...and they sit beside the hole-ID header strip, not on it.
+    from matplotlib.text import Text
+
+    from renderer_water import _overlap_area
+
+    renderer, figure = _consulting_figure()
+    mpl_renderer = figure.canvas.get_renderer()
+    ends = [t for ax in figure.axes for t in ax.texts if "WEST" in t.get_text() or "EAST" in t.get_text()]
+    end_boxes = [Text.get_window_extent(t, mpl_renderer) for t in ends]
+    header_boxes = [Text.get_window_extent(t, mpl_renderer) for t in renderer._header_labels]
+    assert all(_overlap_area(e, h) == 0 for e in end_boxes for h in header_boxes)
+
+
+def test_consulting_notes_do_not_overlap_each_other() -> None:
+    from matplotlib.text import Text
+
+    from renderer_water import _overlap_area
+
+    _, figure = _consulting_figure()
+    mpl_renderer = figure.canvas.get_renderer()
+    notes = [t for ax in figure.axes for t in ax.texts if t.get_text()[:2] in ("1.", "2.", "3.")]
+    assert len(notes) >= 2
+    boxes = [Text.get_window_extent(t, mpl_renderer) for t in notes]
+    for a, b in itertools.combinations(boxes, 2):
+        assert _overlap_area(a, b) == 0
+
+
+def test_last_hole_value_labels_stay_on_the_page() -> None:
+    """Right-only candidates pushed the last column's values past the page
+    edge; a left-of-column fallback now catches them."""
+    ids = [f"BH-{i:02d}" for i in range(6)]
+    collars = [Collar(hole_id=h, easting=i * 40.0, northing=0.0, elevation=100.0, total_depth=8.0) for i, h in enumerate(ids)]
+    lithologies = [Lithology(hole_id=h, from_depth=0.0, to_depth=8.0, lithology_code="Clay") for h in ids]
+    readings = [
+        EnvironmentalReading(hole_id=ids[-1], parameter="Chloride", value=1000.0 + k, depth=1.0 + k)
+        for k in range(6)
+    ]
+    projected, polygons, _ = run_pipeline(collars, lithologies, [(0.0, 0.0), (200.0, 0.0)])
+    renderer = CrossSectionRenderer(
+        show_legend=True,
+        render_profile=CONSULTING_SECTION_PROFILE.model_copy(
+            update={"show_parameter_markers": True, "show_parameter_labels": True}
+        ),
+        environmental_readings=readings,
+        environmental_parameters=("Chloride",),
+    )
+    figure = renderer.render(polygons, projected, collar_depths={h: 8.0 for h in ids})
+    figure.draw_without_rendering()
+    assert not [t for t in _texts_outside_page(figure) if t.startswith("100")]
+    # ...and they do not sit on the twin RL axis tick numbers either.
+    from matplotlib.text import Text
+
+    from renderer_water import _drawn_tick_labels, _overlap_area
+
+    mpl_renderer = figure.canvas.get_renderer()
+    values = [Text.get_window_extent(a, mpl_renderer) for k, a, _c in renderer._water_labels if k == "chem"]
+    ticks = [
+        t.get_window_extent(mpl_renderer)
+        for ax in figure.axes
+        for t in _drawn_tick_labels(ax.yaxis, ax.get_ylim())
+        if t.get_visible() and t.get_text().strip()
+    ]
+    assert values and not any(_overlap_area(v, t) > 0 for v in values for t in ticks)
+
+
+def test_unknown_lithology_codes_get_distinct_fallback_styles() -> None:
+    styles = {code: get_lithology_style(code) for code in ("CL", "SM", "TILL", "GP")}
+    assert all(s.color.startswith("#") and len(s.hatch) >= 2 for s in styles.values())
+    assert len({(s.color, s.hatch) for s in styles.values()}) >= 3  # not one grey for all
+    assert get_lithology_style("CL") == get_lithology_style("cl")  # stable per code
+
+
+# Fill colours read from the client CAD template Cross_Section_Litho_Legend_261002.
+_CAD_TEMPLATE_261002_COLOURS = {
+    "Clay": "#967259", "Silt": "#8D5524", "Loam": "#C68642", "Sand": "#FFE39F",
+    "Topsoil": "#534230", "Organics": "#38220F", "Fill": "#854442", "Gravel": "#D9D9D9",
+    "Mudstone": "#4C516D", "Drilling Waste": "#808080", "Other": "#4D5D53",
+    "No Recovery": "#FFFFFF", "Bentonite": "#BFBFBF", "Coal": "#000000", "Refuse": "#8C973D",
+    "Sandy Clay": "#967259", "Silty Clay": "#967259", "Silty Clay Loam": "#967259",
+    "Sand and Gravel": "#FFE39F", "Loamy Sand": "#FFE39F", "Sandy Clay Loam": "#C68642",
+    "Silty Loam": "#C68642", "Clay Loam": "#C68642", "Sandstone": "#4C516D", "Siltstone": "#4C516D",
+}
+
+
+def test_palette_matches_cad_template_261002() -> None:
+    mismatched = {
+        code: (expected, get_lithology_style(code).color.upper())
+        for code, expected in _CAD_TEMPLATE_261002_COLOURS.items()
+        if get_lithology_style(code).color.upper() != expected
+    }
+    assert not mismatched, mismatched

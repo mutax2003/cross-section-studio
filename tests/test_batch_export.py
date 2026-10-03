@@ -171,3 +171,63 @@ def test_batch_geometry_memo_reuses_same_payload() -> None:
     assert first[0] == second[0] == "A-A"
     assert first[1] and second[1]
     clear_batch_geometry_memo()
+
+
+def test_build_batch_zip_uniquifies_colliding_and_derived_stems() -> None:
+    import io
+    import zipfile as _zipfile
+
+    entries = [(stem, b"svg", b"png", b"pdf") for stem in ("A", "A", "A_2", "a")]
+    names = _zipfile.ZipFile(io.BytesIO(build_batch_zip(entries))).namelist()
+    assert len(names) == len(set(names))
+    stems = {name.rsplit(".", 1)[0] for name in names}
+    assert len(stems) == 4  # every entry kept under a distinct stem
+    lowered = [stem.lower() for stem in stems]
+    assert len(lowered) == len(set(lowered))  # distinct even case-insensitively
+
+
+def test_batch_transect_spec_requires_distinct_holes() -> None:
+    with pytest.raises(ValueError, match="distinct"):
+        parse_batch_transect_lines("A | BH-01, BH-01")
+
+
+def test_batch_end_labels_use_section_letters_not_hole_ids() -> None:
+    """End labels sit beside the edge holes' own names; using the hole IDs
+    printed each edge hole twice on every batch sheet."""
+    from batch_export import _consulting_for_spec
+    from models import ConsultingTitleBlock
+
+    base = ConsultingTitleBlock(
+        section_label="A-A'",
+        transect_start_primary="A",
+        transect_start_secondary="WEST",
+        transect_end_primary="A'",
+        transect_end_secondary="EAST",
+    )
+    block = _consulting_for_spec(base, label="B-B'", hole_ids=("BH26-04", "BH26-05", "BH26-06"))
+    assert (block.transect_start_primary, block.transect_end_primary) == ("B", "B'")
+    # The base section's compass words do not describe this transect.
+    assert block.transect_start_secondary == block.transect_end_secondary == ""
+
+    free = _consulting_for_spec(None, label="North transect", hole_ids=("BH-1", "BH-2"))
+    assert free.transect_start_primary == free.transect_end_primary == ""
+    assert "BH-1" not in (free.transect_start_label, free.transect_end_label)
+
+
+def test_batch_title_swaps_the_base_section_label() -> None:
+    """The base title named A-A' and every batch figure was titled
+    "<title> A-A' — B-B'"."""
+    from batch_export import _batch_section_title
+    from models import ConsultingTitleBlock
+
+    class _Req:
+        def __init__(self, title, block=None):
+            self.section_title = title
+            self.consulting_title_block = block
+
+    assert _batch_section_title(_Req("Test Section A-A'"), "B-B'") == "Test Section B-B'"
+    assert _batch_section_title(_Req("Site 4 – A–A′"), "C-C'") == "Site 4 – C-C'"
+    block = ConsultingTitleBlock(section_label="North")
+    assert _batch_section_title(_Req("North line", block), "South") == "South line"
+    assert _batch_section_title(_Req("Borehole Cross-Section"), "B-B'") == "Borehole Cross-Section — B-B'"
+    assert _batch_section_title(_Req("Plan"), "North line") == "Plan — North line"

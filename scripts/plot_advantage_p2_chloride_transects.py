@@ -96,6 +96,9 @@ def generate_transect(
         parameter_interpolate_segments=spec.parameter_interpolate_segments,
         interpretation_mode=spec.interpretation_mode,  # type: ignore[arg-type]
         elevation_mode=spec.elevation_mode,
+        # Client Fig 6/7 draw thin borehole sticks; the 3 m default (auto-fit)
+        # tripled the column width and alone pushed Fig 7 past the parity gate.
+        track_width_m=0.6,
         export_formats=frozenset({"svg", "png"}),
     )
     output_dir.mkdir(parents=True, exist_ok=True)

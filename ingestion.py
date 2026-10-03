@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
-from typing import BinaryIO, Literal, Sequence
+from typing import BinaryIO, Literal
 
 import pandas as pd
 from pydantic import BaseModel, Field
@@ -23,7 +24,6 @@ from ai_quality import (
     propose_workbook_mapping,
     read_mapped_sheets,
 )
-from constants import DEFAULT_PROFILE_ELEVATION_M
 from models import (
     COLLAR_COLUMNS,
     LITHOLOGY_COLUMNS,
@@ -34,10 +34,9 @@ from models import (
     geology_sheet_counts,
     lithology_has_unit_order_column,
 )
+from paths import import_profiles_dir
 
 logger = logging.getLogger(__name__)
-
-from paths import import_profiles_dir
 
 PROFILES_DIR = import_profiles_dir()
 OVERRIDES_DIR = PROFILES_DIR / "overrides"
@@ -108,6 +107,9 @@ class ImportReport:
 
 
 def _as_workbook(source: str | Path | BinaryIO | BytesIO | pd.ExcelFile) -> pd.ExcelFile:
+    from parsing import check_workbook_row_counts
+
+    check_workbook_row_counts(source)
     if isinstance(source, pd.ExcelFile):
         return source
     if hasattr(source, "seek"):
@@ -712,9 +714,17 @@ def ingest_workbook(
             target_crs=target_crs,
             workbook=workbook,
         )
+        effective_crs = target_crs or profile.coordinates.target_crs
         if suggested_from_adapt and target_crs is None:
             suggested_utm_crs = suggested_from_adapt
             warnings.append(f"Suggested target CRS from coordinates: {suggested_utm_crs}")
+        elif suggested_from_adapt and str(suggested_from_adapt).upper() != str(effective_crs).upper():
+            suggested_utm_crs = suggested_from_adapt
+            warnings.append(
+                f"Coordinates fall in {suggested_from_adapt} but were projected to "
+                f"{effective_crs} — horizontal distances may be distorted; set Target CRS "
+                "to the suggested zone."
+            )
         for hole_id, offset in profile.coordinate_offsets_m.items():
             if len(offset) == 2:
                 offsets_applied[hole_id] = (float(offset[0]), float(offset[1]))
@@ -731,6 +741,19 @@ def ingest_workbook(
             workbook=workbook,
         )
 
+    if (
+        not project_metadata
+        and workbook is not None
+        and any(name.strip().lower() == "project" for name in workbook.sheet_names)
+    ):
+        from workbook_template import load_project_metadata
+
+        if hasattr(source, "seek"):
+            source.seek(0)
+        project_metadata = load_project_metadata(source)
+        if project_metadata and "Project" not in optional_sheets:
+            optional_sheets.append("Project")
+
     placeholder_elevation = (
         profile_default_elevation_m
         if resolved_profile_id not in {NATIVE_PROFILE_ID, DATA_ENTRY_PROFILE_ID}
@@ -738,6 +761,23 @@ def ingest_workbook(
     )
     if elevation_m is not None:
         placeholder_elevation = None
+    cleaned_collars, stale_tags = _drop_stale_placeholder_datums(parse_result.collars)
+    if stale_tags:
+        parse_result = parse_result.model_copy(update={"collars": tuple(cleaned_collars)})
+        warnings.append(
+            f"Ignored the converter placeholder datum on {stale_tags} collar(s) whose "
+            "elevation was since edited (treated as surveyed RL)."
+        )
+    if placeholder_elevation is None and resolved_profile_id in {
+        NATIVE_PROFILE_ID,
+        DATA_ENTRY_PROFILE_ID,
+    }:
+        placeholder_elevation = _uniform_placeholder_elevation(parse_result.collars)
+        if placeholder_elevation is not None:
+            warnings.append(
+                f"Collar elevations are converter placeholders ({placeholder_elevation:.1f} m, "
+                "not surveyed RL) — set surveyed elevations for absolute RL sections."
+            )
 
     had_unit_order_column = lithology_has_unit_order_column(parse_result.lithologies)
     unit_order_auto_assigned = False
@@ -819,6 +859,69 @@ def ingest_workbook(
     return parse_result, report
 
 
+PLACEHOLDER_DATUM_PREFIX = "Placeholder"
+
+
+def _placeholder_datum(elevation_m: float) -> str:
+    return f"{PLACEHOLDER_DATUM_PREFIX} (profile default {elevation_m:.1f} m, not surveyed RL)"
+
+
+_PLACEHOLDER_DEFAULT_RE = re.compile(r"profile default\s+(-?[0-9]+(?:\.[0-9]+)?)\s*m", re.IGNORECASE)
+
+
+def _placeholder_default(datum: str | None) -> float | None:
+    """RL recorded in a converter placeholder tag; None for any other datum text.
+
+    Requires the full tag form so user datums that merely start with
+    "Placeholder" are neither flagged nor cleared.
+    """
+    text = (datum or "").strip()
+    if not text.lower().startswith(PLACEHOLDER_DATUM_PREFIX.lower()):
+        return None
+    match = _PLACEHOLDER_DEFAULT_RE.search(text)
+    return float(match.group(1)) if match else None
+
+
+def _is_placeholder_datum(datum: str | None) -> bool:
+    return _placeholder_default(datum) is not None
+
+
+def _placeholder_still_applies(collar) -> bool:
+    """True while a tagged collar still sits at the RL its converter tag recorded.
+
+    Once a user types a surveyed RL over the placeholder the tag is stale.
+    """
+    default = _placeholder_default(collar.elevation_datum)
+    return default is not None and abs(collar.elevation - default) < 0.01
+
+
+def _uniform_placeholder_elevation(collars) -> float | None:
+    """Collar RL shared by every collar still at its converter placeholder, else None."""
+    if not collars or not all(_placeholder_still_applies(collar) for collar in collars):
+        return None
+    first = collars[0].elevation
+    if all(abs(collar.elevation - first) < 0.01 for collar in collars):
+        return float(first)
+    return None
+
+
+def _drop_stale_placeholder_datums(collars):
+    """Clear placeholder tags on collars whose RL was since surveyed.
+
+    Returns (collars, n_cleared) so the figure never prints "Datum: Placeholder"
+    on a surveyed section.
+    """
+    cleaned = []
+    cleared = 0
+    for collar in collars:
+        if _is_placeholder_datum(collar.elevation_datum) and not _placeholder_still_applies(collar):
+            cleaned.append(collar.model_copy(update={"elevation_datum": None}))
+            cleared += 1
+        else:
+            cleaned.append(collar)
+    return cleaned, cleared
+
+
 def export_platform_workbook(
     source: str | Path | BinaryIO | BytesIO,
     output: Path,
@@ -869,6 +972,9 @@ def export_platform_workbook(
             target_crs=target_crs,
             workbook=workbook,
         )
+        if elevation_m is None:
+            # Not a surveyed RL: tag it so a re-import still flags placeholders.
+            collars_df["elevation_datum"] = _placeholder_datum(profile.defaults.elevation_m)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(output, engine="openpyxl") as writer:

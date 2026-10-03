@@ -118,6 +118,10 @@ Suite MSE ceilings hard-fail in CI; use `--warn-only` for local soft runs. Defau
 | [`docs/operator-runbook.md`](docs/operator-runbook.md) | Deploy, auth, env, release checklist |
 | [`AGENTS.md`](AGENTS.md) | Agent / CI orchestration for contributors |
 
+## Copyright
+
+Created by Andrew Liu, Ecoventure, 2026. Copyright © 2026 Andrew Liu, Ecoventure. All rights reserved — see [`COPYRIGHT`](COPYRIGHT).
+
 ## Interpretation disclaimer
 
 Fence fills between boreholes use deterministic correlation rules (including midpoint pinch-outs when enabled). They are schematic engineering drawings, not interpolated geological models. Always review **Configure** correlation health, **Block export on polygon overlaps**, and Generate overlap warnings before issuing figures to clients.

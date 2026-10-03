@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 from bisect import bisect_left
-from typing import Sequence, TypedDict
+from collections.abc import Sequence
+from typing import TypedDict
 
 import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
+from matplotlib.patheffects import withStroke
+from matplotlib.transforms import offset_copy
 
 from models import EnvironmentalReading
 from render_theme import (
+    CHEMISTRY_FIXED_COLORS,
     CHEMISTRY_LABEL_BLACK,
     LABEL_COLOR,
-    PARAMETER_PALETTE,
     chemistry_label_color,
+    parameter_series_colors,
 )
 from renderer_water import _GW_MARKER_MAP
 
@@ -38,6 +42,8 @@ _PARAMETER_LABEL_BBOX = {
     "edgecolor": "none",
     "alpha": 0.88,
 }
+# "box" readability style: fully opaque so hatch lines never show through.
+_PARAMETER_LABEL_BBOX_SOLID = {**_PARAMETER_LABEL_BBOX, "alpha": 1.0, "boxstyle": "square,pad=0.18"}
 
 
 def _nearest_unused_by_depth(
@@ -106,6 +112,7 @@ def _resolve_parameter_label_offsets(
     marker_labels: list[tuple[float, float, str]],
     *,
     min_gap_pts: float = _PARAMETER_LABEL_MIN_GAP_PTS,
+    invert_y: bool = False,
 ) -> list[tuple[float, float, bool]]:
     """Return ``(dx, dy, draw_leader)`` offset-points for each parameter label.
 
@@ -120,6 +127,9 @@ def _resolve_parameter_label_offsets(
         groups.setdefault(round(float(x_profile), 4), []).append(index)
 
     y0, y1 = ax.get_ylim()
+    # Work in a screen-oriented space: larger value = higher on screen. In
+    # depth_below_collar mode (inverted axis) data-y grows downward, so flip.
+    sign = -1.0 if (invert_y or float(y0) > float(y1)) else 1.0
     data_span = abs(float(y1) - float(y0)) or 1.0
     pos = ax.get_position()
     height_pts = float(ax.figure.get_figheight()) * float(pos.height) * 72.0
@@ -131,19 +141,20 @@ def _resolve_parameter_label_offsets(
     ]
 
     for indices in groups.values():
-        indices_sorted = sorted(indices, key=lambda i: marker_labels[i][1], reverse=True)
+        indices_sorted = sorted(indices, key=lambda i: sign * marker_labels[i][1], reverse=True)
         last_text_y: float | None = None
         for label_index in indices_sorted:
             _x, y, _text = marker_labels[label_index]
-            marker_y_pts = float(y) * pts_per_data
+            marker_y_pts = sign * float(y) * pts_per_data
             dy = _PARAMETER_LABEL_BASE_DY
             text_y = marker_y_pts + dy
             if last_text_y is not None and text_y > last_text_y - min_gap_pts:
                 text_y = last_text_y - min_gap_pts
                 dy = text_y - marker_y_pts
             # Keep labels inside axes (inverted Y still has y0/y1 span).
-            y_lo_pts = min(float(y0), float(y1)) * pts_per_data
-            y_hi_pts = max(float(y0), float(y1)) * pts_per_data
+            bound_a = sign * float(y0) * pts_per_data
+            bound_b = sign * float(y1) * pts_per_data
+            y_lo_pts, y_hi_pts = min(bound_a, bound_b), max(bound_a, bound_b)
             text_y = min(max(text_y, y_lo_pts + min_gap_pts * 0.25), y_hi_pts - min_gap_pts * 0.25)
             dy = text_y - marker_y_pts
             draw_leader = abs(dy - _PARAMETER_LABEL_BASE_DY) > _PARAMETER_LABEL_LEADER_EPS_PTS
@@ -155,6 +166,18 @@ def _resolve_parameter_label_offsets(
 class RendererChemistryMixin:
     """Parameter markers, fence segments, and compact chemistry legend."""
 
+    def _register_chemistry_label(self, annotation, color: str, *, allow_leader: bool) -> None:
+        """Hand a value label to the shared collision pass (renderer_water).
+
+        The base position is beside the reading (not the stacked offset), so
+        a leader appears only when a label ends up away from its value.
+        """
+        annotation._water_base_xyann = (_PARAMETER_LABEL_DX, _PARAMETER_LABEL_BASE_DY)
+        annotation._leader_allowed = allow_leader
+        if not hasattr(self, "_water_labels"):
+            self._water_labels = []
+        self._water_labels.append(("chem", annotation, color))
+
     def _draw_parameter_readings(
         self,
         ax,
@@ -162,6 +185,7 @@ class RendererChemistryMixin:
         collar_lookup: dict[str, float],
         *,
         profile_lookup: dict[str, tuple[float, float]] | None = None,
+        column_half_m: float = 0.0,
     ) -> None:
         if hole_summary.empty or not self.environmental_readings:
             return
@@ -196,10 +220,19 @@ class RendererChemistryMixin:
         font_size = (
             _PARAMETER_LABEL_FONTSIZE_CONSULTING if consulting else _PARAMETER_LABEL_FONTSIZE
         )
+        # Column spans the collision pass must keep value labels off.
+        self._column_spans = [
+            (ax, float(profile_lookup[h][0]) - column_half_m, float(profile_lookup[h][0]) + column_half_m)
+            for h in transect_hole_ids
+            if h in profile_lookup
+        ]
         self.parameter_series_legend = []
-        for index, (parameter, readings) in enumerate(sorted(by_parameter.items())):
+        # Stable per parameter name (chloride keeps its colour on every
+        # section), with collisions on one sheet resolved to distinct colours.
+        series_colors = parameter_series_colors(by_parameter)
+        for parameter, readings in sorted(by_parameter.items()):
             if draw_markers:
-                color = PARAMETER_PALETTE[index % len(PARAMETER_PALETTE)]
+                color = series_colors[parameter]
             else:
                 color = CHEMISTRY_LABEL_BLACK
             readings_by_hole: dict[str, list[EnvironmentalReading]] = {}
@@ -210,6 +243,7 @@ class RendererChemistryMixin:
 
             marker_xs: list[float] = []
             marker_ys: list[float] = []
+            marker_colors: list[str] = []
             marker_labels: list[tuple[float, float, str, str]] = []
             interval_sticks: list[np.ndarray] = []
             y_cache: dict[tuple[str, float], float] = {}
@@ -239,6 +273,13 @@ class RendererChemistryMixin:
                     if draw_markers:
                         marker_xs.append(x_profile)
                         marker_ys.append(y)
+                        # "dot" style carries the workbook colour on the marker
+                        # itself instead of adding a second dot beside the label.
+                        marker_colors.append(
+                            (CHEMISTRY_FIXED_COLORS.get(reading.label_color) or color)
+                            if str(self.profile.chemistry_label_style or "plain") == "dot"
+                            else color
+                        )
                         if (
                             reading.from_depth is not None
                             and reading.to_depth is not None
@@ -261,7 +302,11 @@ class RendererChemistryMixin:
                             label_text = reading.display_label
                         else:
                             label_text = f"{reading.value:g}"
-                        label_color = chemistry_label_color(
+                        # A colour picked in the workbook wins over the
+                        # Configure threshold / black setting.
+                        label_color = CHEMISTRY_FIXED_COLORS.get(
+                            reading.label_color
+                        ) or chemistry_label_color(
                             reading.value,
                             self.profile.chemistry_color_mode,
                             green_max=self.profile.chemistry_threshold_green_max,
@@ -286,7 +331,7 @@ class RendererChemistryMixin:
                     marker_xs,
                     marker_ys,
                     marker=marker,
-                    c=color,
+                    c=marker_colors,
                     s=float(self.profile.parameter_marker_size),
                     zorder=8,
                 )
@@ -313,31 +358,42 @@ class RendererChemistryMixin:
                 )
                 continue
             label_offsets = _resolve_parameter_label_offsets(
-                ax, [(x, y, text) for x, y, text, _ in marker_labels]
+                ax,
+                [(x, y, text) for x, y, text, _ in marker_labels],
+                invert_y=self.profile.y_axis_mode == "depth_below_collar",
             )
+            label_style = str(self.profile.chemistry_label_style or "plain")
             label_base_kwargs: dict[str, object] = {
                 "textcoords": "offset points",
                 "fontsize": font_size,
-                "color": color,
                 "zorder": 9,
                 "clip_on": False,
                 "ha": "left",
                 "va": "center",
             }
-            if draw_markers:
-                label_base_kwargs["bbox"] = _PARAMETER_LABEL_BBOX
+            if draw_markers or label_style == "box":
+                label_base_kwargs["bbox"] = (
+                    _PARAMETER_LABEL_BBOX_SOLID if label_style == "box" else _PARAMETER_LABEL_BBOX
+                )
             draw_leaders = self.profile.parameter_draw_leaders
-            for (x_profile, y, label_text, label_color), (dx, dy, draw_leader) in zip(
+            for (x_profile, y, label_text, label_color), (dx, dy, _draw_leader) in zip(
                 marker_labels, label_offsets, strict=True
             ):
-                annotate_kwargs = {
+                anchor = (x_profile + column_half_m, y)
+                if label_style == "dot" and not draw_markers:
+                    dx += 5.0
+                text_color = CHEMISTRY_LABEL_BLACK if label_style == "dot" else label_color
+                annotation = ax.annotate(
+                    label_text,
                     **label_base_kwargs,
-                    "xy": (x_profile, y),
-                    "xytext": (dx, dy),
-                    "color": label_color,
-                }
-                if draw_leaders and draw_leader:
-                    leader_props = {
+                    # Anchor at the column's right edge: anchored at its centre,
+                    # labels started inside wider (auto-fit) columns.
+                    xy=anchor,
+                    xytext=(dx, dy),
+                    color=text_color,
+                    # Leader exists from the start, hidden until the collision
+                    # pass moves the label away from its reading.
+                    arrowprops={
                         "arrowstyle": "-",
                         "color": label_color,
                         "lw": 0.55,
@@ -345,9 +401,44 @@ class RendererChemistryMixin:
                         "shrinkA": 2,
                         "shrinkB": 1,
                         "alpha": 0.7,
-                    }
-                    annotate_kwargs["arrowprops"] = leader_props
-                ax.annotate(label_text, **annotate_kwargs)
+                    },
+                )
+                annotation.arrow_patch.set_visible(False)
+                if label_style == "stroke":
+                    # The halo is a white twin drawn as outlines beneath the
+                    # label; the label itself stays real text so PDF values
+                    # remain searchable (a path effect on the label would not).
+                    halo = ax.annotate(
+                        label_text,
+                        xy=anchor,
+                        xytext=(dx, dy),
+                        textcoords="offset points",
+                        fontsize=font_size,
+                        ha="left",
+                        va="center",
+                        color="white",
+                        zorder=8.9,
+                        clip_on=False,
+                        path_effects=[withStroke(linewidth=2.6, foreground="white")],
+                    )
+                    annotation._halo = halo
+                if label_style == "dot" and not draw_markers:
+                    # Colour travels on a dot just left of the value; the dot is
+                    # positioned in points off the anchor so it follows the
+                    # label when the collision pass moves it.
+                    (dot,) = ax.plot(
+                        [anchor[0]],
+                        [y],
+                        marker="o",
+                        markersize=3.6,
+                        color=label_color,
+                        linestyle="none",
+                        zorder=9,
+                        clip_on=False,
+                        transform=offset_copy(ax.transData, fig=ax.figure, x=dx - 4.5, y=dy, units="points"),
+                    )
+                    annotation._chem_dot = dot
+                self._register_chemistry_label(annotation, label_color, allow_leader=draw_leaders)
 
             if draw_markers and (
                 use_segments or across_gaps

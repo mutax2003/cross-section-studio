@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from app_identity import COPYRIGHT_NOTICE, CREATED_BY
 from update_url_policy import validate_manifest_fetch_url as _validate_manifest_fetch_url
 from update_url_policy import validate_update_download_url as _validate_update_download_url
 
@@ -23,8 +24,12 @@ DEFAULT_UPDATE_MANIFEST_URL = (
 
 _SEMVER_RE = re.compile(
     r"^\s*v?(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
-    r"(?:[-+][0-9A-Za-z.-]+)?\s*$"
+    r"(?:-(?P<prerelease>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    r"(?:\+[0-9A-Za-z.-]+)?\s*$"
 )
+
+
+MAX_UPDATE_MANIFEST_BYTES = 1024 * 1024  # manifest is a small JSON file
 
 
 def normalize_version_text(value: str | None) -> str:
@@ -71,9 +76,25 @@ def parse_semver(version: str) -> tuple[int, int, int]:
     )
 
 
+def _semver_key(version: str) -> tuple:
+    """Full semver ordering key: pre-releases sort below their release (spec §11)."""
+    match = _SEMVER_RE.match(str(version or ""))
+    if not match:
+        raise ValueError(f"Invalid version string: {version!r}")
+    core = (int(match.group("major")), int(match.group("minor")), int(match.group("patch")))
+    prerelease = match.group("prerelease")
+    if prerelease is None:
+        return (core, (1,), ())
+    identifiers = tuple(
+        (0, int(part), "") if part.isdigit() else (1, 0, part)
+        for part in prerelease.split(".")
+    )
+    return (core, (0,), identifiers)
+
+
 def is_newer(remote: str, local: str) -> bool:
-    """True when ``remote`` is a higher semver than ``local``."""
-    return parse_semver(remote) > parse_semver(local)
+    """True when ``remote`` is a higher semver than ``local`` (pre-release aware)."""
+    return _semver_key(remote) > _semver_key(local)
 
 
 def update_manifest_url() -> str:
@@ -166,6 +187,10 @@ def fetch_release_manifest(
         from urllib.request import url2pathname
 
         path = Path(url2pathname(unquote(parsed.path)))
+        if path.stat().st_size > MAX_UPDATE_MANIFEST_BYTES:
+            raise ValueError(
+                f"Update manifest too large (> {MAX_UPDATE_MANIFEST_BYTES} bytes)"
+            )
         text = path.read_text(encoding="utf-8")
         payload = json.loads(text)
     else:
@@ -175,7 +200,11 @@ def fetch_release_manifest(
             method="GET",
         )
         with _urlopen_manifest(request, timeout_s=timeout_s) as response:  # noqa: S310
-            raw = response.read()
+            raw = response.read(MAX_UPDATE_MANIFEST_BYTES + 1)
+        if len(raw) > MAX_UPDATE_MANIFEST_BYTES:
+            raise ValueError(
+                f"Update manifest too large (> {MAX_UPDATE_MANIFEST_BYTES} bytes)"
+            )
         payload = json.loads(raw.decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("manifest root must be a JSON object")
@@ -215,7 +244,7 @@ def check_for_updates(
             manifest_url=manifest_url,
             error=f"Network error: {exc.reason}",
         )
-    except (OSError, ValueError, json.JSONDecodeError, TypeError) as exc:
+    except (OSError, ValueError, json.JSONDecodeError, TypeError, RecursionError) as exc:
         return UpdateCheckResult(
             current_version=current,
             latest_version=None,
@@ -236,5 +265,6 @@ def about_version_markdown() -> str:
         f"Running **{version}**.\n\n"
         "Use **Help → Check for updates** to compare against the published release "
         "manifest. On the Windows desktop build you can open the download page or use "
-        "**Download and install (restart)** (full zip, SHA-256 verified, sidecar replace).\n"
+        "**Download and install (restart)** (full zip, SHA-256 verified, sidecar replace).\n\n"
+        f"{CREATED_BY}. {COPYRIGHT_NOTICE}\n"
     )

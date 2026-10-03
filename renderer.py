@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import io
 import logging
+import textwrap
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import matplotlib as mpl
 
@@ -17,6 +18,7 @@ from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 
+from app_identity import APP_NAME, AUTHOR, COPYRIGHT_NOTICE, ORGANIZATION
 from constants import HATCH_LINE_COLOR, POLYGON_EDGE_COLOR
 from export_framing import (
     ExportFramingConfig,
@@ -38,14 +40,13 @@ from models import (
     WaterLevel,
 )
 from render_profiles import (
-    CrossSectionRenderProfile,
     SECTION_SHEET_PROFILE,
+    CrossSectionRenderProfile,
 )
 from render_theme import (
     CONTACT_TICK_COLOR,
     CONTACT_TICK_WIDTH,
     EOL_BAR_COLOR,
-    export_font_rc,
     LABEL_COLOR,
     OVERLAP_MARKER_COLOR,
     PINCH_OUT_ALPHA,
@@ -54,15 +55,22 @@ from render_theme import (
     SURFACE_COLOR,
     TRACK_BORDER_COLOR,
     UNCERTAINTY_COLOR,
+    export_font_rc,
 )
-from stratigraphy import GeologicalPolygon, PolygonOverlap
 from renderer_chart import ChartLayoutMixin
-from renderer_chemistry import ParameterLegendEntry, RendererChemistryMixin
-from renderer_chemistry import _resolve_parameter_label_offsets  # noqa: F401
+from renderer_chemistry import (
+    ParameterLegendEntry,
+    RendererChemistryMixin,
+    _resolve_parameter_label_offsets,  # noqa: F401
+)
 from renderer_common import RendererGeometryMixin
 from renderer_consulting import ConsultingLayoutMixin
 from renderer_section_sheet import SectionSheetLayoutMixin
-from renderer_water import RendererWaterMixin, WaterSeriesLegendEntry
+from renderer_water import RendererWaterMixin, WaterSeriesLegendEntry, resolve_header_collisions
+from stratigraphy import GeologicalPolygon, PolygonOverlap
+
+# Salted element ids (with no <dc:date>) make identical inputs give identical SVG.
+mpl.rcParams["svg.hashsalt"] = "cross-section-studio"
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +119,24 @@ class _HoleContext:
     track_half: float
 
 
+def _export_file_metadata(fmt: str) -> dict[str, str]:
+    """Attribution written into each export's own metadata block.
+
+    matplotlib accepts different keys per backend: Dublin Core for SVG, the
+    PDF document-info dictionary, and free tEXt chunks for PNG.
+    """
+    author = f"{AUTHOR}, {ORGANIZATION}"
+    if fmt == "svg":
+        # Date omitted and ids salted (rcParam svg.hashsalt) so identical
+        # inputs give byte-identical SVG.
+        return {"Creator": APP_NAME, "Publisher": ORGANIZATION, "Rights": COPYRIGHT_NOTICE, "Date": None}
+    if fmt == "pdf":
+        return {"Creator": APP_NAME, "Author": author}
+    if fmt == "png":
+        return {"Software": APP_NAME, "Author": author, "Copyright": COPYRIGHT_NOTICE}
+    return {}
+
+
 class CrossSectionRenderer(
     ConsultingLayoutMixin,
     SectionSheetLayoutMixin,
@@ -154,7 +180,8 @@ class CrossSectionRenderer(
         self.scale_bar_length_m = scale_bar_length_m
         self.show_hatches = show_hatches
         self.show_legend = show_legend
-        self.title = title or "Borehole Cross-Section"
+        # Very long titles otherwise stretch tight-bbox exports to the title width.
+        self.title = textwrap.shorten(title, width=120, placeholder="…") if title else "Borehole Cross-Section"
         self.disclaimer = disclaimer
         self.interpretation_mode = interpretation_mode
         self.uncertainty_spacing_m = uncertainty_spacing_m
@@ -259,29 +286,26 @@ class CrossSectionRenderer(
         lithology_codes: Sequence[str] | None = None,
     ) -> Figure:
         self.water_series_legend = []
+        self._water_labels = []
+        self._header_labels = []
         if self.profile.layout == "section_sheet":
-            return self._render_section_sheet(
-                polygons,
-                projected_df,
-                collar_depths,
-                water_levels=water_levels,
-                lithology_codes=lithology_codes,
-            )
-        if self.profile.layout == "consulting_section":
-            return self._render_consulting_section(
-                polygons,
-                projected_df,
-                collar_depths,
-                water_levels=water_levels,
-                lithology_codes=lithology_codes,
-            )
-        return self._render_chart_layout(
+            render_layout = self._render_section_sheet
+        elif self.profile.layout == "consulting_section":
+            render_layout = self._render_consulting_section
+        else:
+            render_layout = self._render_chart_layout
+        fig = render_layout(
             polygons,
             projected_df,
             collar_depths,
             water_levels=water_levels,
             lithology_codes=lithology_codes,
         )
+        # Positions in points are only final once limits and margins are set.
+        # Headers first: the water pass treats every axes text as an obstacle.
+        resolve_header_collisions(fig, self._header_labels)
+        self._resolve_water_label_collisions(fig)
+        return fig
 
     def _hole_context(self, projected_df: pd.DataFrame) -> _HoleContext:
         summary = (
@@ -688,6 +712,7 @@ class CrossSectionRenderer(
                 clip_on=False,
                 zorder=10,
             )
+            self._header_labels.append(text_artist)
             if self._cad_svg_layers_enabled():
                 self._set_cad_gid(text_artist, "headers")
 
@@ -1023,12 +1048,12 @@ class CrossSectionRenderer(
 
     def _draw_footers(self, fig: Figure) -> None:
         if self.disclaimer:
-            fig.text(0.5, 0.01, self.disclaimer, ha="center", va="bottom", fontsize=8, color="#64748B", style="italic")
-        footer_y = 0.045 if self.disclaimer else 0.01
+            fig.text(0.5, 0.008, self.disclaimer, ha="center", va="bottom", fontsize=8, color="#64748B", style="italic")
+        footer_y = 0.03 if self.disclaimer else 0.008
         metadata_lines = self._metadata_footer_lines()
         if metadata_lines and self.profile.title_block:
             fig.text(0.5, footer_y, " | ".join(metadata_lines), ha="center", va="bottom", fontsize=7, color="#475569")
-            footer_y += 0.02
+            footer_y += 0.022
         if self.overlap_pairs and self.profile.show_overlap_footer:
             fig.text(
                 0.5,
@@ -1085,6 +1110,26 @@ class CrossSectionRenderer(
             self.export_framing,
             layout=str(getattr(self.profile, "layout", "")),
         )
+        if (
+            str(getattr(self.profile, "layout", "")) == "consulting_section"
+            and figure.get_size_inches()[0] < 10.0
+        ):
+            # Portrait pages are narrower: give the twin RL axis label room.
+            figure.subplots_adjust(right=0.925)
+        # Consulting sheets: keep RL axis labels on the page (no-op otherwise).
+        self.fit_consulting_page_margins(figure)
+        if tuple(figure.get_size_inches()) == tuple(getattr(figure, "_css_prepared_size", ())):
+            self.refit_consulting_fitted_text(figure)
+            return figure  # already prepared at this size: label passes are current
+        figure._css_prepared_size = tuple(figure.get_size_inches())
+        # Page sizing moves every artist; redo label placement for the new page.
+        headers = [t for t in getattr(self, "_header_labels", None) or [] if t.figure is figure]
+        resolve_header_collisions(figure, headers)
+        water = getattr(self, "_water_labels", None) or []
+        if water and all(annotation.figure is figure for _kind, annotation, _c in water):
+            self._resolve_water_label_collisions(figure)
+        # Fitted title-block / band / notes text was measured at the render size.
+        self.refit_consulting_fitted_text(figure)
         return figure
 
     def _export_dpi(self, default: int = 300) -> int:
@@ -1105,8 +1150,7 @@ class CrossSectionRenderer(
             "facecolor": fig.get_facecolor(),
             **self._savefig_kwargs(),
         }
-        if fmt == "svg":
-            kwargs["metadata"] = {"Creator": "Cross Section Studio"}
+        kwargs["metadata"] = _export_file_metadata(fmt)
         if fmt == "png":
             kwargs["dpi"] = dpi if dpi is not None else self._export_dpi()
         fig.savefig(buffer, **kwargs)
@@ -1199,9 +1243,18 @@ class CrossSectionRenderer(
             x_start = x_max - 0.04 * (x_max - x_min) - bar_length
         else:
             x_start = x_min + 0.04 * (x_max - x_min)
-        y_pos = y_min + 0.06 * (y_max - y_min)
-        tick = 0.01 * (y_max - y_min)
+        y_span = y_max - y_min
+        # Depth mode inverts the axis after drawing, so the visual bottom of
+        # the plot is the numeric maximum; keep the bar at the visual bottom.
+        depth_mode = self.profile.y_axis_mode == "depth_below_collar"
+        if depth_mode:
+            y_pos = y_max - 0.06 * y_span
+            label_y = y_pos - 0.025 * y_span
+        else:
+            y_pos = y_min + 0.06 * y_span
+            label_y = y_pos + 0.025 * y_span
+        tick = 0.01 * y_span
         ax.plot([x_start, x_start + bar_length], [y_pos, y_pos], color=STICK_COLOR, linewidth=4, solid_capstyle="butt", zorder=9)
         ax.plot([x_start, x_start], [y_pos - tick, y_pos + tick], color=STICK_COLOR, linewidth=1.5, zorder=9)
         ax.plot([x_start + bar_length, x_start + bar_length], [y_pos - tick, y_pos + tick], color=STICK_COLOR, linewidth=1.5, zorder=9)
-        ax.text(x_start + bar_length / 2.0, y_pos + 0.025 * (y_max - y_min), f"{bar_length:g} m", ha="center", va="bottom", fontsize=8, fontweight="bold", color=LABEL_COLOR, zorder=9)
+        ax.text(x_start + bar_length / 2.0, label_y, f"{bar_length:g} m", ha="center", va="bottom", fontsize=8, fontweight="bold", color=LABEL_COLOR, zorder=9)

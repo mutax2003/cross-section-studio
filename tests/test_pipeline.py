@@ -8,16 +8,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from constants import BOREHOLE_ONLY_DISCLAIMER, INTERPOLATED_DISCLAIMER
-from models import Collar, Lithology, WaterLevel, EnvironmentalReading
-from pipeline import (
+from constants import BOREHOLE_ONLY_DISCLAIMER, INTERPOLATED_DISCLAIMER  # noqa: E402
+from models import Collar, EnvironmentalReading, Lithology, WaterLevel  # noqa: E402
+from pipeline import (  # noqa: E402
     auto_scale_bar_m,
     build_cross_section,
     compute_section_geometry,
     render_cross_section_from_geometry,
     validate_interpretation_mode,
 )
-from tests.conftest import assert_valid_svg
+from tests.conftest import assert_valid_svg  # noqa: E402
 
 
 def test_auto_scale_bar_picks_nearest_candidate() -> None:
@@ -404,3 +404,52 @@ def test_warn_on_correlation_gaps_adds_warning_text() -> None:
     )
     assert any("Correlation gap" in warning for warning in warnings)
 
+
+
+def test_borehole_only_draws_logs_beyond_the_interpolation_offset() -> None:
+    """The sidebar sets max_offset_for_interpolation_m = offset_warning_m; a
+    borehole-only section must not fail 'fewer than two boreholes' because
+    one log is past that limit (no interpolation is requested)."""
+    collars = [
+        Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
+        Collar(hole_id="BH-02", easting=50.0, northing=80.0, elevation=100.0, total_depth=10.0),
+    ]
+    lithologies = [
+        Lithology(hole_id="BH-01", from_depth=0.0, to_depth=10.0, lithology_code="Clay"),
+        Lithology(hole_id="BH-02", from_depth=0.0, to_depth=10.0, lithology_code="Silt"),
+    ]
+    projected, polygons, svg_bytes, _, _, _, _ = build_cross_section(
+        collars,
+        lithologies,
+        [(0.0, 0.0), (50.0, 0.0)],
+        interpretation_mode="borehole_only",
+        max_offset_for_interpolation_m=50.0,
+    )
+    assert polygons == []
+    assert set(projected["hole_id"]) == {"BH-01", "BH-02"}
+    assert_valid_svg(svg_bytes)
+    # A single hole is likewise fine in borehole-only mode.
+    _, polygons, svg_bytes, _, _, _, _ = build_cross_section(
+        collars[:1],
+        lithologies[:1],
+        [(0.0, 0.0), (50.0, 0.0)],
+        interpretation_mode="borehole_only",
+        max_offset_for_interpolation_m=50.0,
+    )
+    assert polygons == [] and assert_valid_svg(svg_bytes) is None
+
+
+def test_unknown_render_layout_is_rejected() -> None:
+    """An unknown layout used to fall back silently to the section sheet."""
+    import pytest
+
+    from models import Collar, Lithology
+    from pipeline import build_cross_section
+
+    collars = [
+        Collar(hole_id=h, easting=10.0 * i, northing=0.0, elevation=100.0, total_depth=5.0)
+        for i, h in enumerate(("BH-1", "BH-2"))
+    ]
+    liths = [Lithology(hole_id=c.hole_id, from_depth=0.0, to_depth=5.0, lithology_code="Clay") for c in collars]
+    with pytest.raises(ValueError, match="render_layout"):
+        build_cross_section(collars, liths, [(0.0, 0.0), (10.0, 0.0)], render_layout="consulting")

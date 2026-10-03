@@ -72,7 +72,8 @@ def test_report_package_zip_contains_formats() -> None:
     assert "README_deliverable.txt" in names
 
 
-def test_save_exports_to_directory_writes_docx(tmp_path) -> None:
+def test_save_exports_to_directory_writes_docx(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CROSS_SECTION_EXPORT_ROOTS", str(tmp_path))
     from export_framing import save_exports_to_directory
 
     written = save_exports_to_directory(
@@ -177,3 +178,102 @@ def test_fixed_page_margins_adjust_subplots() -> None:
         assert fig.subplotpars.right < 0.98
     finally:
         plt.close(fig)
+
+
+def test_build_export_filename_transect_label_opt_in() -> None:
+    kwargs = dict(pattern="section_title", section_title="Site", transect_label="T1")
+    assert build_export_filename(**kwargs) == "Site"
+    assert build_export_filename(**kwargs, include_transect_label=True) == "Site_T1"
+    # label == title stays un-doubled even when opted in
+    same = dict(pattern="section_title", section_title="Site", transect_label="Site")
+    assert build_export_filename(**same, include_transect_label=True) == "Site"
+
+
+def test_viewport_crop_rejects_non_finite_and_clamps_to_the_data() -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import pytest
+
+    from export_framing import apply_viewport_crop
+
+    for bad in (float("nan"), float("inf"), 1e308):
+        with pytest.raises(ValueError, match="finite"):
+            ExportFramingConfig(viewport_xmin=bad)
+
+    fig, ax = plt.subplots()
+    ax.set_xlim(0, 100)
+    ax.set_ylim(110, 90)  # depth-style inverted axis
+    # A box partly outside the data is clamped, keeping the axis direction.
+    apply_viewport_crop(
+        fig, ExportFramingConfig(viewport_xmin=50, viewport_xmax=500, viewport_ymin=80, viewport_ymax=100)
+    )
+    assert ax.get_xlim() == (50.0, 100.0)
+    assert ax.get_ylim() == (100.0, 90.0)
+    # A box entirely outside the data would export a blank sheet: ignored.
+    apply_viewport_crop(
+        fig, ExportFramingConfig(viewport_xmin=5000, viewport_xmax=6000, viewport_ymin=-900, viewport_ymax=-800)
+    )
+    assert ax.get_xlim() == (50.0, 100.0)
+    plt.close(fig)
+
+
+def test_save_exports_confined_to_allowed_roots(tmp_path, monkeypatch) -> None:
+    import pytest
+
+    from export_framing import save_exports_to_directory
+
+    monkeypatch.setenv("CROSS_SECTION_EXPORT_ROOTS", str(tmp_path / "allowed"))
+    inside = tmp_path / "allowed" / "job" / "figures"
+    written = save_exports_to_directory(
+        str(inside), stem="s", svg_bytes=b"<svg/>", png_bytes=b"", pdf_bytes=b"", metadata={}
+    )
+    assert written and Path(written[0]).parent == inside.resolve()
+
+    with pytest.raises(ValueError, match="must be under"):
+        save_exports_to_directory(
+            str(tmp_path / "elsewhere"), stem="s", svg_bytes=b"<svg/>", png_bytes=b"", pdf_bytes=b"", metadata={}
+        )
+    # Traversal back out of the allowed root is caught after resolution.
+    with pytest.raises(ValueError, match="must be under"):
+        save_exports_to_directory(
+            str(tmp_path / "allowed" / ".." / "elsewhere"),
+            stem="s", svg_bytes=b"<svg/>", png_bytes=b"", pdf_bytes=b"", metadata={},
+        )
+
+
+def test_portrait_export_keeps_the_right_axis_label_on_the_page() -> None:
+    from models import Collar, Lithology
+    from render_profiles import CONSULTING_SECTION_PROFILE
+    from renderer import CrossSectionRenderer
+    from tests.conftest import run_pipeline
+
+    ids = ["BH-01", "BH-02", "BH-03"]
+    collars = [Collar(hole_id=h, easting=i * 40.0, northing=0.0, elevation=100.0, total_depth=8.0) for i, h in enumerate(ids)]
+    lith = [Lithology(hole_id=h, from_depth=0.0, to_depth=8.0, lithology_code="Clay") for h in ids]
+    projected, polygons, _ = run_pipeline(collars, lith, [(0.0, 0.0), (80.0, 0.0)])
+    renderer = CrossSectionRenderer(
+        show_legend=True,
+        render_profile=CONSULTING_SECTION_PROFILE,
+        export_framing=ExportFramingConfig(page_preset="letter_portrait", export_dpi=72),
+    )
+    figure = renderer.render(polygons, projected, collar_depths={h: 8.0 for h in ids})
+    renderer.to_png_bytes(figure)
+    figure.draw_without_rendering()
+    mpl_renderer = figure.canvas.get_renderer()
+    right = [ax.yaxis.label for ax in figure.axes if ax.yaxis.get_label_position() == "right" and ax.yaxis.label.get_text()]
+    assert right and all(lbl.get_window_extent(mpl_renderer).x1 <= figure.bbox.x1 for lbl in right)
+
+
+def test_export_filename_does_not_repeat_the_section_title() -> None:
+    from export_framing import build_export_filename
+
+    stem = build_export_filename(
+        pattern="section_title",
+        section_title="Test Section A-A'",
+        transect_label="Test Section A-A' MW-01→MW-04",
+        include_transect_label=True,
+    )
+    assert stem.count("Test_Section") == 1, stem
+    assert "MW-01" in stem and "MW-04" in stem

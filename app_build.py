@@ -17,6 +17,7 @@ from models import (
     subset_parse_result,
 )
 from projection import off_transect_warnings
+from render_profiles import ChemistryLabelStyle
 from section_build_request import SectionBuildRequest
 from ui_helpers import dedupe_messages, holes_missing_lithology, screen_interval_warnings
 from ui_output_presets import resolve_output_preset
@@ -106,6 +107,7 @@ def build_section_request(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
+    chemistry_label_style: ChemistryLabelStyle | None = None,
     render_layout: str,
     track_width_m: float,
     auto_fit_track_width: bool = True,
@@ -155,6 +157,7 @@ def build_section_request(
         chemistry_color_mode=chemistry_color_mode,  # type: ignore[arg-type]
         chemistry_threshold_green_max=chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
+        chemistry_label_style=chemistry_label_style,
         render_layout=render_layout,  # type: ignore[arg-type]
         track_width_m=track_width_m,
         auto_fit_track_width=auto_fit_track_width,
@@ -211,6 +214,7 @@ def collect_section_build_request(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
+    chemistry_label_style: ChemistryLabelStyle | None = None,
     render_layout: str,
     track_width_m: float,
     auto_fit_track_width: bool = True,
@@ -288,6 +292,7 @@ def collect_section_build_request(
         chemistry_color_mode=chemistry_color_mode,  # type: ignore[arg-type]
         chemistry_threshold_green_max=chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
+        chemistry_label_style=chemistry_label_style,
         render_layout=effective.layout,
         track_width_m=effective.track_width_m,
         auto_fit_track_width=effective.auto_fit_track_width,
@@ -377,6 +382,10 @@ def generate_cross_section(
             "transect_points": transect_points_tuple,
             "correlation_overrides": _session_correlation_overrides()
             + tuple(subset.correlation_overrides),
+            # Geometry trusts only the request payload — without this the
+            # workbook's Deviations sheet is silently ignored on Generate.
+            "deviation_readings": tuple(request.deviation_readings)
+            or tuple(subset.deviation_readings),
         }
     )
     # Reuse Configure-warmed subset JSON when hole set + workbook signature match

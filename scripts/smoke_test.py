@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +14,12 @@ from models import DataParser
 from pipeline import build_cross_section
 
 SAMPLE = ROOT / "data" / "sample_boreholes.xlsx"
-OUTPUT = ROOT / "data" / "smoke_test_output.svg"
+# Written outside the repo so running the verify gate leaves the tree clean;
+# set SMOKE_TEST_OUTPUT to keep the SVG somewhere specific.
+OUTPUT = Path(
+    os.environ.get("SMOKE_TEST_OUTPUT")
+    or Path(tempfile.gettempdir()) / "cross_section_smoke_test_output.svg"
+)
 
 
 def main() -> None:

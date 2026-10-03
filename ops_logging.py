@@ -16,6 +16,7 @@ _SECRET_PATTERNS = (
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]+"), "Bearer [redacted]"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"), "sk-[redacted]"),
     (re.compile(r"\bAIza[0-9A-Za-z_-]{10,}"), "AIza[redacted]"),
+    (re.compile(r"\bgsk_[A-Za-z0-9]{10,}"), "gsk_[redacted]"),
     (re.compile(r"(?i)(x-goog-api-key\s*[:=]\s*)\S+"), r"\1[redacted]"),
 )
 

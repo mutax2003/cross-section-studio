@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
-from typing import BinaryIO, Literal, Sequence
+from typing import BinaryIO, Literal
 
 import pandas as pd
 from rapidfuzz import fuzz
@@ -31,11 +32,10 @@ from models import (
     Transect,
     WaterLevel,
 )
+from paths import lithology_aliases_path
 from projection import TransectGeometry
 
 logger = logging.getLogger(__name__)
-
-from paths import lithology_aliases_path
 MAPPING_CONFIDENCE_THRESHOLD = 0.8
 
 COLLAR_ALIASES: dict[str, set[str]] = {
@@ -58,7 +58,7 @@ SHEET_ALIASES: dict[str, set[str]] = {
 }
 
 
-class Severity(str, Enum):
+class Severity(str, Enum):  # noqa: UP042 — keep (str, Enum): str() formatting of members differs under StrEnum
     ERROR = "error"
     WARNING = "warning"
     INFO = "info"

@@ -20,7 +20,7 @@ You are the **Reviewer** subagent (bugbot-style) for Cross Section Studio. **Rea
 4. **Performance** — avoid reintroducing O(n²) loops in hot paths (`stratigraphy.py`, `renderer_common.py`). Prefer `LineCollection` / shared collections for repeated water/chemistry polylines; do not reintroduce per-segment `ax.plot` loops or section-sheet `tight_layout` without cause.
 5. **Tests** — behavior changes should have pytest or smoke coverage.
 6. **Secrets** — no API keys, `.env`, or credentials committed.
-7. **Export** — Preserve SVG-first Generate (`cached_build_section`). Prepare is `cached_build_section_exports()` (one draw for PNG+PDF); png/pdf helpers must stay wrappers over exports. Geometry cache must stay keyed on `geometry_cache_payload()`, not full-request cosmetics. Do not force `ALL_EXPORT_FORMATS` back onto every Generate (`cached_build_section_bundle` is scripts/one-shot only).
+7. **Export** — Preserve SVG-first Generate (`cached_build_section`). Prepare is `cached_build_section_exports()` (one draw for PNG+PDF); png/pdf helpers must stay wrappers over exports. Geometry cache must stay keyed on `geometry_cache_payload()`, not full-request cosmetics. Do not force `ALL_EXPORT_FORMATS` back onto every Generate (`cached_build_section_bundle` is the full-export cold path only — Prepare fallback in `app_generate._ensure_all_exports()` when no SVG is cached — never the routine Generate draw).
 8. **Ops** — `ops_*` must stay env-gated and out of engine modules.
 
 ## Output format

@@ -56,20 +56,21 @@ def llm_disabled_by_deployment() -> bool:
 
 
 def llm_assist_status_caption() -> str:
-    """One-line status for Validate / Configure AI actions."""
+    """One-line status for Validate / Configure AI actions.
+
+    Empty unless an AI provider is switched on: users on local rules do not
+    need to read about API keys they have not asked for.
+    """
     if llm_disabled_by_deployment():
-        return "Assist mode: **LLM disabled by deployment** — local rules only."
+        return ""
     if st.session_state.get("enable_ai_suggestions"):
         provider = str(st.session_state.get("llm_provider", "groq"))
-        tier = "free" if provider in {"groq", "gemini"} else "paid"
-        return (
-            f"Assist mode: **LLM enabled** (`{provider}`, {tier}) — "
-            "local rules + provider polish."
+        provider_name = {"groq": "Groq", "gemini": "Gemini", "openai": "OpenAI"}.get(
+            provider, provider.title()
         )
-    return (
-        "Assist mode: **Local rules** — set `GROQ_API_KEY` or `GEMINI_API_KEY` "
-        "(or enable LLM in the sidebar) for free-tier polish."
-    )
+        tier = "free tier" if provider in {"groq", "gemini"} else "paid"
+        return f"AI suggestions on ({provider_name}, {tier}) — local checks plus AI wording."
+    return ""
 
 
 def llm_suggestions_available() -> bool:
@@ -106,11 +107,20 @@ def _render_workflow_stepper(stage: int) -> None:
 
 
 def _render_hero(stage: int) -> None:
-    compact = stage >= 1
-    hero_class = "app-hero compact" if compact else "app-hero"
+    """Brand header with the workflow stepper.
+
+    Once a section exists (stage 3) the hero collapses to a single line so the
+    figure sits above the fold at 1280×720.
+    """
+    if stage >= 3:
+        hero_class = "app-hero compact oneline"
+    elif stage >= 1:
+        hero_class = "app-hero compact"
+    else:
+        hero_class = "app-hero"
     tagline = (
         ""
-        if compact
+        if stage >= 1
         else "<p>Upload · validate · configure · export publication-ready borehole profiles.</p>"
     )
     st.markdown(
@@ -125,40 +135,71 @@ def _render_hero(stage: int) -> None:
     )
 
 
+def generate_strip_status_html(
+    *,
+    section_title: str,
+    has_svg: bool,
+    can_generate: bool,
+    is_stale: bool,
+    blocked_reason: str | None = None,
+) -> str:
+    """Figure heading plus a one-line, plain-language status for the action bar."""
+    reason = (blocked_reason or "").strip().rstrip(".")
+    if not has_svg:
+        status = "Choose a section line, then generate."
+    elif is_stale and not can_generate:
+        status = (
+            f"Out of date — to update the figure, {escape_html(reason or 'fix the issues under Setup')}."
+        )
+    elif is_stale:
+        status = "Out of date — settings changed. Generate section to update."
+    elif not can_generate and reason:
+        status = f"Up to date. To generate again, {escape_html(reason)}."
+    else:
+        status = "Up to date."
+    tone = " is-stale" if has_svg and is_stale else ""
+    return (
+        f'<div class="generate-strip{tone}" role="status">'
+        f'<h2 class="strip-title">{escape_html(section_title)}</h2>'
+        f'<span class="strip-status">{status}</span></div>'
+    )
+
+
 def _render_sticky_generate_strip(
     *,
     has_svg: bool,
     can_generate: bool,
     is_stale: bool,
     section_title: str,
+    blocked_reason: str | None = None,
 ) -> None:
-    """Thin action bar under hero when a section exists or parse is ready."""
-    if has_svg:
-        status = (
-            f"<strong>{escape_html(section_title)}</strong> — "
-            + ("settings changed — regenerate before export" if is_stale else "profile ready")
-        )
-    else:
-        status = f"<strong>{escape_html(section_title)}</strong> — configure transect, then generate"
-    col_status, col_action = st.columns([4, 1])
+    """Action bar under the hero: figure title, status and the one Generate button."""
+    col_status, col_action = st.columns([3, 1.2], vertical_alignment="center")
     with col_status:
         st.markdown(
-            f'<div class="generate-strip"><span class="strip-status">{status}</span></div>',
+            generate_strip_status_html(
+                section_title=section_title,
+                has_svg=has_svg,
+                can_generate=can_generate,
+                is_stale=is_stale,
+                blocked_reason=blocked_reason,
+            ),
             unsafe_allow_html=True,
         )
     with col_action:
         if has_svg:
+            # The only Generate button once a figure exists: primary when the
+            # figure is out of date, disabled (reason in the status) when blocked.
             if st.button(
-                "Regenerate",
+                "Generate section",
                 type="primary" if is_stale else "secondary",
                 disabled=not can_generate,
-                key="sticky_regenerate",
+                key="generate_section_strip",
                 width="stretch",
+                help=None if can_generate else (blocked_reason or None),
             ):
                 st.session_state["_regenerate_requested"] = True
                 st.rerun()
-    if has_svg and not can_generate:
-        st.caption("Open **Setup — Validate & Configure** to resolve blocking issues.")
 
 
 def _metric_tone(error_count: int, warning_count: int, *, errors_only: bool = False) -> str:
@@ -173,14 +214,14 @@ def _metric_tone(error_count: int, warning_count: int, *, errors_only: bool = Fa
 
 def _render_metric_card(value: str | int, label: str, tone: str = "ok") -> None:
     st.markdown(
-        f'<div class="metric-card {tone}" role="status">'
+        f'<div class="metric-card {tone}">'
         f'<div class="value">{escape_html(value)}</div>'
         f'<div class="label">{escape_html(label)}</div></div>',
         unsafe_allow_html=True,
     )
 
 
-def _render_profile_chips(
+def profile_chips_html(
     *,
     interpretation_mode: str,
     vertical_exaggeration: float,
@@ -192,38 +233,43 @@ def _render_profile_chips(
     transect_label: str | None = None,
     png_ready: bool = False,
     pdf_ready: bool = False,
-) -> None:
+) -> str:
+    """At most three chips (style, VE, holes); the rest sit in a "+N more" tooltip."""
     mode_label = {
         "borehole_only": "Observed only",
         "correlation_lines": "Contact lines only",
     }.get(interpretation_mode, "Interpolated fence")
     chips = [
-        f'<span class="chip brand">{escape_html(mode_label)}</span>',
-        f'<span class="chip">VE {escape_html(vertical_exaggeration)}×</span>',
+        f'<span class="chip brand">{escape_html(preset_label or mode_label)}</span>',
+        f'<span class="chip">VE {escape_html(f"{vertical_exaggeration:g}")}×</span>',
     ]
-    if preset_label:
-        chips.append(f'<span class="chip">{escape_html(preset_label)}</span>')
-    if render_layout and render_layout != "section_sheet":
-        layout_short = {
-            "consulting_section": "Consulting sheet",
-            "chart": "Chart",
-        }.get(render_layout, render_layout.replace("_", " "))
-        chips.append(f'<span class="chip">{escape_html(layout_short)}</span>')
     if hole_count is not None:
-        chips.append(f'<span class="chip">{escape_html(hole_count)} boreholes</span>')
+        chips.append(f'<span class="chip">{escape_html(hole_count)} holes</span>')
+    extra: list[str] = []
+    if preset_label:
+        extra.append(mode_label)
+    if render_layout and render_layout != "section_sheet":
+        extra.append(
+            {"consulting_section": "Consulting sheet", "chart": "Chart"}.get(
+                render_layout, render_layout.replace("_", " ")
+            )
+        )
     if transect_label:
-        chips.append(f'<span class="chip">{escape_html(transect_label)}</span>')
+        extra.append(f"Section line {transect_label}")
     if polygon_count is not None and interpretation_mode == "interpolated":
-        chips.append(f'<span class="chip">{escape_html(polygon_count)} polygons</span>')
-    freshness = "Stale" if is_stale else "Fresh"
+        extra.append(f"{polygon_count} polygons")
+    extra.append("Out of date" if is_stale else "Up to date")
+    extra.append("PNG and PDF ready" if png_ready and pdf_ready else "PNG and PDF not prepared yet")
+    details = escape_html(" · ".join(extra))
     chips.append(
-        f'<span class="chip {"warn" if is_stale else ""}">{freshness}</span>'
+        f'<span class="chip more" tabindex="0" title="{details}" '
+        f'aria-label="More details: {details}">+{len(extra)} more</span>'
     )
-    if png_ready and pdf_ready:
-        chips.append('<span class="chip brand">PNG/PDF ready</span>')
-    else:
-        chips.append('<span class="chip">PNG/PDF not prepared</span>')
-    st.markdown(f'<div class="profile-header">{"".join(chips)}</div>', unsafe_allow_html=True)
+    return f'<div class="profile-header">{"".join(chips)}</div>'
+
+
+def _render_profile_chips(**kwargs: Any) -> None:
+    st.markdown(profile_chips_html(**kwargs), unsafe_allow_html=True)
 
 
 def _sidebar_heading(title: str) -> None:
@@ -258,25 +304,40 @@ def _render_lithology_legend(codes: list[str]) -> None:
     st.markdown("".join(rows), unsafe_allow_html=True)
 
 
-def _display_svg(svg_bytes: bytes, alt_text: str = "Cross-section profile") -> None:
-    """Render SVG in Streamlit (st.image does not support SVG via PIL)."""
+def _display_svg(
+    svg_bytes: bytes,
+    alt_text: str = "Cross-section profile",
+    *,
+    zoom_slot: Any = None,
+) -> None:
+    """Render SVG in Streamlit (st.image does not support SVG via PIL).
+
+    ``zoom_slot`` (a container/column) lets the caller place the compact zoom
+    control beside other controls instead of on its own row.
+    """
     cached = st.session_state.get("svg_display_meta")
     if cached is None or st.session_state.svg_bytes != svg_bytes:
         cached = svg_display_meta(svg_bytes)
         st.session_state.svg_display_meta = cached
     if not cached.valid:
-        st.error("Renderer produced invalid or empty SVG output.")
+        st.error(
+            "The figure came out empty. Check the section line has at least two holes "
+            "with logs, then generate again."
+        )
         return
     # Without a readable natural width every choice would render fit-to-width.
-    zoom = cached.natural_width_px and st.segmented_control(
-        "Preview size",
-        list(PREVIEW_ZOOM_OPTIONS),
-        default="Fit width",
-        key="svg_preview_zoom",
-        label_visibility="collapsed",
-        help="Fit width shows the whole sheet; 100% / 150% show the figure at "
-        "native size or larger so small labels can be checked before export.",
-    )
+    zoom = None
+    if cached.natural_width_px:
+        with zoom_slot if zoom_slot is not None else st.container():
+            zoom = st.segmented_control(
+                "Preview size",
+                list(PREVIEW_ZOOM_OPTIONS),
+                default="Fit width",
+                key="svg_preview_zoom",
+                label_visibility="collapsed",
+                help="Fit width shows the whole sheet; 100% / 150% show the figure at "
+                "native size or larger so small labels can be checked before export.",
+            )
     img_style, zoomed = preview_img_style(zoom, cached.natural_width_px)
     frame_attrs = (
         'class="svg-frame svg-frame--zoomed" tabindex="0" '

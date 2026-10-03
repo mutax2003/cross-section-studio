@@ -41,11 +41,82 @@ configure_logging()
 init_apm()
 logger = logging.getLogger(__name__)
 
+
+def _coordinate_reference(sidebar) -> str:
+    import_report = st.session_state.import_report
+    return sidebar.target_crs or (import_report.suggested_utm_crs if import_report else "") or ""
+
+
+def _section_request_kwargs(sidebar, configure_state, selection) -> dict[str, object]:
+    """Keyword arguments for ``collect_section_build_request`` (one place, so the
+    staleness check and the Generate action can never drift apart)."""
+    import_report = st.session_state.import_report
+    return {
+        "transect_mode": sidebar.transect_mode,
+        "selected_holes": configure_state.selected_holes,
+        "coordinate_text": configure_state.coordinate_text,
+        "offset_warning_m": sidebar.offset_warning_m,
+        "vertical_exaggeration": sidebar.vertical_exaggeration,
+        "show_hatches": sidebar.show_hatches,
+        "show_legend": sidebar.show_legend,
+        "section_title": sidebar.section_title,
+        "interpretation_mode": sidebar.interpretation_mode,
+        "allow_pinch_outs": sidebar.allow_pinch_outs,
+        "uncertainty_spacing_m": sidebar.uncertainty_spacing_m,
+        "uncertainty_offset_m": sidebar.uncertainty_offset_m,
+        "max_offset_for_interpolation_m": sidebar.max_offset_for_interpolation_m,
+        "show_ground_surface": sidebar.show_ground_surface,
+        "interpolate_water_table": sidebar.interpolate_water_table,
+        "warn_on_correlation_gaps": sidebar.warn_on_correlation_gaps,
+        "show_water_elevation_labels": sidebar.show_water_elevation_labels,
+        "show_water_legend": sidebar.show_water_legend,
+        "show_dry_well_nm": sidebar.show_dry_well_nm,
+        "water_interpolate_across_gaps": sidebar.water_interpolate_across_gaps,
+        "environmental_parameters": configure_state.environmental_parameters,
+        "show_parameter_labels": configure_state.show_parameter_labels,
+        # The Configure toggle "Interpolate parameter between adjacent holes" is
+        # the single source of truth; a sidebar toggle must not silently override it.
+        "parameter_interpolate_segments": configure_state.parameter_interpolate_segments,
+        "parameter_interpolate_across_gaps": sidebar.parameter_interpolate_across_gaps,
+        "parameter_draw_markers": sidebar.parameter_draw_markers_default,
+        "parameter_marker_size": sidebar.parameter_marker_size,
+        "parameter_draw_leaders": False,
+        "parameter_label_include_units": False,
+        "column_header_detail": sidebar.column_header_detail,
+        "show_scale_bar": sidebar.show_scale_bar,
+        "show_ve_annotation": sidebar.show_ve_annotation,
+        "show_parameter_legend_text": sidebar.show_parameter_legend_text,
+        "export_font_family": sidebar.export_font_family,
+        "export_font_size": sidebar.export_font_size,
+        "selected_water_series_ids": configure_state.selected_water_series_ids,
+        "water_line_solid": sidebar.water_line_solid_default,
+        "legend_ncol": sidebar.legend_ncol,
+        "chemistry_color_mode": configure_state.chemistry_color_mode,
+        "chemistry_threshold_green_max": configure_state.chemistry_threshold_green_max,
+        "chemistry_threshold_yellow_max": configure_state.chemistry_threshold_yellow_max,
+        "chemistry_label_style": configure_state.chemistry_label_style,
+        "render_layout": sidebar.render_layout,
+        "track_width_m": sidebar.track_width_m,
+        "auto_fit_track_width": sidebar.auto_fit_track_width,
+        "coordinate_reference": _coordinate_reference(sidebar),
+        "uses_placeholder_elevation": bool(
+            import_report and import_report.uses_placeholder_elevation
+        ),
+        "elevation_mode": configure_state.elevation_mode,
+        "report_preset": sidebar.report_preset,
+        "consulting_title_block": sidebar.consulting_title_block,
+        "selection": selection,
+        "fail_on_overlaps": configure_state.fail_on_overlaps,
+        "output_preset": sidebar.output_preset,
+        "export_framing": sidebar.export_framing,
+    }
+
 st.set_page_config(
     page_title="Cross Section Studio",
     page_icon="🪨",
     layout="wide",
-    initial_sidebar_state="expanded",
+    # "auto": expanded on desktop, collapsed on phones so the page is usable.
+    initial_sidebar_state="auto",
     menu_items={"About": f"**Cross Section Studio**\n\n{CREATED_BY}.\n\n{COPYRIGHT_NOTICE}"},
 )
 
@@ -63,7 +134,8 @@ hero_slot = st.container(key="hero_slot")
 
 flash_success = st.session_state.pop("_flash_success", None)
 if flash_success:
-    st.success(flash_success)
+    # A toast, not a banner: a banner pushes the new figure below the fold.
+    st.toast(flash_success, icon="✅")
 flash_error = st.session_state.pop("_flash_error", None)
 if flash_error:
     st.error(flash_error)
@@ -104,6 +176,9 @@ else:
             )
 
         if has_svg:
+            # Title + status + the one Generate button sit above Setup; filled
+            # once configure_state (and so the blocked reason) is known.
+            strip_slot = st.container(key="generate_strip_slot")
             with st.expander("Setup — Validate & Configure", expanded=False):
                 render_validate_step()
                 configure_state = render_configure_step(
@@ -133,71 +208,11 @@ else:
                 if len(active_ids) >= 2:
                     section_label = st.session_state.get("consulting_section_label") or "A-A'"
                     transect_label = f"{section_label} {active_ids[0]}→{active_ids[-1]}"
-                    import_report = st.session_state.import_report
-                    coordinate_reference = sidebar.target_crs or (
-                        import_report.suggested_utm_crs if import_report else ""
-                    ) or ""
                     _, current_key = collect_section_build_request(
                         parse_result,
-                        transect_mode=sidebar.transect_mode,
-                        selected_holes=configure_state.selected_holes,
-                        coordinate_text=configure_state.coordinate_text,
-                        offset_warning_m=sidebar.offset_warning_m,
-                        vertical_exaggeration=sidebar.vertical_exaggeration,
-                        show_hatches=sidebar.show_hatches,
-                        show_legend=sidebar.show_legend,
-                        section_title=sidebar.section_title,
-                        interpretation_mode=sidebar.interpretation_mode,
-                        allow_pinch_outs=sidebar.allow_pinch_outs,
-                        uncertainty_spacing_m=sidebar.uncertainty_spacing_m,
-                        uncertainty_offset_m=sidebar.uncertainty_offset_m,
-                        max_offset_for_interpolation_m=sidebar.max_offset_for_interpolation_m,
-                        show_ground_surface=sidebar.show_ground_surface,
-                        interpolate_water_table=sidebar.interpolate_water_table,
-                        warn_on_correlation_gaps=sidebar.warn_on_correlation_gaps,
-                        show_water_elevation_labels=sidebar.show_water_elevation_labels,
-                        show_water_legend=sidebar.show_water_legend,
-                        show_dry_well_nm=sidebar.show_dry_well_nm,
-                        water_interpolate_across_gaps=sidebar.water_interpolate_across_gaps,
-                        environmental_parameters=configure_state.environmental_parameters,
-                        show_parameter_labels=configure_state.show_parameter_labels,
-                        parameter_interpolate_segments=(
-                            True
-                            if sidebar.connect_chemistry_values
-                            else configure_state.parameter_interpolate_segments
+                        **_section_request_kwargs(
+                            sidebar, configure_state, configure_state.transect_selection
                         ),
-                        parameter_interpolate_across_gaps=sidebar.parameter_interpolate_across_gaps,
-                        parameter_draw_markers=sidebar.parameter_draw_markers_default,
-                        parameter_marker_size=sidebar.parameter_marker_size,
-                        parameter_draw_leaders=False,
-                        parameter_label_include_units=False,
-                        column_header_detail=sidebar.column_header_detail,
-                        show_scale_bar=sidebar.show_scale_bar,
-                        show_ve_annotation=sidebar.show_ve_annotation,
-                        show_parameter_legend_text=sidebar.show_parameter_legend_text,
-                        export_font_family=sidebar.export_font_family,
-                        export_font_size=sidebar.export_font_size,
-                        selected_water_series_ids=configure_state.selected_water_series_ids,
-                        water_line_solid=sidebar.water_line_solid_default,
-                        legend_ncol=sidebar.legend_ncol,
-                        chemistry_color_mode=configure_state.chemistry_color_mode,
-                        chemistry_threshold_green_max=configure_state.chemistry_threshold_green_max,
-                        chemistry_threshold_yellow_max=configure_state.chemistry_threshold_yellow_max,
-                        chemistry_label_style=configure_state.chemistry_label_style,
-                        render_layout=sidebar.render_layout,
-                        track_width_m=sidebar.track_width_m,
-                        auto_fit_track_width=sidebar.auto_fit_track_width,
-                        coordinate_reference=coordinate_reference,
-                        uses_placeholder_elevation=bool(
-                            import_report and import_report.uses_placeholder_elevation
-                        ),
-                        elevation_mode=configure_state.elevation_mode,
-                        report_preset=sidebar.report_preset,
-                        consulting_title_block=sidebar.consulting_title_block,
-                        selection=configure_state.transect_selection,
-                        fail_on_overlaps=configure_state.fail_on_overlaps,
-                        output_preset=sidebar.output_preset,
-                        export_framing=sidebar.export_framing,
                     )
                     is_stale = (
                         st.session_state.render_cache_key is None
@@ -206,12 +221,14 @@ else:
                     )
 
             preset_key = str(st.session_state.get("output_preset", "section_sheet"))
-            _render_sticky_generate_strip(
-                has_svg=True,
-                can_generate=bool(configure_state and configure_state.can_generate),
-                is_stale=is_stale,
-                section_title=sidebar.section_title,
-            )
+            with strip_slot:
+                _render_sticky_generate_strip(
+                    has_svg=True,
+                    can_generate=bool(configure_state and configure_state.can_generate),
+                    is_stale=is_stale,
+                    section_title=sidebar.section_title,
+                    blocked_reason=configure_state.blocked_reason if configure_state else None,
+                )
             render_profile_and_downloads(
                 section_title=sidebar.section_title,
                 interpretation_mode=sidebar.interpretation_mode,
@@ -253,18 +270,21 @@ else:
             )
 
         generate_clicked = False
+        regenerate_requested = bool(st.session_state.pop("_regenerate_requested", False))
+        blocked_reason = (
+            configure_state.blocked_reason if configure_state else None
+        ) or "fix the issues under Validate and Configure"
         if not has_svg:
-            regenerate_requested = bool(st.session_state.pop("_regenerate_requested", False))
             with coach_slot:
                 render_next_step_coach(
                     selection=configure_state.transect_selection if configure_state else None,
                     blocked_reason=configure_state.blocked_reason if configure_state else None,
                 )
             with generate_slot:
-                gen_col1, gen_col2 = st.columns([1, 3])
+                gen_col1, gen_col2 = st.columns([1, 3], vertical_alignment="center")
                 with gen_col1:
                     generate_clicked = st.button(
-                        "Generate Cross-Section",
+                        "Generate section",
                         type="primary",
                         disabled=not configure_state.can_generate,
                         width="stretch",
@@ -273,20 +293,20 @@ else:
                     if regenerate_requested and configure_state.can_generate:
                         generate_clicked = True
                     elif regenerate_requested and not configure_state.can_generate:
-                        st.caption("Generate shortcut ignored — resolve Configure / Validate first.")
+                        st.caption(f"Generate shortcut ignored — {blocked_reason}.")
                 with gen_col2:
                     if configure_state.can_generate:
-                        st.caption("Builds the profile from sidebar style and transect settings.")
+                        st.caption("Draws the section using your figure style and section line.")
                     elif configure_state.blocking:
-                        st.caption("Fix blocking QA errors in Validate before generating.")
+                        st.caption("Fix the blocking data errors in Validate before generating.")
                     elif configure_state.placeholder_blocks_interp:
                         st.caption(
-                            "Placeholder collar elevations block interpolated geology — "
-                            "switch to relative depth or borehole-only mode."
+                            "Some holes have no real ground elevation, so layers can't be joined "
+                            "between holes — switch to relative depth or observed logs only."
                         )
                     elif configure_state.fail_on_overlaps and configure_state.has_overlap_warnings:
                         st.caption(
-                            "Polygon overlaps block export — resolve correlation or disable "
+                            "Overlapping layers block export — fix the layer order or turn off "
                             "'Block export on polygon overlaps'."
                         )
                     elif configure_state.transect_selection is None:
@@ -295,23 +315,27 @@ else:
                             and len(configure_state.selected_holes) < 2
                         ):
                             st.caption(
-                                "Pick at least 2 holes in **Transect selection** "
+                                "Pick at least 2 holes for the section line "
                                 f"({len(configure_state.selected_holes)} selected)."
                             )
                         else:
-                            st.caption("Select a transect (holes, coordinates, or recommended) before generating.")
+                            st.caption(
+                                "Choose a section line (holes, coordinates or a recommended line) "
+                                "before generating."
+                            )
                     elif configure_state.has_warnings and not configure_state.override_warnings:
                         st.caption(
-                            "QA warnings are present — enable 'Allow generate with warnings' in Configure, "
-                            "or resolve the warnings in Validate."
+                            "Data warnings are present — tick 'Allow generate with warnings' in "
+                            "Configure, or fix the warnings in Validate."
                         )
                     else:
-                        st.caption("Resolve Configure / Validate issues before generating.")
+                        st.caption(f"Can't generate yet — {blocked_reason}.")
         else:
-            regenerate_requested = bool(st.session_state.pop("_regenerate_requested", False))
-            generate_clicked = regenerate_requested and configure_state is not None and configure_state.can_generate
-            if regenerate_requested and configure_state and not configure_state.can_generate:
-                st.warning(f"Regenerate skipped — {configure_state.blocked_reason}.")
+            generate_clicked = (
+                regenerate_requested and configure_state is not None and configure_state.can_generate
+            )
+            if regenerate_requested and not generate_clicked:
+                st.warning(f"Generate section skipped — {blocked_reason}.")
 
         if (not has_svg and generate_clicked) or (has_svg and generate_clicked):
             try:
@@ -329,81 +353,18 @@ else:
                         except ValueError as exc:
                             raise ValueError(str(exc)) from exc
                         raise ValueError(
-                            f"Need at least two boreholes within {sidebar.offset_warning_m:.0f} m of the transect line"
+                            f"Need at least two holes within {sidebar.offset_warning_m:.0f} m of the section line."
                         )
-                    raise ValueError("Select at least two holes for the transect")
+                    raise ValueError("Pick at least two holes for the section line.")
                 active_hole_ids, transect_points = selection
-                import_report = st.session_state.import_report
-                coordinate_reference = sidebar.target_crs or (
-                    import_report.suggested_utm_crs if import_report else ""
-                ) or ""
-                uses_placeholder = bool(
-                    import_report and import_report.uses_placeholder_elevation
-                )
                 build_request, cache_key = collect_section_build_request(
                     parse_result,
-                    transect_mode=sidebar.transect_mode,
-                    selected_holes=configure_state.selected_holes,
-                    coordinate_text=configure_state.coordinate_text,
-                    offset_warning_m=sidebar.offset_warning_m,
-                    vertical_exaggeration=sidebar.vertical_exaggeration,
-                    show_hatches=sidebar.show_hatches,
-                    show_legend=sidebar.show_legend,
-                    section_title=sidebar.section_title,
-                    interpretation_mode=sidebar.interpretation_mode,
-                    allow_pinch_outs=sidebar.allow_pinch_outs,
-                    uncertainty_spacing_m=sidebar.uncertainty_spacing_m,
-                    uncertainty_offset_m=sidebar.uncertainty_offset_m,
-                    max_offset_for_interpolation_m=sidebar.max_offset_for_interpolation_m,
-                    show_ground_surface=sidebar.show_ground_surface,
-                    interpolate_water_table=sidebar.interpolate_water_table,
-                    warn_on_correlation_gaps=sidebar.warn_on_correlation_gaps,
-                    show_water_elevation_labels=sidebar.show_water_elevation_labels,
-                    show_water_legend=sidebar.show_water_legend,
-                    show_dry_well_nm=sidebar.show_dry_well_nm,
-                    water_interpolate_across_gaps=sidebar.water_interpolate_across_gaps,
-                    environmental_parameters=configure_state.environmental_parameters,
-                    show_parameter_labels=configure_state.show_parameter_labels,
-                    parameter_interpolate_segments=(
-                        True
-                        if sidebar.connect_chemistry_values
-                        else configure_state.parameter_interpolate_segments
-                    ),
-                    parameter_interpolate_across_gaps=sidebar.parameter_interpolate_across_gaps,
-                    parameter_draw_markers=sidebar.parameter_draw_markers_default,
-                    parameter_marker_size=sidebar.parameter_marker_size,
-                    parameter_draw_leaders=False,
-                    parameter_label_include_units=False,
-                    column_header_detail=sidebar.column_header_detail,
-                    show_scale_bar=sidebar.show_scale_bar,
-                    show_ve_annotation=sidebar.show_ve_annotation,
-                    show_parameter_legend_text=sidebar.show_parameter_legend_text,
-                    export_font_family=sidebar.export_font_family,
-                    export_font_size=sidebar.export_font_size,
-                    selected_water_series_ids=configure_state.selected_water_series_ids,
-                    water_line_solid=sidebar.water_line_solid_default,
-                    legend_ncol=sidebar.legend_ncol,
-                    chemistry_color_mode=configure_state.chemistry_color_mode,
-                    chemistry_threshold_green_max=configure_state.chemistry_threshold_green_max,
-                    chemistry_threshold_yellow_max=configure_state.chemistry_threshold_yellow_max,
-                        chemistry_label_style=configure_state.chemistry_label_style,
-                    render_layout=sidebar.render_layout,
-                    track_width_m=sidebar.track_width_m,
-                    auto_fit_track_width=sidebar.auto_fit_track_width,
-                    coordinate_reference=coordinate_reference,
-                    uses_placeholder_elevation=uses_placeholder,
-                    elevation_mode=configure_state.elevation_mode,
-                    report_preset=sidebar.report_preset,
-                    consulting_title_block=sidebar.consulting_title_block,
-                    selection=selection,
-                    fail_on_overlaps=configure_state.fail_on_overlaps,
-                    output_preset=sidebar.output_preset,
-                    export_framing=sidebar.export_framing,
+                    **_section_request_kwargs(sidebar, configure_state, selection),
                 )
                 if build_request is None or cache_key is None:
-                    raise ValueError("Select at least two holes for the transect")
+                    raise ValueError("Pick at least two holes for the section line.")
 
-                with st.spinner("Generating cross-section…"):
+                with st.spinner("Generating section…"):
                     svg_bytes, png_bytes, pdf_bytes, polygon_count, lithology_codes, overlap_warnings = (
                         generate_cross_section(
                             parse_result,
@@ -432,12 +393,12 @@ else:
                 st.session_state.render_cache_key = cache_key
                 if sidebar.interpretation_mode == "borehole_only":
                     st.session_state["_flash_success"] = (
-                        f"Generated observed-data cross-section across {len(active_hole_ids)} boreholes."
+                        f"Section generated from observed logs across {len(active_hole_ids)} holes."
                     )
                 else:
                     st.session_state["_flash_success"] = (
-                        f"Generated cross-section with {polygon_count} geological polygons "
-                        f"across {len(active_hole_ids)} boreholes."
+                        f"Section generated: {polygon_count} geological layers "
+                        f"across {len(active_hole_ids)} holes."
                     )
                 st.rerun()
             except ValueError as exc:
@@ -445,14 +406,14 @@ else:
                 # selection…): show the reason in plain sight, not in server logs.
                 st.session_state.render_cache_key = None
                 st.error(
-                    f"Couldn't generate the section: {exc} Adjust **Transect selection** "
+                    f"Couldn't generate the section: {exc} Adjust the section line "
                     "in the sidebar or Configure, then try again."
                 )
             except Exception as exc:
                 logger.exception("Cross-section generation failed")
                 error_msg = (
-                    "Something unexpected went wrong while drawing the section. Try Generate "
-                    "again; if it repeats, re-upload the workbook or send the log to support."
+                    "Something unexpected went wrong while drawing the section. Click Generate "
+                    "section again; if it repeats, re-upload the workbook or send the log to support."
                 )
                 st.session_state["_flash_error"] = error_msg
                 # Keep SVG if present but mark stale so downloads stay gated.
@@ -492,8 +453,7 @@ Optional `unit_order` column (1 = shallowest) for repeated lithology codes.
 **Optional sheets:** `Water`, `Screens`, `Gradients`, `Correlations`, `Deviations`,
 `Environmental`, `Faults`, `Unconformities`.
 
-Use **Help → Workbook quick reference** (or `docs/help/workbook-quick.md`) for a short guide,
-and `docs/workbook-format.md` for the full schema.
+Use **Help → Workbook quick reference** for a short guide to every sheet and column.
 
 **Field export:** single `Lithology` sheet with `Label`, `Depth` (e.g. `0.00-2.00m`),
 `Lithology`, `Lat`, `Long` — auto-converted to UTM on import.

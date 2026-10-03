@@ -29,6 +29,16 @@ APP_CSS = """
     .app-hero.compact p { display: none; }
     .app-hero.compact .workflow { margin-top: 0.3rem; }
     .app-hero.compact .workflow-step { padding: 0.28rem 0.4rem; font-size: 0.75rem; }
+    /* Once a section exists: brand + stepper on ONE line so the figure is above the fold. */
+    .app-hero.oneline {
+        display: flex;
+        align-items: center;
+        gap: 0.85rem;
+        padding: 0.35rem 0.6rem 0.35rem 0.85rem;
+    }
+    .app-hero.oneline h1 { font-size: 0.98rem; white-space: nowrap; padding: 0; }
+    .app-hero.oneline .workflow { flex: 1 1 auto; margin: 0; flex-wrap: nowrap; }
+    .app-hero.oneline .workflow-step { padding: 0.18rem 0.35rem; }
     .generate-strip {
         display: flex;
         flex-wrap: wrap;
@@ -37,27 +47,41 @@ APP_CSS = """
         background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
         border: 1px solid var(--border);
         border-radius: 10px;
-        padding: 0.45rem 0.75rem;
-        margin-bottom: 0.55rem;
+        padding: 0.4rem 0.75rem;
+        margin: 0;
         font-size: 0.84rem;
         color: #334155;
     }
-    .generate-strip .strip-status { flex: 1 1 12rem; color: var(--muted); }
-    .generate-strip .strip-status strong { color: var(--text); }
+    .generate-strip .strip-title {
+        font-size: 1rem !important;
+        font-weight: 700;
+        color: var(--text);
+        margin: 0 !important;
+        padding: 0 !important;
+        line-height: 1.35;
+    }
+    .generate-strip .strip-status { flex: 1 1 12rem; color: #475569; }
+    .generate-strip [data-testid="stHeaderActionElements"] { display: none; }
+    /* Streamlit pulls markdown up by -1rem; undo it so the strip centres on the button. */
+    [data-testid="stMarkdownContainer"]:has(> .generate-strip),
+    [data-testid="stMarkdownContainer"]:has(> .profile-header) { margin-bottom: 0; }
+    .generate-strip.is-stale { background: #fffbeb; border-color: #fde68a; }
+    .generate-strip.is-stale .strip-status { color: #92400e; font-weight: 600; }
     .workflow {
         display: flex;
         gap: 0.35rem;
         flex-wrap: wrap;
         margin: 0.45rem 0 0.15rem;
     }
+    /* Solid dark step background: white text stays >= 4.5:1 across the gradient. */
     .workflow-step {
         flex: 1 1 6.5rem;
-        background: rgba(255,255,255,0.12);
+        background: rgba(0,0,0,0.25);
         border: 1px solid rgba(255,255,255,0.22);
         border-radius: 8px;
         padding: 0.35rem 0.5rem;
         font-size: 0.75rem;
-        color: #f1f5f9;
+        color: #ffffff;
         text-align: center;
     }
     .workflow-step.active {
@@ -66,7 +90,7 @@ APP_CSS = """
         font-weight: 600;
         border-color: transparent;
     }
-    .workflow-step.done { color: #d1fae5; }
+    .workflow-step.done { color: #ffffff; }
     .metric-card {
         background: var(--surface);
         border: 1px solid var(--border);
@@ -85,15 +109,15 @@ APP_CSS = """
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: 14px;
-        padding: 1rem 1.15rem 0.65rem;
-        margin-top: 0.65rem;
+        padding: 0.6rem 1rem 0.6rem;
+        margin-top: 0;
         box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
     }
     .profile-header {
         display: flex;
         flex-wrap: wrap;
-        gap: 0.45rem;
-        margin: 0.35rem 0 0.85rem;
+        gap: 0.4rem;
+        margin: 0;
     }
     .chip {
         display: inline-block;
@@ -107,6 +131,15 @@ APP_CSS = """
     }
     .chip.brand { background: #ecfdf5; border-color: #a7f3d0; color: #065f46; }
     .chip.warn { background: #fffbeb; border-color: #fde68a; color: #92400e; }
+    .chip.more { border-style: dashed; cursor: help; color: #475569; }
+    .chip.more:focus-visible { outline: 2px solid var(--brand-mid); outline-offset: 2px; }
+    /* Compact preview zoom, right-aligned beside the chips. */
+    .st-key-svg_preview_zoom [data-testid="stButtonGroup"] { justify-content: flex-end; }
+    .st-key-svg_preview_zoom button {
+        min-height: 1.75rem !important;
+        padding: 0.1rem 0.6rem !important;
+    }
+    .st-key-svg_preview_zoom button p { font-size: 0.8rem !important; }
     .legend-swatch {
         display: inline-block;
         width: 24px;
@@ -274,8 +307,46 @@ APP_CSS = """
         outline: 2px solid var(--brand-mid) !important;
         outline-offset: 2px !important;
     }
+    /* Text/number inputs, selects and text areas: outline the whole field. */
+    [data-baseweb="input"]:focus-within,
+    [data-baseweb="select"] > div:focus-within,
+    [data-baseweb="textarea"]:focus-within,
+    textarea:focus-visible {
+        outline: 2px solid var(--brand-mid) !important;
+        outline-offset: 1px !important;
+    }
+    /* File uploader hint ("50MB per file · XLSX") at >= 4.5:1. */
+    [data-testid="stFileUploaderDropzoneInstructions"] span { color: #475569 !important; }
     /* Reclaim default top padding so results sit higher on the page. */
     [data-testid="stMainBlockContainer"] { padding-top: 2.25rem; }
+    /* Narrow windows and phones: keep File/Edit/View/Help on one row at their
+       natural width (scroll sideways if needed) instead of truncating ("F…")
+       or stacking into four full-width rows. */
+    @media (max-width: 1100px) {
+        .st-key-app_menubar [data-testid="stHorizontalBlock"] {
+            flex-wrap: nowrap !important;
+            overflow-x: auto;
+            gap: 0.25rem;
+        }
+        .st-key-app_menubar [data-testid="stColumn"] {
+            flex: 0 0 auto !important;
+            width: auto !important;
+            min-width: 0 !important;
+        }
+    }
+    @media (max-width: 640px) {
+        .st-key-app_menubar [data-testid="stCaptionContainer"] { display: none; }
+        /* Downloads as a 2 × 2 grid rather than four stacked rows. */
+        .st-key-section_card [data-testid="stHorizontalBlock"]:has([data-testid="stDownloadButton"]) {
+            flex-wrap: wrap !important;
+        }
+        .st-key-section_card [data-testid="stHorizontalBlock"]:has([data-testid="stDownloadButton"]) > [data-testid="stColumn"] {
+            min-width: calc(50% - 0.5rem) !important;
+            flex: 1 1 calc(50% - 0.5rem) !important;
+        }
+        .app-hero.oneline { flex-wrap: wrap; }
+        .app-hero.oneline .workflow { flex-wrap: wrap; }
+    }
     @media (prefers-reduced-motion: reduce) {
         .workflow-step, .metric-card, .section-card {
             transition: none;

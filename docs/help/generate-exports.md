@@ -1,6 +1,6 @@
 # Generate & exports
 
-Cross Section Studio is **SVG-first**: **Generate Cross-Section** (or `Ctrl+G`) builds the fence diagram as SVG immediately.
+Cross Section Studio is **SVG-first**: **Generate Cross-Section** (or `Alt+Shift+G`) builds the fence diagram as SVG immediately.
 
 ## Downloads
 

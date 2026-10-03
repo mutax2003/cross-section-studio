@@ -8,7 +8,7 @@ Cross Section Studio builds borehole **fence diagrams** from an Excel workbook. 
 2. Upload the saved `.xlsx` with **Upload Excel workbook** (filled template, native workbook, or field export with Lat/Long).
 3. Continue **Validate → Configure → Generate**.
 
-Fastest path with no prep: **Try sample project** (or `Ctrl+Shift+O`).
+Fastest path with no prep: **Try sample project** (or `Alt+Shift+O`).
 
 ## Workflow
 
@@ -23,7 +23,7 @@ Multi-transect packaging is configured under **Multi-transect batch ZIP**, then 
 
 ## Sample project
 
-**Try sample project** (or `Ctrl+Shift+O`) loads the built-in demo workbook so you can walk Validate → Configure → Generate without preparing your own data.
+**Try sample project** (or `Alt+Shift+O`) loads the built-in demo workbook so you can walk Validate → Configure → Generate without preparing your own data.
 
 ## Input template
 

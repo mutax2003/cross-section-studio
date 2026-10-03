@@ -325,13 +325,18 @@ def read_mapped_sheets(
     return collars_df, lithology_df
 
 
+def _m(value: float) -> str:
+    """Depth for messages: 3.0 -> "3", 8.25 -> "8.25"."""
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
 def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[QualityIssue]:
     issues: list[QualityIssue] = []
     if not intervals:
         issues.append(
             QualityIssue(
                 code="no_lithology",
-                message=f"{collar.hole_id} has no lithology intervals",
+                message=f"{collar.hole_id} has no lithology intervals — add them in the Lithology sheet",
                 severity=Severity.WARNING.value,
                 hole_id=collar.hole_id,
             )
@@ -354,8 +359,8 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
             QualityIssue(
                 code="depth_gap",
                 message=(
-                    f"{collar.hole_id} missing coverage from 0 to "
-                    f"{sorted_intervals[0].from_depth:.2f} m"
+                    f"{collar.hole_id}: nothing logged from 0 to "
+                    f"{_m(sorted_intervals[0].from_depth)} m (missing coverage)"
                 ),
                 severity=Severity.WARNING.value,
                 hole_id=collar.hole_id,
@@ -368,8 +373,8 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
                 QualityIssue(
                     code="depth_gap",
                     message=(
-                        f"{collar.hole_id} gap between {left.to_depth:.2f} and "
-                        f"{right.from_depth:.2f} m"
+                        f"{collar.hole_id}: gap between {_m(left.to_depth)} and "
+                        f"{_m(right.from_depth)} m — nothing logged there"
                     ),
                     severity=Severity.WARNING.value,
                     hole_id=collar.hole_id,
@@ -380,9 +385,9 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
                 QualityIssue(
                     code="depth_overlap",
                     message=(
-                        f"{left.hole_id} intervals overlap between "
-                        f"{left.from_depth:.2f}-{left.to_depth:.2f} m and "
-                        f"{right.from_depth:.2f}-{right.to_depth:.2f} m"
+                        f"{left.hole_id}: {_m(left.from_depth)}–{_m(left.to_depth)} m overlaps "
+                        f"{_m(right.from_depth)}–{_m(right.to_depth)} m — fix from_depth/to_depth "
+                        "in Lithology"
                     ),
                     severity=Severity.ERROR.value,
                     hole_id=left.hole_id,
@@ -395,8 +400,8 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
             QualityIssue(
                 code="depth_gap",
                 message=(
-                    f"{collar.hole_id} missing coverage from {last.to_depth:.2f} to "
-                    f"{collar.total_depth:.2f} m (TD)"
+                    f"{collar.hole_id}: nothing logged from {_m(last.to_depth)} m to "
+                    f"total depth {_m(collar.total_depth)} m (missing coverage)"
                 ),
                 severity=Severity.WARNING.value,
                 hole_id=collar.hole_id,
@@ -418,9 +423,9 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
                 QualityIssue(
                     code="duplicate_lithology_no_unit_order",
                     message=(
-                        f"{collar.hole_id} has duplicate lithology code(s) "
-                        f"({', '.join(sorted(set(missing_order)))}) without unit_order — "
-                        "correlation across holes will fail"
+                        f"{collar.hole_id} repeats lithology code(s) "
+                        f"{', '.join(sorted(set(missing_order)))} without unit_order — "
+                        "add unit_order so layers correlate between holes"
                     ),
                     severity=Severity.ERROR.value,
                     hole_id=collar.hole_id,
@@ -431,7 +436,7 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
             issues.append(
                 QualityIssue(
                     code="duplicate_unit_order",
-                    message=f"{collar.hole_id} has duplicate unit_order values",
+                    message=f"{collar.hole_id} uses the same unit_order twice — give each layer its own number",
                     severity=Severity.ERROR.value,
                     hole_id=collar.hole_id,
                 )
@@ -472,7 +477,10 @@ def analyze_parsed_data(
             issues.append(
                 QualityIssue(
                     code="orphan_lithology",
-                    message=f"Lithology references unknown hole_id '{lithology.hole_id}'",
+                    message=(
+                        f"{lithology.hole_id} is in Lithology but not in Collars — "
+                        "add it to Collars or fix the spelling"
+                    ),
                     severity=Severity.ERROR.value,
                     hole_id=lithology.hole_id,
                 )
@@ -485,8 +493,8 @@ def analyze_parsed_data(
                 QualityIssue(
                     code="below_td",
                     message=(
-                        f"{lithology.hole_id} interval exceeds total depth "
-                        f"({lithology.to_depth:.2f} m > {collar.total_depth:.2f} m TD)"
+                        f"{lithology.hole_id}: interval to {_m(lithology.to_depth)} m exceeds total "
+                        f"depth {_m(collar.total_depth)} m — fix to_depth or total_depth in Collars"
                     ),
                     severity=Severity.ERROR.value,
                     hole_id=lithology.hole_id,
@@ -499,7 +507,7 @@ def analyze_parsed_data(
             issues.append(
                 QualityIssue(
                     code="flat_collar_grid",
-                    message="All collars share identical easting/northing coordinates",
+                    message="All collars have the same easting/northing — check the Collars coordinates",
                     severity=Severity.WARNING.value,
                 )
             )
@@ -535,8 +543,8 @@ def analyze_parsed_data(
                     QualityIssue(
                         code="off_transect",
                         message=(
-                            f"{hole_id} is {offset:.1f} m from transect "
-                            f"(threshold {offset_threshold_m:.1f} m)"
+                            f"{hole_id} is {offset:.1f} m from the section line "
+                            f"(limit {offset_threshold_m:.1f} m)"
                         ),
                         severity=Severity.WARNING.value,
                         hole_id=hole_id,
@@ -691,10 +699,10 @@ def summarize_water_levels(
             )
         )
     if transect_holes and not by_series:
-        warnings.append("No groundwater readings on the selected transect.")
+        warnings.append("No groundwater readings on the selected section line.")
     if orphan_ids:
         warnings.append(
-            "Groundwater readings for holes not on the selected transect: "
+            "Groundwater readings for holes not on the selected section line: "
             + ", ".join(sorted(orphan_ids))
         )
 
@@ -803,7 +811,7 @@ def summarize_environmental_readings(
         )
 
     if not readings and transect_holes:
-        warnings.append("No environmental/lab readings on the selected transect.")
+        warnings.append("No environmental/lab readings on the selected section line.")
     holes_with_any = {reading.hole_id for reading in readings if reading.hole_id in hole_set}
     holes_without_any = tuple(hole_id for hole_id in transect_holes if hole_id not in holes_with_any)
     return EnvironmentalQualitySummary(

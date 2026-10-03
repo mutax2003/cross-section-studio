@@ -16,7 +16,9 @@ from batch_export import (
     export_binder_pdf,
     parse_batch_transect_lines,
     prepare_batch_section_request,
+    split_batch_transect_lines,
     transect_points_from_collars,
+    validate_batch_transect_lines,
 )
 from models import Collar, Lithology, ParseResult
 from section_build_request import SectionBuildRequest
@@ -231,3 +233,39 @@ def test_batch_title_swaps_the_base_section_label() -> None:
     assert _batch_section_title(_Req("North line", block), "South") == "South line"
     assert _batch_section_title(_Req("Borehole Cross-Section"), "B-B'") == "Borehole Cross-Section — B-B'"
     assert _batch_section_title(_Req("Plan"), "North line") == "Plan — North line"
+
+
+def test_validate_batch_lines_reports_each_line_without_raising() -> None:
+    text = (
+        "A-A' | MW-01, MW-02\n"
+        "\n"
+        "C-C' | MW-01, MW-99\n"
+        "D-D' | MW-02\n"
+        "just some words\n"
+        " | MW-01, MW-02\n"
+        "A-A' | MW-02, MW-03\n"
+        "E-E' | MW-01, MW-01\n"
+    )
+    statuses = validate_batch_transect_lines(text, ["MW-01", "MW-02", "MW-03"])
+    assert [s.line_number for s in statuses] == [1, 3, 4, 5, 6, 7, 8]
+    assert statuses[0].ok and statuses[0].spec.hole_ids == ("MW-01", "MW-02")
+    assert statuses[1].message == "C-C': MW-99 not in Collars"
+    assert statuses[2].message == "D-D': needs at least 2 holes"
+    assert "'|'" in statuses[3].message and statuses[3].message.startswith("Line 5")
+    assert "name" in statuses[4].problem
+    assert statuses[5].problem == "name already used on line 1"
+    assert "listed more than once" in statuses[6].problem
+    assert not any(s.ok for s in statuses[1:])
+
+
+def test_validate_batch_lines_skips_collar_check_without_known_ids() -> None:
+    (status,) = validate_batch_transect_lines("X | Q-1, Q-2", None)
+    assert status.ok and status.message == "X: 2 holes, ready"
+
+
+def test_split_batch_lines_keeps_valid_and_lists_skipped() -> None:
+    valid, skipped = split_batch_transect_lines(
+        "A-A' | MW-01, MW-02\nC-C' | MW-01, MW-99", ["MW-01", "MW-02"]
+    )
+    assert [spec.label for spec in valid] == ["A-A'"]
+    assert [status.label for status in skipped] == ["C-C'"]

@@ -419,3 +419,18 @@ def test_transect_recommender_orders_candidates() -> None:
 
     scored = score_transect(collars, lithologies, ("BH-01", "BH-02", "BH-03"))
     assert scored.length_m == 100.0
+
+
+def test_fix_plan_shows_the_overlapping_depths() -> None:
+    """The fix plan showed only "Lithology intervals overlap in depth (BH-03)"
+    plus two near-identical fix lines."""
+    from ai_assistant import _local_fix_plan
+    from ai_quality import QualityIssue
+
+    issues = [
+        QualityIssue(code="depth_overlap", message="BH-03: 2–6 m overlaps 0–5 m — fix from_depth/to_depth in Lithology", severity="error", hole_id="BH-03"),
+        QualityIssue(code="depth_overlap", message="BH-03: 8–9 m overlaps 7–10 m — fix from_depth/to_depth in Lithology", severity="error", hole_id="BH-03"),
+    ]
+    steps = _local_fix_plan(issues)
+    assert [s.summary for s in steps] == [i.message for i in issues]
+    assert all("from_depth" not in s.action for s in steps)

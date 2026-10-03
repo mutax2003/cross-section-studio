@@ -20,7 +20,7 @@ Inter-hole fills are a **rule-based fence** (linear contacts, midpoint pinch-out
 
 - **Compact hero** — after upload, the header shrinks so the figure gets vertical room (reporting focus).
 - **Figure-first** — once a profile exists, the SVG sheet stays on top; Validate & Configure move into **Setup — Validate & Configure** (collapsed).
-- **Regenerate strip** — sticky bar under the hero when a section exists; use **Generate Cross-Section** (`Ctrl+G`) after changing sidebar style or transect.
+- **Regenerate strip** — sticky bar under the hero when a section exists; use **Generate Cross-Section** (`Alt+Shift+G`) after changing sidebar style or transect.
 - **Plan mini-map** — collar scatter in Configure mirrors a plan-view pick for fence orientation.
 - **Hole order** — numbered sequence with ↑/↓ matches Strater-style hole ordering for A–A′.
 - **Export ribbon** — chips show preset, VE, hole count, transect, fresh/stale, PNG/PDF readiness.
@@ -41,6 +41,6 @@ Inter-hole fills are a **rule-based fence** (linear contacts, midpoint pinch-out
 
 ## Keyboard shortcuts
 
-- **Ctrl+G** — Generate / Regenerate (same as menubar **File → Generate cross-section**).
+- **Alt+Shift+G** (Option+Shift+G on macOS) — Generate section (same as **File → Generate section**). Full list: **Help → Keyboard shortcuts**.
 
-See **Help → Generate & exports** for SVG-first caching, Prepare deliverables, and multi-transect ZIP.
+See **Help → Generate and exports** for SVG-first caching, Prepare deliverables, and multi-transect ZIP.

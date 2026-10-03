@@ -92,7 +92,7 @@ def render_input_template_download(*, key: str, help: str | None = None) -> None
     """Offer a template download button; fall back to caption if unavailable."""
     payload = input_template_download_payload()
     if payload is None:
-        st.caption("Input template not found — run `python scripts/build_input_template.py`.")
+        st.caption("The data-entry template isn't included in this install — use **Try sample project** instead.")
         return
     data, file_name = payload
     st.download_button(
@@ -125,8 +125,11 @@ def _friendly_workbook_error(exc: Exception) -> str:
         return (
             f"No **Collars** sheet was found{sheets}. Add a Collars sheet with hole_id, easting, "
             "northing, elevation and total_depth, or start from **Download template**. "
-            "See Help → Workbook quick reference."
+            "See Help → Workbook & data entry."
         )
+    if "sheet is missing the" in text:
+        # Already plain language from the parser: names the sheet and the column.
+        return text
     if "Missing required sheet" in text:
         return f"{text}. Add the missing sheet(s), or start from **Download template**."
     if "rows (limit" in text:
@@ -144,6 +147,38 @@ def _friendly_workbook_error(exc: Exception) -> str:
     return (
         "The workbook couldn't be read. Check that Collars and Lithology use the template "
         "headers, then upload it again."
+    )
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def upload_headline(
+    *,
+    hole_count: int,
+    interval_count: int,
+    skipped_count: int,
+    error_count: int,
+) -> tuple[str, str]:
+    """``("success" | "warning", text)`` for the banner shown after a workbook loads.
+
+    Green only when no row was dropped and no data check failed; otherwise the
+    headline says what went wrong and points to Validate, where the row list lives.
+    """
+    # Same total as the Data health tile, which counts skipped rows as errors.
+    total = skipped_count + error_count
+    if total:
+        detail = f" ({_plural(skipped_count, 'row')} skipped)" if skipped_count else ""
+        return (
+            "warning",
+            f"**Loaded with problems: {_plural(total, 'data error')}{detail} — see Validate.** "
+            f"({_plural(hole_count, 'borehole')} and "
+            f"{_plural(interval_count, 'lithology interval')} loaded.)",
+        )
+    return (
+        "success",
+        f"Loaded **{hole_count}** boreholes and **{interval_count}** lithology intervals.",
     )
 
 
@@ -171,9 +206,12 @@ def load_sample_workbook() -> None:
     """
     sample_path = sample_boreholes_workbook()
     if not sample_path.exists():
+        logger.warning(
+            "Sample workbook not found at %s (run scripts/generate_sample_data.py)", sample_path
+        )
         raise FileNotFoundError(
-            f"Sample workbook not found at {sample_path}. "
-            "Run: python scripts/generate_sample_data.py"
+            "The sample project isn't included in this install. Upload your own workbook, "
+            "or download the template to start one."
         )
     data = sample_path.read_bytes()
     # The demo must never open on a blocked Generate: the sample has pinch-out
@@ -239,7 +277,7 @@ def render_welcome_card() -> None:
   <ol class="welcome-steps">
     <li><strong>Enter</strong> — Download the multi-tab template and fill <em>Collars</em> + <em>Lithology</em> (optional Water, Screens, …).</li>
     <li><strong>Upload</strong> — Use <em>Upload Excel workbook</em> in the sidebar Data source section.</li>
-    <li><strong>Validate &amp; Configure</strong> — Review Data Health, then pick transect holes and style.</li>
+    <li><strong>Validate &amp; Configure</strong> — Review data health, then pick the holes on the section line and the style.</li>
     <li><strong>Generate</strong> — SVG is ready immediately; Prepare deliverables for PNG/PDF/Word/package.</li>
   </ol>
 </div>
@@ -419,6 +457,7 @@ def handle_workbook_upload(
             st.session_state.detection_result = FormatDetector().detect(BytesIO(file_bytes))
             st.session_state.pop("upload_banner_error", None)
             st.session_state.pop("upload_banner_success", None)
+            st.session_state.pop("upload_banner_problem", None)
             st.session_state.pop("upload_banner_info", None)
             st.session_state.pop("upload_banner_caption", None)
         except Exception as exc:
@@ -427,6 +466,7 @@ def handle_workbook_upload(
             st.session_state.upload_banner_error = _friendly_workbook_error(exc)
             st.session_state.upload_banner_error_detail = str(exc)
             st.session_state.pop("upload_banner_success", None)
+            st.session_state.pop("upload_banner_problem", None)
             st.session_state.pop("upload_banner_caption", None)
 
     detection = st.session_state.detection_result
@@ -513,15 +553,20 @@ def handle_workbook_upload(
                         f"{', '.join(stale)} (e.g. {sample['client_name']}); they will print on "
                         "the title block — update them before issuing figures."
                     )
-            st.session_state.upload_banner_success = (
-                f"Loaded **{len(hole_ids)}** boreholes and "
-                f"**{len(parse_result.lithologies)}** lithology intervals."
+            level, headline = upload_headline(
+                hole_count=len(hole_ids),
+                interval_count=len(parse_result.lithologies),
+                skipped_count=len(parse_result.errors),
+                error_count=int(getattr(quality_report, "error_count", 0) or 0),
             )
+            if level == "success":
+                st.session_state.upload_banner_success = headline
+            else:
+                st.session_state.upload_banner_problem = headline
             st.session_state.upload_banner_info = " ".join(info_parts) if info_parts else None
-            st.session_state.upload_banner_skipped = list(parse_result.errors) or None
             st.session_state.upload_banner_caption = (
-                f"Suggested transect offset threshold: **{st.session_state.suggested_offset_m:.0f} m** "
-                "(applied to sidebar warnings)."
+                f"Suggested section line offset limit: **{st.session_state.suggested_offset_m:.0f} m** "
+                "(holes farther than this are flagged)."
             )
             st.session_state.pop("upload_banner_error", None)
             audit_event(
@@ -541,6 +586,7 @@ def handle_workbook_upload(
             st.session_state.upload_banner_error = _friendly_workbook_error(exc)
             st.session_state.upload_banner_error_detail = str(exc)
             st.session_state.pop("upload_banner_success", None)
+            st.session_state.pop("upload_banner_problem", None)
             st.session_state.pop("upload_banner_info", None)
             st.session_state.pop("upload_banner_caption", None)
             # Fall through: the banner block below is what shows the error.
@@ -555,15 +601,10 @@ def handle_workbook_upload(
     success_banner = st.session_state.pop("upload_banner_success", None)
     if success_banner:
         st.success(success_banner)
-    skipped = st.session_state.pop("upload_banner_skipped", None)
-    if skipped:
-        st.warning(
-            f"**{len(skipped)} row(s) were not imported**, so the section won't include them. "
-            "Fix these rows in Excel and upload again (for example, add the hole to Collars "
-            "or correct the hole_id spelling)."
-        )
-        with st.expander(f"Show skipped rows ({len(skipped)})"):
-            st.markdown("\n".join(f"- {message}" for message in skipped[:50]))
+    problem_banner = st.session_state.pop("upload_banner_problem", None)
+    if problem_banner:
+        # The row-by-row list is shown once, on Validate — not repeated here.
+        st.warning(problem_banner)
     caution = st.session_state.pop("upload_banner_caution", None)
     if caution:
         st.warning(caution)

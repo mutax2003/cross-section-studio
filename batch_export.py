@@ -110,6 +110,98 @@ def parse_batch_transect_lines(text: str) -> list[BatchTransectSpec]:
     return specs
 
 
+@dataclass(frozen=True)
+class BatchLineStatus:
+    """Validation result for one non-blank line of the batch section-line editor."""
+
+    line_number: int
+    text: str
+    label: str
+    spec: BatchTransectSpec | None
+    problem: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.spec is not None and self.problem is None
+
+    @property
+    def message(self) -> str:
+        """Short plain-language status, e.g. ``"C-C': MW-99 not in Collars"``."""
+        name = self.label or f"Line {self.line_number}"
+        if self.ok and self.spec is not None:
+            return f"{name}: {len(self.spec.hole_ids)} holes, ready"
+        return f"{name}: {self.problem}"
+
+
+def validate_batch_transect_lines(
+    text: str,
+    known_hole_ids: Sequence[str] | None = None,
+) -> list[BatchLineStatus]:
+    """Check each ``Label | hole1, hole2, …`` line on its own; never raises.
+
+    Unlike :func:`parse_batch_transect_lines`, a bad line does not stop the
+    others: each non-blank line gets a :class:`BatchLineStatus` with either a
+    ready ``spec`` or a plain-language ``problem`` (missing ``|``, no name,
+    fewer than two holes, hole IDs not in Collars, repeated name). When
+    ``known_hole_ids`` is None the Collars check is skipped.
+    """
+    known = None if known_hole_ids is None else set(known_hole_ids)
+    statuses: list[BatchLineStatus] = []
+    seen_labels: dict[str, int] = {}
+    for line_number, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line:
+            continue
+
+        def _bad(label: str, problem: str, _n=line_number, _line=line) -> None:
+            statuses.append(BatchLineStatus(_n, _line, label, None, problem))
+
+        if "|" not in line:
+            _bad("", "add '|' between the name and the hole IDs (e.g. A-A' | MW-01, MW-02)")
+            continue
+        label_part, holes_part = line.split("|", 1)
+        label = label_part.strip()
+        hole_ids = tuple(
+            part.strip() for part in holes_part.replace(";", ",").split(",") if part.strip()
+        )
+        if not label:
+            _bad("", "give the section line a name before '|'")
+            continue
+        if label in seen_labels:
+            _bad(label, f"name already used on line {seen_labels[label]}")
+            continue
+        seen_labels[label] = line_number
+        if known is not None:
+            unknown = [hole_id for hole_id in hole_ids if hole_id not in known]
+            if unknown:
+                _bad(label, ", ".join(unknown) + " not in Collars")
+                continue
+        repeated = sorted({hole_id for hole_id in hole_ids if hole_ids.count(hole_id) > 1})
+        if repeated:
+            _bad(label, ", ".join(repeated) + " listed more than once")
+            continue
+        if len(hole_ids) < 2:
+            _bad(label, "needs at least 2 holes")
+            continue
+        statuses.append(
+            BatchLineStatus(
+                line_number, line, label, BatchTransectSpec(label=label, hole_ids=hole_ids)
+            )
+        )
+    return statuses
+
+
+def split_batch_transect_lines(
+    text: str,
+    known_hole_ids: Sequence[str] | None = None,
+) -> tuple[list[BatchTransectSpec], list[BatchLineStatus]]:
+    """Return ``(valid specs, skipped line statuses)`` so a batch can build what it can."""
+    statuses = validate_batch_transect_lines(text, known_hole_ids)
+    valid = [status.spec for status in statuses if status.ok and status.spec is not None]
+    skipped = [status for status in statuses if not status.ok]
+    return valid, skipped
+
+
 _SECTION_ENDS_RE = re.compile(r"^\s*([A-Za-z0-9]+)\s*[-\u2013]\s*([A-Za-z0-9]+['\u2032\u2019]*)\s*$")
 
 

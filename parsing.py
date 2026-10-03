@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
+from collections.abc import Sequence
 from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO
@@ -98,6 +100,175 @@ def _short_error(exc: Exception) -> str:
         except Exception:  # pragma: no cover - defensive
             pass
     return str(exc)
+
+
+# --- Plain-language row errors -------------------------------------------------
+# Every message starts "<Sheet> row <n>" (the Excel row number) so users can jump
+# straight to the cell; :func:`skipped_row_hole_ids` relies on that shape.
+
+_NUMBER_ERROR_TYPES = frozenset(
+    {"float_parsing", "float_type", "int_parsing", "int_type", "int_from_float", "finite_number"}
+)
+_ROW_PREFIX_RE = re.compile(
+    r"^(?P<sheet>[A-Z][A-Za-z ]+?) row \d+(?: \((?P<paren>[^)]+)\))?[,:] (?P<rest>.*)$"
+)
+_UNKNOWN_HOLE_RE = re.compile(r"unknown hole_id '([^']*)'")
+_LABEL_COLOUR_RE = re.compile(r"label_color must be green, red, black or orange \(got '(.*)'\)")
+
+
+def _is_blank_cell(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float) and math.isnan(value):
+        return True
+    return isinstance(value, str) and not value.strip()
+
+
+def _cell_text(value: object, limit: int = 30) -> str:
+    if isinstance(value, float) and value.is_integer():
+        text = str(int(value))
+    else:
+        text = str(value).strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _number_example(value: object) -> str:
+    match = re.search(r"-?\d+(?:[.,]\d+)?", str(value))
+    return match.group(0).replace(",", ".") if match else "4"
+
+
+def _first_error(exc: Exception) -> tuple[str, str, object, str]:
+    """(field, pydantic error type, offending input, message) for *exc*."""
+    errors = getattr(exc, "errors", None)
+    if callable(errors):
+        try:
+            first = errors()[0]
+            field = ".".join(str(part) for part in first.get("loc", ()))
+            message = str(first.get("msg", "")).removeprefix("Value error, ")
+            return field, str(first.get("type", "")), first.get("input"), message
+        except Exception:  # pragma: no cover - defensive
+            pass
+    return "", "value_error", None, str(exc)
+
+
+def _row_where(sheet: str, row_num: int, hole_id: object) -> str:
+    where = f"{sheet} row {row_num}"
+    if not _is_blank_cell(hole_id):
+        where += f" ({_cell_text(hole_id, 20)})"
+    return where
+
+
+def _row_error(sheet: str, row_num: int, exc: Exception, *, hole_id: object = None) -> str:
+    """One actionable sentence for a rejected row: sheet, Excel row, bad value, fix."""
+    field, kind, value, message = _first_error(exc)
+    where = _row_where(sheet, row_num, hole_id)
+    lowered = message.lower()
+
+    unknown = _UNKNOWN_HOLE_RE.search(message)
+    if unknown:
+        return _unknown_hole_error(sheet, row_num, unknown.group(1))
+
+    colour = _LABEL_COLOUR_RE.search(message)
+    if colour:
+        return (
+            f"{where}, label_color = '{_cell_text(colour.group(1))}' — use green, red, black "
+            "or orange, or leave it blank."
+        )
+    if "label_color 'blue' is reserved" in message:
+        return (
+            f"{where}, label_color = 'blue' — blue is reserved for groundwater; "
+            "use green, red, black or orange."
+        )
+
+    whole_number = "must be an integer" in lowered or "whole number" in lowered
+    if field and (
+        kind in _NUMBER_ERROR_TYPES or "must be a finite number" in lowered or whole_number
+    ):
+        if _is_blank_cell(value):
+            return f"{where}: {field} is empty — enter a number (e.g. {_number_example(value)})."
+        if whole_number:
+            return f"{where}, {field} = '{_cell_text(value)}' — enter a whole number (e.g. 2)."
+        return (
+            f"{where}, {field} = '{_cell_text(value)}' — enter a number only "
+            f"(e.g. {_number_example(value)})."
+        )
+
+    if "to_depth must be" in lowered and "from_depth" in lowered:
+        top = value.get("from_depth") if isinstance(value, dict) else None
+        base = value.get("to_depth") if isinstance(value, dict) else None
+        if top is not None and base is not None:
+            return (
+                f"{where}: from_depth {_cell_text(top)} is deeper than to_depth "
+                f"{_cell_text(base)} — swap them or fix the typo."
+            )
+        return f"{where}: from_depth is deeper than to_depth — swap them or fix the typo."
+
+    if "non-negative" in lowered:
+        subject = field or "depth"
+        shown = f" ({_cell_text(value)})" if field and not _is_blank_cell(value) else ""
+        if not field and isinstance(value, dict):
+            for name in ("from_depth", "to_depth", "depth"):
+                number = value.get(name)
+                if isinstance(number, (int, float)) and number < 0:
+                    subject, shown = name, f" ({_cell_text(number)})"
+                    break
+        return f"{where}: {subject}{shown} can't be negative — enter 0 or more."
+
+    if kind == "missing" or "is required" in lowered or "is missing" in lowered:
+        return f"{where}: {field or 'a required value'} is empty — fill it in."
+    if field and lowered.endswith(" is blank"):
+        return f"{where}: {field} is empty — fill it in."
+
+    if "formula" in lowered:
+        return (
+            f"{where}: {field or 'a cell'} holds a formula — paste it as a value "
+            "(Paste Special → Values)."
+        )
+
+    if field and not message.startswith(field):
+        return f"{where}, {field}: {message}"
+    return f"{where}: {message}"
+
+
+def _unknown_hole_error(sheet: str, row_num: int, hole_id: object) -> str:
+    """Row references a hole that is not in Collars (keeps the Excel row number)."""
+    hole = _cell_text(hole_id, 20)
+    return (
+        f"{sheet} row {row_num}: {hole} is in {sheet} but not in Collars — "
+        "add it to Collars or fix the spelling."
+    )
+
+
+def _missing_columns_message(sheet: str, missing: object) -> str:
+    names = ", ".join(sorted(str(name) for name in missing))  # type: ignore[union-attr]
+    noun = "column" if "," not in names else "columns"
+    return (
+        f"The {sheet} sheet is missing the {names} {noun} — add the header to row 1 "
+        "(see Help → Workbook & data entry)."
+    )
+
+
+def skipped_row_hole_ids(errors: Sequence[str]) -> dict[str, set[str]]:
+    """Hole IDs whose rows were skipped on import, keyed by sheet name.
+
+    Reads the "<Sheet> row <n> (<hole>)" / "<Sheet> row <n>: <hole> is in …"
+    shapes produced by :func:`_row_error` and :func:`_unknown_hole_error`.
+    """
+    holes: dict[str, set[str]] = {}
+    for message in errors:
+        match = _ROW_PREFIX_RE.match(str(message))
+        if not match:
+            continue
+        sheet = match.group("sheet")
+        hole = match.group("paren")
+        if hole is None:
+            rest = match.group("rest")
+            marker = f" is in {sheet} but not in Collars"
+            if marker in rest:
+                hole = rest.split(marker, 1)[0]
+        if hole:
+            holes.setdefault(sheet, set()).add(hole.strip())
+    return holes
 
 
 _COLUMN_SPELLINGS = {"label_colour": "label_color"}
@@ -430,7 +601,7 @@ class DataParser:
 
         missing_cols = COLLAR_COLUMNS - set(df.columns)
         if missing_cols:
-            raise ValueError(f"Collars sheet missing columns: {', '.join(sorted(missing_cols))}")
+            raise ValueError(_missing_columns_message("Collars", missing_cols))
         optional_cols = {
             "elevation_datum",
             "inclination_deg",
@@ -466,14 +637,17 @@ class DataParser:
                     payload["stick_up_m"] = row.stick_up_m
                 collar = Collar.model_validate(payload)
             except Exception as exc:
-                errors.append(f"Collars row {row_num}: {_short_error(exc)}")
+                errors.append(_row_error("Collars", row_num, exc, hole_id=getattr(row, "hole_id", None)))
                 # Child rows of a rejected collar get no "unknown hole_id"
                 # cascade: the collar error already explains them.
                 self._failed_collar_ids.add(str(row.hole_id).strip())
                 continue
 
             if collar.hole_id in seen_ids:
-                errors.append(f"Collars row {row_num}: duplicate hole_id '{collar.hole_id}'")
+                errors.append(
+                    f"Collars row {row_num}: duplicate hole_id {collar.hole_id} — "
+                    "keep one row or rename the hole"
+                )
                 continue
 
             seen_ids.add(collar.hole_id)
@@ -492,7 +666,7 @@ class DataParser:
 
         missing_cols = LITHOLOGY_COLUMNS - set(df.columns)
         if missing_cols:
-            raise ValueError(f"Lithology sheet missing columns: {', '.join(sorted(missing_cols))}")
+            raise ValueError(_missing_columns_message("Lithology", missing_cols))
 
         optional_cols = LITHOLOGY_OPTIONAL_COLUMNS & set(df.columns)
         for index, row in enumerate(df.itertuples(index=True)):
@@ -514,13 +688,13 @@ class DataParser:
                     payload["unit_order"] = row.unit_order
                 lithology = Lithology.model_validate(payload)
             except Exception as exc:
-                errors.append(f"Lithology row {row_num}: {_short_error(exc)}")
+                errors.append(_row_error("Lithology", row_num, exc, hole_id=getattr(row, "hole_id", None)))
                 continue
 
             if valid_hole_ids and lithology.hole_id not in valid_hole_ids:
                 if not self._collar_failed(lithology.hole_id):
                     errors.append(
-                        f"Lithology row {row_num}: unknown hole_id '{lithology.hole_id}'"
+                        _unknown_hole_error("Lithology", row_num, lithology.hole_id)
                     )
                 continue
 
@@ -539,7 +713,7 @@ class DataParser:
         collar_by_id = {collar.hole_id: collar for collar in collars}
         columns = set(df.columns)
         if "hole_id" not in columns:
-            raise ValueError("Water sheet missing columns: hole_id")
+            raise ValueError(_missing_columns_message("Water", {"hole_id"}))
         if not columns.intersection(WATER_VALUE_COLUMNS | WATER_STATUS_COLUMNS):
             raise ValueError(
                 "Water sheet requires hole_id plus depth, elevation_masl, or status (dry/nm)"
@@ -602,11 +776,11 @@ class DataParser:
                         payload[col] = getattr(row, col)
                 level = WaterLevel.model_validate(payload)
             except Exception as exc:
-                errors.append(f"Water row {row_num}: {_short_error(exc)}")
+                errors.append(_row_error("Water", row_num, exc, hole_id=getattr(row, "hole_id", None)))
                 continue
             if valid_hole_ids and level.hole_id not in valid_hole_ids:
                 if not self._collar_failed(level.hole_id):
-                    errors.append(f"Water row {row_num}: unknown hole_id '{level.hole_id}'")
+                    errors.append(_unknown_hole_error("Water", row_num, level.hole_id))
                 continue
             levels.append(level)
 
@@ -650,11 +824,11 @@ class DataParser:
             try:
                 interval = ScreenInterval.model_validate(row._asdict())
             except Exception as exc:
-                errors.append(f"Screens row {row_num}: {_short_error(exc)}")
+                errors.append(_row_error("Screens", row_num, exc, hole_id=getattr(row, "hole_id", None)))
                 continue
             if valid_hole_ids and interval.hole_id not in valid_hole_ids:
                 if not self._collar_failed(interval.hole_id):
-                    errors.append(f"Screens row {row_num}: unknown hole_id '{interval.hole_id}'")
+                    errors.append(_unknown_hole_error("Screens", row_num, interval.hole_id))
                 continue
             intervals.append(interval)
         return intervals, errors
@@ -675,11 +849,11 @@ class DataParser:
             try:
                 gradient = VerticalGradient.model_validate(row._asdict())
             except Exception as exc:
-                errors.append(f"Gradients row {row_num}: {_short_error(exc)}")
+                errors.append(_row_error("Gradients", row_num, exc, hole_id=getattr(row, "hole_id", None)))
                 continue
             if valid_hole_ids and gradient.hole_id not in valid_hole_ids:
                 if not self._collar_failed(gradient.hole_id):
-                    errors.append(f"Gradients row {row_num}: unknown hole_id '{gradient.hole_id}'")
+                    errors.append(_unknown_hole_error("Gradients", row_num, gradient.hole_id))
                 continue
             gradients.append(gradient)
         return gradients, errors
@@ -784,12 +958,12 @@ class DataParser:
                     payload["value_label"] = ""
                 reading = EnvironmentalReading.model_validate(payload)
             except Exception as exc:
-                errors.append(f"Environmental row {row_num}: {_short_error(exc)}")
+                errors.append(_row_error("Environmental", row_num, exc, hole_id=getattr(row, "hole_id", None)))
                 continue
             if valid_hole_ids and reading.hole_id not in valid_hole_ids:
                 if not self._collar_failed(reading.hole_id):
                     errors.append(
-                        f"Environmental row {row_num}: unknown hole_id '{reading.hole_id}'"
+                        _unknown_hole_error("Environmental", row_num, reading.hole_id)
                     )
                 continue
             readings.append(reading)
@@ -876,11 +1050,11 @@ class DataParser:
             try:
                 from_depth, to_depth = parse_depth_interval(payload.get(depth_col))
             except Exception as exc:
-                errors.append(f"Field Data row {row_num}: {exc}")
+                errors.append(_row_error("Field Data", row_num, exc, hole_id=hole_id))
                 continue
 
             if valid_hole_ids and hole_id not in valid_hole_ids:
-                errors.append(f"Field Data row {row_num}: unknown hole_id '{hole_id}'")
+                errors.append(_unknown_hole_error("Field Data", row_num, hole_id))
                 continue
 
             if ova_color_col is not None and ova_color_col == ec_color_col:
@@ -891,7 +1065,7 @@ class DataParser:
                         _color_value(payload, ova_color_col)
                     )
                 except Exception as exc:
-                    errors.append(f"Field Data row {row_num}: {_short_error(exc)}")
+                    errors.append(_row_error("Field Data", row_num, exc, hole_id=hole_id))
                     continue
 
             if ova_value is not None:
@@ -910,7 +1084,7 @@ class DataParser:
                         )
                     )
                 except Exception as exc:
-                    errors.append(f"Field Data row {row_num}: {_short_error(exc)}")
+                    errors.append(_row_error("Field Data", row_num, exc, hole_id=hole_id))
             if ec_value is not None:
                 try:
                     readings.append(
@@ -927,7 +1101,7 @@ class DataParser:
                         )
                     )
                 except Exception as exc:
-                    errors.append(f"Field Data row {row_num}: {_short_error(exc)}")
+                    errors.append(_row_error("Field Data", row_num, exc, hole_id=hole_id))
         return readings, errors
 
     def _parse_field_data_environmental_sheet(

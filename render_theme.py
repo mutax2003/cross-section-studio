@@ -31,9 +31,11 @@ CONSULTING_WATER_COLOR = "#007FFF"
 PARAMETER_READING_COLOR = "#EA580C"
 PARAMETER_TEXT_COLOR = "#DC2626"
 CHEMISTRY_LABEL_BLACK = "#111827"
-CHEMISTRY_LABEL_GREEN = "#059669"
-CHEMISTRY_LABEL_RED = "#DC2626"
-CHEMISTRY_LABEL_ORANGE = "#EA580C"
+# Label hues agreed with the client (meeting 1 Oct 2026), darkened so value
+# text clears WCAG 1.4.3 (>= 4.5:1 on white): green 5.48, orange 5.18, red 6.47.
+CHEMISTRY_LABEL_GREEN = "#047857"
+CHEMISTRY_LABEL_RED = "#B91C1C"
+CHEMISTRY_LABEL_ORANGE = "#C2410C"
 # Fixed label colours a logger can pick in the workbook (meeting 1 Oct 2026):
 # one hex per name, no shades; blue is reserved for groundwater elevations.
 CHEMISTRY_FIXED_COLORS: dict[str, str] = {
@@ -155,6 +157,38 @@ def chemistry_label_color(
         # Orange replaces yellow (hard to read on white) — meeting 1 Oct 2026.
         return CHEMISTRY_LABEL_ORANGE
     return CHEMISTRY_LABEL_RED
+
+
+def _fmt_threshold(value: float) -> str:
+    return f"{float(value):g}"
+
+
+def chemistry_threshold_bands(
+    green_max: float, yellow_max: float
+) -> tuple[tuple[str, str, str], ...]:
+    """(colour name, hex, range text) per threshold band, matching
+    :func:`chemistry_label_color` (green <= green_max < orange <= yellow_max < red).
+
+    The range text lets a figure state each band in words so it reads without
+    colour discrimination (WCAG 1.4.1).
+    """
+    low, high = _fmt_threshold(green_max), _fmt_threshold(yellow_max)
+    return (
+        ("green", CHEMISTRY_LABEL_GREEN, f"\u2264 {low}"),
+        ("orange", CHEMISTRY_LABEL_ORANGE, f"{low}\u2013{high}"),
+        ("red", CHEMISTRY_LABEL_RED, f"> {high}"),
+    )
+
+
+def chemistry_threshold_key(
+    green_max: float, yellow_max: float, unit: str | None = None
+) -> str:
+    """Plain-text threshold key, e.g. ``green ≤ 100 · orange 100–300 · red > 300 mg/L``."""
+    text = " \u00b7 ".join(
+        f"{name} {span}" for name, _hex, span in chemistry_threshold_bands(green_max, yellow_max)
+    )
+    unit = (unit or "").strip()
+    return f"{text} {unit}" if unit else text
 
 
 def filter_water_levels_for_plot(

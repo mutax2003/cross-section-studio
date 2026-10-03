@@ -98,14 +98,14 @@ def test_streamlit_generate_smoke(sample_workbook: Path) -> None:
     at.session_state["hole_sequence_multiselect"] = hole_ids[: min(4, len(hole_ids))]
     for box in at.checkbox:
         label = box.label or ""
-        if "Allow generate with warnings" in label:
+        if "Generate even if data checks found warnings" in label:
             box.set_value(True)
             break
     at.run()
 
-    generate_buttons = [btn for btn in at.button if btn.label == "Generate Cross-Section"]
+    generate_buttons = [btn for btn in at.button if btn.label == "Generate section"]
     assert generate_buttons, (
-        "Generate Cross-Section missing after upload+transect setup; "
+        "Generate section missing after upload+transect setup; "
         f"buttons={[b.label for b in at.button]}"
     )
     assert not generate_buttons[0].disabled, (
@@ -114,8 +114,11 @@ def test_streamlit_generate_smoke(sample_workbook: Path) -> None:
     generate_buttons[0].click().run()
     assert not at.exception
     assert "svg_bytes" in at.session_state and at.session_state["svg_bytes"]
-    # Figure-first: setup collapsed, regenerate strip present after first generate
-    assert any(btn.label == "Regenerate" for btn in at.button)
+    # Figure-first: setup collapsed; exactly ONE Generate button after the first build
+    assert [btn.key for btn in at.button if btn.label == "Generate section"] == [
+        "generate_section_strip"
+    ]
+    assert not any("Regenerate" in (btn.label or "") for btn in at.button)
 
 
 def test_render_hero_compact_after_upload() -> None:
@@ -135,11 +138,11 @@ def _generated_app(sample_workbook: Path):
     hole_ids = list(at.session_state["hole_ids"])
     at.session_state["hole_sequence_multiselect"] = hole_ids[: min(4, len(hole_ids))]
     for box in at.checkbox:
-        if "Allow generate with warnings" in (box.label or ""):
+        if "Generate even if data checks found warnings" in (box.label or ""):
             box.set_value(True)
             break
     at.run()
-    [btn for btn in at.button if btn.label == "Generate Cross-Section"][0].click().run()
+    [btn for btn in at.button if btn.label == "Generate section"][0].click().run()
     assert at.session_state["svg_bytes"]
     return at
 
@@ -179,7 +182,10 @@ def test_generate_action_and_state_aware_coach_sit_above_validate(sample_workboo
     assert "workflow-step" in hero, "stepper must render inside the hero"
     assert "✓ Upload" in hero
     coach = next(value for value in markdown if 'class="next-step-coach"' in value)
-    assert "is selected" in coach and "Generate Cross-Section" in coach
+    # Coach copy lives in app_validate (may still say the old label).
+    assert "is selected" in coach and (
+        "Generate section" in coach or "Generate Cross-Section" in coach
+    )
 
     def walk(node):
         yield node
@@ -189,11 +195,11 @@ def test_generate_action_and_state_aware_coach_sit_above_validate(sample_workboo
     flat = list(walk(at.main))
     generate_index = next(
         i for i, node in enumerate(flat)
-        if getattr(node, "type", "") == "button" and node.label == "Generate Cross-Section"
+        if getattr(node, "type", "") == "button" and node.label == "Generate section"
     )
     health_index = next(
         i for i, node in enumerate(flat)
-        if getattr(node, "type", "") in {"subheader", "heading"} and "Data Health" in str(node.value)
+        if getattr(node, "type", "") in {"subheader", "heading"} and "data health" in str(node.value).lower()
     )
     assert generate_index < health_index, "Generate must render above Validate's Data Health"
 
@@ -218,10 +224,16 @@ def test_preview_zoom_switches_to_scrollable_native_size_frame(sample_workbook: 
 
 def test_menu_load_sample_asks_before_discarding_a_generated_section(sample_workbook: Path) -> None:
     at = _generated_app(sample_workbook)
-    for key in ("menu_file_sample", "menu_accel_sample"):
-        at.button(key=key).click().run()
+    triggers = {
+        "menu": lambda: at.menu_button(key="menu_file").click(
+            "Load sample project (Alt+Shift+O)"
+        ),
+        "shortcut": lambda: at.button(key="menu_accel_sample").click(),
+    }
+    for name, trigger in triggers.items():
+        trigger().run()
         assert not at.exception
-        assert at.session_state["svg_bytes"], f"{key} discarded the section without asking"
+        assert at.session_state["svg_bytes"], f"{name} discarded the section without asking"
         assert at.session_state["_pending_destructive"] == "sample"
         at.button(key="cancel_destructive").click().run()
 
@@ -271,13 +283,16 @@ def test_stale_generate_button_is_disabled_with_the_reason_when_blocked(sample_w
     at.session_state["vertical_exaggeration"] = 3.0
     at.run()
     assert not at.exception
-    stale_button = next(b for b in at.button if b.key == "regenerate_stale")
-    assert stale_button.disabled
-    banner = next(m.value for m in at.markdown if m.value.startswith("<div class=\"stale-banner\""))
-    assert "polygon overlaps" in banner
-    at.session_state["_regenerate_requested"] = True  # Ctrl+G / menu path
+    generate_buttons = [b for b in at.button if b.label == "Generate section"]
+    assert len(generate_buttons) == 1, "one Generate button when out of date"
+    assert generate_buttons[0].disabled
+    banner = next(m.value for m in at.markdown if 'class="generate-strip is-stale"' in m.value)
+    assert "Out of date" in banner and "overlap" in banner
+    at.session_state["_regenerate_requested"] = True  # Alt+Shift+G / menu path
     at.run()
-    assert any("Regenerate skipped" in w.value and "overlaps" in w.value for w in at.warning)
+    assert any(
+        "Generate section skipped" in w.value and "overlap" in w.value for w in at.warning
+    )
 
 
 def test_sections_tab_drop_down_drives_the_preview(tmp_path: Path) -> None:
@@ -365,3 +380,90 @@ def test_clear_then_sample_drops_project_fields_and_opens_unblocked(sample_workb
     assert at.session_state["consulting_section_label"] != "A - A' WITH CHLORIDE AVERAGES"
     assert not any("Polygon overlaps detected" in e.value for e in at.error)
     assert at.session_state.get("fail_on_overlaps_checkbox") is False
+
+
+def test_batch_section_lines_fill_from_suggestions_and_flag_bad_lines(sample_workbook: Path) -> None:
+    """Fill from suggested lines works without visiting Recommended mode, and
+    each typed line is checked on its own under the editor."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("sample.xlsx", sample_workbook.read_bytes()).run()
+    at.button(key="batch_fill_recommended").click().run()
+    assert not at.exception
+    filled = str(at.session_state["batch_transect_specs"])
+    assert filled.startswith("A-A' | ")
+    assert not any("Switch to Recommended" in w.value for w in at.warning)
+    hole_ids = list(at.session_state["hole_ids"])
+    at.session_state["batch_transect_specs"] = (
+        f"A-A' | {hole_ids[0]}, {hole_ids[1]}\nC-C' | {hole_ids[0]}, MW-99"
+    )
+    at.run()
+    assert not at.exception
+    status = [w.value for w in at.warning if "section lines ready" in w.value]
+    assert status and "1 of 2" in status[0] and "C-C': MW-99 not in Collars" in status[0]
+
+
+def test_profile_chips_show_three_and_fold_the_rest_into_a_tooltip() -> None:
+    from app_common import profile_chips_html
+
+    html = profile_chips_html(
+        interpretation_mode="interpolated",
+        vertical_exaggeration=5.0,
+        hole_count=4,
+        polygon_count=6,
+        is_stale=True,
+        preset_label="Section sheet",
+        render_layout="consulting_section",
+        transect_label="A-A' BH-01→BH-04",
+    )
+    assert html.count('<span class="chip') == 4  # style, VE, holes, "+N more"
+    assert ">Section sheet<" in html and "VE 5×" in html and "4 holes" in html
+    assert "Out of date" in html and "Stale" not in html and "Fresh" not in html
+
+
+def test_assist_mode_caption_hidden_unless_an_llm_is_switched_on(monkeypatch) -> None:
+    import streamlit as st
+
+    from app_common import llm_assist_status_caption
+
+    monkeypatch.delenv("CROSS_SECTION_DISABLE_LLM", raising=False)
+    st.session_state["enable_ai_suggestions"] = False
+    assert llm_assist_status_caption() == ""
+    st.session_state["enable_ai_suggestions"] = True
+    st.session_state["llm_provider"] = "groq"
+    caption = llm_assist_status_caption()
+    assert "Groq" in caption and "API_KEY" not in caption and "`" not in caption
+
+
+def test_prepare_deliverables_names_ready_files_and_downloads_share_one_row(
+    sample_workbook: Path,
+) -> None:
+    at = _generated_app(sample_workbook)
+    figure_files = {"PDF", "PNG", "SVG", "Word"}
+    downloads = [b.label for b in at.get("download_button") if b.label in figure_files]
+    assert downloads[:3] == ["PDF", "PNG", "SVG"]
+    at.button(key="prepare_both_exports").click().run()
+    assert not at.exception
+    toasts = [t.value for t in at.toast]
+    assert any(t in {"PDF, PNG and Word file ready", "PDF and PNG ready"} for t in toasts), toasts
+    assert not any(b.key == "prepare_both_exports" for b in at.button)
+
+
+def test_batch_zip_builds_the_good_lines_and_lists_the_skipped_ones(sample_workbook: Path) -> None:
+    """One bad batch line used to fail the whole ZIP."""
+    at = _generated_app(sample_workbook)
+    holes = list(at.session_state["hole_ids"])
+    at.session_state["batch_transect_specs"] = (
+        f"A-A' | {holes[0]}, {holes[1]}, {holes[2]}\nZ-Z' | {holes[0]}, MW-99"
+    )
+    at.run()
+    assert any("Skipped" in c.value and "MW-99" in c.value for c in at.caption)
+    at.button(key="prepare_batch_zip").click().run()
+    assert not at.exception
+    assert at.session_state["batch_package_bytes"]
+    assert any(
+        "Batch ZIP ready: 1 section line" in s.value and "Left out: Z-Z'" in s.value
+        for s in at.success
+    )

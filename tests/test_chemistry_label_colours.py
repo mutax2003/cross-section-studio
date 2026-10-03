@@ -336,3 +336,25 @@ def test_outlined_labels_remain_searchable_text_in_pdf() -> None:
     text = PdfReader(BytesIO(renderer.to_pdf_bytes(figure))).pages[0].extract_text()
     values = {f"{r.value:g}" for r in readings}
     assert sum(1 for v in values if v in text) >= len(values) - 1
+
+
+@pytest.mark.parametrize("style", ["plain", "stroke", "box", "dot"])
+def test_threshold_key_is_added_without_touching_the_collision_pass(style) -> None:
+    from matplotlib.offsetbox import AnchoredOffsetbox
+
+    black, _ = _render(style)
+    threshold, figure = _render(
+        style,
+        chemistry_color_mode="threshold",
+        chemistry_threshold_green_max=5.0,
+        chemistry_threshold_yellow_max=10.0,
+    )
+    assert getattr(black, "chemistry_threshold_key_text", None) is None
+    assert threshold.chemistry_threshold_key_text.startswith("green ≤ 5 · orange 5–10")
+    keys = [a for ax in figure.axes for a in ax.artists if isinstance(a, AnchoredOffsetbox)]
+    assert len(keys) == 1
+    # The key is a fixed panel, not a value label the collision pass moves.
+    assert len(threshold._water_labels) == len(black._water_labels)
+    import matplotlib.pyplot as plt
+
+    plt.close("all")

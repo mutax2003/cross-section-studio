@@ -301,7 +301,11 @@ def _render_batch_export(
                 binder_pdf=export_binder_pdf(pdfs, cover_title=section_title) or None,
             )
             st.session_state["_batch_package_token"] = batch_token
-            st.success(f"Batch ZIP ready: {len(entries)} section line(s).")
+            left_out = [status.label for status in skipped_lines] + [
+                reason.split(":", 1)[0] for reason in failed
+            ]
+            note = f" Left out: {', '.join(left_out)}." if left_out else ""
+            st.success(f"Batch ZIP ready: {len(entries)} section line(s).{note}")
         except Exception as exc:  # noqa: BLE001 — surface any rebuild failure in UI
             st.error(f"Couldn't prepare the batch ZIP: {exc}")
             return

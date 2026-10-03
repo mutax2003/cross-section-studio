@@ -463,4 +463,7 @@ def test_batch_zip_builds_the_good_lines_and_lists_the_skipped_ones(sample_workb
     at.button(key="prepare_batch_zip").click().run()
     assert not at.exception
     assert at.session_state["batch_package_bytes"]
-    assert any("Batch ZIP ready: 1 section line" in s.value for s in at.success)
+    assert any(
+        "Batch ZIP ready: 1 section line" in s.value and "Left out: Z-Z'" in s.value
+        for s in at.success
+    )

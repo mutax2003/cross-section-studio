@@ -133,7 +133,7 @@ def test_knock_on_advisory_says_rows_were_skipped() -> None:
 def test_upload_headline_warns_when_rows_were_skipped() -> None:
     level, text = upload_headline(hole_count=3, interval_count=6, skipped_count=4, error_count=0)
     assert level == "warning"
-    assert text.startswith("**Loaded with problems: 4 rows skipped — see Validate.**")
+    assert text.startswith("**Loaded with problems: 4 data errors (4 rows skipped) — see Validate.**")
     level, text = upload_headline(hole_count=3, interval_count=6, skipped_count=0, error_count=0)
     assert level == "success"
 
@@ -141,7 +141,7 @@ def test_upload_headline_warns_when_rows_were_skipped() -> None:
 def test_upload_headline_counts_data_errors() -> None:
     level, text = upload_headline(hole_count=3, interval_count=6, skipped_count=1, error_count=2)
     assert level == "warning"
-    assert "1 row skipped and 2 data errors" in text
+    assert "3 data errors (1 row skipped)" in text  # same total as Data health
 
 
 def test_app_shows_problem_headline_and_counts_skipped_rows_as_errors() -> None:
@@ -152,7 +152,7 @@ def test_app_shows_problem_headline_and_counts_skipped_rows_as_errors() -> None:
     at.file_uploader[0].upload("bad.xlsx", _workbook(BAD_LITHOLOGY)).run()
     assert not at.exception
     warnings = [str(item.value) for item in at.warning]
-    assert any("Loaded with problems: 3 rows skipped — see Validate." in w for w in warnings)
+    assert any("Loaded with problems: 3 data errors (3 rows skipped) — see Validate." in w for w in warnings)
     assert not any("Loaded **" in str(item.value) for item in at.success)
     # The skipped-row list appears once (on Validate), not per screen.
     listed = [str(md.value) for md in at.markdown if "BH-09 is in Lithology" in str(md.value)]

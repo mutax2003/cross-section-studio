@@ -352,5 +352,8 @@ APP_CSS = """
             transition: none;
         }
     }
+    /* Toasts sit bottom-right so they never cover the stepper, the status
+       strip or the phone menubar while they are shown. */
+    [data-testid="stToastContainer"] { top: auto !important; bottom: 1rem !important; }
 </style>
 """

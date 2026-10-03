@@ -166,15 +166,13 @@ def upload_headline(
     Green only when no row was dropped and no data check failed; otherwise the
     headline says what went wrong and points to Validate, where the row list lives.
     """
-    problems: list[str] = []
-    if skipped_count:
-        problems.append(f"{_plural(skipped_count, 'row')} skipped")
-    if error_count:
-        problems.append(_plural(error_count, "data error"))
-    if problems:
+    # Same total as the Data health tile, which counts skipped rows as errors.
+    total = skipped_count + error_count
+    if total:
+        detail = f" ({_plural(skipped_count, 'row')} skipped)" if skipped_count else ""
         return (
             "warning",
-            f"**Loaded with problems: {' and '.join(problems)} — see Validate.** "
+            f"**Loaded with problems: {_plural(total, 'data error')}{detail} — see Validate.** "
             f"({_plural(hole_count, 'borehole')} and "
             f"{_plural(interval_count, 'lithology interval')} loaded.)",
         )

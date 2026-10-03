@@ -54,10 +54,8 @@ def _render_fix_step_actions(
             st.session_state.elevation_mode = "relative"
             st.success("Elevation mode set to relative depth below collar.")
             st.rerun()
-    elif step.action_id == "manual_unit_order":
-        st.caption("Edit the Lithology sheet so each layer order (unit_order) is unique per hole.")
-    elif step.action_id == "manual_intervals":
-        st.caption("Correct from_depth/to_depth in the Lithology sheet.")
+    # Manual fixes (unit order, interval depths) are described by step.action
+    # already; no second caption.
 
 
 def _column_rename_checklist(suggestions: dict[str, Sequence[Any]]) -> str:

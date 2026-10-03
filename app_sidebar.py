@@ -374,7 +374,8 @@ def render_sidebar() -> SidebarState:
         output_preset = st.selectbox(
             "Output style",
             options=tuple(OUTPUT_PRESET_LABELS.keys()),
-            format_func=lambda key: OUTPUT_PRESET_LABELS[key],
+            # Short names fit the sidebar; the caption below explains the style.
+            format_func=output_preset_short_name,
             key="output_preset",
             help="  \n".join(
                 f"**{OUTPUT_PRESET_LABELS[key]}**: {text}" for key, text in _OUTPUT_STYLE_HELP.items()
@@ -383,6 +384,16 @@ def render_sidebar() -> SidebarState:
         # Visible, not hidden behind (?): what this style produces.
         st.caption(_OUTPUT_STYLE_HELP.get(output_preset, ""))
         preset_config = resolve_output_preset(output_preset)
+        parsed = st.session_state.get("parse_result")
+        if (
+            preset_config.prefer_chemistry
+            and parsed is not None
+            and not getattr(parsed, "environmental_readings", None)
+        ):
+            st.caption(
+                "This workbook has no lab values, so no chemistry labels will be drawn. "
+                "Add an Environmental sheet (see Help → Workbook and data entry)."
+            )
         visibility = sidebar_visibility(output_preset)
         style_name = output_preset_short_name(output_preset)
         render_layout = preset_config.render_layout

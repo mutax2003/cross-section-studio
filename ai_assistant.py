@@ -886,11 +886,19 @@ def _local_issue_summary(issues: Sequence[QualityIssue]) -> str:
     )
 
 
+# Issues whose own message carries the values to fix (hole, depths).
+_SPECIFIC_MESSAGE_CODES = frozenset({"depth_overlap", "below_td"})
+
+
 def _local_fix_plan(issues: Sequence[QualityIssue]) -> tuple[FixStep, ...]:
     steps: list[FixStep] = []
     seen: set[tuple[str, str | None]] = set()
     for issue in issues:
-        key = (issue.code, issue.hole_id)
+        key = (
+            (issue.code, issue.message)
+            if issue.code in _SPECIFIC_MESSAGE_CODES
+            else (issue.code, issue.hole_id)
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -908,6 +916,23 @@ def _local_fix_plan(issues: Sequence[QualityIssue]) -> tuple[FixStep, ...]:
             )
             continue
         action_id, summary, action = catalog
+        if issue.code in _SPECIFIC_MESSAGE_CODES:
+            # The issue text already names the hole and depths (e.g. "BH-03:
+            # 2–6 m overlaps 0–5 m — fix …"); show it instead of the generic
+            # title, and keep the action to what comes next.
+            summary = issue.message
+            action = "Fix it in Excel, then upload the workbook again."
+            steps.append(
+                FixStep(
+                    issue_code=issue.code,
+                    hole_id=issue.hole_id,
+                    summary=summary,
+                    blocks_generate=issue.code in _BLOCKS_GENERATE or issue.severity == "error",
+                    action=action,
+                    action_id=action_id,
+                )
+            )
+            continue
         steps.append(
             FixStep(
                 issue_code=issue.code,

@@ -5,10 +5,10 @@ Operator-facing help for Cross Section Studio (Help menu). Keep topics short and
 | Topic | File | Menu |
 | --- | --- | --- |
 | Getting started | `getting-started.md` | Help → Getting started |
-| Generate & exports | `generate-exports.md` | Help → Generate & exports |
-| Consulting UX | `consulting-ux.md` | Help → Consulting UX |
+| Generate & exports | `generate-exports.md` | Help → Generate and exports |
+| Consulting UX | `consulting-ux.md` | Help → Consulting layouts (gINT, Strater) |
 | Keyboard shortcuts | `keyboard-shortcuts.md` | Help → Keyboard shortcuts (also synthesized in-app from `_SHORTCUT_ROWS`) |
-| Workbook & data entry | `workbook-quick.md` | Help → Workbook & data entry |
+| Workbook & data entry | `workbook-quick.md` | Help → Workbook and data entry |
 | About | `about.md` | Help → About |
 
 ## Writing guidelines

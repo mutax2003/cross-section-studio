@@ -7,7 +7,7 @@
 1. Download **Download template (data entry)** from the welcome card or sidebar Data source section.
 2. Fill **Collars** and **Lithology** in Excel (optional sheets below).
 3. Upload the saved `.xlsx` with **Upload Excel workbook** — same ingest path as any other workbook.
-4. Use File → **Load sample project** (or `Ctrl+Shift+O`) only when you want the built-in demo.
+4. Use File → **Load sample project** (or `Alt+Shift+O`) only when you want the built-in demo.
 
 A legacy **Data Entry** sheet still imports for compatibility; prefer the named tabs in the template.
 

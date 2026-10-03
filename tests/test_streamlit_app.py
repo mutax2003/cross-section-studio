@@ -224,10 +224,16 @@ def test_preview_zoom_switches_to_scrollable_native_size_frame(sample_workbook: 
 
 def test_menu_load_sample_asks_before_discarding_a_generated_section(sample_workbook: Path) -> None:
     at = _generated_app(sample_workbook)
-    for key in ("menu_file_sample", "menu_accel_sample"):
-        at.button(key=key).click().run()
+    triggers = {
+        "menu": lambda: at.menu_button(key="menu_file").click(
+            "Load sample project (Alt+Shift+O)"
+        ),
+        "shortcut": lambda: at.button(key="menu_accel_sample").click(),
+    }
+    for name, trigger in triggers.items():
+        trigger().run()
         assert not at.exception
-        assert at.session_state["svg_bytes"], f"{key} discarded the section without asking"
+        assert at.session_state["svg_bytes"], f"{name} discarded the section without asking"
         assert at.session_state["_pending_destructive"] == "sample"
         at.button(key="cancel_destructive").click().run()
 
@@ -282,7 +288,7 @@ def test_stale_generate_button_is_disabled_with_the_reason_when_blocked(sample_w
     assert generate_buttons[0].disabled
     banner = next(m.value for m in at.markdown if 'class="generate-strip is-stale"' in m.value)
     assert "Out of date" in banner and "overlap" in banner
-    at.session_state["_regenerate_requested"] = True  # Ctrl+G / menu path
+    at.session_state["_regenerate_requested"] = True  # Alt+Shift+G / menu path
     at.run()
     assert any(
         "Generate section skipped" in w.value and "overlap" in w.value for w in at.warning

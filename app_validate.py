@@ -549,17 +549,17 @@ def render_next_step_coach(
             coach = (
                 f"<strong>Next:</strong> section line {holes} is selected — "
                 f"{escape(blocked_reason)}, then click "
-                "<strong>Generate Cross-Section</strong>."
+                "<strong>Generate section</strong>."
             )
         else:
             coach = (
                 f"<strong>Next:</strong> section line {holes} is selected — click "
-                "<strong>Generate Cross-Section</strong> above."
+                "<strong>Generate section</strong> above."
             )
     else:
         coach = (
-            "<strong>Next:</strong> choose holes under <strong>Transect selection</strong> "
-            "in the sidebar, then click <strong>Generate Cross-Section</strong>."
+            "<strong>Next:</strong> choose holes under <strong>Section line</strong> "
+            "in the sidebar, then click <strong>Generate section</strong>."
         )
     st.markdown(f'<div class="next-step-coach" role="note">{coach}</div>', unsafe_allow_html=True)
 
@@ -581,7 +581,9 @@ def render_validate_step(*, show_coach: bool = True) -> None:
         return
 
     st.subheader("Data health", anchor=False)
-    st.caption(llm_assist_status_caption())
+    assist_caption = llm_assist_status_caption()
+    if assist_caption:
+        st.caption(assist_caption)
 
     active_transect = st.session_state.get("transect_selection")
     scope_hole_ids: tuple[str, ...]

@@ -17,9 +17,9 @@ from app_services import (
 from batch_export import (
     BATCH_DEFAULT_EXPORT_FORMATS,
     build_batch_zip,
-    build_multi_transect_exports,
+    build_one_transect_exports,
     export_binder_pdf,
-    parse_batch_transect_lines,
+    split_batch_transect_lines,
 )
 from docx_export import build_figure_docx_bytes
 from export_framing import (
@@ -228,10 +228,14 @@ def _render_batch_export(
     if not specs_raw:
         return
     st.markdown("**Batch ZIP (several section lines)**")
-    try:
-        specs = parse_batch_transect_lines(specs_raw)
-    except ValueError as exc:
-        st.warning(str(exc))
+    parse_result = st.session_state.get("parse_result")
+    known_holes = [c.hole_id for c in parse_result.collars] if parse_result is not None else None
+    # Check each line on its own: build the good ones, list the rest.
+    specs, skipped_lines = split_batch_transect_lines(specs_raw, known_holes)
+    for status in skipped_lines:
+        st.caption(f"Skipped — {status.message}")
+    if not specs:
+        st.warning("No section line in the batch list is ready yet — fix the lines above.")
         return
     st.caption(
         f"{len(specs)} section line(s) — each one is drawn afresh as PNG and PDF "
@@ -246,7 +250,6 @@ def _render_batch_export(
     if is_stale:
         st.info("Click Generate section first so the batch uses your current figure style.")
         return
-    parse_result = st.session_state.get("parse_result")
     request_json = st.session_state.get("section_build_request_json")
     if parse_result is None or not request_json:
         st.info("Generate a section first, then prepare the batch ZIP.")
@@ -258,13 +261,23 @@ def _render_batch_export(
         try:
             base_request = cached_parse_request(request_json)
             formats = ALL_EXPORT_FORMATS if include_svg else BATCH_DEFAULT_EXPORT_FORMATS
+            raw_entries = []
+            failed: list[str] = []
             with st.spinner(f"Drawing {len(specs)} section line(s)…"):
-                raw_entries = build_multi_transect_exports(
-                    parse_result,
-                    base_request,
-                    specs,
-                    export_formats=formats,
-                )
+                for spec in specs:
+                    try:
+                        raw_entries.append(
+                            build_one_transect_exports(
+                                parse_result, base_request, spec, export_formats=formats
+                            )
+                        )
+                    except ValueError as exc:  # e.g. too few holes with logs
+                        failed.append(f"{spec.label}: {exc}")
+            for reason in failed:
+                st.warning(f"Left out of the ZIP — {reason}")
+            if not raw_entries:
+                st.error("None of the section lines could be drawn, so no ZIP was made.")
+                return
             entries = [
                 (
                     sanitize_filename(
@@ -545,7 +558,7 @@ def render_profile_and_downloads(
                         st.success(f"Saved {len(written)} file(s) to **{target.resolve()}**")
             else:
                 st.caption(
-                    "Set **Save exports to folder** under sidebar **Export framing & deliverables** "
+                    "Set **Save exports to folder** under sidebar **Export** "
                     "to save files directly."
                 )
 

@@ -306,8 +306,8 @@ else:
                         )
                     elif configure_state.fail_on_overlaps and configure_state.has_overlap_warnings:
                         st.caption(
-                            "Overlapping layers block export — fix the layer order or turn off "
-                            "'Block export on polygon overlaps'."
+                            "Some matched layers overlap — fix the layer order or untick "
+                            "'Stop if matched layers overlap' in Configure."
                         )
                     elif configure_state.transect_selection is None:
                         if (
@@ -325,8 +325,8 @@ else:
                             )
                     elif configure_state.has_warnings and not configure_state.override_warnings:
                         st.caption(
-                            "Data warnings are present — tick 'Allow generate with warnings' in "
-                            "Configure, or fix the warnings in Validate."
+                            "Data checks found warnings — tick 'Generate even if data checks "
+                            "found warnings' in Configure, or fix them in Validate."
                         )
                     else:
                         st.caption(f"Can't generate yet — {blocked_reason}.")
@@ -444,7 +444,7 @@ with hero_slot:
     )
 
 with st.expander("Excel format", expanded=False):
-    st.caption("Quick reference — full help is under Help → Workbook quick reference.")
+    st.caption("Quick reference — full help is under Help → Workbook and data entry.")
     st.markdown(
         """
 **Native platform:** `Collars` + `Lithology` sheets with `hole_id`, `easting`, `northing`, etc.
@@ -453,7 +453,7 @@ Optional `unit_order` column (1 = shallowest) for repeated lithology codes.
 **Optional sheets:** `Water`, `Screens`, `Gradients`, `Correlations`, `Deviations`,
 `Environmental`, `Faults`, `Unconformities`.
 
-Use **Help → Workbook quick reference** for a short guide to every sheet and column.
+Use **Help → Workbook and data entry** for a short guide to every sheet and column.
 
 **Field export:** single `Lithology` sheet with `Label`, `Depth` (e.g. `0.00-2.00m`),
 `Lithology`, `Lat`, `Long` — auto-converted to UTM on import.

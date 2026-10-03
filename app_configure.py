@@ -646,7 +646,7 @@ def render_configure_step(
             else:
                 st.caption(
                     "Add an **Environmental** sheet (`hole_id`, `parameter`, `value`, `depth` or "
-                    "`from_depth`/`to_depth`) to plot lab data by depth. See docs/workbook-format.md."
+                    "`from_depth`/`to_depth`) to plot lab data by depth. See Help → Workbook and data entry."
                 )
             correlation_overrides = _session_correlation_overrides() + subset_preflight.correlation_overrides
             max_interp_m = float(

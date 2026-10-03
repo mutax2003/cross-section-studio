@@ -449,3 +449,18 @@ def test_prepare_deliverables_names_ready_files_and_downloads_share_one_row(
     toasts = [t.value for t in at.toast]
     assert any(t in {"PDF, PNG and Word file ready", "PDF and PNG ready"} for t in toasts), toasts
     assert not any(b.key == "prepare_both_exports" for b in at.button)
+
+
+def test_batch_zip_builds_the_good_lines_and_lists_the_skipped_ones(sample_workbook: Path) -> None:
+    """One bad batch line used to fail the whole ZIP."""
+    at = _generated_app(sample_workbook)
+    holes = list(at.session_state["hole_ids"])
+    at.session_state["batch_transect_specs"] = (
+        f"A-A' | {holes[0]}, {holes[1]}, {holes[2]}\nZ-Z' | {holes[0]}, MW-99"
+    )
+    at.run()
+    assert any("Skipped" in c.value and "MW-99" in c.value for c in at.caption)
+    at.button(key="prepare_batch_zip").click().run()
+    assert not at.exception
+    assert at.session_state["batch_package_bytes"]
+    assert any("Batch ZIP ready: 1 section line" in s.value for s in at.success)

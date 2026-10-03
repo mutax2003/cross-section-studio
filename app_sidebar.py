@@ -639,11 +639,8 @@ def render_sidebar() -> SidebarState:
                 else:
                     _keep_widget_state("parameter_marker_size")
                     st.caption(f"Set by {style_name}: lab values shown as labels without dots.")
-                st.toggle(
-                    "Connect chemistry values between holes",
-                    key="connect_chemistry_values",
-                    help="Draw dashed lines joining lab values on neighbouring holes.",
-                )
+                # Joining values between holes is set once, in Configure
+                # ("Interpolate parameter between adjacent holes").
                 parameter_interpolate_across_gaps = st.toggle(
                     "Join lab values across holes with no reading",
                     value=False,

@@ -228,7 +228,7 @@ APP_CSS = """
     }
     .app-menubar button[kind="secondary"],
     .app-menubar button,
-    .st-key-app_menubar [data-testid="stPopover"] button {
+    .st-key-app_menubar [data-testid="stMenuButton"] button {
         font-size: 0.875rem !important;
         font-weight: 600 !important;
         border: 1px solid transparent !important;
@@ -238,12 +238,12 @@ APP_CSS = """
     }
     .st-key-app_menubar [data-testid="stCaptionContainer"] { margin: 0; }
     .app-menubar button:hover,
-    .st-key-app_menubar [data-testid="stPopover"] button:hover {
+    .st-key-app_menubar [data-testid="stMenuButton"] button:hover {
         background: #e2e8f0 !important;
         border-color: #cbd5e1 !important;
     }
     .app-menubar button:focus-visible,
-    .st-key-app_menubar [data-testid="stPopover"] button:focus-visible {
+    .st-key-app_menubar [data-testid="stMenuButton"] button:focus-visible {
         outline: 2px solid var(--brand-mid) !important;
         outline-offset: 2px !important;
         background: #ecfdf5 !important;

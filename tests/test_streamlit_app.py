@@ -193,7 +193,7 @@ def test_generate_action_and_state_aware_coach_sit_above_validate(sample_workboo
     )
     health_index = next(
         i for i, node in enumerate(flat)
-        if getattr(node, "type", "") in {"subheader", "heading"} and "Data Health" in str(node.value)
+        if getattr(node, "type", "") in {"subheader", "heading"} and "data health" in str(node.value).lower()
     )
     assert generate_index < health_index, "Generate must render above Validate's Data Health"
 

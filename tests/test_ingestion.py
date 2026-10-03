@@ -511,8 +511,8 @@ def test_screens_and_gradients_unknown_hole_surface_errors() -> None:
     result = DataParser().parse_file(BytesIO(buffer.getvalue()))
     assert len(result.screen_intervals) == 1
     assert len(result.vertical_gradients) == 1
-    assert any("unknown hole_id 'MISSING'" in message for message in result.errors)
-    assert any("unknown hole_id 'GHOST'" in message for message in result.errors)
+    assert any("MISSING is in Screens but not in Collars" in message for message in result.errors)
+    assert any("GHOST is in Gradients but not in Collars" in message for message in result.errors)
 
 
 def test_environmental_unknown_hole_surfaces_errors() -> None:
@@ -559,7 +559,7 @@ def test_environmental_unknown_hole_surfaces_errors() -> None:
         ).to_excel(writer, sheet_name="Environmental", index=False)
     result = DataParser().parse_file(BytesIO(buffer.getvalue()))
     assert len(result.environmental_readings) == 1
-    assert any("unknown hole_id 'ORPHAN'" in message for message in result.errors)
+    assert any("ORPHAN is in Environmental but not in Collars" in message for message in result.errors)
 
 
 def test_water_sheet_parses_gw_series_columns(tmp_path) -> None:
@@ -1098,4 +1098,4 @@ def test_bad_collar_row_does_not_cascade_into_unknown_hole_errors() -> None:
     assert len(result.collars) == 1
     collar_errors = [e for e in result.errors if e.startswith("Collars row 2")]
     assert len(collar_errors) == 1 and "pydantic.dev" not in collar_errors[0]
-    assert not any("unknown hole_id 'BH1'" in e for e in result.errors)  # the collar error explains them
+    assert not any("BH1 is in" in e for e in result.errors)  # the collar error explains them

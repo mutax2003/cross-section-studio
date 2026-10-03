@@ -23,6 +23,7 @@ from app_common import (
     llm_suggestions_available,
 )
 from ingestion import NATIVE_PROFILE_ID
+from parsing import skipped_row_hole_ids
 
 
 def _render_fix_step_actions(
@@ -99,6 +100,42 @@ def _sheet_role_checklist(roles: Sequence[Any]) -> str:
     return "\n".join(lines)
 
 
+# Advisories that a skipped Lithology row can cause on its own (a dropped interval
+# leaves a gap, or leaves the hole with one interval / none).
+_KNOCK_ON_CODES = frozenset({"depth_gap", "single_interval", "no_lithology"})
+_KNOCK_ON_NOTE = " — Lithology rows for this hole were skipped, so this may clear once fixed"
+
+
+def lithology_skipped_holes(parse_errors: Sequence[str]) -> set[str]:
+    """Holes that lost at least one Lithology row on import."""
+    return set(skipped_row_hole_ids(parse_errors).get("Lithology", set()))
+
+
+def issue_display_message(issue: Any, skipped_holes: set[str]) -> str:
+    """Issue text for the screen; flags advisories that skipped rows may have caused."""
+    message = str(issue.message)
+    if issue.code in _KNOCK_ON_CODES and issue.hole_id and issue.hole_id in skipped_holes:
+        return message + _KNOCK_ON_NOTE
+    return message
+
+
+def render_skipped_rows(parse_errors: Sequence[str]) -> None:
+    """The one place the skipped-row list is shown (Upload only links here)."""
+    if not parse_errors:
+        return
+    count = len(parse_errors)
+    noun = "row was" if count == 1 else "rows were"
+    st.warning(
+        f"**{count} {noun} skipped on import**, so the section won't include them. "
+        "Fix them in Excel and upload the workbook again."
+    )
+    with st.expander(f"Skipped rows ({count})", expanded=count <= 10):
+        st.markdown("\n".join(f"- {message}" for message in parse_errors[:50]))
+        if count > 50:
+            st.caption(f"…and {count - 50} more.")
+        st.caption("Column rules and examples: Help → Workbook & data entry.")
+
+
 def _render_validate_details(
     *,
     parse_result: Any,
@@ -112,6 +149,8 @@ def _render_validate_details(
     get_assistant: Callable[[], AIAssistant],
     show_blocking_fix_coach: bool,
 ) -> None:
+    skipped_count = len(parse_result.errors)
+    skipped_holes = lithology_skipped_holes(parse_result.errors)
     """Heavy Validate panels: optional sheets, fix coach, mapping, metrics, issues table."""
     if parse_result.water_levels:
         from ai_quality import summarize_water_levels
@@ -236,10 +275,8 @@ def _render_validate_details(
             plan_steps = st.session_state.get("qa_fix_plan") or fix_plan
             blocking_codes = {step.issue_code for step in blocking_steps}
             for index, step in enumerate(plan_steps):
-                badge = "blocks generate" if step.blocks_generate else "advisory"
-                st.markdown(
-                    f"**{index + 1}. [{step.issue_code}]** ({badge}) — {step.summary}"
-                )
+                badge = "blocks Generate section" if step.blocks_generate else "advisory"
+                st.markdown(f"**{index + 1}.** {step.summary} ({badge})")
                 st.caption(step.action)
                 if step.blocks_generate and step.issue_code in blocking_codes:
                     continue
@@ -376,7 +413,9 @@ def _render_validate_details(
             )
             st.markdown(_sheet_role_checklist(st.session_state.ai_sheet_roles))
 
-    health_tone = _metric_tone(quality_report.error_count, quality_report.warning_count)
+    # Skipped rows are errors too: the tile must not read 0 while rows are missing.
+    error_total = quality_report.error_count + skipped_count
+    health_tone = _metric_tone(error_total, quality_report.warning_count)
     m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
         _render_metric_card(
@@ -394,9 +433,9 @@ def _render_validate_details(
         _render_metric_card(len(unique_lithologies), "Lithology units", "ok")
     with m4:
         _render_metric_card(
-            quality_report.error_count,
+            error_total,
             "Errors",
-            _metric_tone(quality_report.error_count, quality_report.warning_count, errors_only=True),
+            _metric_tone(error_total, quality_report.warning_count, errors_only=True),
         )
     with m5:
         _render_metric_card(
@@ -469,10 +508,9 @@ def _render_validate_details(
             pd.DataFrame(
                 [
                     {
-                        "severity": issue.severity,
-                        "code": issue.code,
-                        "hole_id": issue.hole_id or "",
-                        "message": issue.message,
+                        "Severity": str(issue.severity).capitalize(),
+                        "Hole": issue.hole_id or "",
+                        "Message": issue_display_message(issue, skipped_holes),
                     }
                     for issue in quality_report.issues
                 ]
@@ -487,11 +525,8 @@ def _render_validate_details(
         )
 
     if st.session_state.qa_narrative:
-        st.markdown("**QA Summary**")
+        st.markdown("**QA summary**")
         st.write(st.session_state.qa_narrative)
-
-    for message in parse_result.errors:
-        st.warning(message)
 
 
 def render_next_step_coach(
@@ -512,13 +547,13 @@ def render_next_step_coach(
         holes = " → ".join(escape(str(hole)) for hole in selection[0])
         if blocked_reason:
             coach = (
-                f"<strong>Next:</strong> transect {holes} is selected — "
+                f"<strong>Next:</strong> section line {holes} is selected — "
                 f"{escape(blocked_reason)}, then click "
                 "<strong>Generate Cross-Section</strong>."
             )
         else:
             coach = (
-                f"<strong>Next:</strong> transect {holes} is selected — click "
+                f"<strong>Next:</strong> section line {holes} is selected — click "
                 "<strong>Generate Cross-Section</strong> above."
             )
     else:
@@ -539,10 +574,13 @@ def render_validate_step(*, show_coach: bool = True) -> None:
     mapping_proposal = st.session_state.mapping_proposal
     unique_lithologies = list(st.session_state.unique_lithology_codes)
     if quality_report is None:
-        st.warning("No quality report available. Re-parse the workbook.")
+        st.warning("Data checks didn't run for this workbook.")
+        if st.button("Re-read workbook", key="validate_reread_workbook"):
+            st.session_state.parse_signature = None
+            st.rerun()
         return
 
-    st.subheader("Data Health", anchor=False)
+    st.subheader("Data health", anchor=False)
     st.caption(llm_assist_status_caption())
 
     active_transect = st.session_state.get("transect_selection")
@@ -554,52 +592,44 @@ def render_validate_step(*, show_coach: bool = True) -> None:
     ):
         scope_hole_ids = tuple(str(hole_id) for hole_id in active_transect[0])
         scope_caption = (
-            f"Coverage scoped to active transect (**{' → '.join(scope_hole_ids)}**)."
+            f"Coverage scoped to the active section line (**{' → '.join(scope_hole_ids)}**)."
         )
-        missing_col = "Missing on transect"
+        missing_col = "Missing on section line"
     else:
         scope_hole_ids = tuple(collar.hole_id for collar in parse_result.collars)
         scope_caption = (
-            "Coverage is **site-wide** (all collars). Select a transect in Configure "
+            "Coverage is **site-wide** (all collars). Select a section line in Configure "
             "to see missing holes for the section only."
         )
         missing_col = "Missing (site-wide)"
 
+    skipped_rows = list(parse_result.errors)
+    skipped_holes = lithology_skipped_holes(skipped_rows)
+    error_total = quality_report.error_count + len(skipped_rows)
+    status_label = _health_status_label(error_total, quality_report.warning_count)
+    status_line = (
+        f"**{status_label}** — "
+        f"**{error_total} {'error' if error_total == 1 else 'errors'}**, "
+        f"**{quality_report.warning_count} warnings**, "
+        f"**{quality_report.info_count} info**"
+    )
     compact = not quality_report.has_blocking_errors
-    status_label = _health_status_label(quality_report.error_count, quality_report.warning_count)
     if compact:
         if show_coach:
             render_next_step_coach()
-        if parse_result is not None and parse_result.errors:
-            st.warning(
-                f"{len(parse_result.errors)} workbook row(s) were skipped on import — "
-                "see **Data Health details**."
-            )
-        if quality_report.warning_count or quality_report.info_count:
-            st.markdown(
-                f"**{status_label}** — "
-                f"**{quality_report.error_count} errors**, "
-                f"**{quality_report.warning_count} warnings**, "
-                f"**{quality_report.info_count} info**"
-            )
+        if error_total or quality_report.warning_count or quality_report.info_count:
+            st.markdown(status_line)
         else:
             st.markdown("**Data health OK** — no blocking issues detected.")
-        details_loaded = st.session_state.get("validate_details_loaded")
-        if quality_report.warning_count and not details_loaded:
-            top_warnings = [
-                issue
-                for issue in quality_report.issues
-                if issue.severity == "warning"
-            ][:3]
-            for issue in top_warnings:
-                st.warning(f"**{issue.severity}** — {issue.message}")
-            if st.session_state.get("override_warnings_checkbox", True):
-                st.caption("Open Data Health details below to review all issues.")
-            else:
-                st.caption(
-                    "Enable **Allow generate with warnings** in Configure to proceed, "
-                    "or open Data Health details below to review all issues."
-                )
+    else:
+        st.markdown(status_line)
+    render_skipped_rows(skipped_rows)
+    if compact and quality_report.warning_count:
+        top_warnings = [issue for issue in quality_report.issues if issue.severity == "warning"][:3]
+        for issue in top_warnings:
+            st.warning(issue_display_message(issue, skipped_holes))
+        # Whether warnings block Generate is explained once, in Configure.
+        st.caption("Open **Data health details** below to review every issue.")
 
     assistant: AIAssistant | None = None
     if quality_report.has_blocking_errors:
@@ -624,20 +654,12 @@ def render_validate_step(*, show_coach: bool = True) -> None:
     )
 
     if compact:
-        with st.expander("Data Health details", expanded=st.session_state.get("validate_details_expanded", False)):
-            if st.session_state.get("validate_details_loaded"):
-                _render_validate_details(**detail_kwargs, show_blocking_fix_coach=False)
-            elif st.button("Load data health details", key="validate_load_details"):
-                st.session_state.validate_details_loaded = True
-                st.session_state.validate_details_expanded = True
-                st.rerun()
+        # Rendered straight away (no "Load…" click): every panel is local and
+        # cheap — summaries over parsed rows, the rule-based fix plan (cached in
+        # session) and small tables. LLM calls stay behind their own buttons.
+        with st.expander("Data health details", expanded=False):
+            _render_validate_details(**detail_kwargs, show_blocking_fix_coach=False)
     else:
-        st.markdown(
-            f"**{status_label}** — "
-            f"**{quality_report.error_count} errors**, "
-            f"**{quality_report.warning_count} warnings**, "
-            f"**{quality_report.info_count} info**"
-        )
         _render_validate_details(**detail_kwargs, show_blocking_fix_coach=True)
 
     with st.expander("Export cleaned workbook", expanded=False):

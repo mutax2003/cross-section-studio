@@ -35,7 +35,7 @@ def test_summarize_water_levels_warns_when_all_off_transect() -> None:
     summary = summarize_water_levels(collars, levels, ("BH-01", "BH-02"))
     assert summary.total_levels == 0
     assert summary.series == ()
-    assert any("No groundwater readings on the selected transect" in warning for warning in summary.warnings)
+    assert any("No groundwater readings on the selected section line" in warning for warning in summary.warnings)
     assert any("BH-99" in warning for warning in summary.warnings)
 
 

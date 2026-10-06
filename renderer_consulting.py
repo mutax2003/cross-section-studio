@@ -17,7 +17,7 @@ from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.patches import FancyArrow, Rectangle
-from matplotlib.ticker import FuncFormatter, MultipleLocator
+from matplotlib.ticker import Formatter, FuncFormatter, Locator, MultipleLocator
 from matplotlib.transforms import blended_transform_factory, offset_copy
 
 from lithology_codes import collect_lithology_codes
@@ -123,6 +123,92 @@ _DESIGN_BLOCK_AXES_WIDTH_IN = 11.0 * (0.95 - 0.06)
 
 # A label that already names a (cross) section as a word is printed as-is.
 _SECTION_WORD_RE = re.compile(r"\bsection\b", re.IGNORECASE)
+
+# RL / depth axis labelling: at most this many labelled ticks per side, and
+# labels at least this many font heights apart. The client figures label every
+# 1 m on short sections (GWM) and every 2 m on the 16 m P2 depth axis; taller
+# ranges thin to the next round step (1, 2, 5, 10, 20, 50 ... true metres).
+_Y_MAX_LABELS = 15
+_Y_LABEL_SPACING_EM = 1.8
+_Y_MIN_STEP_M = 1.0
+
+
+def _round_step_at_least(value: float) -> float:
+    """Smallest 1/2/5 x 10^k step that is >= ``value``."""
+    exponent = 10.0 ** np.floor(np.log10(max(value, 1e-9)))
+    for mantissa in (1.0, 2.0, 5.0, 10.0):
+        if mantissa * exponent >= value * (1.0 - 1e-9):
+            return mantissa * exponent
+    return 10.0 * exponent  # pragma: no cover - loop always returns
+
+
+def true_metre_major_step(span_m: float, axis_height_pt: float, label_pt: float) -> float:
+    """Round labelled-tick step (true metres) for a ``span_m`` tall RL/depth axis.
+
+    Keeps the client's 1 m step while it fits, otherwise the next 1/2/5 step so
+    at most ``_Y_MAX_LABELS`` labels show and labels never crowd each other.
+    """
+    span_m = abs(float(span_m))
+    room = int(axis_height_pt // max(label_pt * _Y_LABEL_SPACING_EM, 1e-6)) if axis_height_pt > 0 else 0
+    max_labels = max(2, min(_Y_MAX_LABELS, room)) if room else _Y_MAX_LABELS
+    step = _Y_MIN_STEP_M
+    while np.floor(span_m / step + 1e-9) + 1 > max_labels:
+        step = _round_step_at_least(step * 1.0001)
+    return step
+
+
+def true_metre_minor_step(major_step: float) -> float:
+    """Unlabelled minor step: 0.5 m under a 1 m major, else 1 m up to 10 m majors."""
+    if major_step <= _Y_MIN_STEP_M:
+        return major_step / 2.0
+    return max(_Y_MIN_STEP_M, major_step / 10.0)
+
+
+class _TrueMetreLocator(Locator):
+    """Major/minor y ticks at round true-metre steps on a VE-exaggerated axis.
+
+    Decided at draw time from the view range and the axes height, so an export
+    page resize re-thins the labels instead of keeping the render-size choice.
+    """
+
+    def __init__(self, ve: float, label_pt: float, *, minor: bool = False) -> None:
+        self._ve = float(ve) if ve and ve > 0 else 1.0
+        self._label_pt = float(label_pt)
+        self._minor = minor
+
+    def major_step(self) -> float:
+        vmin, vmax = self.axis.get_view_interval()
+        axes = self.axis.axes
+        height_pt = axes.bbox.height * 72.0 / axes.figure.dpi
+        return true_metre_major_step((vmax - vmin) / self._ve, height_pt, self._label_pt)
+
+    def __call__(self):
+        vmin, vmax = self.axis.get_view_interval()
+        return self.tick_values(vmin, vmax)
+
+    def tick_values(self, vmin, vmax):
+        low, high = sorted((vmin / self._ve, vmax / self._ve))
+        step = self.major_step()
+        if self._minor:
+            step = true_metre_minor_step(step)
+        first = np.ceil(low / step - 1e-9) * step
+        values = np.arange(first, high + step * 1e-6, step)
+        return self.raise_if_exceeds(np.round(values, 6) * self._ve)
+
+
+class _TrueMetreFormatter(Formatter):
+    """True-metre labels (plotted value / VE); ``suppressed`` values print blank."""
+
+    def __init__(self, ve: float) -> None:
+        self._ve = float(ve) if ve and ve > 0 else 1.0
+        self.suppressed: set[float] = set()
+
+    def __call__(self, value, pos=None):
+        true_value = round(value / self._ve, 6)
+        if true_value in self.suppressed:
+            return ""
+        text = f"{true_value:.0f}" if abs(true_value - round(true_value)) < 1e-6 else f"{true_value:g}"
+        return "0" if text == "-0" else text
 
 
 class ConsultingLayoutMixin:
@@ -415,28 +501,85 @@ class ConsultingLayoutMixin:
 
     def _apply_report_grid(self, ax, ax_right=None, *, consulting: bool = False, x_major_step: float | None = None) -> None:
         ve = self.vertical_exaggeration
-        y_step = max(ve, 0.5)
-        y_locator = MultipleLocator(y_step)
-        ax.yaxis.set_major_locator(y_locator)
-        if self.profile.y_axis_mode == "elevation_rl":
-            ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _pos, v=ve: f"{value / v:.0f}"))
+        ax.xaxis.set_major_locator(MultipleLocator(x_major_step if x_major_step is not None else self.profile.x_major_grid_m))
+        if not consulting:
+            y_locator = MultipleLocator(max(ve, 0.5))
+            ax.yaxis.set_major_locator(y_locator)
             if ax_right is not None:
                 ax_right.yaxis.set_major_locator(y_locator)
-                ax_right.yaxis.set_major_formatter(
-                    FuncFormatter(lambda value, _pos, v=ve: f"{value / v:.0f}")
-                )
-        elif ax_right is not None:
-            ax_right.yaxis.set_major_locator(y_locator)
-        ax.xaxis.set_major_locator(MultipleLocator(x_major_step if x_major_step is not None else self.profile.x_major_grid_m))
+            ax.grid(True, which="major", color=REPORT_GRID_COLOR, alpha=REPORT_GRID_ALPHA, linewidth=0.6, zorder=0)
+            return
+        # Labelled ticks at a round true-metre step (thinned on tall sections),
+        # the finer 1 m / 0.5 m step kept as unlabelled minor ticks and grid.
+        # Same rule on both sides and in depth (mbgs) mode.
+        label_pt = self._fs(8)
+        for axis_ax in (ax, ax_right):
+            if axis_ax is None:
+                continue
+            axis_ax.yaxis.set_major_locator(_TrueMetreLocator(ve, label_pt))
+            axis_ax.yaxis.set_minor_locator(_TrueMetreLocator(ve, label_pt, minor=True))
+            axis_ax.yaxis.set_major_formatter(_TrueMetreFormatter(ve))
+            axis_ax.tick_params(axis="y", which="major", labelsize=label_pt)
         ax.grid(True, which="major", color=REPORT_GRID_COLOR, alpha=REPORT_GRID_ALPHA, linewidth=0.6, zorder=0)
-        if consulting:
-            minor_y = max(ve * 0.5, 0.25)
-            ax.yaxis.set_minor_locator(MultipleLocator(minor_y))
-            ax.xaxis.set_minor_locator(MultipleLocator(5.0))
-            ax.grid(True, which="minor", color=REPORT_GRID_COLOR, alpha=0.45, linewidth=0.35, zorder=0)
-            ax.tick_params(axis="both", which="major", labelsize=self._fs(8))
-            if ax_right is not None:
-                ax_right.tick_params(axis="y", which="major", labelsize=self._fs(8))
+        ax.xaxis.set_minor_locator(MultipleLocator(5.0))
+        ax.grid(True, which="minor", color=REPORT_GRID_COLOR, alpha=0.45, linewidth=0.35, zorder=0)
+        ax.tick_params(axis="both", which="major", labelsize=label_pt)
+
+    def _suppress_header_tick_collisions(self, figure: Figure) -> None:
+        """Blank RL tick labels a hole-ID header would cover at its drawn spot.
+
+        Headers sit just above the frame, so only the topmost labels can meet
+        them; dropping that label beats stepping the header off the page.
+        Measured with each header at its base (pre-collision-pass) position.
+        """
+        axes = getattr(figure, "_css_main_axes", None)
+        headers = [
+            text
+            for text in getattr(self, "_header_labels", None) or []
+            if text.figure is figure and text.get_visible() and text.get_text().strip()
+        ]
+        if not axes:
+            return
+        formatters = []
+        for axis_ax in axes:
+            if axis_ax is None:
+                continue
+            formatter = axis_ax.yaxis.get_major_formatter()
+            if isinstance(formatter, _TrueMetreFormatter):
+                formatter.suppressed.clear()
+                formatters.append((axis_ax, formatter))
+        if not headers or not formatters:
+            return
+        renderer = figure.canvas.get_renderer()
+        figure.draw_without_rendering()
+        pad = renderer.points_to_pixels(1.0)
+        header_boxes = []
+        for text in headers:
+            current = (text.get_transform(), text.get_horizontalalignment(), text.get_rotation())
+            base = getattr(text, "_header_base", None)
+            if base is not None:
+                text.set_transform(base[0])
+                text.set_horizontalalignment(base[1])
+                text.set_rotation(base[2])
+            header_boxes.append(text.get_window_extent(renderer).padded(pad))
+            if base is not None:
+                text.set_transform(current[0])
+                text.set_horizontalalignment(current[1])
+                text.set_rotation(current[2])
+        for axis_ax, formatter in formatters:
+            low, high = sorted(axis_ax.get_ylim())
+            locs = axis_ax.yaxis.get_majorticklocs()
+            for tick, loc in zip(axis_ax.yaxis.get_major_ticks(len(locs)), locs):
+                if not low <= loc <= high:
+                    continue
+                for label in (tick.label1, tick.label2):
+                    if not label.get_visible() or not label.get_text().strip():
+                        continue
+                    box = label.get_window_extent(renderer)
+                    if any(box.overlaps(other) for other in header_boxes):
+                        formatter.suppressed.add(round(loc / formatter._ve, 6))
+        if any(formatter.suppressed for _ax, formatter in formatters):
+            figure.draw_without_rendering()
 
     def _draw_well_columns(
         self,
@@ -1605,6 +1748,7 @@ class ConsultingLayoutMixin:
                 moved = True
         if moved:
             figure.subplots_adjust(left=left, right=right)
+        self._suppress_header_tick_collisions(figure)
 
     def _title_label_column_need(self, ax, labels: list[str]) -> float | None:
         """Axes-fraction width the bold row labels need (offset + text + pad)."""

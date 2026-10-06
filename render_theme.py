@@ -100,22 +100,28 @@ EXPORT_FONT_FALLBACKS: tuple[str, ...] = ("Arial", "Calibri", "DejaVu Sans", "sa
 EXPORT_FONT_SIZE_DEFAULT = 8.0
 PARAMETER_MARKER_SIZE_DEFAULT = 16.0
 
-# Up to four GW event / nest series — inverted triangles, blue shades (Wave B).
+# Up to four GW event / nest series — blue family (groundwater = blue is
+# reserved), every shade >= 4.5:1 contrast on white so its value labels stay
+# legible (WCAG AA). Hue/lightness spread keeps neighbours apart; marker shape
+# (CONSULTING_GW_SERIES_MARKERS) separates them even in greyscale.
 CONSULTING_GW_BLUE_SHADES: tuple[str, ...] = (
-    "#5EB8FF",  # light
-    "#007FFF",  # primary
-    "#0055CC",  # mid
-    "#003399",  # deep
+    "#0072D6",  # azure (4.8:1)
+    "#1D4ED8",  # royal (6.7:1)
+    "#075985",  # steel (7.6:1)
+    "#0A2F6B",  # navy (12.9:1)
 )
+# Marker per series slot: inverted triangle first (client GW symbol), then
+# shapes that read differently even where shades are hard to tell apart.
+CONSULTING_GW_SERIES_MARKERS: tuple[str, ...] = ("v", "o", "D", "s")
 
 # Consecutive series alternate light/deep so neighbours are easy to tell apart.
 _GW_CONTRAST_ORDER: tuple[int, ...] = (0, 3, 1, 2)
 
 CONSULTING_GW_SERIES_STYLES: dict[str, tuple[str, str, str]] = {
-    "2024-05": (CONSULTING_GW_BLUE_SHADES[0], "v", "May 2024"),
-    "2024-06": (CONSULTING_GW_BLUE_SHADES[2], "v", "June 2024"),
-    "2025-06": (CONSULTING_GW_BLUE_SHADES[3], "v", "June 2025"),
-    "default": (CONSULTING_WATER_COLOR, "v", ""),
+    "2024-05": (CONSULTING_GW_BLUE_SHADES[0], CONSULTING_GW_SERIES_MARKERS[0], "May 2024"),
+    "2024-06": (CONSULTING_GW_BLUE_SHADES[2], CONSULTING_GW_SERIES_MARKERS[2], "June 2024"),
+    "2025-06": (CONSULTING_GW_BLUE_SHADES[3], CONSULTING_GW_SERIES_MARKERS[1], "June 2025"),
+    "default": (CONSULTING_GW_BLUE_SHADES[0], CONSULTING_GW_SERIES_MARKERS[0], ""),
 }
 
 
@@ -128,17 +134,18 @@ def consulting_gw_series_style(
     """Return (color, marker, label) for a groundwater series.
 
     Known EcoVenture series ids keep stable colours. Unknown ids cycle through
-    ``CONSULTING_GW_BLUE_SHADES`` (all inverted triangles).
+    ``CONSULTING_GW_BLUE_SHADES`` and ``CONSULTING_GW_SERIES_MARKERS`` by
+    series slot (first series: inverted triangle).
     """
     if series_id in CONSULTING_GW_SERIES_STYLES:
         color, marker, label = CONSULTING_GW_SERIES_STYLES[series_id]
         return color, marker, level_label or label
     if series_index is not None:
-        shade = CONSULTING_GW_BLUE_SHADES[
-            _GW_CONTRAST_ORDER[int(series_index) % len(_GW_CONTRAST_ORDER)]
-        ]
-        return shade, "v", level_label or series_id
-    return CONSULTING_WATER_COLOR, "v", level_label or series_id
+        slot = int(series_index)
+        shade = CONSULTING_GW_BLUE_SHADES[_GW_CONTRAST_ORDER[slot % len(_GW_CONTRAST_ORDER)]]
+        marker = CONSULTING_GW_SERIES_MARKERS[slot % len(CONSULTING_GW_SERIES_MARKERS)]
+        return shade, marker, level_label or series_id
+    return CONSULTING_GW_BLUE_SHADES[0], "v", level_label or series_id
 
 
 def chemistry_label_color(

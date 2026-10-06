@@ -7,7 +7,7 @@ Matplotlib's built-in hatches do not match the template:
 * ``/`` draws continuous diagonals; the template's silty pattern is short
   45° dashes (~7 pt long, ~9 pt apart, staggered).
 * ``+`` draws a full grid; the template's clay-loam pattern is isolated small
-  ``+`` marks (~2 pt arms, ~12 pt apart, staggered).
+  ``+`` marks (4.35 pt strokes, ~12 pt apart, staggered).
 
 ``install()`` swaps the matplotlib pattern classes for those three characters
 (every other character keeps its stock pattern; ``x`` keeps continuous
@@ -32,7 +32,7 @@ STOCK_ROWS_PER_INCH = 6
 # Mark sizes, in inches (template measurements at 1:1).
 _DOT_RADIUS_IN = 0.42 / 72.0
 _DASH_HALF_SPAN_IN = 2.52 / 72.0  # each axis: 5.04 pt box -> ~7.1 pt dash
-_PLUS_ARM_IN = 1.1 / 72.0
+_PLUS_ARM_IN = 4.35 / 2 / 72.0  # template "+" strokes are 4.35 pt long
 
 _DEFAULT_DENSITY = 6
 

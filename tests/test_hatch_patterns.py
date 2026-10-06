@@ -59,7 +59,7 @@ def test_silty_pattern_is_short_dashes_not_lines() -> None:
 def test_clay_loam_pattern_is_isolated_plus_marks() -> None:
     marks = _marks("+")
     lengths_pt = {round(float(np.hypot(*(m[-1] - m[0])) * 72), 1) for m in marks}
-    assert lengths_pt == {2.2}  # two 2.2 pt strokes per mark, no grid lines
+    assert lengths_pt <= {4.3, 4.4}  # template: two 4.35 pt strokes per mark, no grid lines
     assert len(marks) % 2 == 0
 
 

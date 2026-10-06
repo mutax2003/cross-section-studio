@@ -467,3 +467,30 @@ def test_batch_zip_builds_the_good_lines_and_lists_the_skipped_ones(sample_workb
         "Batch ZIP ready: 1 section line" in s.value and "Left out: Z-Z'" in s.value
         for s in at.success
     )
+
+
+def test_real_project_sharing_the_sample_number_and_date_is_not_flagged() -> None:
+    """The B-B' workbook (own client and title, same project number and date
+    as the template sample) was told its Project tab still held sample values."""
+    from io import BytesIO
+
+    import openpyxl
+    from streamlit.testing.v1 import AppTest
+
+    from workbook_template import build_input_template_bytes
+
+    book = openpyxl.load_workbook(BytesIO(build_input_template_bytes()))
+    sheet = book["Project"]
+    for row in sheet.iter_rows(min_row=2):
+        if row[0].value == "client_name":
+            row[2].value = "WHITECAP RESOURCES INC."
+        elif row[0].value == "section_title":
+            row[2].value = "B - B' WITH CHLORIDE INTERVALS"
+    buffer = BytesIO()
+    book.save(buffer)
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("bb.xlsx", buffer.getvalue()).run()
+    assert not at.exception
+    assert not any("template's sample values" in w.value for w in at.warning)

@@ -547,11 +547,15 @@ def handle_workbook_upload(
                     for key in ("client_name", "project_number", "report_date", "section_title")
                     if str(project_metadata.get(key, "")).strip() == sample.get(key, "")
                 ]
-                if stale:
+                # A real project can share a number format or date with the
+                # sample; only the client name or section title identify a
+                # Project tab that was never filled in.
+                if stale and {"client_name", "section_title"} & set(stale):
+                    quoted = ", ".join(f"{key} = '{sample[key]}'" for key in stale)
                     st.session_state.upload_banner_caution = (
-                        "The Project tab still holds the template's sample values for "
-                        f"{', '.join(stale)} (e.g. {sample['client_name']}); they will print on "
-                        "the title block — update them before issuing figures."
+                        "The Project tab still holds the template's sample values "
+                        f"({quoted}); they will print on the title block — update them "
+                        "before issuing figures."
                     )
             level, headline = upload_headline(
                 hole_count=len(hole_ids),

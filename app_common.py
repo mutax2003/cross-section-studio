@@ -304,6 +304,31 @@ def _render_lithology_legend(codes: list[str]) -> None:
     st.markdown("".join(rows), unsafe_allow_html=True)
 
 
+
+@st.cache_data(show_spinner=False)
+def _full_legend_png() -> bytes:
+    from lithology_legend_sheet import build_legend_sheet_png
+
+    return build_legend_sheet_png()
+
+
+def render_full_lithology_legend() -> None:
+    """Every palette code with its colour and pattern, as drawn in figures."""
+    with st.expander("Full lithology legend (all codes)", expanded=False):
+        png = _full_legend_png()
+        st.image(
+            png,
+            caption="Colours and patterns follow the client legend template (261002).",
+            width="stretch",
+        )
+        st.download_button(
+            "Download legend (PNG)",
+            data=png,
+            file_name="lithology_legend.png",
+            mime="image/png",
+            key="download_full_lithology_legend",
+        )
+
 def _display_svg(
     svg_bytes: bytes,
     alt_text: str = "Cross-section profile",

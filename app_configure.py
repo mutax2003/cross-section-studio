@@ -17,6 +17,7 @@ from app_common import (
     _section_facts,
     _session_correlation_overrides,
     _sidebar_heading,
+    render_full_lithology_legend,
     safe_lithology_index,
 )
 from app_services import cached_configure_preflight, cached_recommend_transects
@@ -107,6 +108,7 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
     _sidebar_heading("Stratigraphy legend")
     legend_codes = st.session_state.section_lithology_codes or st.session_state.unique_lithology_codes
     _render_lithology_legend(legend_codes)
+    render_full_lithology_legend()
 
     _sidebar_heading("Section line")
     specs = tuple(getattr(parse_result, "section_specs", ()) or ())

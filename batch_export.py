@@ -533,5 +533,18 @@ def build_batch_zip(
                 archive.writestr(f"{safe}.pdf", pdf_bytes)
         if binder_pdf:
             archive.writestr("report_binder.pdf", binder_pdf)
+        archive.writestr("README.txt", _batch_readme(len(entries)).encode("utf-8"))
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def _batch_readme(section_count: int) -> str:
+    """Plain-text note shipped in every batch ZIP (contents and attribution)."""
+    from app_identity import COPYRIGHT_NOTICE, CREATED_BY
+
+    return (
+        f"Cross Section Studio batch export: {section_count} section line(s).\n"
+        "Each section has a PNG (reports) and PDF (print); SVG (CAD) when selected.\n"
+        "report_binder.pdf, when present, collects every section PDF behind a cover page.\n"
+        f"{CREATED_BY}. {COPYRIGHT_NOTICE}\n"
+    )

@@ -182,7 +182,7 @@ def test_build_batch_zip_uniquifies_colliding_and_derived_stems() -> None:
     entries = [(stem, b"svg", b"png", b"pdf") for stem in ("A", "A", "A_2", "a")]
     names = _zipfile.ZipFile(io.BytesIO(build_batch_zip(entries))).namelist()
     assert len(names) == len(set(names))
-    stems = {name.rsplit(".", 1)[0] for name in names}
+    stems = {name.rsplit(".", 1)[0] for name in names if name != "README.txt"}
     assert len(stems) == 4  # every entry kept under a distinct stem
     lowered = [stem.lower() for stem in stems]
     assert len(lowered) == len(set(lowered))  # distinct even case-insensitively

@@ -108,3 +108,16 @@ def test_word_and_zip_deliverables_carry_attribution() -> None:
     assert "2026" in props.comments
     assert zipfile.is_zipfile(io.BytesIO(docx_bytes))
     assert CREATED_BY in _default_readme("stem")
+
+
+def test_batch_zip_carries_the_attribution_readme() -> None:
+    import zipfile
+    from io import BytesIO
+
+    from app_identity import CREATED_BY
+    from batch_export import build_batch_zip
+
+    payload = build_batch_zip([("A-A", b"", b"png", b"%PDF")])
+    with zipfile.ZipFile(BytesIO(payload)) as archive:
+        readme = archive.read("README.txt").decode("utf-8")
+    assert CREATED_BY in readme

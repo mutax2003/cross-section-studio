@@ -42,6 +42,7 @@ from export_framing import ExportFramingConfig
 from ingestion import DATA_ENTRY_PROFILE_ID, NATIVE_PROFILE_ID, list_profiles
 from models import ConsultingTitleBlock
 from pipeline import DEFAULT_UNCERTAINTY_SPACING_M
+from render_theme import water_has_multiple_series
 from ui_output_presets import (
     INTERPRETATION_LABELS,
     OUTPUT_PRESET_LABELS,
@@ -410,10 +411,15 @@ def render_sidebar() -> SidebarState:
             if preset_config.show_water_elevation_labels is not None
             else force_gw_chrome
         )
+        parsed_for_water = st.session_state.get("parse_result")
+        several_water_series = water_has_multiple_series(
+            getattr(parsed_for_water, "water_levels", None)
+        )
         show_water_legend = (
             preset_config.show_water_legend
             if preset_config.show_water_legend is not None
-            else force_gw_chrome
+            # Several blue series are unreadable without a key, so start on.
+            else (force_gw_chrome or several_water_series)
         )
         show_dry_well_nm = (
             preset_config.show_dry_well_nm

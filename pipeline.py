@@ -586,6 +586,10 @@ def render_cross_section_from_geometry(
         ("chemistry_threshold_yellow_max", chemistry_threshold_yellow_max),
         ("chemistry_label_style", chemistry_label_style),
     )
+    if show_water_legend is False:
+        # The sidebar "Show groundwater legend" switch was turned off: no
+        # per-series water key either, even with several series.
+        profile_updates["water_series_key_min_series"] = 0
     if chemistry_label_style is not None and chemistry_label_style not in get_args(ChemistryLabelStyle):
         raise ValueError(
             f"chemistry_label_style must be one of {get_args(ChemistryLabelStyle)} "

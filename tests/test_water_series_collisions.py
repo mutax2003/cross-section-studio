@@ -144,3 +144,38 @@ def test_single_series_section_sheet_has_no_series_key() -> None:
     )
     texts = [text.get_text() for legend in figure.findobj(Legend) for text in legend.get_texts()]
     assert not any("GROUNDWATER" in text for text in texts)
+
+
+def test_groundwater_legend_switch_off_hides_the_series_key() -> None:
+    """The section-sheet series key must follow the sidebar switch when it
+    is turned off explicitly."""
+    import pipeline
+    from models import Collar, Lithology, WaterLevel
+
+    collars = [
+        Collar(hole_id=h, easting=10.0 * i, northing=0.0, elevation=100.0, total_depth=10.0)
+        for i, h in enumerate(("BH-1", "BH-2"))
+    ]
+    liths = [Lithology(hole_id=c.hole_id, from_depth=0.0, to_depth=10.0, lithology_code="Clay") for c in collars]
+    water = [
+        WaterLevel(hole_id=c.hole_id, depth=2.0 + k * 0.5, series_id=f"S{k}")
+        for c in collars
+        for k in range(2)
+    ]
+    captured = {}
+    original = pipeline.CrossSectionRenderer.__init__
+
+    def spy(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        captured["profile"] = self.profile
+
+    pipeline.CrossSectionRenderer.__init__ = spy
+    try:
+        pipeline.build_cross_section(
+            collars, liths, [(0.0, 0.0), (10.0, 0.0)], water_levels=water, show_water_legend=False
+        )
+        assert captured["profile"].water_series_key_min_series == 0
+        pipeline.build_cross_section(collars, liths, [(0.0, 0.0), (10.0, 0.0)], water_levels=water)
+        assert captured["profile"].water_series_key_min_series > 0
+    finally:
+        pipeline.CrossSectionRenderer.__init__ = original

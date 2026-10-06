@@ -1,6 +1,6 @@
 # Generate & exports
 
-Cross Section Studio is **SVG-first**: **Generate Cross-Section** (or `Alt+Shift+G`) builds the fence diagram as SVG immediately.
+Cross Section Studio is **SVG-first**: **Generate section** (or `Alt+Shift+G`) builds the fence diagram as SVG immediately.
 
 ## Downloads
 
@@ -16,26 +16,26 @@ Greyed buttons explain why on hover. The green (primary) button is always the ne
 
 ## Prepare deliverables
 
-Click **Prepare deliverables (PNG · PDF · Word · package)** once. That builds PNG and PDF in a **single** matplotlib draw, then unlocks the **Drafter package** row:
+Click **Prepare deliverables** once. That builds PNG and PDF in a **single** drawing pass (plus the Word file when available) and shows a notice naming the ready files. It then unlocks:
 
 - **Word figure (.docx)** — PNG + caption/metadata (needs `python-docx`)
 - **Copy PNG to clipboard** — browser clipboard (permission-dependent; fall back to Download PNG)
-- **Build report ZIP** / **Download report ZIP** — SVG + PNG + PDF + metadata JSON + README (+ Word when available)
-- **Save to project folder** — set **Save exports to folder** (a full path, e.g. `P:\Projects\Job\Figures`) under sidebar **Export framing & deliverables**
+- **Prepare report ZIP** / **Download report ZIP** — SVG + PNG + PDF + metadata JSON + README (+ Word when available)
+- **Save to project folder** — set **Save exports to folder** (a full path, e.g. `P:\Projects\Job\Figures`) under sidebar **Export**
 
-**Report ZIP** packages the **current** figure. **Multi-transect ZIP** (below) rebuilds a separate figure per Configure batch line.
+**Report ZIP** packages the **current** figure. **Batch ZIP** (below) rebuilds a separate figure for each section line in the batch list.
 
 ## Sidebar framing
 
-Under **Export framing & deliverables**: page preset, margins, DPI, fence-only, DRAFT watermark, layer toggles, viewport crop, filename pattern, CAD-friendly SVG layers (Inkscape layer groups when enabled), and optional output folder path.
+Under sidebar **Export** (margins, crop and CAD layers are under **Advanced**): page preset, margins, DPI, fence-only, DRAFT watermark, layer toggles, viewport crop, filename pattern, CAD-friendly SVG layers (Inkscape layer groups when enabled), and optional output folder path.
 
-## Multi-transect ZIP
+## Batch ZIP (several section lines)
 
-Configure → **Multi-transect batch ZIP**: one line per transect as `Label | hole1, hole2, …`.
+Configure → **Several section lines (batch ZIP)**: one section line per row as `Label | hole1, hole2, …`. Each row is checked as you type (for example `C-C': MW-99 not in Collars`).
 
-On Generate, **Build multi-transect ZIP** rebuilds each line through the pipeline (distinct figures), then packages them. Check **Include SVG** only when needed (encode is slower). Optional **report_binder.pdf** merges section PDFs when `pypdf` is installed.
+On Generate, **Prepare batch ZIP** draws each valid line as its own figure and packages them with a README; lines that can't be drawn are listed and left out instead of failing the batch. Tick **Include SVG in batch ZIP** only when needed (SVG is slower). **report_binder.pdf** collects the section PDFs behind a cover page.
 
-Helpers: **Add current transect**, **Fill from recommended** (after Recommended mode has run once), and **Load from workbook Sections** (when the workbook has a **Sections** sheet). An empty batch box is seeded **once** from that sheet on Configure; clearing the box after that does not re-seed — use **Load from workbook Sections** to refresh.
+Helpers: **Add current section line**, **Fill from suggested lines**, and **Load from workbook Sections** (when the workbook has a **Sections** sheet). An empty batch box is seeded **once** from that sheet on Configure; clearing the box after that does not re-seed — use **Load from workbook Sections** to refresh.
 
 ## CAD note
 
@@ -43,10 +43,10 @@ Download SVG for drafting. With **CAD-friendly SVG layers** on, export promotes 
 
 ## QA before export
 
-If **Block export on polygon overlaps** is on in Configure, resolve overlaps (or clear the gate after manual review) before Generate or batch ZIP. Cosmetic changes (title, VE, hatches, fonts, column width) still need Generate for a new SVG; projection/stratigraphy can reuse cached geometry when only cosmetics change.
+If **Stop if matched layers overlap** is on in Configure, resolve overlaps (or clear the gate after manual review) before Generate or batch ZIP. Cosmetic changes (title, VE, hatches, fonts, column width) still need Generate for a new SVG; projection/stratigraphy can reuse cached geometry when only cosmetics change.
 
 Water and chemistry connector layers (when plotted) add footer text clarifying they are **schematic** — not potentiometric surfaces or plume contours. Chemistry colour thresholds in Configure are global (not per-parameter guidelines); keep chemistry interpolate off for stick-style P2 figures.
 
-## Regenerate
+## Generate again
 
-If transect, style, or correlation settings change, **Generate** again. SVG refreshes immediately; run **Prepare deliverables** again for PNG/PDF/Word/ZIP.
+If the section line, style, or layer matching changes, click **Generate section** again. SVG refreshes immediately; run **Prepare deliverables** again for PNG/PDF/Word/ZIP.

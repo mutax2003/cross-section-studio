@@ -8,11 +8,11 @@ Inter-hole fills are a **rule-based fence** (linear contacts, midpoint pinch-out
 
 | Step | Studio | gINT / Strater / RockWorks analogue |
 | --- | --- | --- |
-| 1 | **Data source** — upload Excel workbook | Project database / Excel export |
+| 1 | **Data** — upload Excel workbook | Project database / Excel export |
 | 2 | **Validate** — QA metrics, lithology mapping | Data checker, import QA |
 | 3 | **Configure** — plan view, hole order, transect A–A′ | Fence line / section definition |
 | 4 | **Generate** — SVG profile (fast preview) | Section preview |
-| 5 | **Prepare deliverables** — PNG/PDF (one draw); optional Word / multi-transect ZIP | Report sheet / layout export |
+| 5 | **Prepare deliverables** — PNG/PDF (one draw); optional Word / batch ZIP | Report sheet / layout export |
 
 > **Note:** Rows 1–4 map to Streamlit’s four workflow steps (Upload → Validate → Configure → Generate). **Prepare deliverables** is a Generate-step export action, not a fifth workflow step.
 
@@ -20,11 +20,11 @@ Inter-hole fills are a **rule-based fence** (linear contacts, midpoint pinch-out
 
 - **Compact hero** — after upload, the header shrinks so the figure gets vertical room (reporting focus).
 - **Figure-first** — once a profile exists, the SVG sheet stays on top; Validate & Configure move into **Setup — Validate & Configure** (collapsed).
-- **Regenerate strip** — sticky bar under the hero when a section exists; use **Generate Cross-Section** (`Alt+Shift+G`) after changing sidebar style or transect.
+- **Status strip** — shows the figure title, Up to date / Out of date, and the **Generate section** button (`Alt+Shift+G`); use it after changing the figure style or section line.
 - **Plan mini-map** — collar scatter in Configure mirrors a plan-view pick for fence orientation.
 - **Hole order** — numbered sequence with ↑/↓ matches Strater-style hole ordering for A–A′.
-- **Export ribbon** — chips show preset, VE, hole count, transect, fresh/stale, PNG/PDF readiness.
-- **Sidebar accordion** — Data source, Section output, Advanced, AI Assist, Consulting report sheet.
+- **Export ribbon** — chips show preset, VE, hole count, transect, up to date / out of date, PNG/PDF readiness.
+- **Sidebar sections** — Data, Figure style, Section line, Title block (consulting styles), Export, Advanced. Controls an output style doesn't use are hidden with a "Set by <style>" note.
 
 ## Output presets
 
@@ -43,4 +43,4 @@ Inter-hole fills are a **rule-based fence** (linear contacts, midpoint pinch-out
 
 - **Alt+Shift+G** (Option+Shift+G on macOS) — Generate section (same as **File → Generate section**). Full list: **Help → Keyboard shortcuts**.
 
-See **Help → Generate and exports** for SVG-first caching, Prepare deliverables, and multi-transect ZIP.
+See **Help → Generate and exports** for SVG-first caching, Prepare deliverables, and batch ZIP.

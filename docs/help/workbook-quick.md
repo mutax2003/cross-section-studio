@@ -4,7 +4,7 @@
 
 ## Enter in Excel, then upload
 
-1. Download **Download template (data entry)** from the welcome card or sidebar Data source section.
+1. Download **Download template (data entry)** from the welcome card or sidebar **Data** section.
 2. Fill **Collars** and **Lithology** in Excel (optional sheets below).
 3. Upload the saved `.xlsx` with **Upload Excel workbook** — same ingest path as any other workbook.
 4. Use File → **Load sample project** (or `Alt+Shift+O`) only when you want the built-in demo.
@@ -33,7 +33,7 @@ Optional: `hatch_pattern`, `unit_order` (needed when the same code repeats in on
 | **Screens** | Screen interval hatch bands (consulting layout) |
 | **Gradients** | Vertical gradient arrows (`up` / `down`) |
 | **Environmental** | Lab/screening values at depth or interval — pick parameters on **Configure** |
-| **Sections** | `section_label` + ordered `hole_ids` — seeds Configure **Multi-transect batch ZIP** (also **Load from workbook Sections**) |
+| **Sections** | `section_label` + ordered `hole_ids` — seeds Configure **Several section lines (batch ZIP)** (also **Load from workbook Sections**) |
 | **Field Data** | Field-export sheet with `OVA` / `EC` → environmental readings (`OVA` / `EC`); **not** used for stratigraphy |
 | **Deviations** | Deviated stick survey points |
 | **Correlations** | Manual unit pairing between holes |

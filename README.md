@@ -29,9 +29,9 @@ streamlit run app.py
 
 Open [http://localhost:8501](http://localhost:8501).
 
-1. **Try sample project** on the welcome card (or `Ctrl+Shift+O`), or download the **data entry template** and upload your `.xlsx`.
+1. **Try sample project** on the welcome card (or `Alt+Shift+O`), or download the **data entry template** and upload your `.xlsx`.
 2. Walk **Upload → Validate → Configure → Generate**.
-3. After Generate, click **Prepare deliverables** for PNG/PDF and the drafter package.
+3. After Generate, click **Prepare deliverables** for PNG/PDF and Word, then the report ZIP or project folder.
 
 The top **File / Edit / View / Help** bar mirrors Windows-style menus. In-app help topics live in [`docs/help/`](docs/help/).
 
@@ -55,7 +55,7 @@ Validate / Configure guidance only (never changes geometry). Set `GROQ_API_KEY` 
 |-------|------|
 | **Collars** + **Lithology** | Required |
 | **Water** / **Screens** / **Gradients** / **Environmental** | Optional overlays |
-| **Sections** | Named transects → Configure **Multi-transect batch ZIP** |
+| **Sections** | Named section lines → Configure **Several section lines (batch ZIP)** |
 | **Field Data** | Field-export `OVA` / `EC` → environmental readings (not stratigraphy) |
 
 Full schemas: [`docs/workbook-format.md`](docs/workbook-format.md). Short in-app guide: Help → **Workbook & data entry**.
@@ -124,4 +124,4 @@ Created by Andrew Liu, Ecoventure, 2026. Copyright © 2026 Andrew Liu, Ecoventur
 
 ## Interpretation disclaimer
 
-Fence fills between boreholes use deterministic correlation rules (including midpoint pinch-outs when enabled). They are schematic engineering drawings, not interpolated geological models. Always review **Configure** correlation health, **Block export on polygon overlaps**, and Generate overlap warnings before issuing figures to clients.
+Fence fills between boreholes use deterministic correlation rules (including midpoint pinch-outs when enabled). They are schematic engineering drawings, not interpolated geological models. Always review **Configure** correlation health, **Stop if matched layers overlap**, and Generate overlap warnings before issuing figures to clients.

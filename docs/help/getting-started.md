@@ -15,11 +15,12 @@ Fastest path with no prep: **Try sample project** (or `Alt+Shift+O`).
 1. **Upload** — Template + Excel, or sidebar upload of an existing `.xlsx`.
 2. **Validate** — Review parse warnings, lithology codes, groundwater series, and environmental readings. Fix sheet issues before configuring.
 3. **Configure** — Choose holes, transect order, layout/style, and overlays (water, screens, gradients, parameters). Resolve correlation preflight if prompted. Optional QA gates:
-   - **Block export on polygon overlaps** — stops Generate until overlaps are resolved (consulting presets often enable this).
-   - **Warn on correlation gaps** (Advanced) — surfaces unmatched units / pinch-out candidates.
-4. **Generate** — Builds the cross-section as **SVG immediately**. Then click **Prepare deliverables** for PNG/PDF and the drafter package (Word, clipboard, report ZIP, project folder). Regenerate after config changes.
+   - **Stop if matched layers overlap** — stops Generate until overlaps are resolved (consulting presets often enable this).
+   - **Generate even if data checks found warnings** — shows the warning count; tick it to draw anyway.
+   - **Warn when layers don't match between holes** (Advanced) — surfaces unmatched units / pinch-out candidates.
+4. **Generate** — Builds the cross-section as **SVG immediately**. Then click **Prepare deliverables** for PNG/PDF (and Word), then the report ZIP, clipboard copy or project folder. Click **Generate section** again after changing settings.
 
-Multi-transect packaging is configured under **Multi-transect batch ZIP**, then built from Generate — see [Generate & exports](generate-exports.md).
+Several section lines are set up under **Several section lines (batch ZIP)** in Configure, then built from Generate — see [Generate & exports](generate-exports.md).
 
 ## Sample project
 

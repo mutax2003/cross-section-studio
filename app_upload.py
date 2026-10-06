@@ -258,7 +258,7 @@ def run_destructive(action: str) -> None:
 def request_destructive(action: str) -> None:
     """Act immediately unless it would discard a generated section; then confirm.
 
-    Shared by the sidebar, File menu and Ctrl+Shift+O so no entry point can
+    Shared by the sidebar, File menu and Alt+Shift+O so no entry point can
     discard a section silently; the sidebar renders the pending prompt.
     """
     if st.session_state.get("svg_bytes") is None:
@@ -276,7 +276,7 @@ def render_welcome_card() -> None:
   in the sidebar. Or try the sample project to skip prep.</p>
   <ol class="welcome-steps">
     <li><strong>Enter</strong> — Download the multi-tab template and fill <em>Collars</em> + <em>Lithology</em> (optional Water, Screens, …).</li>
-    <li><strong>Upload</strong> — Use <em>Upload Excel workbook</em> in the sidebar Data source section.</li>
+    <li><strong>Upload</strong> — Use <em>Upload Excel workbook</em> in the sidebar Data section.</li>
     <li><strong>Validate &amp; Configure</strong> — Review data health, then pick the holes on the section line and the style.</li>
     <li><strong>Generate</strong> — SVG is ready immediately; Prepare deliverables for PNG/PDF/Word/package.</li>
   </ol>

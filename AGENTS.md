@@ -52,6 +52,7 @@ PM/Architect prompts (`pm.md`, `architect.md`) are **IDE-only** — the SDK does
 | Projection math | `projection.py` | `projection.py` | `tests/test_projection.py` |
 | Transect planner | `transect_planner.py` | `transect_planner.py` | `tests/test_ai_assistant.py`, `tests/test_e2e_edge_cases.py` |
 | Lithology palette | `constants.py`, `data/bh_log_lithology_legend.json` | `constants.py` (scheme) or `scripts/export_lithology_swatches.py` (Survey123 swatches) | `tests/test_renderer_styles.py`, `tests/test_advantage_p2_reference.py`, `tests/test_lithology_swatches.py` |
+| Hatch marks / legend sheet | `hatch_patterns.py`, `lithology_legend_sheet.py` | One of `hatch_patterns.py` (template marks) or `lithology_legend_sheet.py` (full legend PNG) | `tests/test_hatch_patterns.py`, `tests/test_thin_unit_hatches.py`, `tests/test_lithology_legend_sheet.py` |
 | Chemistry label colours / theme | `render_theme.py`, `renderer_chemistry.py` | One of `render_theme.py` (fixed colours, palettes) or `renderer_chemistry.py` (label styles, placement) | `tests/test_chemistry_label_colours.py`, `tests/test_wave_c_chemistry_legend.py` |
 | Product identity / attribution | `app_identity.py` | `app_identity.py` (every notice reads from it) | `tests/test_attribution.py` |
 | Lithology codes helper | `lithology_codes.py` | `lithology_codes.py` | `tests/test_pipeline.py` |
@@ -69,7 +70,7 @@ PM/Architect prompts (`pm.md`, `architect.md`) are **IDE-only** — the SDK does
 
 ## E2E quality gate
 
-**Naming:** the quality gate is **three shell commands** below (`VERIFY_COMMANDS`). That is separate from the Streamlit UI’s **four workflow steps** (Upload → Validate → Configure → Generate). **Prepare deliverables** (PNG · PDF · Word · package) is a Generate-step export action, not a fifth workflow step.
+**Naming:** the quality gate is **three shell commands** below (`VERIFY_COMMANDS`). That is separate from the Streamlit UI’s **four workflow steps** (Upload → Validate → Configure → Generate). **Prepare deliverables** (PNG · PDF · Word) is a Generate-step export action, not a fifth workflow step.
 
 Canonical command list is also `VERIFY_COMMANDS` in `scripts/agent_supervisor.py`. Exit non-zero if any step fails. CI mirror: `.github/workflows/e2e.yml`. IDE: use the project skill [`.cursor/skills/e2e-verify/SKILL.md`](.cursor/skills/e2e-verify/SKILL.md) when the user asks to test end to end.
 

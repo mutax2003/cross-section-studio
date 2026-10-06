@@ -1,5 +1,5 @@
 ---
-description: Streamlit UI assembly — upload, transect config, SVG-first Generate + Prepare deliverables / Drafter package
+description: Streamlit UI assembly — upload, transect config, SVG-first Generate section + Prepare deliverables / report and batch ZIP
 globs: app.py,app_*.py,ui_helpers.py,ui_output_presets.py,docs/help/**
 alwaysApply: false
 ---
@@ -20,8 +20,8 @@ Thin shell in **`app.py`**; sidebar/upload/configure live in split modules. Dele
 | `app_common.py` | Shared helpers (assistant, transect selection, quality refresh, legend) |
 | `app_validate.py` | Validate step: Data Health, fix plan, lithology mapping, sheet roles |
 | `app_configure.py` | Configure: transect sidebar, correlation health, manual overrides, section Q&A |
-| `app_generate.py` | Generate, stale banner; **Prepare deliverables** (PNG/PDF/DOCX); **Drafter package** ZIP; folder save |
-| `app_menubar.py` | Windows-style File/Edit/View/Help menus, Ctrl accelerators, `docs/help` dialogs |
+| `app_generate.py` | Generate, stale banner; **Prepare deliverables** (PNG/PDF/DOCX); report ZIP, batch ZIP (valid lines built, skipped lines listed); folder save |
+| `app_menubar.py` | File/Edit/View/Help `st.menu_button` menus, Alt+Shift+letter shortcuts (on/off), `docs/help` dialogs |
 | `app_state.py` | `DEFAULT_SESSION` + `SidebarState` (incl. track width / framing) + domain key groups / clear helpers |
 | `app_services.py` | Cached ingest/recommend/build; Configure preflight warms geometry cache + post-cache QA (`_apply_section_geometry_qa`); no widgets; no *new* geometry algorithms |
 | `ui_helpers.py` | Streamlit-free helpers: `active_transect_selection`, `svg_is_valid`, workflow stage |
@@ -48,7 +48,7 @@ result = cached_build_section(subset.model_dump_json(), request.model_dump_json(
 - **SVG display:** `st.markdown` + base64 `<img>` via `svg_display_meta()` — never `st.image()` on raw SVG
 - **Menubar accelerators:** `app_menubar._inject_shortcut_bridge()` uses **`st.iframe(..., height=1)`** (must be `height > 0`). Do **not** use deprecated `st.components.v1.html`.
 - **Lazy imports** for `render_theme` and `ai_assistant.resolve_llm_api_key` inside `app_common.py` helpers (avoid Streamlit hot-reload ImportErrors); other `ai_assistant` imports are top-level
-- **Help docs:** keep `docs/help/generate-exports.md` aligned with Prepare deliverables + Drafter package UX
+- **Help docs:** keep `docs/help/generate-exports.md` aligned with Prepare deliverables + report / batch ZIP UX
 
 ## Workflow (four steps)
 
@@ -57,7 +57,7 @@ result = cached_build_section(subset.model_dump_json(), request.model_dump_json(
 1. **Upload** — file uploader, profile, CRS, elevation, Parse; import report (optional sheets incl. Field Data OVA/EC → environmental readings, geology counts, `unit_order` / `unit_order_auto_assigned`)
 2. **Validate** — Data Health, fix-path coach, lithology mapping, sheet roles, QA narrative; water/screens/environmental summaries when sheets (or Field Data–sourced readings) are present
 3. **Configure** — transect (incl. NL pick), `cached_configure_preflight()` (correlation + overlap **and** warms `cached_compute_section_geometry`), environmental parameter multiselect → `SectionBuildRequest.environmental_parameters`, section Q&A, consulting report sheet fields
-4. **Generate** — warnings gate, `cached_build_section()` (**SVG only**), overlap warnings; **Prepare deliverables** builds PNG+PDF via `cached_build_section_exports()` (one draw); optional DOCX; **Multi-transect ZIP** rebuilds each Configure batch line via `batch_export.build_multi_transect_exports`
+4. **Generate** — warnings gate, `cached_build_section()` (**SVG only**), overlap warnings; **Prepare deliverables** builds PNG+PDF via `cached_build_section_exports()` (one draw); optional DOCX; **Batch ZIP** rebuilds each valid batch section line via `batch_export.build_one_transect_exports` (lines checked with `split_batch_transect_lines`)
 
 ## Layouts
 

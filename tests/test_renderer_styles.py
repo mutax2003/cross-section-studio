@@ -749,6 +749,7 @@ def test_consulting_water_labels_do_not_overlap_and_series_get_own_colours() -> 
     mpl_renderer = _figure_renderer(figure)
     labels = [annotation for _kind, annotation, _color in renderer._water_labels]
     assert len(labels) >= 8
+    labels = [annotation for annotation in labels if annotation.get_visible()]
     boxes = []
     for annotation in labels:
         annotation.update_positions(mpl_renderer)

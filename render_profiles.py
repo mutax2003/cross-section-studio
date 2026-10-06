@@ -45,6 +45,11 @@ class CrossSectionRenderProfile(BaseModel, frozen=True):
     water_interpolate_across_gaps: bool = False
     show_water_elevation_labels: bool = False
     show_water_legend: bool = False
+    # Draw a per-series GW key (marker + line + label) once a sheet has at
+    # least this many water series, even with show_water_legend off: several
+    # blue series are unreadable without one. 0 disables (consulting sheets
+    # carry the series in the title-block legend instead).
+    water_series_key_min_series: int = Field(default=0, ge=0)
     show_dry_well_nm: bool = False
     y_axis_mode: YAxisMode = "elevation_rl"
     water_symbol: WaterSymbol = "triangle"
@@ -128,6 +133,7 @@ SECTION_SHEET_PROFILE = CrossSectionRenderProfile(
     parameter_label_include_units=False,
     legend_ncol=2,
     chemistry_color_mode="black",
+    water_series_key_min_series=2,
 )
 
 CONSULTING_SECTION_PROFILE = CrossSectionRenderProfile(

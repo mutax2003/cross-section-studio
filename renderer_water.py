@@ -48,7 +48,7 @@ def _nearest_first(
 _DY_GRID = (0.0, -8.0, 8.0, -16.0, 16.0, -26.0, 26.0, -38.0, 38.0, -52.0, 52.0)
 _SIDE_OFFSETS = [
     (dx, dy, "left" if dx > 0 else "right")
-    for dx in (5.0, -5.0, 22.0, -22.0, 40.0, -40.0)
+    for dx in (5.0, -5.0, 22.0, -22.0, 40.0, -40.0, 60.0, -60.0)
     for dy in _DY_GRID
 ]
 _LABEL_CANDIDATES: dict[str, list[tuple[float, float, str]]] = {
@@ -66,6 +66,17 @@ _LABEL_CANDIDATES: dict[str, list[tuple[float, float, str]]] = {
 _CHEM_RELATIVE_OFFSETS = [(dx, dy, "left") for dx in (0.0, 10.0, 22.0) for dy in _DY_GRID]
 # Placement order: RL values matter most, then chemistry, gradients least.
 _LABEL_PRIORITY = {"rl": 0, "nm": 1, "chem": 2, "gradient": 3}
+# Water numbers that still collide after every candidate are dropped (marker
+# stays) — overlapping digits misreport a level. Chemistry keeps best-effort.
+_DROP_ON_COLLISION = frozenset({"rl", "nm", "gradient"})
+# Clearance around each label box (points) so neighbours never touch.
+_LABEL_PAD_PT = 2.0
+# Sideways nudge (points) between coincident markers of different series on
+# non-consulting sheets, so one series cannot hide another.
+_SERIES_MARKER_STEP_PT = 7.5
+# Line dash per series slot on non-consulting sheets (consulting keeps its
+# solid client lines; marker shape separates series there).
+_SERIES_DASHES = ("--", "-.", ":", (0, (6, 2, 1, 2)))
 
 
 class _ObstacleArray:
@@ -84,6 +95,14 @@ class _ObstacleArray:
         w = np.minimum(self._arr[:, 2], box.x1) - np.maximum(self._arr[:, 0], box.x0)
         h = np.minimum(self._arr[:, 3], box.y1) - np.maximum(self._arr[:, 1], box.y0)
         return float(np.sum(np.clip(w, 0.0, None) * np.clip(h, 0.0, None)))
+
+
+def _set_label_visible(annotation, visible: bool) -> None:
+    """Show/hide a label together with its halo twin and colour dot."""
+    annotation.set_visible(visible)
+    for companion in (getattr(annotation, "_halo", None), getattr(annotation, "_chem_dot", None)):
+        if companion is not None:
+            companion.set_visible(visible)
 
 
 def _sync_label_companions(annotation, fig, dx: float, dy: float, ha: str) -> None:
@@ -286,6 +305,7 @@ class WaterSeriesLegendEntry(TypedDict):
     series_id: str
     color: str
     marker: str
+    linestyle: str | tuple
     level_label: str
     elevation_label: str
 
@@ -399,7 +419,13 @@ class RendererWaterMixin:
         if not labels:
             return
         renderer = _figure_renderer(fig)
-        pad = renderer.points_to_pixels(1.5)
+        pad = renderer.points_to_pixels(_LABEL_PAD_PT)
+        # A re-run (page resize) starts from scratch: restore labels a previous
+        # pass dropped so they get another chance at the new size.
+        for _kind, annotation, _color in labels:
+            if getattr(annotation, "_water_dropped", False):
+                annotation._water_dropped = False
+                _set_label_visible(annotation, True)
         water_artists = {id(annotation) for _kind, annotation, _color in labels}
         water_artists |= {
             id(annotation._halo) for _k, annotation, _c in labels if hasattr(annotation, "_halo")
@@ -455,6 +481,12 @@ class RendererWaterMixin:
             annotation.set_horizontalalignment(ha)
             _sync_label_companions(annotation, fig, dx, dy, ha)
             final_box = _text_box(annotation, renderer).padded(pad)
+            if kind in _DROP_ON_COLLISION and placed_arr.overlap(final_box) > 0.0:
+                # No free spot: keep the marker, never print overlapping text.
+                annotation._water_dropped = True
+                annotation.arrow_patch.set_visible(False)
+                _set_label_visible(annotation, False)
+                continue
             placed.append(final_box)
             placed_arr.add(final_box)
             moved = abs(dy - base[1]) > _LEADER_THRESHOLD_PT or abs(dx - base[0]) > _LEADER_THRESHOLD_PT
@@ -536,6 +568,11 @@ class RendererWaterMixin:
             str(row.hole_id): float(row.x_profile)
             for row in hole_summary.itertuples(index=False)
         }
+        consulting = self.profile.layout == "consulting_section"
+        n_series = len(series_groups)
+        multi_series = n_series >= 2
+        # One "i=" per segment: series with equal heads produce identical text.
+        gradient_drawn: set[tuple[str, str, str]] = set()
         for series_index, (series_id, levels) in enumerate(sorted(series_groups.items())):
             first = levels[0]
             default_color, default_marker, default_label = consulting_gw_series_style(
@@ -544,7 +581,8 @@ class RendererWaterMixin:
                 series_index=series_index,
             )
             color = first.color or water_color or default_color or default_water_color
-            if self.profile.layout == "consulting_section":
+            if consulting or multi_series:
+                # Several series: per-series shapes so they read apart.
                 raw_marker = first.marker or default_marker or profile_marker
             else:
                 raw_marker = first.marker or profile_marker or default_marker
@@ -553,6 +591,9 @@ class RendererWaterMixin:
             if marker not in MarkerStyle.markers:
                 marker = lowered if lowered in MarkerStyle.markers else "v"
             label = first.series_label or default_label or series_id
+            series_linestyle = "-" if self.profile.water_line_solid else "--"
+            if multi_series and not consulting:
+                series_linestyle = _SERIES_DASHES[series_index % len(_SERIES_DASHES)]
             level_by_hole = {level.hole_id: level for level in levels}
             if label_series_gaps:
                 # Fully dry holes: one NM only (skip if label_dry_wells already drew them,
@@ -616,7 +657,15 @@ class RendererWaterMixin:
                 water_arr = np.asarray(water_rls, dtype=float)
                 collar_arr = np.asarray(collars, dtype=float)
                 ys = self._plot_y_values(water_arr, collar_arr)
-                ax.scatter(xs_arr, ys, marker=marker, c=color, s=49, zorder=7)
+                marker_transform = ax.transData
+                if multi_series and not consulting:
+                    # Coincident heads of different series: fan the markers
+                    # out sideways so one series cannot hide another.
+                    shift = (series_index - 0.5 * (n_series - 1)) * _SERIES_MARKER_STEP_PT
+                    marker_transform = offset_copy(ax.transData, fig=ax.figure, x=shift, units="points")
+                ax.scatter(
+                    xs_arr, ys, marker=marker, c=color, s=49, zorder=7, transform=marker_transform
+                )
                 if label_elevations:
                     for x_profile, water_rl, y, level, collar_rl in zip(
                         xs_arr, water_arr, ys, measured_levels, collars, strict=True
@@ -631,7 +680,7 @@ class RendererWaterMixin:
                             xytext=(4, -8),
                         )
                 if len(xs_arr) >= 2 and interpolate:
-                    gw_linestyle = "-" if self.profile.water_line_solid else "--"
+                    gw_linestyle = series_linestyle
                     if across_gaps:
                         x_dense = np.linspace(float(xs_arr.min()), float(xs_arr.max()), 100)
                         y_dense = np.interp(x_dense, xs_arr, ys)
@@ -711,6 +760,15 @@ class RendererWaterMixin:
                             # Segments mode draws no water line across a dry/NM
                             # gap — do not float an i= label over the open gap.
                             continue
+                        gradient_text = format_gradient_label(segment)
+                        gradient_key = (
+                            str(segment.left_hole_id),
+                            str(segment.right_hole_id),
+                            gradient_text,
+                        )
+                        if gradient_key in gradient_drawn:
+                            continue
+                        gradient_drawn.add(gradient_key)
                         mid_collar = 0.5 * (
                             float(profile_lookup[segment.left_hole_id][1])
                             + float(profile_lookup[segment.right_hole_id][1])
@@ -718,7 +776,7 @@ class RendererWaterMixin:
                         mid_y = self._plot_y(segment.mid_head_masl, mid_collar)
                         self._water_annotate(
                             ax,
-                            format_gradient_label(segment),
+                            gradient_text,
                             (segment.mid_x, float(mid_y)),
                             kind="gradient",
                             color=color,
@@ -734,14 +792,54 @@ class RendererWaterMixin:
                     "series_id": series_id,
                     "color": color,
                     "marker": marker,
+                    "linestyle": series_linestyle,
                     "level_label": level_label_text,
                     "elevation_label": elevation_label_text,
                 }
             )
+        key_min = int(getattr(self.profile, "water_series_key_min_series", 0) or 0)
+        if not consulting and key_min and len(self.water_series_legend) >= key_min:
+            self._draw_water_series_key(ax)
+
+    def _draw_water_series_key(self, ax) -> None:
+        """Marker + line + label per GW series, as a small framed key."""
+        from matplotlib.legend import Legend
+        from matplotlib.lines import Line2D
+
+        handles = [
+            Line2D(
+                [],
+                [],
+                color=entry["color"],
+                marker=entry["marker"],
+                markersize=6,
+                linewidth=1.6,
+                linestyle=entry.get("linestyle", "--"),
+            )
+            for entry in self.water_series_legend
+        ]
+        labels = [entry["level_label"] for entry in self.water_series_legend]
+        key = Legend(
+            ax,
+            handles,
+            labels,
+            loc="lower left",
+            fontsize=7,
+            frameon=True,
+            framealpha=0.9,
+            handlelength=3.0,
+            borderaxespad=0.6,
+        )
+        key.set_zorder(20)
+        key.set_gid("water_series_key")
+        ax.add_artist(key)
+        self._water_series_key_ax = ax
 
     def _draw_compact_water_legend(self, ax) -> None:
         if not self.water_series_legend:
             return
+        if getattr(self, "_water_series_key_ax", None) is ax:
+            return  # the series key already names every series
         lines = []
         for entry in self.water_series_legend:
             lines.append(entry["level_label"])

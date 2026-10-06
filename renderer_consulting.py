@@ -64,6 +64,22 @@ _HEADER_FONT_PT = 8.0
 _HEADER_CHAR_WIDTH_IN = _HEADER_FONT_PT * 0.62 / 72.0
 
 
+
+def _end_label_reserve_fraction(
+    endpoint_lines: tuple[tuple[str, str], tuple[str, str]],
+    *,
+    font_pt: float,
+    page_height_in: float,
+) -> float:
+    """Page-height fraction for the stacked end labels above the header row."""
+    line_counts = [sum(1 for part in end if part) for end in endpoint_lines]
+    lines = max(line_counts, default=0)
+    if not lines:
+        return 0.0
+    # Bold text at linespacing 0.9 (~1.1 x font per line) plus a small gap.
+    height_in = (lines * font_pt * 1.1 + 2.0) / 72.0
+    return min(height_in / page_height_in, 0.08)
+
 def _vertical_header_reserve_fraction(
     hole_summary: pd.DataFrame,
     *,
@@ -280,6 +296,12 @@ class ConsultingLayoutMixin:
         # off the fixed letter page and was silently dropped from PNG/PDF.
         top = 0.97 - _vertical_header_reserve_fraction(
             ctx.summary, page_height_in=8.5, font_pt=self._fs(_HEADER_FONT_PT)
+        )
+        # End labels ("A" / "NORTHWEST") get their own band above the hole-ID
+        # headers, as on the client figures; sharing a row, the edge headers
+        # printed into them ("MW18-18NORTHWEST").
+        top -= _end_label_reserve_fraction(
+            self._transect_endpoint_lines(title_block), font_pt=self._fs(8), page_height_in=8.5
         )
         fig.subplots_adjust(left=0.06, right=0.95, top=top, bottom=0.04)
         grid = GridSpec(3, 1, figure=fig, height_ratios=[58, 12, 22], hspace=0.12)

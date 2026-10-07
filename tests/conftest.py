@@ -126,3 +126,13 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if "slow" in item.keywords:
             item.add_marker(skip_slow)
+
+
+@pytest.fixture(autouse=True)
+def _close_matplotlib_figures():
+    """Close figures a test left open (they piled up past matplotlib's
+    20-figure warning and held memory for the rest of the run)."""
+    yield
+    import matplotlib.pyplot as plt
+
+    plt.close("all")

@@ -24,7 +24,7 @@ def test_swatch_is_exact_pixel_size_and_filled_with_the_lithology_colour() -> No
     assert image.size == (100, 40)
     assert image.getpixel((50, 20)) == (0xFF, 0xE3, 0x9F)  # Sand base colour between the dots
     hatched = Image.open(io.BytesIO(render_swatch_png("Sandy Clay", width_px=64, height_px=64))).convert("RGB")
-    assert len(set(hatched.getdata())) > 2  # hatch dots present
+    assert len(set(hatched.get_flattened_data())) > 2  # hatch dots present
 
 
 def test_export_writes_every_code_to_folder_and_zip(tmp_path: Path) -> None:

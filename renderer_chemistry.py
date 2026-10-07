@@ -277,14 +277,11 @@ class RendererChemistryMixin:
         )
         self.chemistry_threshold_key_text = None
         self._chemistry_threshold_key = None
-        # Fixed non-black label colour (P2 red) earns a sample value in the
-        # consulting legend; black (the default) keeps the plain label.
+        # Fixed label colour (P2 red or black) earns a sample value in the
+        # consulting legend, as on the client P2 figures; threshold mode has
+        # its own colour key under the distance label instead.
         fixed_color = chemistry_fixed_mode_color(self.profile.chemistry_color_mode)
-        legend_sample_color = (
-            fixed_color
-            if label_values and consulting and fixed_color not in (None, CHEMISTRY_LABEL_BLACK)
-            else None
-        )
+        legend_sample_color = fixed_color if label_values and consulting and fixed_color else None
         # Stable per parameter name (chloride keeps its colour on every
         # section), with collisions on one sheet resolved to distinct colours.
         series_colors = parameter_series_colors(by_parameter)

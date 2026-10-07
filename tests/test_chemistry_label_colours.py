@@ -428,7 +428,7 @@ def test_p2_chemistry_columns_preset_prints_values_red_with_legend_sample() -> N
     plt.close("all")
 
 
-def test_black_default_and_threshold_modes_unchanged_without_legend_sample() -> None:
+def test_black_default_and_threshold_modes_keep_their_colours() -> None:
     import matplotlib.pyplot as plt
 
     from render_theme import (
@@ -445,7 +445,9 @@ def test_black_default_and_threshold_modes_unchanged_without_legend_sample() -> 
     renderer, colours = _p2_render("black")
     assert colours["120"] == CHEMISTRY_LABEL_BLACK
     assert colours["170"] == CHEMISTRY_FIXED_COLORS["green"].upper()
-    assert "sample_text" not in renderer.parameter_series_legend[0]
+    # Black mode now shows a black sample value too (live QA: the legend
+    # entry had an empty gap where the sample sits in red mode).
+    assert renderer.parameter_series_legend[0].get("sample_color") == CHEMISTRY_LABEL_BLACK
 
     threshold, colours = _p2_render("threshold")  # no limits set: black, no key
     assert colours["120"] == CHEMISTRY_LABEL_BLACK

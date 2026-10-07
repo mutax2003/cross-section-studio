@@ -142,6 +142,10 @@ def legend_swatch_hatch(hatch: str | None, height_in: float) -> str | None:
     factor = thin_unit_densify_factor(
         height_in, min_height_in=BASE_HATCH_ROW_SPACING_IN, base_hatch=hatch
     )
+    if "+" in hatch:
+        # Separate "+" marks packed 3-4x tighter read as a grid, unlike the
+        # section; double density at most keeps them separate marks.
+        factor = min(factor, 2)
     return densify_hatch(hatch, factor) if factor > 1 else hatch
 
 class ThinUnitHatchCollection(PolyCollection):

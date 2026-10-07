@@ -26,7 +26,7 @@ from matplotlib.path import Path
 
 # Marks per inch along each axis for ONE pattern character at matplotlib's
 # default hatch density (6). Matplotlib's hatch unit cell is one inch.
-TEMPLATE_ROWS_PER_INCH: dict[str, int] = {".": 14, "/": 8, "+": 6, "O": 4}
+TEMPLATE_ROWS_PER_INCH: dict[str, int] = {".": 14, "/": 8, "+": 6, "O": 8}
 STOCK_ROWS_PER_INCH = 6
 
 # Mark sizes, in inches (template measurements at 1:1).
@@ -36,9 +36,22 @@ _PLUS_ARM_IN = 4.35 / 2 / 72.0  # template "+" strokes are 4.35 pt long
 
 _DEFAULT_DENSITY = 6
 
+# Gravel outlines are drawn thinner than other hatch marks: at the smaller
+# legend-size stones the shared 0.65 pt hatch line filled them in (the
+# template uses 0.42 pt lines on 17 pt stones).
+GRAVEL_HATCH_LINEWIDTH_PT = 0.3
+
+
+def hatch_linewidth_for(hatch: str | None) -> float | None:
+    """Hatch line width override for *hatch* (``None`` = use the rc default)."""
+    if hatch and "O" in hatch:
+        return GRAVEL_HATCH_LINEWIDTH_PT
+    return None
+
 # Gravel cobbles: one repeat tile of the template's stone outlines, traced
-# from Cross_Section_Litho_Legend_261002 (17.1 pt square tile; drawn here at
-# 4 tiles per inch = 18 pt so the 1 in hatch cell holds whole tiles). Each
+# from Cross_Section_Litho_Legend_261002 (17.1 pt square tile). Drawn at 8
+# tiles per inch (9 pt) in sections and legend swatches alike, so the figure
+# shows the stones the legend shows; whole tiles fit the 1 in cell. Each
 # entry is a straight segment (x0, y0, x1, y1) in tile units, y up; outlines
 # that cross the tile edge continue in the neighbouring tile.
 COBBLE_TILE_SEGMENTS: tuple[tuple[float, float, float, float], ...] = (
@@ -228,8 +241,33 @@ def is_installed() -> bool:
     return all(cls in mhatch._hatch_types for cls in _TEMPLATE_TYPES)
 
 
+def _with_gravel_linewidth(set_hatch):
+    """Wrap an artist's ``set_hatch`` to apply :func:`hatch_linewidth_for`."""
+    if getattr(set_hatch, "_template_gravel_linewidth", False):
+        return set_hatch
+
+    def wrapped(self, hatch):
+        set_hatch(self, hatch)
+        linewidth = hatch_linewidth_for(hatch)
+        if linewidth is not None:
+            self._hatch_linewidth = linewidth
+
+    wrapped._template_gravel_linewidth = True
+    wrapped.__doc__ = set_hatch.__doc__
+    return wrapped
+
+
 def install() -> None:
-    """Use the template marks for ``.``, ``/``, ``+`` and ``O`` (idempotent)."""
+    """Use the template marks for ``.``, ``/``, ``+`` and ``O`` (idempotent).
+
+    Also gives gravel (``O``) hatches their thinner outline on every patch and
+    collection, so section fills, legend swatches and exports match.
+    """
+    from matplotlib.collections import Collection
+    from matplotlib.patches import Patch
+
+    Patch.set_hatch = _with_gravel_linewidth(Patch.set_hatch)
+    Collection.set_hatch = _with_gravel_linewidth(Collection.set_hatch)
     if is_installed():
         return
     types: list[type] = []

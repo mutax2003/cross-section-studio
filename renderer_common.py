@@ -135,6 +135,10 @@ def legend_swatch_hatch(hatch: str | None, height_in: float) -> str | None:
     """
     if not hatch:
         return hatch
+    if "O" in hatch:
+        # Gravel stones are drawn at one size everywhere (section, legend,
+        # legend sheet) so the legend shows exactly what the figure shows.
+        return hatch
     factor = thin_unit_densify_factor(
         height_in, min_height_in=BASE_HATCH_ROW_SPACING_IN, base_hatch=hatch
     )

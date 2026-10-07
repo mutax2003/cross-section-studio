@@ -80,6 +80,20 @@ def test_gravel_draws_template_cobble_outlines_not_circles() -> None:
     path = mhatch.get_path("O", 6)
     codes = path.codes
     assert set(codes) <= {Path.MOVETO, Path.LINETO}  # straight outline segments, no curves
-    # 4 tiles per inch plus one tile of overlap on each side.
-    assert len(path.vertices) == len(COBBLE_TILE_SEGMENTS) * 2 * 6 * 6
+    # 8 tiles per inch (the legend size) plus one tile of overlap on each side.
+    assert len(path.vertices) == len(COBBLE_TILE_SEGMENTS) * 2 * 10 * 10
     assert len(COBBLE_TILE_SEGMENTS) == 41
+
+
+def test_gravel_outlines_are_thin_on_every_hatched_artist() -> None:
+    """Small legend-size stones filled in at the shared 0.65 pt hatch line."""
+    from matplotlib.collections import PolyCollection
+    from matplotlib.patches import Rectangle
+
+    from hatch_patterns import GRAVEL_HATCH_LINEWIDTH_PT
+
+    patch = Rectangle((0, 0), 1, 1, hatch="O")
+    collection = PolyCollection([[(0, 0), (1, 0), (1, 1)]], hatch="OO")
+    assert patch.get_hatch_linewidth() == GRAVEL_HATCH_LINEWIDTH_PT
+    assert collection.get_hatch_linewidth() == GRAVEL_HATCH_LINEWIDTH_PT
+    assert Rectangle((0, 0), 1, 1, hatch="/").get_hatch_linewidth() != GRAVEL_HATCH_LINEWIDTH_PT

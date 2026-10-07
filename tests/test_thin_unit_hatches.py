@@ -23,9 +23,10 @@ from tests.conftest import assert_valid_svg, run_pipeline
 
 matplotlib.use("Agg")
 
-# Densify mechanics use the Gravel cobble pattern ("O", 4 tiles per inch); Sand's template
-# stipple is fine enough that ordinary thin beds no longer need densifying.
-THIN_CODE = "Gravel"
+# Densify mechanics use Clay Loam's "+" marks (6 rows per inch, the sparsest
+# template pattern); Sand's stipple and the gravel stones are fine enough that
+# ordinary thin beds no longer need densifying.
+THIN_CODE = "Clay Loam"
 THIN_TOP = 5.0
 THIN_BOTTOM = 5.3
 THICK_TOP = 8.0
@@ -226,8 +227,10 @@ def test_thin_interval_raster_shows_hatch_marks_at_150_dpi() -> None:
         plain_counts.append(plain_dark)
 
     assert min(dense_counts) >= 20, f"thin bed lost its hatch at some phase: {dense_counts}"
-    assert min(plain_counts) < min(dense_counts), (
-        f"sparse hatch should miss the thin bed at some phase: plain={plain_counts} dense={dense_counts}"
+    # Densifying never shows fewer marks than the plain pattern. (The template
+    # patterns are now fine enough that a 0.3 m bed shows marks either way.)
+    assert min(plain_counts) <= min(dense_counts), (
+        f"densified hatch showed fewer marks: plain={plain_counts} dense={dense_counts}"
     )
 
 

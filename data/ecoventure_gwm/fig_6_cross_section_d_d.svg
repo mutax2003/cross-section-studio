@@ -2556,6 +2556,7 @@ z
     <path d="M 50.004888 51.07438 
 L 301.80691 53.091977 
 L 301.80691 58.135969 
+L 175.905899 62.927762 
 L 50.004888 55.109574 
 L 50.004888 51.07438 
 z
@@ -2577,8 +2578,10 @@ z
    </g>
    <g id="PolyCollection_2">
     <path d="M 50.004888 55.109574 
+L 175.905899 62.927762 
 L 301.80691 83.35593 
 L 301.80691 123.707868 
+L 175.905899 129.00406 
 L 50.004888 76.294341 
 L 50.004888 55.109574 
 z
@@ -2587,33 +2590,34 @@ z
    <g id="PolyCollection_3">
     <path d="M 50.004888 76.294341 
 L 50.004888 111.602287 
-L 175.905899 123.707868 
+L 175.905899 129.00406 
 L 50.004888 76.294341 
 z
 " clip-path="url(#p6dc1bb4d1b)" style="fill: url(#h68eb00e7ef); fill-opacity: 0.72; stroke-dasharray: 2.775,1.2; stroke-dashoffset: 0; stroke: #2c2c2c; stroke-opacity: 0.72; stroke-width: 0.75"/>
-    <path d="M 301.80691 83.35593 
-L 183.032371 56.708424 
-L 301.80691 58.135969 
+    <path d="M 301.80691 58.135969 
 L 301.80691 83.35593 
+L 175.905899 62.927762 
+L 301.80691 58.135969 
 z
 " clip-path="url(#p6dc1bb4d1b)" style="fill: url(#h68eb00e7ef); fill-opacity: 0.72; stroke-dasharray: 2.775,1.2; stroke-dashoffset: 0; stroke: #2c2c2c; stroke-opacity: 0.72; stroke-width: 0.75"/>
    </g>
    <g id="PolyCollection_4">
     <path d="M 50.004888 111.602287 
 L 50.004888 141.86624 
-L 175.905899 123.707868 
+L 175.905899 129.00406 
 L 50.004888 111.602287 
 z
 " clip-path="url(#p6dc1bb4d1b)" style="fill: url(#h2b48d9dd10); fill-opacity: 0.72; stroke-dasharray: 2.775,1.2; stroke-dashoffset: 0; stroke: #2c2c2c; stroke-opacity: 0.72; stroke-width: 0.75"/>
     <path d="M 301.80691 83.35593 
 L 301.80691 123.707868 
-L 361.44423 83.35593 
+L 361.44423 93.443915 
 L 301.80691 83.35593 
 z
 " clip-path="url(#p6dc1bb4d1b)" style="fill: url(#h2b48d9dd10); fill-opacity: 0.72; stroke-dasharray: 2.775,1.2; stroke-dashoffset: 0; stroke: #2c2c2c; stroke-opacity: 0.72; stroke-width: 0.75"/>
    </g>
    <g id="PolyCollection_5">
     <path d="M 50.004888 192.306163 
+L 175.905899 129.00406 
 L 301.80691 123.707868 
 L 301.80691 335.555542 
 L 50.004888 353.713914 
@@ -2621,6 +2625,7 @@ L 50.004888 192.306163
 z
 " clip-path="url(#p6dc1bb4d1b)" style="fill: #967259; stroke: #2c2c2c; stroke-width: 0.75"/>
     <path d="M 301.80691 123.707868 
+L 361.44423 93.443915 
 L 421.081551 83.35593 
 L 421.081551 350.687519 
 L 301.80691 335.555542 
@@ -2638,7 +2643,7 @@ z
    <g id="PolyCollection_6">
     <path d="M 50.004888 141.86624 
 L 50.004888 192.306163 
-L 175.905899 123.707868 
+L 175.905899 129.00406 
 L 50.004888 141.86624 
 z
 " clip-path="url(#p6dc1bb4d1b)" style="fill: #8d5524; fill-opacity: 0.72; stroke-dasharray: 2.775,1.2; stroke-dashoffset: 0; stroke: #2c2c2c; stroke-opacity: 0.72; stroke-width: 0.75"/>
@@ -2647,6 +2652,7 @@ z
     <path d="M 301.80691 58.135969 
 L 421.081551 52.083178 
 L 421.081551 83.35593 
+L 361.44423 93.443915 
 L 301.80691 83.35593 
 L 301.80691 58.135969 
 z

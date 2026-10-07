@@ -42,8 +42,9 @@ Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) 
 
 **Case 2 — Pinch-out** (key in one hole only, `allow_pinch_outs=True`):
 - `_pinch_out_wedge_coords`: vertical edge exactly on the source hole from logged top to bottom; tip at `PINCH_OUT_FRACTION` (0.5) of the way to the neighbour
-- Tip height `Z_mid` (`_matched_contact_z`) priority: the matched units directly above/below the pinched unit → adjacent `unit_order` (±1) → **elevation-position** neighbours (compare RLs, not hole-local depths)
-- 3-vertex triangular wedge tapering to `(X_tip, Z_mid)`
+- Wedges are planned first: `_bracketing_matches` finds the nearest matched units above/below in the source hole; tip z (`_bracket_tip_z`) = mean of the two bounding contact lines interpolated hole-to-hole at the tip x (one-sided wedges sit on that single contact); no matched bracket → `_pinch_out_z_mid` fallback (adjacent `unit_order` ±1, then elevation position — RLs, not hole-local depths)
+- When both bracketing units exist, the upper unit's bottom edge and the lower unit's top edge bend through the tip (`_bend_path`) so upper unit, wedge(s) and lower unit tile the gap with no white triangle; stacked lenses share one tip
+- 3-vertex triangular wedge tapering to `(X_tip, Z_tip)`
 - `is_pinch_out = True` — renderer draws dashed edges and lower alpha
 - `_make_polygon` always stores a single Shapely `Polygon` (largest part after `buffer(0)` repair) so the renderer can use `.exterior`
 

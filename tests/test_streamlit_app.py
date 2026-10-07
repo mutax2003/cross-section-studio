@@ -503,7 +503,10 @@ def test_chemistry_columns_style_starts_with_red_labels() -> None:
 
     at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
     at.run()
-    at.file_uploader[0].upload("t.xlsx", (ROOT / "data" / "test_workbook.xlsx").read_bytes()).run()
+    from workbook_template import build_input_template_bytes
+
+    # The committed template carries Environmental (chloride) sample rows.
+    at.file_uploader[0].upload("t.xlsx", build_input_template_bytes()).run()
     at.session_state["output_preset"] = "p2_chemistry_sticks"
     at.run()
     at.run()

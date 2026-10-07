@@ -132,8 +132,10 @@ def _build_docx_if_ready(
             title=section_title,
             metadata=metadata,
         )
-    except RuntimeError as exc:
-        st.warning(str(exc))
+    except (RuntimeError, ValueError) as exc:
+        # Missing python-docx, or text Word can't store: skip the Word file,
+        # keep the other deliverables.
+        st.warning(f"Word file not made: {exc}")
         return b""
 
 

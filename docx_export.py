@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from io import BytesIO
-from typing import Mapping
 
 from app_identity import AUTHOR, COPYRIGHT_NOTICE, ORGANIZATION
+
+_XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _xml_safe(value: object) -> str:
+    """Text Word can store: XML-illegal control characters removed."""
+    return _XML_ILLEGAL.sub("", "" if value is None else str(value))
 
 
 def build_figure_docx_bytes(
@@ -24,6 +32,10 @@ def build_figure_docx_bytes(
             "python-docx is required for Word export. Install with: pip install python-docx"
         ) from exc
 
+    # Word XML rejects control characters (e.g. the soft line break \x0b that
+    # comes with text pasted from Word); drop them from everything we write.
+    title = _xml_safe(title)
+    caption = _xml_safe(caption)
     document = Document()
     document.core_properties.author = f"{AUTHOR}, {ORGANIZATION}"
     document.core_properties.last_modified_by = f"{AUTHOR}, {ORGANIZATION}"
@@ -43,8 +55,8 @@ def build_figure_docx_bytes(
         header[1].text = "Value"
         for key, value in metadata.items():
             row = table.add_row().cells
-            row[0].text = str(key)
-            row[1].text = str(value)
+            row[0].text = _xml_safe(key)
+            row[1].text = _xml_safe(value)
     buffer = BytesIO()
     document.save(buffer)
     buffer.seek(0)

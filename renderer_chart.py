@@ -10,12 +10,14 @@ import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
+from matplotlib.transforms import blended_transform_factory, offset_copy
 
 from lithology_codes import collect_lithology_codes
 from models import WaterLevel
 from render_profiles import CHART_PROFILE
 from render_theme import AXES_BG, FIGURE_BG, GRID_COLOR, LABEL_COLOR, STICK_COLOR, SURFACE_COLOR
 from renderer_common import apply_true_value_y_axis
+from renderer_water import resolve_header_collisions
 from stratigraphy import GeologicalPolygon
 
 
@@ -136,27 +138,29 @@ class ChartLayoutMixin:
             if self.profile.show_centerline:
                 self._draw_chart_centerlines(ax, hole_summary, collar_depths, collar_lookup)
 
+            # Hole headers sit just above the plot frame, over their columns
+            # (as on the section sheet). Anchored at the collars inside the
+            # plot, the 3-line boxes rose into the title and touched each other
+            # on short sections; the shared header pass staggers them instead.
+            header_transform = offset_copy(
+                blended_transform_factory(ax.transData, ax.transAxes),
+                fig=fig,
+                y=4.0,
+                units="points",
+            )
+            self._header_labels = []
             for label in labels:
-                plot_y = self._plot_y(label.y, label.y)
-                if label.draw_leader:
-                    ax.plot(
-                        [label.x, label.x + label.dx],
-                        [plot_y, self._plot_y(label.y + label.dy, label.y)],
-                        color=STICK_COLOR,
-                        linewidth=0.8,
-                        linestyle="--",
-                        zorder=7,
-                    )
-                ax.annotate(
+                header = ax.text(
+                    label.x,
+                    1.0,
                     label.text,
-                    xy=(label.x, plot_y),
-                    xytext=(label.x + label.dx, self._plot_y(label.y + label.dy, label.y)),
-                    textcoords="data",
+                    transform=header_transform,
                     ha="center",
                     va="bottom",
-                    fontsize=9,
+                    fontsize=8,
                     fontweight="bold",
                     color=LABEL_COLOR,
+                    linespacing=1.1,
                     bbox={
                         "boxstyle": "round,pad=0.25",
                         "facecolor": "white",
@@ -164,7 +168,9 @@ class ChartLayoutMixin:
                         "alpha": 0.92,
                     },
                     zorder=8,
+                    clip_on=False,
                 )
+                self._header_labels.append(header)
 
             self._draw_scale_bar(ax)
             if self.show_legend and lithology_codes:
@@ -180,7 +186,8 @@ class ChartLayoutMixin:
             apply_true_value_y_axis(ax, ve)
             if depth_mode:
                 ax.invert_yaxis()
-            ax.set_title(self.title, fontsize=13, fontweight="bold", pad=12, color=LABEL_COLOR)
+            # Room for up to two tiers of 3-line headers between plot and title.
+            ax.set_title(self.title, fontsize=13, fontweight="bold", pad=72, color=LABEL_COLOR)
             ax.set_aspect("auto")
             ax.grid(True, linestyle="--", alpha=0.35, color=GRID_COLOR, zorder=0)
             for spine in ax.spines.values():
@@ -193,6 +200,7 @@ class ChartLayoutMixin:
                 self.fit_right_margin_for_legend(fig)
             else:
                 fig.tight_layout(rect=(0, bottom_margin - 0.02, 1, 1))
+            resolve_header_collisions(fig, self._header_labels)
             return fig
         finally:
             self.profile = original

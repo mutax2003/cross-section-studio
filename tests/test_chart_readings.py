@@ -129,3 +129,31 @@ def test_chart_collar_rl_rides_in_the_header_box() -> None:
         import matplotlib.pyplot as plt
 
         plt.close(figure)
+
+
+def test_chart_headers_clear_the_title_and_each_other() -> None:
+    """On a short 7-hole section the 3-line collar boxes rose into the title
+    and touched each other (live QA, quick preview)."""
+    import itertools
+
+    import matplotlib.pyplot as plt
+
+    ids = [f"BH-{i}" for i in range(7)]
+    collars = [
+        Collar(hole_id=h, easting=5.0 * i, northing=0.0, elevation=635.0, total_depth=10.0)
+        for i, h in enumerate(ids)
+    ]
+    liths = [Lithology(hole_id=h, from_depth=0.0, to_depth=10.0, lithology_code="Clay") for h in ids]
+    projected, polygons, _ = run_pipeline(collars, liths, [(0.0, 0.0), (30.0, 0.0)], render_layout="chart")
+    renderer = CrossSectionRenderer(render_profile=CHART_PROFILE, title="Borehole Cross-Section")
+    figure = renderer.render(polygons, projected, collar_depths={h: 10.0 for h in ids})
+    try:
+        figure.draw_without_rendering()
+        mpl_renderer = figure.canvas.get_renderer()
+        boxes = [t.get_window_extent(mpl_renderer) for t in renderer._header_labels]
+        title = figure.axes[0].title.get_window_extent(mpl_renderer)
+        assert len(boxes) == 7
+        assert not any(box.overlaps(title) for box in boxes)
+        assert not any(a.overlaps(b) for a, b in itertools.combinations(boxes, 2))
+    finally:
+        plt.close(figure)

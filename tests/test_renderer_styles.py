@@ -1011,10 +1011,9 @@ def test_consulting_first_borehole_is_drawn_in_full() -> None:
     assert "0" in labels
 
 
-def test_stale_excel_legend_only_overrides_listed_codes(tmp_path, monkeypatch, caplog) -> None:
-    """A leftover BH Log Lithology Legend.xlsx used to replace the whole agreed
-    scheme (dropping codes to grey); now it only overrides the codes it lists,
-    and says so."""
+def test_old_excel_legend_is_fallback_only(tmp_path, monkeypatch, caplog) -> None:
+    """Template 261002 supersedes the old BH Log hex sheet: a leftover Excel
+    legend never recolours scheme codes; it only adds codes the scheme lacks."""
     import logging
 
     import openpyxl
@@ -1028,6 +1027,7 @@ def test_stale_excel_legend_only_overrides_listed_codes(tmp_path, monkeypatch, c
     sheet.append(["BH Log Lithology Legend"])  # title row; the parser reads header=1
     sheet.append(["Colour", "", "Lithology", "RGB"])
     sheet.append(["#38220F", "", "Clay", ""])
+    sheet.append(["#123456", "", "Legacy Fill Unit", ""])
     book.save(legend)
     monkeypatch.setattr(paths, "bh_log_lithology_legend_xlsx_path", lambda: legend)
     monkeypatch.setattr(constants, "bh_log_lithology_legend_xlsx_path", lambda: legend)
@@ -1035,10 +1035,10 @@ def test_stale_excel_legend_only_overrides_listed_codes(tmp_path, monkeypatch, c
     try:
         with caplog.at_level(logging.WARNING):
             palette = constants._build_lithology_palette()
-        assert palette["Clay"] == "#38220F"  # the listed code is overridden...
-        assert palette["Coal"] == "#000000" and palette["Silty Sand"] == "#FFE39F"  # ...the rest keep the scheme
-        assert len(palette) == len(constants.USGS_LITHOLOGY_COLORS)
-        assert any("overrides the agreed scheme" in r.message for r in caplog.records)
+        assert palette["Clay"] == constants.USGS_LITHOLOGY_COLORS["Clay"] != "#38220F"
+        assert palette["Coal"] == "#000000" and palette["Silty Sand"] == "#FFE39F"
+        assert palette["Legacy Fill Unit"] == "#123456"  # old-only code falls back
+        assert any("the scheme wins" in r.message for r in caplog.records)
     finally:
         constants._load_bh_log_lithology_colors.cache_clear()
 

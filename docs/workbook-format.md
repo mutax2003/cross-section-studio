@@ -51,7 +51,7 @@ Optional **Field Data** sheet (same workbook): `Label` (or `hole_id`), `Depth` i
 
 ## Lithology styles
 
-Canonical colors come from `data/BH Log Lithology Legend.xlsx` (loaded at runtime by `constants.py`). Hatches live in `USGS_LITHOLOGY_HATCHES`. A JSON cache (`data/bh_log_lithology_legend.json`) is used when the Excel file is absent (e.g. frozen builds); regenerate with `python scripts/convert_bh_log_legend.py`. Overrides can be saved from the app fill-style editor (`data/lithology_styles.json`).
+Canonical colors and marks follow Sheryl's CAD template **Cross_Section_Litho_Legend_261002**: colours in `data/bh_log_lithology_legend.json`, hatches in `USGS_LITHOLOGY_HATCHES` (`constants.py`). The old `data/BH Log Lithology Legend.xlsx` hex sheet is a fallback only: it adds codes 261002 does not list, and never recolours a 261002 code. Per-project overrides can be saved from the app fill-style editor (`data/lithology_styles.json`).
 
 Chloride average concentrations for Advantage Phase 2 transects A–A′ and B–B′ are loaded via `advantage_p2_reference.chlorides.load_chloride_readings()`, which reads `data/Cross_Section_Chlorides.xlsx` when present (a client workbook, not tracked in the repo) and otherwise falls back to the packaged fixture `advantage_p2_reference/chloride_readings.json`.
 

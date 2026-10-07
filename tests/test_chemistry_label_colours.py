@@ -340,7 +340,7 @@ def test_outlined_labels_remain_searchable_text_in_pdf() -> None:
 
 @pytest.mark.parametrize("style", ["plain", "stroke", "box", "dot"])
 def test_threshold_key_is_added_without_touching_the_collision_pass(style) -> None:
-    from matplotlib.offsetbox import AnchoredOffsetbox
+    from matplotlib.offsetbox import AnnotationBbox
 
     black, _ = _render(style)
     threshold, figure = _render(
@@ -351,8 +351,8 @@ def test_threshold_key_is_added_without_touching_the_collision_pass(style) -> No
     )
     assert getattr(black, "chemistry_threshold_key_text", None) is None
     assert threshold.chemistry_threshold_key_text.startswith("green ≤ 5 · orange 5–10")
-    keys = [a for ax in figure.axes for a in ax.artists if isinstance(a, AnchoredOffsetbox)]
-    assert len(keys) == 1
+    keys = [a for ax in figure.axes for a in ax.artists if isinstance(a, AnnotationBbox)]
+    assert len(keys) == 1 and keys[0].get_gid() == "chemistry-threshold-key"
     # The key is a fixed panel, not a value label the collision pass moves.
     assert len(threshold._water_labels) == len(black._water_labels)
     import matplotlib.pyplot as plt
@@ -454,4 +454,134 @@ def test_black_default_and_threshold_modes_unchanged_without_legend_sample() -> 
     bands = {"green_max": 150.0, "yellow_max": 200.0}
     assert chemistry_label_color(120.0, "threshold", **bands) == CHEMISTRY_LABEL_GREEN
     assert chemistry_label_color(270.0, "threshold", **bands) == CHEMISTRY_LABEL_RED
+    plt.close("all")
+
+
+def _threshold_key_figure(profile, *, page=None, font_size=None, mode="threshold"):
+    from export_framing import ExportFramingConfig
+    from models import SectionFigureMetadata
+
+    ids, projected, polygons, readings, water = _chemistry_section()
+    update = {
+        "show_parameter_markers": True,
+        "show_parameter_labels": True,
+        "chemistry_color_mode": mode,
+        "chemistry_threshold_green_max": 150.0,
+        "chemistry_threshold_yellow_max": 250.0,
+    }
+    if font_size is not None:
+        update["export_font_size"] = font_size
+    renderer = CrossSectionRenderer(
+        show_legend=True,
+        render_profile=profile.model_copy(update=update),
+        environmental_readings=readings,
+        environmental_parameters=("Chloride",),
+        disclaimer="Interpreted between boreholes.",
+        figure_metadata=SectionFigureMetadata(coordinate_reference="EPSG:26912", elevation_datum="CGVD2013"),
+        export_framing=ExportFramingConfig(page_preset=page, export_dpi=72) if page else None,
+    )
+    figure = renderer.render(polygons, projected, collar_depths={h: 12.0 for h in ids}, water_levels=water)
+    if page:
+        renderer.to_png_bytes(figure, dpi=72)
+    return renderer, figure
+
+
+def _threshold_key_artists(figure):
+    from matplotlib.offsetbox import AnnotationBbox
+
+    return [
+        a for ax in figure.axes for a in ax.artists
+        if isinstance(a, AnnotationBbox) and a.get_gid() == "chemistry-threshold-key"
+    ]
+
+
+def _assert_key_off_plot_and_clear(figure) -> None:
+    from matplotlib.text import Text
+
+    from renderer_water import _figure_renderer, _overlap_area
+
+    mpl_renderer = _figure_renderer(figure)
+    figure.draw_without_rendering()
+    (key,) = _threshold_key_artists(figure)
+    key_box = key.get_window_extent(mpl_renderer)
+    main = key.axes
+    assert key_box.y1 <= main.get_window_extent(mpl_renderer).y0  # off the plot
+    assert key_box.y1 <= main.xaxis.get_tightbbox(mpl_renderer).y0 + 1e-6  # under ticks + label
+    supx = getattr(figure, "_supxlabel", None)
+    if supx is not None and supx.get_text():
+        assert key_box.y1 <= supx.get_window_extent(mpl_renderer).y0 + 1e-6
+    page = figure.bbox
+    assert page.x0 <= key_box.x0 and key_box.x1 <= page.x1 and page.y0 <= key_box.y0
+    own = {id(t) for t in key.offsetbox.findobj(Text)}
+    for ax in figure.axes:
+        if not ax.axison:  # hidden axis furniture of panel axes is never drawn
+            own |= {id(t) for t in ax.xaxis.findobj(Text) + ax.yaxis.findobj(Text)}
+    for text in figure.findobj(Text):
+        if id(text) in own or not text.get_visible() or not text.get_text().strip():
+            continue
+        assert _overlap_area(key_box, text.get_window_extent(mpl_renderer)) <= 0, text.get_text()
+    main_box = main.get_window_extent(mpl_renderer)
+    for ax in figure.axes:
+        box = ax.get_window_extent(mpl_renderer)
+        if box.y1 < main_box.y0:  # consulting subtitle band / title block panels
+            assert _overlap_area(key_box, box) <= 0
+
+
+@pytest.mark.parametrize(
+    "profile_name,show_headers",
+    [("consulting", None), ("sheet", True), ("sheet", False), ("chart", None)],
+)
+@pytest.mark.parametrize(
+    "page,font_size",
+    [
+        (None, None),
+        ("letter_landscape", 8),
+        ("letter_portrait", None),
+        ("letter_portrait", 14),
+        ("tabloid_landscape", 14),
+    ],
+)
+def test_threshold_key_sits_below_the_distance_label_clear_of_everything(
+    profile_name, show_headers, page, font_size
+) -> None:
+    import matplotlib.pyplot as plt
+
+    from render_profiles import CHART_PROFILE
+
+    profile = {
+        "consulting": CONSULTING_SECTION_PROFILE,
+        "sheet": SECTION_SHEET_PROFILE,
+        "chart": CHART_PROFILE,
+    }[profile_name]
+    if show_headers is not None:
+        profile = profile.model_copy(update={"show_column_headers": show_headers})
+    _, figure = _threshold_key_figure(profile, page=page, font_size=font_size)
+    _assert_key_off_plot_and_clear(figure)
+    plt.close("all")
+
+
+@pytest.mark.parametrize("mode", ["black", "red"])
+def test_threshold_key_absent_in_fixed_colour_modes(mode) -> None:
+    import matplotlib.pyplot as plt
+
+    for profile in (CONSULTING_SECTION_PROFILE, SECTION_SHEET_PROFILE):
+        renderer, figure = _threshold_key_figure(profile, mode=mode)
+        assert renderer.chemistry_threshold_key_text is None
+        assert _threshold_key_artists(figure) == []
+    plt.close("all")
+
+
+def test_consulting_band_only_moves_for_the_threshold_key() -> None:
+    import matplotlib.pyplot as plt
+
+    _, black = _threshold_key_figure(CONSULTING_SECTION_PROFILE, mode="black")
+    _, keyed = _threshold_key_figure(CONSULTING_SECTION_PROFILE)
+    black_band = [ax.get_position().bounds for ax in black.axes[1:5]]
+    keyed_band = [ax.get_position().bounds for ax in keyed.axes[1:5]]
+    # Main plot and title block stay put; only the subtitle band yields room.
+    assert black.axes[0].get_position().bounds == keyed.axes[0].get_position().bounds
+    assert black_band[3] == keyed_band[3]
+    for before, after in zip(black_band[:3], keyed_band[:3], strict=True):
+        assert after[1] + after[3] < before[1] + before[3]  # band top lowered
+        assert after[3] > 0.6 * before[3]  # only slightly
     plt.close("all")

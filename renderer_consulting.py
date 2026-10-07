@@ -114,6 +114,10 @@ def _vertical_header_reserve_fraction(
 # every explicit point size from here (the sidebar default of 8 clamps up to 9,
 # so the stock output is unchanged).
 _CONSULTING_BASE_FONT_PT = 9.0
+# Threshold key below DISTANCE (m): clearance above the subtitle band, and the
+# least gap the band may leave above the title block when it moves down for it.
+_THRESHOLD_KEY_BAND_PAD_PT = 3.0
+_BAND_BLOCK_MIN_GAP = 0.012
 
 # Title-block metadata values: start size, smallest one-line size, and the
 # smallest size tried when wrapping is forced.
@@ -527,12 +531,44 @@ class ConsultingLayoutMixin:
             # RL axis labels must stay on the page before the band and title
             # block are fitted to their (margin-dependent) panels.
             fig._css_main_axes = (ax, ax_right)
+            fig._css_band_axes = ((ax_scale, ax_center, ax_notes), ax_block)
             self.fit_consulting_page_margins(fig)
 
             self._draw_subtitle_band(ax_scale, ax_center, ax_notes, title_block)
             self._draw_cad_title_block(ax_block, style_cache, lithology_codes, title_block)
             self._draw_consulting_footers(fig)
         return fig
+
+    def _reserve_threshold_key_band(self, fig: Figure) -> None:
+        """Lower the subtitle band so the threshold key under DISTANCE (m) clears it.
+
+        The key hangs below the x-axis label (threshold colour mode only). The
+        band first moves down into its gap above the title block, keeping
+        ``_BAND_BLOCK_MIN_GAP`` of it; only what is still missing comes off
+        the band's top. Measured from the grid positions each time, so it is
+        idempotent and survives ``subplots_adjust`` (which resets them) on an
+        export page resize; a sheet without the key is left untouched.
+        """
+        key = getattr(self, "_chemistry_threshold_key", None)
+        band = getattr(fig, "_css_band_axes", None)
+        if key is None or key.figure is not fig or not band:
+            return
+        band_axes, ax_block = band
+        bases = [axis.get_subplotspec().get_position(fig) for axis in band_axes]
+        for axis, base in zip(band_axes, bases, strict=True):
+            axis.set_position(base)
+        renderer = fig.canvas.get_renderer()
+        pad_px = _THRESHOLD_KEY_BAND_PAD_PT * fig.dpi / 72.0
+        key_bottom = (key.get_window_extent(renderer).y0 - pad_px) / fig.bbox.height
+        need = max(base.y1 for base in bases) - key_bottom
+        if need <= 0.0:
+            return
+        band_bottom = min(base.y0 for base in bases)
+        slack = max(0.0, band_bottom - ax_block.get_position().y1 - _BAND_BLOCK_MIN_GAP)
+        shift = min(need, slack)
+        trim = need - shift
+        for axis, base in zip(band_axes, bases, strict=True):
+            axis.set_position([base.x0, base.y0 - shift, base.width, base.height - trim])
 
     def _apply_consulting_axis_limits(
         self,
@@ -1965,6 +2001,8 @@ class ConsultingLayoutMixin:
                 moved = True
         if moved:
             figure.subplots_adjust(left=left, right=right)
+        # After any margin change: subplots_adjust resets the band to its grid slot.
+        self._reserve_threshold_key_band(figure)
         self._suppress_header_tick_collisions(figure)
 
     def _title_label_column_need(self, ax, labels: list[str]) -> float | None:

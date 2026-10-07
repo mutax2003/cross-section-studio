@@ -269,3 +269,17 @@ def test_split_batch_lines_keeps_valid_and_lists_skipped() -> None:
     )
     assert [spec.label for spec in valid] == ["A-A'"]
     assert [status.label for status in skipped] == ["C-C'"]
+
+
+def test_batch_cover_title_names_the_whole_batch() -> None:
+    from types import SimpleNamespace
+
+    from batch_export import batch_cover_title
+
+    block = SimpleNamespace(section_label="A-A'")
+    request = SimpleNamespace(section_title="Site X A-A'", consulting_title_block=block)
+    labels = ["A-A'", "B-B'", "C-C'"]
+    assert batch_cover_title(request, labels) == "Site X — Cross Sections A-A', B-B', C-C'"
+    bare = SimpleNamespace(section_title="B-B'", consulting_title_block=None)
+    assert batch_cover_title(bare, labels) == "Cross Sections A-A', B-B', C-C'"
+    assert batch_cover_title(bare, ["A-A'"]) == "Cross Section A-A'"

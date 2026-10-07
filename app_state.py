@@ -44,6 +44,7 @@ SESSION_SECTION_KEYS = (
     "figure_docx_bytes",
     "batch_package_bytes",
     "_batch_package_token",
+    "_batch_zip_name",
     "_preflight_json_key",
     "_preflight_subset_json",
     "_preflight_overrides_json",

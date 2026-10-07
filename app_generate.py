@@ -16,6 +16,8 @@ from app_services import (
 )
 from batch_export import (
     BATCH_DEFAULT_EXPORT_FORMATS,
+    batch_cover_title,
+    batch_section_title,
     build_batch_zip,
     build_one_transect_exports,
     export_binder_pdf,
@@ -280,28 +282,25 @@ def _render_batch_export(
             if not raw_entries:
                 st.error("None of the section lines could be drawn, so no ZIP was made.")
                 return
-            entries = [
-                (
-                    sanitize_filename(
-                        _export_stem(
-                            section_title=section_title,
-                            export_framing=export_framing,
-                            consulting_title_block=consulting_title_block,
-                            transect_label=label,
-                            include_transect_label=True,
-                        )
-                    ),
-                    svg_bytes,
-                    png_bytes,
-                    pdf_bytes,
+            # Name each file after its own section, not the one previewed.
+            entries = []
+            for label, svg_bytes, png_bytes, pdf_bytes in raw_entries:
+                sheet_title = batch_section_title(base_request, label)
+                stem = _export_stem(
+                    section_title=sheet_title,
+                    export_framing=export_framing,
+                    consulting_title_block=consulting_title_block,
+                    transect_label=label,
+                    include_transect_label=label not in sheet_title,
                 )
-                for label, svg_bytes, png_bytes, pdf_bytes in raw_entries
-            ]
+                entries.append((sanitize_filename(stem), svg_bytes, png_bytes, pdf_bytes))
             pdfs = [pdf for _stem, _svg, _png, pdf in entries if pdf]
+            cover_title = batch_cover_title(base_request, [entry[0] for entry in raw_entries])
             st.session_state["batch_package_bytes"] = build_batch_zip(
                 entries,
-                binder_pdf=export_binder_pdf(pdfs, cover_title=section_title) or None,
+                binder_pdf=export_binder_pdf(pdfs, cover_title=cover_title) or None,
             )
+            st.session_state["_batch_zip_name"] = f"{sanitize_filename(cover_title)}.zip"
             st.session_state["_batch_package_token"] = batch_token
             left_out = [status.label for status in skipped_lines] + [
                 reason.split(":", 1)[0] for reason in failed
@@ -316,12 +315,14 @@ def _render_batch_export(
         # Specs, output style, or title changed since this ZIP was built.
         st.session_state.pop("batch_package_bytes", None)
         st.session_state.pop("_batch_package_token", None)
+        st.session_state.pop("_batch_zip_name", None)
         batch_payload = None
     if batch_payload:
         st.download_button(
             "Download batch ZIP",
             data=batch_payload,
-            file_name=f"{sanitize_filename(section_title)}_batch.zip",
+            file_name=st.session_state.get("_batch_zip_name")
+            or f"{sanitize_filename(section_title)}_batch.zip",
             mime="application/zip",
             key="download_batch_zip",
         )

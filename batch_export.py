@@ -266,6 +266,30 @@ def _batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
         return title
     return f"{title} — {label}"
 
+def batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
+    """Public alias: the title one batch sheet prints (and is named after)."""
+    return _batch_section_title(base_request, label)
+
+
+def batch_cover_title(base_request: SectionBuildRequest, labels: Sequence[str]) -> str:
+    """Binder cover / ZIP name for the whole batch, not the previewed section.
+
+    "Site X A-A'" with lines A-A', B-B', C-C' → "Site X — Cross Sections A-A', B-B', C-C'".
+    """
+    title = base_request.section_title.strip()
+    block = base_request.consulting_title_block
+    base_label = (block.section_label if block else "").strip()
+    if base_label and base_label in title:
+        title = title.replace(base_label, "")
+    else:
+        title = _TITLE_SECTION_LABEL_RE.sub("", title)
+    title = title.strip(" -—–:,")
+    shown = [label for label in labels if label]
+    noun = "Cross Section" if len(shown) == 1 else "Cross Sections"
+    sections = f"{noun} {', '.join(shown)}" if shown else "Cross Sections"
+    return f"{title} — {sections}" if title else sections
+
+
 def prepare_batch_section_request(
     parse_result: ParseResult,
     base_request: SectionBuildRequest,

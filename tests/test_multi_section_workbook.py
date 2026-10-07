@@ -596,12 +596,15 @@ def test_streamlit_upload_seeds_batch_lines_and_builds_zip(site_bytes: bytes) ->
     assert package
     with zipfile.ZipFile(BytesIO(package)) as archive:
         names = set(archive.namelist())
-    # The app prefixes each file with the current figure title (here the
-    # previewed "B-B'"), e.g. B-B_A-A.png; every line still gets its own pair.
+    # Each file is named after its own section, never the previewed one
+    # (B-B' here used to prefix every name: B-B_A-A.png).
     pngs = sorted(name for name in names if name.endswith(".png"))
     pdfs = sorted(name for name in names if name.endswith(".pdf") and name != "report_binder.pdf")
     assert len(pngs) == 3 and len(pdfs) == 3, names
     for stem in ("A-A", "B-B", "C-C"):
         assert any(name.endswith(f"{stem}.png") for name in pngs), names
+    assert not any("B-B_" in name for name in names), names
+    zip_name = at.session_state["_batch_zip_name"]
+    assert all(label in zip_name for label in ("A-A", "B-B", "C-C")), zip_name
     assert {"README.txt", "report_binder.pdf"} <= names
     assert any("Batch ZIP ready: 3 section line" in s.value for s in at.success)

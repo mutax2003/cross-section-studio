@@ -27,6 +27,8 @@ For each adjacent pair, match intervals using hashable keys (not code-only union
 
 Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) or skipped.
 
+**Shifted-unit re-match (`_rematch_shifted_units`, via `_correlate_pair`):** after overrides, unmatched same-lithology intervals in the two holes are paired top-down, skipping any pairing that would cross an existing match. This keeps e.g. Clay continuous when one hole logs an extra lens (which shifts every deeper per-hole `unit_order` by one). Leftover repeats stay pinch-outs. Used by both `_polygons_for_pair` and `preview_correlation_health`.
+
 `correlation_overrides` from workbook or session remap left/right `unit_order` pairs before matching. Overrides keyed with **reversed** hole order are accepted via `_overrides_for_hole_pair` (unit orders swapped to transect left→right). Prefer exact `(left, right)` when both directions exist.
 
 ## Pinch-Out Algorithm
@@ -39,10 +41,9 @@ Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) 
 - `is_pinch_out = False`
 
 **Case 2 — Pinch-out** (key in one hole only, `allow_pinch_outs=True`):
-- `Z_mid` = average boundary elevation from neighboring units in the other hole
-- When the pinch interval has **`unit_order`**, prefer neighbor intervals with adjacent `unit_order` (±1) before **elevation-position** neighbors (compare RLs / top–bottom elevations — not hole-local depths — so unequal collar elevations stay correct)
-- `X_mid = (X_Bᵢ + X_Bᵢ₊₁) / 2`
-- 3-vertex triangular wedge tapering to `(X_mid, Z_mid)`
+- `_pinch_out_wedge_coords`: vertical edge exactly on the source hole from logged top to bottom; tip at `PINCH_OUT_FRACTION` (0.5) of the way to the neighbour
+- Tip height `Z_mid` (`_matched_contact_z`) priority: the matched units directly above/below the pinched unit → adjacent `unit_order` (±1) → **elevation-position** neighbours (compare RLs, not hole-local depths)
+- 3-vertex triangular wedge tapering to `(X_tip, Z_mid)`
 - `is_pinch_out = True` — renderer draws dashed edges and lower alpha
 - `_make_polygon` always stores a single Shapely `Polygon` (largest part after `buffer(0)` repair) so the renderer can use `.exterior`
 
@@ -55,8 +56,8 @@ After `_polygons_for_pair()` builds polygons for one adjacent hole pair, **`_res
 1. Sort polygons by `(is_pinch_out, -bounds[3], bounds[1])` — continuous fills before pinch-outs, then descending top elevation
 2. Walk in order; skip probes that do not intersect occupied area (`shapely.prepared.prep` when available for faster `intersects` / `touches`)
 3. Subtract already-occupied area from each polygon via Shapely `difference`
-4. Keep the largest remaining polygon fragment (`_largest_polygon`); drop empty fragments
-5. Batch-union occupied area every `batch_limit` (4) polygons (or at end) and refresh the prepared geometry
+4. Keep a fragment: for pinch-outs, the piece still touching its source-hole edge (`_pinch_anchor_edge`, `_anchored_fragment`) so wedges never float mid-section; otherwise the largest (`_largest_polygon`); drop empty fragments
+5. Clip against both the batch-unioned occupied area and the polygons still pending in the current batch; batch-union every `batch_limit` (4) polygons (or at end) and refresh the prepared geometry
 
 Called inside `build_stratigraphy()` for every adjacent pair **before** polygons are returned to the pipeline. This reduces false overlap markers on section-sheet figures; residual overlaps may still be detected and surfaced.
 

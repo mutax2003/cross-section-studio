@@ -70,3 +70,16 @@ def test_other_patterns_keep_stock_matplotlib_shapes() -> None:
     assert long_strokes
     assert len(mhatch.get_path("-", 6).vertices) > 0
     assert len(mhatch.get_path("O", 6).vertices) > 0
+
+
+def test_gravel_draws_template_cobble_outlines_not_circles() -> None:
+    """Template 261002 draws gravel as irregular stone outlines on a ~17 pt
+    tile; matplotlib's "O" drew even circles."""
+    from hatch_patterns import COBBLE_TILE_SEGMENTS
+
+    path = mhatch.get_path("O", 6)
+    codes = path.codes
+    assert set(codes) <= {Path.MOVETO, Path.LINETO}  # straight outline segments, no curves
+    # 4 tiles per inch plus one tile of overlap on each side.
+    assert len(path.vertices) == len(COBBLE_TILE_SEGMENTS) * 2 * 6 * 6
+    assert len(COBBLE_TILE_SEGMENTS) == 41

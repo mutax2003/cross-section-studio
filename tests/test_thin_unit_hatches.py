@@ -23,7 +23,7 @@ from tests.conftest import assert_valid_svg, run_pipeline
 
 matplotlib.use("Agg")
 
-# Densify mechanics use a stock-pitch pattern (Gravel "O"); Sand's template
+# Densify mechanics use the Gravel cobble pattern ("O", 4 tiles per inch); Sand's template
 # stipple is fine enough that ordinary thin beds no longer need densifying.
 THIN_CODE = "Gravel"
 THIN_TOP = 5.0
@@ -162,7 +162,7 @@ def test_thin_sand_interval_gets_denser_hatch_than_thick_one() -> None:
     resolved = collection.resolved_hatches
     base = get_lithology_style(THIN_CODE).hatch
     assert resolved[thick_index] == base
-    expected_factor = thin_unit_densify_factor(float(heights_in[thin_index]))
+    expected_factor = thin_unit_densify_factor(float(heights_in[thin_index]), base_hatch=base)
     assert expected_factor >= THIN_UNIT_MIN_DENSIFY
     assert resolved[thin_index] == densify_hatch(base, expected_factor)
     assert len(resolved[thin_index]) > len(resolved[thick_index])
@@ -263,7 +263,7 @@ def test_multi_char_base_hatch_factors() -> None:
     assert thin_unit_densify_factor(0.03, base_hatch="xxx") == 1
     # Two-char bases are thin only below half the threshold, then capped at 2x.
     half = THIN_UNIT_MIN_HEIGHT_IN / 2
-    for base in ("**", "\\\\", "OO"):
+    for base in ("**", "\\\\", "oo"):
         assert thin_unit_densify_factor(0.08, base_hatch=base) == 1
         assert thin_unit_densify_factor(half, base_hatch=base) == 1
         assert thin_unit_densify_factor(half - 1e-3, base_hatch=base) == 2
@@ -271,7 +271,7 @@ def test_multi_char_base_hatch_factors() -> None:
         assert densify_hatch(base, 2) == base * 2
     # Stock-pitch single-char bases behave like the default.
     for height in (0.0, 0.01, 0.05, 0.08, 0.099, 0.1, 0.5):
-        assert thin_unit_densify_factor(height, base_hatch="O") == thin_unit_densify_factor(height)
+        assert thin_unit_densify_factor(height, base_hatch="o") == thin_unit_densify_factor(height)
     # Template stipple ('.', 14 rows/in) only densifies far thinner beds.
     assert thin_unit_densify_factor(0.05, base_hatch=".") == 1
     assert thin_unit_densify_factor(0.04, base_hatch=".") >= 2
@@ -334,8 +334,8 @@ def test_legend_swatch_hatch_keeps_marks_on_short_swatches() -> None:
     from renderer_common import legend_swatch_hatch
 
     # Stock-pitch marks (1/6 in rows) densify on a 0.11 in swatch...
-    assert legend_swatch_hatch("O", 0.11) == "OO"
-    assert legend_swatch_hatch("O", 0.25) == "O"
+    assert legend_swatch_hatch("o", 0.11) == "oo"
+    assert legend_swatch_hatch("o", 0.25) == "o"
     # ...the template's fine Sand stipple (1/14 in rows) already fits.
     assert legend_swatch_hatch(".", 0.11) == "."
     assert legend_swatch_hatch(".", 0.05) == ".."

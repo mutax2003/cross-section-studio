@@ -63,7 +63,7 @@ from renderer_chemistry import (
     RendererChemistryMixin,
     _resolve_parameter_label_offsets,  # noqa: F401
 )
-from renderer_common import RendererGeometryMixin
+from renderer_common import UNLOGGED_FILL_COLOR, UNLOGGED_LEGEND_LABEL, RendererGeometryMixin
 from renderer_consulting import ConsultingLayoutMixin
 from renderer_section_sheet import SectionSheetLayoutMixin
 from renderer_water import RendererWaterMixin, WaterSeriesLegendEntry, resolve_header_collisions
@@ -225,6 +225,7 @@ class CrossSectionRenderer(
         self.water_series_legend: list[WaterSeriesLegendEntry] = []
         self.parameter_series_legend: list[ParameterLegendEntry] = []
         self._has_pinch_out = False
+        self._has_unlogged_intervals = False
         if show_ground_surface is not None:
             self.profile = self.profile.model_copy(update={"show_ground_surface": show_ground_surface})
 
@@ -309,6 +310,7 @@ class CrossSectionRenderer(
         self.water_series_legend = []
         self._water_labels = []
         self._header_labels = []
+        self._has_unlogged_intervals = False
         if self.profile.layout == "section_sheet":
             render_layout = self._render_section_sheet
         elif self.profile.layout == "consulting_section":
@@ -1025,6 +1027,15 @@ class CrossSectionRenderer(
                     hatch=style.hatch or None,
                     linewidth=0.75,
                     label=code,
+                )
+            )
+        if getattr(self, "_has_unlogged_intervals", False):
+            legend_handles.append(
+                Patch(
+                    facecolor=UNLOGGED_FILL_COLOR,
+                    edgecolor=POLYGON_EDGE_COLOR,
+                    linewidth=0.75,
+                    label=UNLOGGED_LEGEND_LABEL,
                 )
             )
         if self._has_pinch_out:

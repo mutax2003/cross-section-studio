@@ -19,6 +19,8 @@ from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.patches import FancyArrow, Rectangle
 from matplotlib.ticker import Formatter, FuncFormatter, Locator, MultipleLocator
 from matplotlib.transforms import blended_transform_factory, offset_copy
+from shapely.geometry import LineString
+from shapely.geometry import Polygon as ShapelyPolygon
 
 from lithology_codes import collect_lithology_codes
 from models import ConsultingTitleBlock, VerticalGradient, WaterLevel
@@ -42,7 +44,7 @@ from render_theme import (
     primary_water_depth_by_hole,
     water_has_multiple_series,
 )
-from renderer_common import legend_swatch_hatch
+from renderer_common import UNLOGGED_FILL_COLOR, UNLOGGED_LEGEND_LABEL, legend_swatch_hatch
 from stratigraphy import GeologicalPolygon
 
 logger = logging.getLogger(__name__)
@@ -426,23 +428,41 @@ class ConsultingLayoutMixin:
             profile_lookup = ctx.profile_lookup
             show_nm = self.profile.show_dry_well_nm
 
-            if polygons:
+            # Units logged in a hole but drawn by no fence polygon (one-hole
+            # units when pinch-outs are off) would otherwise vanish behind the
+            # plain grey column while still listed in the legend.
+            orphan_rows, orphan_lenses = self._orphan_unit_geometry(
+                projected_df, polygons, hole_summary, track_half
+            )
+            fence_polygons = list(polygons) + orphan_lenses
+            if fence_polygons:
                 self._draw_fence_polygons(
-                    ax, polygons, style_cache, ve, alpha=self.profile.fence_alpha, collar_lookup=collar_lookup
+                    ax,
+                    fence_polygons,
+                    style_cache,
+                    ve,
+                    alpha=self.profile.fence_alpha,
+                    collar_lookup=collar_lookup,
                 )
             else:
                 self._has_pinch_out = False
             self._draw_consulting_surface(ax, hole_summary, collar_lookup)
             self._draw_well_columns(ax, hole_summary, collar_depths, collar_lookup, track_half)
-            if self.profile.show_track_lithology:
+            column_rows = projected_df if self.profile.show_track_lithology else orphan_rows
+            if not column_rows.empty:
                 self._draw_lithology_interval_rects(
                     ax,
-                    projected_df,
+                    column_rows,
                     style_cache,
                     track_half * 0.92,
                     collar_lookup,
                     zorder=9,
                     alpha=1.0,
+                )
+            if self.profile.show_track_lithology:
+                # The grey column shows through wherever the log has no row.
+                self._draw_unlogged_intervals(
+                    ax, projected_df, collar_depths, collar_lookup, track_half, draw=False
                 )
             if self.screen_intervals:
                 self._draw_screen_intervals(
@@ -741,6 +761,97 @@ class ConsultingLayoutMixin:
                         formatter.suppressed.add(round(loc / formatter._ve, 6))
         if any(formatter.suppressed for _ax, formatter in formatters):
             figure.draw_without_rendering()
+
+    def _orphan_unit_geometry(
+        self,
+        projected_df: pd.DataFrame,
+        polygons: Sequence[GeologicalPolygon],
+        hole_summary: pd.DataFrame,
+        track_half: float,
+    ) -> tuple[pd.DataFrame, list[GeologicalPolygon]]:
+        """Logged intervals no fence polygon draws, plus short lenses for them.
+
+        Consulting columns are plain grey (no track lithology), so a unit is
+        only visible through the fence polygons. With pinch-outs off (the
+        generic consulting default) stratigraphy builds no polygon for a unit
+        logged in a single hole, which then appeared in the legend but nowhere
+        on the section. Return those intervals (drawn in the column) and a
+        short inferred pinch-out lens either side of the hole, toward each
+        neighbouring hole.
+        """
+        empty = projected_df.iloc[0:0]
+        if (
+            projected_df.empty
+            or self.profile.show_track_lithology
+            or self.interpretation_mode not in {"interpolated", "correlation_lines"}
+        ):
+            return empty, []
+        by_code_hole: dict[tuple[str, str], list] = {}
+        for geo_polygon in polygons:
+            for hole_id in set(geo_polygon.hole_pair):
+                by_code_hole.setdefault(
+                    (str(geo_polygon.lithology_code), str(hole_id)), []
+                ).append(geo_polygon.polygon)
+
+        orphan_index: list = []
+        for index, row in projected_df.iterrows():
+            top = float(row["top_elevation"])
+            bottom = float(row["bottom_elevation"])
+            thickness = abs(top - bottom)
+            if not np.isfinite(thickness) or thickness <= 1e-9:
+                continue
+            candidates = by_code_hole.get((str(row["lithology_code"]), str(row["hole_id"])), [])
+            if candidates:
+                x = float(row["x_profile"])
+                column = LineString([(x, top), (x, bottom)])
+                covered = sum(
+                    shape.buffer(1e-3).intersection(column).length for shape in candidates
+                )
+                if covered >= 0.5 * thickness:
+                    continue
+            orphan_index.append(index)
+        if not orphan_index:
+            return empty, []
+        orphans = projected_df.loc[orphan_index]
+
+        hole_x = (
+            hole_summary.set_index(hole_summary["hole_id"].astype(str))["x_profile"].astype(float)
+            if not hole_summary.empty
+            else pd.Series(dtype=float)
+        )
+        xs_sorted = np.sort(hole_x.to_numpy(dtype=float))
+        lenses: list[GeologicalPolygon] = []
+        for _, row in orphans.iterrows():
+            hole_id = str(row["hole_id"])
+            x = float(hole_x.get(hole_id, row["x_profile"]))
+            top = float(row["top_elevation"])
+            bottom = float(row["bottom_elevation"])
+            mid = (top + bottom) / 2.0
+            position = int(np.searchsorted(xs_sorted, x))
+            neighbours = []
+            if position > 0:
+                neighbours.append(float(xs_sorted[position - 1]))
+            upper = position + 1 if position < len(xs_sorted) and abs(xs_sorted[position] - x) < 1e-9 else position
+            if upper < len(xs_sorted):
+                neighbours.append(float(xs_sorted[upper]))
+            for neighbour_x in neighbours:
+                spacing = neighbour_x - x
+                if abs(spacing) <= 2.0 * track_half:
+                    continue
+                # A quarter of the way to the neighbour (half way to where a
+                # pinch-out would close), but always clear of the column.
+                reach = min(0.5 * abs(spacing), max(0.25 * abs(spacing), 3.0 * track_half))
+                apex_x = x + np.sign(spacing) * reach
+                lenses.append(
+                    GeologicalPolygon(
+                        lithology_code=str(row["lithology_code"]),
+                        polygon=ShapelyPolygon([(x, top), (x, bottom), (apex_x, mid)]),
+                        # Both ends on this hole: depth-axis plots keep its collar RL.
+                        hole_pair=(hole_id, hole_id),
+                        is_pinch_out=True,
+                    )
+                )
+        return orphans, lenses
 
     def _draw_well_columns(
         self,
@@ -1480,6 +1591,18 @@ class ConsultingLayoutMixin:
                 )
             )
         n_code_entries = len(entries)
+        if getattr(self, "_has_unlogged_intervals", False):
+            entries.append(
+                (
+                    "swatch",
+                    UNLOGGED_LEGEND_LABEL.upper(),
+                    {
+                        "facecolor": UNLOGGED_FILL_COLOR,
+                        "edgecolor": TRACK_BORDER_COLOR,
+                        "hatch": None,
+                    },
+                )
+            )
         if self.screen_intervals:
             entries.append(
                 (

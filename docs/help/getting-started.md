@@ -16,7 +16,7 @@ Fastest path with no prep: **Try sample project** (or `Alt+Shift+O`).
 2. **Validate** — Review parse warnings, lithology codes, groundwater series, and environmental readings. Fix sheet issues before configuring.
 3. **Configure** — Choose holes, transect order, layout/style, and overlays (water, screens, gradients, parameters). Resolve correlation preflight if prompted. Optional QA gates:
    - **Stop if matched layers overlap** — stops Generate until overlaps are resolved (consulting presets often enable this).
-   - **Generate even if data checks found warnings** — shows the warning count; tick it to draw anyway.
+   - **Generate even if data checks found warnings** — shows the warning count; tick it to draw anyway. Logging gaps (nothing logged over a depth range) are listed in Validate but never lock Generate — they draw grey as "Not logged".
    - **Warn when layers don't match between holes** (Advanced) — surfaces unmatched units / pinch-out candidates.
 4. **Generate** — Builds the cross-section as **SVG immediately**. Then click **Prepare deliverables** for PNG/PDF (and Word), then the report ZIP, clipboard copy or project folder. Click **Generate section** again after changing settings.
 

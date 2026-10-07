@@ -168,28 +168,33 @@ def parse_bh_log_legend_json(path: Path) -> dict[str, str]:
 
 @lru_cache(maxsize=1)
 def _load_bh_log_lithology_colors() -> dict[str, str]:
-    """Agreed scheme (bundled JSON) with any live Excel legend merged on top.
+    """Agreed scheme (template 261002, bundled JSON) with the old Excel legend as fallback.
 
-    An Excel legend used to replace the JSON wholesale, so a stale copy left
-    in data/ silently dropped codes and restored the old colours. Codes the
-    Excel file does not list keep the scheme; differences are logged.
+    261002 supersedes the old BH Log hex sheet: the Excel legend only supplies
+    codes the scheme does not list, so older workbooks with extra codes still
+    get their historic colour instead of grey. Conflicting colours are ignored
+    (and logged).
     """
     scheme = parse_bh_log_legend_json(bh_log_lithology_legend_path())
     xlsx_colors = parse_bh_log_legend_xlsx(bh_log_lithology_legend_xlsx_path())
     if not xlsx_colors:
         return scheme
-    changed = sorted(
+    scheme_lookup = {code.casefold(): colour for code, colour in scheme.items()}
+    ignored = sorted(
         code for code, colour in xlsx_colors.items()
-        if scheme.get(code, "").upper() != colour.upper()
+        if code.casefold() in scheme_lookup and scheme_lookup[code.casefold()].upper() != colour.upper()
     )
-    if changed:
+    if ignored:
         logger.warning(
-            "BH Log Lithology Legend.xlsx overrides the agreed scheme for %d code(s): %s "
-            "(delete or update the Excel legend to use the scheme colours)",
-            len(changed),
-            ", ".join(changed[:8]),
+            "BH Log Lithology Legend.xlsx differs from the 261002 scheme for %d code(s): %s "
+            "(the scheme wins; the Excel legend only adds codes the scheme lacks)",
+            len(ignored),
+            ", ".join(ignored[:8]),
         )
-    return {**scheme, **xlsx_colors}
+    extra = {
+        code: colour for code, colour in xlsx_colors.items() if code.casefold() not in scheme_lookup
+    }
+    return {**scheme, **extra}
 
 
 def _build_lithology_palette() -> dict[str, str]:

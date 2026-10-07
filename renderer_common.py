@@ -12,7 +12,12 @@ from matplotlib.ticker import FuncFormatter, Locator, MaxNLocator
 import hatch_patterns
 from constants import get_lithology_style
 from models import ScreenInterval
-from render_theme import SCREEN_INTERVAL_HATCH, TRACK_BORDER_COLOR, TRACK_FILL_COLOR
+from render_theme import (
+    CONSULTING_COLUMN_FILL,
+    SCREEN_INTERVAL_HATCH,
+    TRACK_BORDER_COLOR,
+    TRACK_FILL_COLOR,
+)
 
 # Draw '.', '/' and '+' as the client legend template's marks (fine stipple,
 # short silty dashes, isolated plus marks) in every figure and export.
@@ -61,6 +66,65 @@ BASE_HATCH_ROW_SPACING_IN = 1.0 / 6.0
 # densified.
 THIN_UNIT_MIN_DENSIFY = 2
 THIN_UNIT_MAX_DENSIFY = 4
+
+# Depth ranges of a borehole with no lithology row (log gaps, no recovery, or
+# an unlogged top / bottom of hole) show the plain grey column fill. They get
+# their own legend key so the grey does not read as an unlisted lithology.
+UNLOGGED_FILL_COLOR = CONSULTING_COLUMN_FILL
+UNLOGGED_LEGEND_LABEL = "Not logged / no recovery"
+# Gaps thinner than this (metres) are rounding noise between logged rows.
+UNLOGGED_MIN_THICKNESS_M = 0.01
+
+
+def unlogged_intervals(
+    projected_df: pd.DataFrame,
+    collar_depths: dict[str, float] | None = None,
+    collar_lookup: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Return the unlogged depth ranges of each hole as elevation intervals.
+
+    Covers gaps between logged rows, a logged top below the collar, and a
+    total depth (``collar_depths``) below the deepest logged row. Columns:
+    ``hole_id``, ``x_profile``, ``collar_elevation``, ``top_elevation``,
+    ``bottom_elevation`` (top above bottom).
+    """
+    columns = ["hole_id", "x_profile", "collar_elevation", "top_elevation", "bottom_elevation"]
+    if projected_df is None or projected_df.empty:
+        return pd.DataFrame(columns=columns)
+    collar_depths = collar_depths or {}
+    collar_lookup = collar_lookup or {}
+    tol = UNLOGGED_MIN_THICKNESS_M
+    rows: list[tuple[str, float, float, float, float]] = []
+    for hole_id, hole_df in projected_df.groupby("hole_id", sort=False):
+        hole = str(hole_id)
+        x_profile = float(hole_df["x_profile"].iloc[0])
+        collar = float(collar_lookup.get(hole, hole_df["collar_elevation"].iloc[0]))
+        tops = np.maximum(
+            hole_df["top_elevation"].to_numpy(dtype=float),
+            hole_df["bottom_elevation"].to_numpy(dtype=float),
+        )
+        bottoms = np.minimum(
+            hole_df["top_elevation"].to_numpy(dtype=float),
+            hole_df["bottom_elevation"].to_numpy(dtype=float),
+        )
+        finite = np.isfinite(tops) & np.isfinite(bottoms)
+        if not np.any(finite) or not np.isfinite(collar):
+            continue
+        order = np.argsort(-tops[finite], kind="stable")
+        tops = tops[finite][order]
+        bottoms = bottoms[finite][order]
+        # Walk down the hole; ``reached`` is the deepest elevation logged so far.
+        reached = collar
+        for top, bottom in zip(tops, bottoms, strict=True):
+            if reached - top > tol:
+                rows.append((hole, x_profile, collar, reached, float(top)))
+            reached = min(reached, float(bottom))
+        td = collar_depths.get(hole)
+        if td is not None and np.isfinite(td):
+            td_elevation = collar - float(td)
+            if reached - td_elevation > tol:
+                rows.append((hole, x_profile, collar, reached, td_elevation))
+    return pd.DataFrame(rows, columns=columns)
 
 
 def hatch_density(hatch: str | None) -> int:
@@ -486,6 +550,46 @@ class RendererGeometryMixin:
             )
             style_cache[code] = style
         return style
+
+    def _draw_unlogged_intervals(
+        self,
+        ax,
+        projected_df: pd.DataFrame,
+        collar_depths: dict[str, float] | None,
+        collar_lookup: dict[str, float],
+        track_half_width: float,
+        *,
+        zorder: int = 5,
+        draw: bool = True,
+    ) -> bool:
+        """Fill unlogged column depths grey; record whether any exist for the legend.
+
+        With ``draw=False`` only the legend flag is set (consulting columns are
+        already grey underneath the logged intervals).
+        """
+        gaps = unlogged_intervals(projected_df, collar_depths, collar_lookup)
+        found = not gaps.empty
+        self._has_unlogged_intervals = bool(getattr(self, "_has_unlogged_intervals", False) or found)
+        if not found or not draw:
+            return found
+        collars = gaps["collar_elevation"].to_numpy(dtype=float)
+        tops = self._plot_y_values(gaps["top_elevation"].to_numpy(dtype=float), collars)
+        bottoms = self._plot_y_values(gaps["bottom_elevation"].to_numpy(dtype=float), collars)
+        count = len(gaps)
+        self._add_rect_collection(
+            ax,
+            (
+                gaps["x_profile"].to_numpy(dtype=float) - track_half_width,
+                np.minimum(tops, bottoms),
+                np.full(count, 2.0 * track_half_width),
+                np.abs(tops - bottoms),
+            ),
+            facecolors=UNLOGGED_FILL_COLOR,
+            edgecolors=TRACK_BORDER_COLOR,
+            linewidths=0.6,
+            zorder=zorder,
+        )
+        return found
 
     def _draw_screen_intervals(
         self,

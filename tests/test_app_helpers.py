@@ -350,3 +350,17 @@ def test_default_hole_sequence_takes_every_hole_of_a_small_workbook() -> None:
     many = [f"BH-{i}" for i in range(1, 24)]
     assert default_hole_sequence(many) == many[:4]
     assert default_hole_sequence(["A", "B"]) == ["A", "B"]
+
+
+def test_coverage_gaps_do_not_gate_generate():
+    from types import SimpleNamespace
+
+    from ai_quality import QualityIssue
+    from app_configure import gating_warning_count
+
+    gap = QualityIssue(code="depth_gap", message="gap", severity="warning", hole_id="BH1")
+    other = QualityIssue(code="no_lithology", message="none", severity="warning", hole_id="BH2")
+    error = QualityIssue(code="depth_overlap", message="x", severity="error", hole_id="BH1")
+    assert gating_warning_count(None) == 0
+    assert gating_warning_count(SimpleNamespace(issues=[gap, gap])) == 0
+    assert gating_warning_count(SimpleNamespace(issues=[gap, other, error])) == 1

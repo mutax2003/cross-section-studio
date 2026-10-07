@@ -64,13 +64,18 @@ def check_workbook_row_counts(source: WorkbookSource, *, limit: int = MAX_WORKBO
     try:
         for sheet in book.worksheets:
             rows = sheet.max_row
-            if rows is None:
-                # No <dimension> element (write-only generators): probe past the
-                # limit instead of trusting a missing size.
+            if rows is None or rows <= limit:
+                # The <dimension> tag is only a claim: it can be missing (write-
+                # only generators) or understated (a tampered A1:E2 on 600k rows
+                # parsed for 45 s). Count real rows, stopping one past the limit.
+                reset = getattr(sheet, "reset_dimensions", None)
+                if callable(reset):
+                    reset()
                 rows = sum(1 for _ in sheet.iter_rows(min_row=1, max_row=limit + 1))
             if rows > limit:
+                size = f"{rows:,} rows" if rows > limit + 1 else f"more than {limit:,} rows"
                 raise WorkbookTooLargeError(
-                    f"Sheet '{sheet.title}' has {rows:,} rows (limit {limit:,}). "
+                    f"Sheet '{sheet.title}' has {size} (limit {limit:,}). "
                     "Delete the empty formatted rows below the data and upload again."
                 )
     finally:
@@ -168,6 +173,10 @@ def _row_where(sheet: str, row_num: int, hole_id: object) -> str:
     return where
 
 
+# Lab results reported as text: "<10", "< 0.5", ">1000", "ND", "n.d.", "BDL".
+_NON_DETECT_RE = re.compile(r"^\s*([<>]\s*[\d.]+|n\.?\s*d\.?|bdl|not detected)\s*$", re.IGNORECASE)
+
+
 def _row_error(sheet: str, row_num: int, exc: Exception, *, hole_id: object = None) -> str:
     """One actionable sentence for a rejected row: sheet, Excel row, bad value, fix."""
     field, kind, value, message = _first_error(exc)
@@ -198,8 +207,15 @@ def _row_error(sheet: str, row_num: int, exc: Exception, *, hole_id: object = No
             return f"{where}: {field} is empty — enter a number (e.g. {_number_example(value)})."
         if whole_number:
             return f"{where}, {field} = '{_cell_text(value)}' — enter a whole number (e.g. 2)."
+        text = _cell_text(value)
+        if field == "value" and _NON_DETECT_RE.match(text):
+            # Lab non-detects: keep the number for plotting, the text for the label.
+            return (
+                f"{where}, value = '{text}' — enter the number in value (e.g. 10) and "
+                f"put '{text}' in the value_label column to print it as written."
+            )
         return (
-            f"{where}, {field} = '{_cell_text(value)}' — enter a number only "
+            f"{where}, {field} = '{text}' — enter a number only "
             f"(e.g. {_number_example(value)})."
         )
 

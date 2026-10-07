@@ -1160,3 +1160,34 @@ def test_bad_collar_row_does_not_cascade_into_unknown_hole_errors() -> None:
     collar_errors = [e for e in result.errors if e.startswith("Collars row 2")]
     assert len(collar_errors) == 1 and "pydantic.dev" not in collar_errors[0]
     assert not any("BH1 is in" in e for e in result.errors)  # the collar error explains them
+
+
+def test_row_cap_counts_real_rows_when_the_dimension_tag_understates(tmp_path) -> None:
+    """A workbook whose <dimension> claims A1:E2 but holds far more rows got
+    past the cap and was parsed for ~45 s."""
+    import re
+    import zipfile
+
+    import openpyxl
+    import pytest
+
+    from parsing import WorkbookTooLargeError, check_workbook_row_counts
+
+    honest = tmp_path / "honest.xlsx"
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "Collars"
+    sheet.append(["hole_id", "easting", "northing", "elevation", "total_depth"])
+    for i in range(60):
+        sheet.append([f"BH-{i}", i, 0, 100, 10])
+    book.save(honest)
+    tampered = tmp_path / "tampered.xlsx"
+    with zipfile.ZipFile(honest) as src, zipfile.ZipFile(tampered, "w") as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename.startswith("xl/worksheets/sheet"):
+                data = re.sub(rb'<dimension ref="[^"]+"', b'<dimension ref="A1:E2"', data)
+            dst.writestr(item, data)
+    with pytest.raises(WorkbookTooLargeError, match="more than 50 rows"):
+        check_workbook_row_counts(tampered, limit=50)
+    check_workbook_row_counts(tampered, limit=100)  # under the limit: accepted

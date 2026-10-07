@@ -9,9 +9,9 @@ from typing import NotRequired, TypedDict
 import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
-from matplotlib.offsetbox import AnchoredOffsetbox, HPacker, TextArea
+from matplotlib.offsetbox import AnnotationBbox, HPacker, TextArea
 from matplotlib.patheffects import withStroke
-from matplotlib.transforms import offset_copy
+from matplotlib.transforms import Bbox, offset_copy
 
 from models import EnvironmentalReading
 from render_theme import (
@@ -39,6 +39,8 @@ class ParameterLegendEntry(TypedDict):
 
 
 _PARAMETER_LABEL_MIN_GAP_PTS = 26.0
+# Clearance between the lowest x-axis text and the threshold key below it.
+_THRESHOLD_KEY_GAP_PTS = 3.0
 _PARAMETER_LABEL_DX = 8.0
 _PARAMETER_LABEL_BASE_DY = 0.0
 _PARAMETER_LABEL_LEADER_EPS_PTS = 2.5
@@ -52,6 +54,35 @@ _PARAMETER_LABEL_BBOX = {
 }
 # "box" readability style: fully opaque so hatch lines never show through.
 _PARAMETER_LABEL_BBOX_SOLID = {**_PARAMETER_LABEL_BBOX, "alpha": 1.0, "boxstyle": "square,pad=0.18"}
+
+
+def _below_x_axis_anchor(ax):
+    """Display bbox centred on the distance label, bottomed at the lowest x-axis text.
+
+    Covers the tick labels, the axes x label and a figure-level ``supxlabel``
+    (section sheets with column headers label the distance axis that way), so
+    the key centres under whichever label is printed and never rides up into it.
+    """
+
+    def _bbox(renderer) -> Bbox:
+        axes_box = ax.get_window_extent(renderer)
+        bottom = axes_box.y0
+        centre = 0.5 * (axes_box.x0 + axes_box.x1)
+        tight = ax.xaxis.get_tightbbox(renderer)
+        if tight is not None and tight.height > 0:
+            bottom = min(bottom, tight.y0)
+        supx = getattr(ax.figure, "_supxlabel", None)
+        labels = [ax.xaxis.label, supx]
+        for label in labels:
+            if label is None or not label.get_visible() or not label.get_text():
+                continue
+            box = label.get_window_extent(renderer)
+            if box.height > 0 and box.y0 <= bottom:
+                bottom = box.y0
+                centre = 0.5 * (box.x0 + box.x1)
+        return Bbox.from_extents(centre - 1.0, bottom, centre + 1.0, axes_box.y1)
+
+    return _bbox
 
 
 def _nearest_unused_by_depth(
@@ -245,6 +276,7 @@ class RendererChemistryMixin:
             and self.profile.chemistry_threshold_yellow_max is not None
         )
         self.chemistry_threshold_key_text = None
+        self._chemistry_threshold_key = None
         # Fixed non-black label colour (P2 red) earns a sample value in the
         # consulting legend; black (the default) keeps the plain label.
         fixed_color = chemistry_fixed_mode_color(self.profile.chemistry_color_mode)
@@ -537,22 +569,24 @@ class RendererChemistryMixin:
             parts.append(TextArea(suffix, textprops=text_props))
         if unit:
             parts.append(TextArea(unit, textprops=text_props))
-        box = AnchoredOffsetbox(
-            loc="lower left",
-            child=HPacker(children=parts, align="baseline", pad=0, sep=3),
-            pad=0.25,
-            borderpad=0.4,
-            frameon=True,
-            # Sit above the compact parameter legend line when that is shown.
-            bbox_to_anchor=(0.0, 0.06 if self.profile.show_parameter_legend_text else 0.0),
-            bbox_transform=ax.transAxes,
+        # Off the plot, in the white space under the x-axis label: anchored to
+        # the axis' drawn extent at draw time, so it follows the axis through
+        # export page resizes and margin refits without a re-layout pass.
+        key = AnnotationBbox(
+            HPacker(children=parts, align="baseline", pad=0, sep=3),
+            (0.5, 0.0),
+            xycoords=_below_x_axis_anchor(ax),
+            xybox=(0.0, -_THRESHOLD_KEY_GAP_PTS),
+            boxcoords="offset points",
+            box_alignment=(0.5, 1.0),
+            frameon=False,
+            pad=0.0,
+            annotation_clip=False,
         )
-        box.patch.set_facecolor("white")
-        box.patch.set_edgecolor("#9CA3AF")
-        box.patch.set_linewidth(0.5)
-        box.patch.set_alpha(0.92)
-        box.set_zorder(9.5)
-        ax.add_artist(box)
+        key.set_gid("chemistry-threshold-key")
+        key.set_zorder(9.5)
+        ax.add_artist(key)
+        self._chemistry_threshold_key = key
 
     def _draw_parameter_fence(
         self,

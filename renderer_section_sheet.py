@@ -14,6 +14,9 @@ from render_theme import AXES_BG, FIGURE_BG, GRID_COLOR, LABEL_COLOR
 from renderer_common import apply_true_value_y_axis
 from stratigraphy import GeologicalPolygon
 
+# Clearance between the threshold key and the footer lines below it.
+_KEY_FOOTER_PAD_PT = 3.0
+
 
 class SectionSheetLayoutMixin:
     """Strater-like section sheet layout."""
@@ -177,4 +180,33 @@ class SectionSheetLayoutMixin:
             ax.set_xlabel("Distance along transect (m)", fontsize=10, labelpad=8)
 
         self._draw_footers(fig)
+        self._lift_threshold_key_over_footers(fig)
         return fig
+
+    def _lift_threshold_key_over_footers(self, fig: Figure) -> None:
+        """Raise the distance label (and the threshold key under it) clear of the footers.
+
+        The threshold key hangs below the distance label; the disclaimer /
+        metadata footer lines sit at the page foot. Measured at the render
+        size: export pages are as tall or taller, so the clearance only grows.
+        """
+        key = getattr(self, "_chemistry_threshold_key", None)
+        if key is None or key.figure is not fig:
+            return
+        supx = getattr(fig, "_supxlabel", None)
+        footers = [
+            text for text in fig.texts
+            if text is not supx and text.get_visible() and text.get_text().strip()
+        ]
+        if not footers:
+            return
+        renderer = fig.canvas.get_renderer()
+        top = max(text.get_window_extent(renderer).y1 for text in footers)
+        need_px = top + _KEY_FOOTER_PAD_PT * fig.dpi / 72.0 - key.get_window_extent(renderer).y0
+        if need_px <= 0.0:
+            return
+        need = need_px / fig.bbox.height
+        if supx is not None and supx.get_text():
+            supx.set_y(supx.get_position()[1] + need)
+        else:
+            fig.subplots_adjust(bottom=fig.subplotpars.bottom + need)

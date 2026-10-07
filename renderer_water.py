@@ -9,7 +9,8 @@ import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
 from matplotlib.markers import MarkerStyle
-from matplotlib.text import Text
+from matplotlib.patches import ArrowStyle, ConnectionStyle
+from matplotlib.text import Annotation, Text
 from matplotlib.transforms import Bbox, offset_copy
 
 from hydro_metrics import (
@@ -26,6 +27,7 @@ from render_theme import (
     WATER_COLOR,
     consulting_gw_series_style,
 )
+from renderer_common import settle_figure_layout
 
 _GW_MARKER_MAP = {
     "circle": "o",
@@ -273,6 +275,41 @@ def _overlap_area(a, b) -> float:
     return width * height if width > 0 and height > 0 else 0.0
 
 
+class _BoxStack:
+    """Growable (N, 4) array of bbox extents for vectorised overlap sums.
+
+    ``overlap_sum`` returns exactly ``sum(_overlap_area(box, b) for b in boxes)``:
+    the per-pair areas use the same float ops, and only the non-zero terms are
+    added in the original order, so layout decisions are bit-for-bit unchanged.
+    """
+
+    __slots__ = ("_data", "_size")
+
+    def __init__(self, boxes=()) -> None:
+        self._data = np.empty((max(16, len(boxes)), 4), dtype=float)
+        self._size = 0
+        for box in boxes:
+            self.append(box)
+
+    def append(self, box) -> None:
+        if self._size == len(self._data):
+            self._data = np.concatenate([self._data, np.empty_like(self._data)])
+        self._data[self._size] = (box.x0, box.y0, box.x1, box.y1)
+        self._size += 1
+
+    def overlap_sum(self, box, start: int = 0) -> float:
+        data = self._data[start : self._size]
+        if not len(data):
+            return 0
+        x0, y0, x1, y1 = box.x0, box.y0, box.x1, box.y1
+        width = np.minimum(x1, data[:, 2]) - np.maximum(x0, data[:, 0])
+        height = np.minimum(y1, data[:, 3]) - np.maximum(y0, data[:, 1])
+        hit = (width > 0) & (height > 0)
+        if not hit.any():
+            return 0
+        return sum((width[hit] * height[hit]).tolist())
+
+
 def _outside_area(box, frame) -> float:
     inside_w = max(0.0, min(box.x1, frame.x1) - max(box.x0, frame.x0))
     inside_h = max(0.0, min(box.y1, frame.y1) - max(box.y0, frame.y0))
@@ -323,7 +360,13 @@ def resolve_header_collisions(fig, headers) -> None:
         text.set_horizontalalignment(base_ha)
         text.set_rotation(base_rotation)
     page = fig.bbox
-    obstacles = _header_obstacles(fig, renderer, 0.0, exclude={id(text) for text in headers})
+    obstacles = _header_obstacles(
+        fig,
+        renderer,
+        0.0,
+        exclude={id(text) for text in headers},
+        header_bands=_header_bands(fig, renderer, headers, pad),
+    )
     _stagger_headers(fig, renderer, headers, obstacles, page, pad)
     staggered_cost = _header_layout_cost(renderer, headers, obstacles, page, pad)
     if staggered_cost == 0.0:
@@ -344,29 +387,60 @@ def resolve_header_collisions(fig, headers) -> None:
 
 def _header_layout_cost(renderer, headers, obstacles, page, pad) -> float:
     boxes = [text.get_window_extent(renderer).padded(pad) for text in headers]
+    header_stack = _BoxStack(boxes)
+    obstacle_stack = _BoxStack(obstacles)
     cost = 0.0
     for index, box in enumerate(boxes):
-        cost += sum(_overlap_area(box, other) for other in boxes[index + 1 :])
-        cost += sum(_overlap_area(box, other) for other in obstacles)
+        cost += header_stack.overlap_sum(box, start=index + 1)
+        cost += obstacle_stack.overlap_sum(box)
         cost += 4.0 * _outside_area(box, page)
     return cost
 
 
+def _candidate_extent_fn(text, renderer):
+    """``(transform, ha) -> Text.get_window_extent`` for one header's candidates.
+
+    Only the transform and horizontal alignment differ between candidates, so
+    the (alignment-dependent) text layout is computed once per alignment and
+    translated exactly as ``Text.get_window_extent`` does, instead of
+    re-measuring the string for all 28 candidate spots.
+    """
+    if text.get_wrap() or text.get_transform_rotates_text() or not text.get_text():
+        def measure(transform, ha):
+            text.set_transform(transform)
+            text.set_horizontalalignment(ha)
+            return text.get_window_extent(renderer)
+
+        return measure
+    position = text.get_unitless_position()
+    layouts: dict[str, Bbox] = {}
+
+    def extent(transform, ha):
+        layout = layouts.get(ha)
+        if layout is None:
+            text.set_horizontalalignment(ha)
+            layout = layouts[ha] = text._get_layout(renderer)[0]
+        x, y = transform.transform(position)
+        return layout.translated(x, y)
+
+    return extent
+
+
 def _stagger_headers(fig, renderer, headers, obstacles, page, pad) -> None:
     """Greedy pass: nudge alignment, then step headers outward by text-height tiers."""
-    placed = list(obstacles)
+    placed = _BoxStack(obstacles)
     for text in sorted(headers, key=lambda item: item.get_window_extent(renderer).x0):
         base_transform = text._header_base[0]
         height_pt = text.get_window_extent(renderer).height * 72.0 / fig.dpi + 1.0
         outward = 1.0 if text.get_verticalalignment() == "bottom" else -1.0
         best: tuple[float, float, int, str] | None = None
+        candidate_box = _candidate_extent_fn(text, renderer)
         for index, (dx, tier, ha) in enumerate(_HEADER_CANDIDATES):
-            text.set_transform(
-                offset_copy(base_transform, fig=fig, x=dx, y=outward * tier * height_pt, units="points")
+            transform = offset_copy(
+                base_transform, fig=fig, x=dx, y=outward * tier * height_pt, units="points"
             )
-            text.set_horizontalalignment(ha)
-            box = text.get_window_extent(renderer).padded(pad)
-            collision = sum(_overlap_area(box, other) for other in placed)
+            box = candidate_box(transform, ha).padded(pad)
+            collision = placed.overlap_sum(box)
             outside = _outside_area(box, page)
             score = (collision + 4.0 * outside) * 1000.0 + index
             if best is None or score < best[0]:
@@ -395,9 +469,55 @@ def _drawn_tick_labels(axis, limits) -> list:
     return labels
 
 
-def _header_obstacles(fig, renderer, pad, *, exclude: set[int]) -> list:
-    """Tick labels, axis labels, titles and figure text a header must not cover."""
-    fig.draw_without_rendering()  # settle tick label positions for this page size
+def _header_bands(fig, renderer, headers, pad) -> list[tuple[float, float]]:
+    """Display-y ranges every candidate header box (any tier / alignment, or the
+    vertical alternative) stays within, padded like the boxes themselves."""
+    bands = []
+    for text in headers:
+        box = text.get_window_extent(renderer)
+        # Tiers step up to two (text height + 1 pt) either way; the vertical
+        # alternative spans at most the text's width + height from its anchor.
+        reach = 2.0 * (box.height + fig.dpi / 72.0) + box.width + box.height + pad + 1.0
+        bands.append((box.y0 - reach, box.y1 + reach))
+    return bands
+
+
+def _straight_leader_bound(annotation, renderer):
+    """Cheap superset of ``annotation.get_window_extent`` for a straight "-" leader.
+
+    The leader path lies on the segment between its two end points (clipping
+    and shrinking only trim it), so text box + segment box contains the exact
+    extent without the costly patch-clipped path.  None when that cannot be
+    guaranteed (other arrow / connection styles, transforms, clipped xy).
+    """
+    arrow = annotation.arrow_patch
+    if arrow is None or not annotation._check_xy(renderer):
+        return None
+    style = arrow.get_arrowstyle()
+    connection = arrow.get_connectionstyle()
+    if not (
+        type(style) is ArrowStyle.Curve
+        and isinstance(connection, ConnectionStyle.Arc3)
+        and connection.rad == 0.0
+        and arrow.get_transform().is_affine
+        and np.array_equal(arrow.get_transform().get_matrix(), np.eye(3))
+        and arrow._posA_posB is not None
+    ):
+        return None
+    annotation.update_positions(renderer)
+    (xa, ya), (xb, yb) = arrow._posA_posB
+    segment = Bbox([[min(xa, xb), min(ya, yb)], [max(xa, xb), max(ya, yb)]])
+    return Bbox.union([Text.get_window_extent(annotation, renderer), segment])
+
+
+def _header_obstacles(fig, renderer, pad, *, exclude: set[int], header_bands=None) -> list:
+    """Tick labels, axis labels, titles and figure text a header must not cover.
+
+    With ``header_bands``, annotations provably clear of every band (leadered
+    chemistry / water labels deep in the plot) are left out: they cannot
+    overlap any candidate header box, so every overlap sum is unchanged.
+    """
+    settle_figure_layout(fig)  # settle tick label positions for this page size
     artists: list = list(fig.texts)
     for ax in fig.axes:
         if not ax.get_visible():
@@ -411,6 +531,12 @@ def _header_obstacles(fig, renderer, pad, *, exclude: set[int]) -> list:
     for artist in artists:
         if id(artist) in exclude or not artist.get_visible() or not artist.get_text().strip():
             continue
+        if header_bands is not None and isinstance(artist, Annotation):
+            bound = _straight_leader_bound(artist, renderer)
+            if bound is not None:
+                y0, y1 = bound.y0 - pad, bound.y1 + pad
+                if not any(y0 < top and y1 > bottom for bottom, top in header_bands):
+                    continue
         boxes.append(artist.get_window_extent(renderer).padded(pad))
     return boxes
 
@@ -559,7 +685,7 @@ class RendererWaterMixin:
                     placed.append(text.get_window_extent(renderer).padded(pad))
         # Tick labels too — the twin RL axis on consulting sheets sits exactly
         # where a last-hole value label wants to go.
-        fig.draw_without_rendering()
+        settle_figure_layout(fig)
         for ax in fig.axes:
             if not ax.get_visible():
                 continue

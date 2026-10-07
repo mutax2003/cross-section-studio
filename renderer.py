@@ -63,7 +63,11 @@ from renderer_chemistry import (
     RendererChemistryMixin,
     _resolve_parameter_label_offsets,  # noqa: F401
 )
-from renderer_common import RendererGeometryMixin
+from renderer_common import (
+    HatchBatchedPolyCollection,
+    RendererGeometryMixin,
+    settle_figure_layout,
+)
 from renderer_consulting import ConsultingLayoutMixin
 from renderer_section_sheet import SectionSheetLayoutMixin
 from renderer_water import RendererWaterMixin, WaterSeriesLegendEntry, resolve_header_collisions
@@ -500,7 +504,8 @@ class CrossSectionRenderer(
             polygon_groups.setdefault(style_key, []).append(verts)
         for style_key, verts_list in polygon_groups.items():
             color, hatch, edge_color, linestyle, patch_alpha = style_key
-            collection = PolyCollection(
+            batch_kwargs = {"merge_shared_edges": True} if hatch else {}
+            collection = (HatchBatchedPolyCollection if hatch else PolyCollection)(
                 verts_list,
                 facecolors=color,
                 edgecolors=edge_color,
@@ -508,6 +513,7 @@ class CrossSectionRenderer(
                 linestyles=linestyle,
                 hatch=hatch or None,
                 alpha=patch_alpha,
+                **batch_kwargs,
             )
             collection.set_zorder(2)
             if self._cad_svg_layers_enabled():
@@ -1067,7 +1073,7 @@ class CrossSectionRenderer(
         legend = ax.get_legend()
         if legend is None:
             return
-        figure.draw_without_rendering()
+        settle_figure_layout(figure)
         renderer = figure.canvas.get_renderer()
         legend_w = legend.get_window_extent(renderer).width / figure.bbox.width
         # Legend starts 1% of the axes width right of the plot; keep a 1.5% page gap.

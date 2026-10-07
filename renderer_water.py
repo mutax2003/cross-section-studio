@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
 from matplotlib.markers import MarkerStyle
+from matplotlib.patches import Rectangle
 from matplotlib.text import Text
 from matplotlib.transforms import Bbox, offset_copy
 
@@ -120,6 +121,14 @@ _CHEM_COMPACT_OFFSETS_ARR = np.asarray(_CHEM_COMPACT_OFFSETS, dtype=float)
 # Clear gap (points) between a chemistry label (box/dot included) and the
 # right edge of its own column.
 _CHEM_COLUMN_GAP_PT = 2.0
+# "strip" style: background knock-out beside a labelled column. Above the
+# lithology fills (2) and contact lines (3), below track fills, water lines /
+# markers (5-8) and the values (9).
+_CHEM_STRIP_ZORDER = 3.5
+_CHEM_STRIP_PAD_PT = 2.5
+# Values starting within this many points of a hole's left-most value form
+# its main column (one strip); the rest get their own knock-outs.
+_CHEM_STRIP_COLUMN_TOL_PT = 8.0
 # Last resorts before a value is dropped (the stick/marker stays): slightly
 # smaller text. A value is never printed over a column or another label.
 _CHEM_FONT_SCALES = (1.0, 0.88, 0.76)
@@ -625,9 +634,85 @@ class RendererWaterMixin:
                 hole for hole in dropped_holes if compact.get(hole, 0) < _CHEM_MAX_COMPACT_LEVEL
             }
             if not escalate:
-                return
+                break
             for hole in escalate:
                 compact[hole] = compact.get(hole, 0) + 1
+        self._draw_chem_label_strips(fig, labels, renderer)
+
+    def _draw_chem_label_strips(self, fig, labels, renderer) -> None:
+        """Knock a background strip out of the fills beside each labelled column.
+
+        "strip" style: values read on a clean strip immediately right of their
+        column (widest placed value + pad, spanning the hole's placed values)
+        with the hatching resuming beyond it. The strip sits above lithology
+        fills and contacts but below columns, water lines and markers, and is
+        clipped so it never reaches another column or leaves the frame.
+        """
+        for strip in getattr(self, "_chem_strips", ()):
+            strip.remove()
+        self._chem_strips = []
+        if str(getattr(self.profile, "chemistry_label_style", "") or "") != "strip":
+            return
+        column_boxes = self._column_obstacle_boxes(fig)
+        if not column_boxes:
+            return
+        pad = renderer.points_to_pixels(_CHEM_STRIP_PAD_PT)
+        holes: dict[tuple[int, float], list] = {}
+        for kind, annotation, _color in labels:
+            if kind == "chem" and annotation.get_visible():
+                key = (id(annotation.axes), _chem_hole_key(annotation))
+                holes.setdefault(key, []).append(annotation)
+        for hole_labels in holes.values():
+            ax = hole_labels[0].axes
+            own = _own_column(hole_labels[0], column_boxes)
+            if own is None:
+                continue
+            boxes = [_chem_footprint(annotation, renderer) for annotation in hole_labels]
+            frame = ax.get_window_extent(renderer)
+            # Never over the next column to the right, nor past the frame.
+            right_limit = min(
+                [frame.x1] + [col.x0 for col in column_boxes if col is not own and col.x0 > own.x1]
+            )
+            # The strip spans the hole's main value column; a value nudged
+            # further right (around a water label, or a crowded hole's
+            # zig-zag column) gets its own knock-out instead of widening the
+            # whole strip.
+            first_x0 = min(box.x0 for box in boxes)
+            tol = renderer.points_to_pixels(_CHEM_STRIP_COLUMN_TOL_PT)
+            main = [box for box in boxes if box.x0 <= first_x0 + tol]
+            rects = [
+                (
+                    own.x1,
+                    min(box.y0 for box in main) - pad,
+                    max(box.x1 for box in main) + pad,
+                    max(box.y1 for box in main) + pad,
+                )
+            ]
+            rects += [
+                (box.x0 - pad, box.y0 - pad, box.x1 + pad, box.y1 + pad)
+                for box in boxes
+                if box.x0 > first_x0 + tol
+            ]
+            for x0, y0, x1, y1 in rects:
+                x0 = max(x0, own.x1)
+                x1 = min(x1, right_limit)
+                y0 = max(y0, frame.y0)
+                y1 = min(y1, frame.y1)
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                (dx0, dy0), (dx1, dy1) = ax.transData.inverted().transform([[x0, y0], [x1, y1]])
+                strip = Rectangle(
+                    (min(dx0, dx1), min(dy0, dy1)),
+                    abs(dx1 - dx0),
+                    abs(dy1 - dy0),
+                    facecolor=ax.get_facecolor(),
+                    edgecolor="none",
+                    linewidth=0.0,
+                    zorder=_CHEM_STRIP_ZORDER,
+                )
+                strip.set_gid("chemistry-label-strip")
+                ax.add_patch(strip)
+                self._chem_strips.append(strip)
 
     def _label_collision_pass(self, fig, labels, renderer, compact: dict[float, int]) -> set[float]:
         """One greedy placement pass; returns hole keys with dropped chemistry values."""

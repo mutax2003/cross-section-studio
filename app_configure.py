@@ -72,7 +72,7 @@ class ConfigureState:
     chemistry_color_mode: str = "black"
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
-    chemistry_label_style: ChemistryLabelStyle = "plain"
+    chemistry_label_style: ChemistryLabelStyle = "strip"
     placeholder_blocks_masl_water: bool = False
 
     @property
@@ -420,7 +420,7 @@ def render_configure_step(
     chemistry_color_mode: str = "black"
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
-    chemistry_label_style = "plain"
+    chemistry_label_style = "strip"
     subset_ready = False
     has_overlap_warnings = False
 
@@ -598,6 +598,7 @@ def render_configure_step(
                         "Environmental sheet keep that colour; the setting above applies to the rest."
                     )
                 style_labels = {
+                    "strip": "Clear strip beside borehole (no hatching under labels)",
                     "plain": "Plain coloured text",
                     "box": "White box behind the label",
                     "dot": "Coloured dot, black text",

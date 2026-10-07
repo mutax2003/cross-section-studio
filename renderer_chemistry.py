@@ -434,7 +434,9 @@ class RendererChemistryMixin:
                 "ha": "left",
                 "va": "center",
             }
-            if draw_markers or label_style == "box":
+            # "strip" values sit on a knocked-out background strip (drawn by
+            # the collision pass once they are placed), so they need no box.
+            if (draw_markers and label_style != "strip") or label_style == "box":
                 label_base_kwargs["bbox"] = (
                     _PARAMETER_LABEL_BBOX_SOLID if label_style == "box" else _PARAMETER_LABEL_BBOX
                 )

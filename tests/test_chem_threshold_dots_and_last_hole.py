@@ -151,3 +151,72 @@ def test_crowded_last_hole_keeps_every_value(monkeypatch, layout, last_n, span_m
     assert total == len(readings)
     assert (dropped, left_of_own, over_column, overlaps) == (0, 0, 0, 0)
     assert _order_inversions(renderer, figure) == []
+
+
+# --- "strip" readability style (default): clean background beside the column ---
+
+
+def _strips(figure):
+    return [p for ax in figure.axes for p in ax.patches if p.get_gid() == "chemistry-label-strip"]
+
+
+def test_strip_is_the_default_label_style_and_others_remain() -> None:
+    from typing import get_args
+
+    from render_profiles import ChemistryLabelStyle, CrossSectionRenderProfile
+
+    assert CrossSectionRenderProfile().chemistry_label_style == "strip"
+    assert CONSULTING_SECTION_PROFILE.chemistry_label_style == "strip"
+    assert set(get_args(ChemistryLabelStyle)) == {"strip", "plain", "box", "dot", "stroke"}
+
+
+@pytest.mark.parametrize("profile", [CONSULTING_SECTION_PROFILE, SECTION_SHEET_PROFILE])
+def test_strip_knocks_out_fills_beside_each_labelled_column(profile) -> None:
+    from matplotlib.transforms import Bbox
+
+    from models import WaterLevel
+    from renderer_water import _chem_footprint, _figure_renderer, _overlap_area
+
+    collars, lith = _section()
+    projected, polygons, _ = run_pipeline(collars, lith, [(0.0, 0.0), (100.0, 0.0)])
+    renderer = CrossSectionRenderer(
+        show_legend=False,
+        render_profile=profile.model_copy(update={"show_parameter_markers": True, "show_parameter_labels": True}),
+        environmental_readings=_readings(12, 20.0),
+        environmental_parameters=("Chloride",),
+    )
+    water = [WaterLevel(hole_id=h, depth=3.0 + 0.3 * i) for i, h in enumerate(_HOLES)]
+    figure = renderer.render(polygons, projected, collar_depths={h: 30.0 for h in _HOLES}, water_levels=water)
+    figure.draw_without_rendering()
+    mpl_renderer = _figure_renderer(figure)
+    strips = _strips(figure)
+    assert len(strips) >= len(_HOLES)
+    columns = renderer._column_obstacle_boxes(figure)
+    strip_boxes = [s.get_window_extent(mpl_renderer) for s in strips]
+    for box in strip_boxes:
+        # Beside a column, never over any column (1 px float tolerance).
+        assert not any(_overlap_area(box.padded(-1.0), col) > 0 for col in columns)
+    ax = strips[0].axes
+    frame = ax.get_window_extent(mpl_renderer)
+    # Water-level lines stay drawn above the strip.
+    water_lines = [line for line in ax.lines if line.get_zorder() >= 6]
+    assert water_lines
+    for strip in strips:
+        # Above lithology fills and contacts, below track fills, water, markers, values.
+        assert 3.0 < strip.get_zorder() < 5.0
+    for kind, ann, _c in renderer._water_labels:
+        if kind != "chem" or not ann.get_visible():
+            continue
+        assert ann.get_bbox_patch() is None  # plain coloured text, no box
+        box = _chem_footprint(ann, mpl_renderer)
+        inside = Bbox.intersection(box, frame)
+        if inside is None or inside.width < 1 or inside.height < 1:
+            continue
+        covered = sum(_overlap_area(inside, s) for s in strip_boxes)
+        assert covered >= 0.95 * inside.width * inside.height, ann.get_text()
+
+
+@pytest.mark.parametrize("style", ["plain", "box", "dot", "stroke"])
+def test_other_styles_draw_no_strip(style) -> None:
+    _renderer, figure = _render_threshold(SECTION_SHEET_PROFILE, _readings(5, 20.0), chemistry_label_style=style)
+    assert _strips(figure) == []

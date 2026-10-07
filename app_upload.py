@@ -122,10 +122,18 @@ def _friendly_workbook_error(exc: Exception) -> str:
     if "Could not detect a supported workbook format" in text:
         found = text.split("Sheets found:", 1)[-1].strip() if "Sheets found:" in text else ""
         sheets = f" (sheets in this file: {found})" if found else ""
+        found_names = {name.strip().strip("[]'\" ").casefold() for name in found.split(",")}
+        if "collars" in found_names:
+            # Collars is there, so the missing piece is the lithology log.
+            return (
+                f"No **Lithology** sheet was found{sheets}. Add a Lithology sheet with hole_id, "
+                "from_depth, to_depth and lithology_code, or start from **Download template**. "
+                "See Help → Workbook and data entry."
+            )
         return (
             f"No **Collars** sheet was found{sheets}. Add a Collars sheet with hole_id, easting, "
             "northing, elevation and total_depth, or start from **Download template**. "
-            "See Help → Workbook & data entry."
+            "See Help → Workbook and data entry."
         )
     if "sheet is missing the" in text:
         # Already plain language from the parser: names the sheet and the column.

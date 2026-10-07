@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from collections.abc import Sequence
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import numpy as np
 import pandas as pd
@@ -18,6 +18,7 @@ from render_theme import (
     CHEMISTRY_FIXED_COLORS,
     CHEMISTRY_LABEL_BLACK,
     LABEL_COLOR,
+    chemistry_fixed_mode_color,
     chemistry_label_color,
     chemistry_threshold_bands,
     chemistry_threshold_key,
@@ -31,6 +32,10 @@ class ParameterLegendEntry(TypedDict):
     color: str
     marker: str
     label: str
+    # Single fixed colour mode other than black (P2 red): a value from the
+    # figure in that colour, drawn beside the label as the client legend does.
+    sample_text: NotRequired[str]
+    sample_color: NotRequired[str]
 
 
 _PARAMETER_LABEL_MIN_GAP_PTS = 26.0
@@ -240,6 +245,14 @@ class RendererChemistryMixin:
             and self.profile.chemistry_threshold_yellow_max is not None
         )
         self.chemistry_threshold_key_text = None
+        # Fixed non-black label colour (P2 red) earns a sample value in the
+        # consulting legend; black (the default) keeps the plain label.
+        fixed_color = chemistry_fixed_mode_color(self.profile.chemistry_color_mode)
+        legend_sample_color = (
+            fixed_color
+            if label_values and consulting and fixed_color not in (None, CHEMISTRY_LABEL_BLACK)
+            else None
+        )
         # Stable per parameter name (chloride keeps its colour on every
         # section), with collisions on one sheet resolved to distinct colours.
         series_colors = parameter_series_colors(by_parameter)
@@ -485,14 +498,19 @@ class RendererChemistryMixin:
                     if len(units) == 1
                     else f"{parameter.upper()} CONCENTRATION"
                 )
-            self.parameter_series_legend.append(
-                {
-                    "parameter": parameter,
-                    "color": color,
-                    "marker": marker,
-                    "label": legend_label,
-                }
-            )
+            legend_entry: ParameterLegendEntry = {
+                "parameter": parameter,
+                "color": color,
+                "marker": marker,
+                "label": legend_label,
+            }
+            if legend_sample_color is not None and not draw_markers and marker_labels:
+                legend_entry["sample_text"] = next(
+                    (text for _x, _y, text, c in marker_labels if c == legend_sample_color),
+                    marker_labels[0][2],
+                )
+                legend_entry["sample_color"] = legend_sample_color
+            self.parameter_series_legend.append(legend_entry)
         if threshold_units:
             self._draw_chemistry_threshold_key(ax, threshold_units, font_size)
 
@@ -619,6 +637,41 @@ class RendererChemistryMixin:
                 zorder=7,
             )
             ax.add_collection(collection)
+
+    @staticmethod
+    def _draw_parameter_legend_sample(
+        ax,
+        x: float,
+        y: float,
+        entry: ParameterLegendEntry,
+        *,
+        font_size: float,
+        transform=None,
+        clip_path=None,
+    ):
+        """Draw an entry's sample value (e.g. red ``120``) at ``(x, y)``.
+
+        Legend panels call this in the swatch column for parameter entries;
+        returns the text artist, or ``None`` when the entry has no sample.
+        """
+        sample = entry.get("sample_text")
+        if not sample:
+            return None
+        artist = ax.text(
+            x,
+            y,
+            sample,
+            fontsize=font_size,
+            va="center",
+            ha="left",
+            color=entry.get("sample_color", CHEMISTRY_LABEL_BLACK),
+            transform=transform if transform is not None else ax.transAxes,
+            clip_on=True,
+            gid="parameter-legend-sample",
+        )
+        if clip_path is not None:
+            artist.set_clip_path(clip_path)
+        return artist
 
     def _draw_compact_parameter_legend(self, ax) -> None:
         if not self.profile.show_parameter_legend_text or not self.parameter_series_legend:

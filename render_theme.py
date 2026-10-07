@@ -34,6 +34,8 @@ CHEMISTRY_LABEL_BLACK = "#111827"
 # Label hues agreed with the client (meeting 1 Oct 2026), darkened so value
 # text clears WCAG 1.4.3 (>= 4.5:1 on white): green 5.48, orange 5.18, red 6.47.
 CHEMISTRY_LABEL_GREEN = "#047857"
+# The client P2 figures print chloride in pure #FF0000 (4.0:1 on white, below
+# AA); the agreed red is kept instead so one name maps to one hex everywhere.
 CHEMISTRY_LABEL_RED = "#B91C1C"
 CHEMISTRY_LABEL_ORANGE = "#C2410C"
 # Fixed label colours a logger can pick in the workbook (meeting 1 Oct 2026):
@@ -148,6 +150,13 @@ def consulting_gw_series_style(
     return CONSULTING_GW_BLUE_SHADES[0], "v", level_label or series_id
 
 
+def chemistry_fixed_mode_color(mode: str | None) -> str | None:
+    """Hex for a single-colour mode (``"black"`` / ``"red"``), else ``None``."""
+    if mode in ("black", "red"):
+        return CHEMISTRY_FIXED_COLORS[mode]
+    return None
+
+
 def chemistry_label_color(
     value: float,
     mode: str,
@@ -155,8 +164,11 @@ def chemistry_label_color(
     green_max: float | None = None,
     yellow_max: float | None = None,
 ) -> str:
-    """Return label colour for a chemistry value (black default or G/Y/R thresholds)."""
-    if mode != "threshold" or green_max is None or yellow_max is None:
+    """Return label colour for a chemistry value: one fixed colour (black
+    default, red for the P2 chloride figures) or G/O/R threshold bands."""
+    if mode != "threshold":
+        return chemistry_fixed_mode_color(mode) or CHEMISTRY_LABEL_BLACK
+    if green_max is None or yellow_max is None:
         return CHEMISTRY_LABEL_BLACK
     if value <= green_max:
         return CHEMISTRY_LABEL_GREEN

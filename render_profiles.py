@@ -11,7 +11,10 @@ YAxisMode = Literal["elevation_rl", "depth_below_collar"]
 WaterSymbol = Literal["circle", "triangle", "diamond"]
 ScaleBarPosition = Literal["bottom_left", "bottom_right"]
 ColumnHeaderDetail = Literal["id_only", "id_rl_td"]
-ChemistryColorMode = Literal["black", "threshold"]
+# "black" (default) and "red" print every value in one fixed colour ("red"
+# matches the client P2 chloride figures); "threshold" bands green/orange/red.
+# A per-reading workbook label_color always wins. Blue stays for groundwater.
+ChemistryColorMode = Literal["black", "red", "threshold"]
 # How a value label is kept legible over hatched fills.
 ChemistryLabelStyle = Literal["plain", "box", "dot", "stroke"]
 

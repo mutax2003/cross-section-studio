@@ -358,3 +358,100 @@ def test_threshold_key_is_added_without_touching_the_collision_pass(style) -> No
     import matplotlib.pyplot as plt
 
     plt.close("all")
+
+
+def _p2_render(mode: str, *, label_colors=("", "green", "")):
+    """Consulting sheet like the P2 "Chemistry columns" style (no markers)."""
+    ids = ["BH-01", "BH-02"]
+    collars = [
+        Collar(hole_id=h, easting=i * 8.0, northing=0.0, elevation=100.0, total_depth=10.0)
+        for i, h in enumerate(ids)
+    ]
+    lith = [Lithology(hole_id=h, from_depth=0.0, to_depth=10.0, lithology_code="Sandy Clay") for h in ids]
+    readings = [
+        EnvironmentalReading(
+            hole_id=h, parameter="Chloride", value=float(120 + 50 * k + 7 * i), depth=1.0 + 3.0 * k,
+            unit="mg/kg", label_color=colour,
+        )
+        for i, h in enumerate(ids)
+        for k, colour in enumerate(label_colors)
+    ]
+    projected, polygons, _ = run_pipeline(collars, lith, [(0.0, 0.0), (8.0, 0.0)])
+    renderer = CrossSectionRenderer(
+        render_profile=CONSULTING_SECTION_PROFILE.model_copy(
+            update={
+                "show_parameter_markers": True,
+                "show_parameter_labels": True,
+                "parameter_draw_markers": False,
+                "show_track_lithology": True,
+                "chemistry_color_mode": mode,
+            }
+        ),
+        environmental_readings=readings,
+        environmental_parameters=("Chloride",),
+    )
+    renderer.render(polygons, projected, collar_depths={h: 10.0 for h in ids})
+    colours = {
+        ann.get_text(): ann.get_color().upper()
+        for kind, ann, _c in renderer._water_labels
+        if kind == "chem"
+    }
+    return renderer, colours
+
+
+def test_p2_chemistry_columns_preset_prints_values_red_with_legend_sample() -> None:
+    import matplotlib.pyplot as plt
+
+    from render_theme import CHEMISTRY_LABEL_BLACK, CHEMISTRY_LABEL_RED, chemistry_label_color
+    from ui_output_presets import OUTPUT_PRESETS
+
+    mode = OUTPUT_PRESETS["p2_chemistry_sticks"].chemistry_color_mode
+    assert mode == "red"
+    # Client figures print pure #FF0000 (4.0:1); the agreed red clears AA.
+    assert CHEMISTRY_LABEL_RED == CHEMISTRY_FIXED_COLORS["red"]
+    assert chemistry_label_color(999.0, "red") == CHEMISTRY_LABEL_RED
+    renderer, colours = _p2_render(mode)
+    assert colours["120"] == CHEMISTRY_LABEL_RED and colours["227"] == CHEMISTRY_LABEL_RED
+    # A colour picked in the workbook still wins over the preset default.
+    assert colours["170"] == CHEMISTRY_FIXED_COLORS["green"].upper()
+    assert colours["177"] == CHEMISTRY_FIXED_COLORS["green"].upper()
+    (entry,) = renderer.parameter_series_legend
+    assert entry["label"] == "CHLORIDE CONCENTRATION (mg/kg)"
+    assert entry["color"] == CHEMISTRY_LABEL_BLACK  # label text stays black
+    assert entry["sample_text"] == "120" and entry["sample_color"] == CHEMISTRY_LABEL_RED
+    # Legend panels draw the sample through the chemistry mixin helper.
+    fig, ax = plt.subplots()
+    artist = renderer._draw_parameter_legend_sample(ax, 0.1, 0.5, entry, font_size=7.0)
+    assert artist.get_text() == "120" and artist.get_color() == CHEMISTRY_LABEL_RED
+    blank = {**entry, "sample_text": ""}
+    assert renderer._draw_parameter_legend_sample(ax, 0.1, 0.5, blank, font_size=7.0) is None
+    plt.close("all")
+
+
+def test_black_default_and_threshold_modes_unchanged_without_legend_sample() -> None:
+    import matplotlib.pyplot as plt
+
+    from render_theme import (
+        CHEMISTRY_LABEL_BLACK,
+        CHEMISTRY_LABEL_GREEN,
+        CHEMISTRY_LABEL_RED,
+        chemistry_label_color,
+    )
+    from ui_output_presets import OUTPUT_PRESETS
+
+    for preset_id, preset in OUTPUT_PRESETS.items():
+        if preset_id != "p2_chemistry_sticks":
+            assert preset.chemistry_color_mode in (None, "black")
+    renderer, colours = _p2_render("black")
+    assert colours["120"] == CHEMISTRY_LABEL_BLACK
+    assert colours["170"] == CHEMISTRY_FIXED_COLORS["green"].upper()
+    assert "sample_text" not in renderer.parameter_series_legend[0]
+
+    threshold, colours = _p2_render("threshold")  # no limits set: black, no key
+    assert colours["120"] == CHEMISTRY_LABEL_BLACK
+    assert threshold.chemistry_threshold_key_text is None
+    assert "sample_text" not in threshold.parameter_series_legend[0]
+    bands = {"green_max": 150.0, "yellow_max": 200.0}
+    assert chemistry_label_color(120.0, "threshold", **bands) == CHEMISTRY_LABEL_GREEN
+    assert chemistry_label_color(270.0, "threshold", **bands) == CHEMISTRY_LABEL_RED
+    plt.close("all")

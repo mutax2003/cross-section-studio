@@ -112,8 +112,18 @@ def test_fixed_modes_keep_series_coloured_dots(mode) -> None:
     assert dots == {to_hex(parameter_series_color("Chloride"))}
 
 
-@pytest.mark.parametrize("layout", ["consulting_section", "section_sheet"])
-@pytest.mark.parametrize(("last_n", "span_m"), [(25, 10.0), (35, 20.0)])
+@pytest.mark.parametrize(
+    ("layout", "last_n", "span_m"),
+    [
+        ("consulting_section", 25, 10.0),
+        ("consulting_section", 35, 20.0),
+        # More values than one column holds: the consulting frame widens for a
+        # second label column (renderer_consulting._last_hole_label_room).
+        ("consulting_section", 60, 25.0),
+        ("section_sheet", 25, 10.0),
+        ("section_sheet", 35, 20.0),
+    ],
+)
 def test_crowded_last_hole_keeps_every_value(monkeypatch, layout, last_n, span_m) -> None:
     # 6 holes on letter portrait; the right-most hole has a long, dense list
     # (readings 0.4-0.6 m apart). Every value prints, right of its column,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import re
 import textwrap
 from collections.abc import Sequence
@@ -610,16 +611,8 @@ class ConsultingLayoutMixin:
         # sections keep the 5 m they always had.
         span = max(x_max - x_min, 1.0)
         x_pad = max(track_half + max(0.25 * track_half, 0.3), min(5.0, 0.06 * span))
-        last_hole = str(hole_summary.loc[hole_summary["x_profile"].idxmax(), "hole_id"])
-        if self.profile.show_parameter_labels and any(
-            str(getattr(reading, "hole_id", "")) == last_hole
-            for reading in getattr(self, "environmental_readings", ()) or ()
-        ):
-            # The last hole's values print to its right: leave room for a
-            # ~40 pt label inside the frame (they were shrunk against the
-            # right frame line on portrait pages). Axes width ~ 0.85 x page.
-            axes_width_pt = 0.85 * float(ax.figure.get_size_inches()[0]) * 72.0
-            label_room = 44.0 * span / max(axes_width_pt - 44.0, 1.0)
+        label_room = self._last_hole_label_room(ax, hole_summary, span)
+        if label_room:
             x_pad = max(x_pad, track_half + label_room)
         # The first hole sits at x = 0; an axis starting at exactly 0 cut its
         # left half off. Start slightly negative (column half width + margin)
@@ -2112,6 +2105,32 @@ class ConsultingLayoutMixin:
             unit["draw"]()
             unit["artists"] = [child for child in ax.get_children() if id(child) not in before]
             unit["key"] = key
+
+    def _last_hole_label_room(self, ax, hole_summary: pd.DataFrame, span: float) -> float:
+        """Data-x room right of the last column for its chemistry values (0 if none).
+
+        The last hole's values print to its right: leave room for a ~40 pt
+        label inside the frame (they were shrunk against the right frame line
+        on portrait pages). Axes width ~ 0.85 x page. More values than one
+        column holds (~11 pt per line over ~0.7 of the page height) zig-zag
+        into a second / third column.
+        """
+        if not self.profile.show_parameter_labels or hole_summary.empty:
+            return 0.0
+        last_hole = str(hole_summary.loc[hole_summary["x_profile"].idxmax(), "hole_id"])
+        last_readings = sum(
+            1
+            for reading in getattr(self, "environmental_readings", ()) or ()
+            if str(getattr(reading, "hole_id", "")) == last_hole
+        )
+        if not last_readings:
+            return 0.0
+        width_in, height_in = (float(v) for v in ax.figure.get_size_inches())
+        axes_width_pt = 0.85 * width_in * 72.0
+        column_lines = max(0.7 * height_in * 72.0 / 11.0, 1.0)
+        columns = min(3, max(1, math.ceil(last_readings / column_lines)))
+        label_pt = 44.0 * columns
+        return label_pt * max(span, 1.0) / max(axes_width_pt - label_pt, 1.0)
 
     def fit_consulting_page_margins(self, figure: Figure) -> None:
         """Pull the side margins in when an RL axis label would leave the page.

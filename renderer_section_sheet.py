@@ -122,6 +122,15 @@ class SectionSheetLayoutMixin:
                 self._draw_compact_water_legend(ax)
         self._draw_faults(ax, collar_lookup, hole_summary=hole_summary)
         self._draw_unconformities(ax, collar_lookup, hole_summary=hole_summary)
+        if not hole_summary.empty:
+            # A long list of values on the last hole zig-zags right of it;
+            # widen the frame so none are dropped at the right edge.
+            x_max = float(hole_summary["x_profile"].max())
+            span = x_max - float(hole_summary["x_profile"].min())
+            label_room = self._last_hole_label_room(ax, hole_summary, span)
+            if label_room:
+                left, right = ax.get_xlim()
+                ax.set_xlim(left, max(right, x_max + track_half + label_room))
         self._draw_parameter_readings(
             ax,
             hole_summary,

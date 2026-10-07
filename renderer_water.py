@@ -63,7 +63,12 @@ _LABEL_CANDIDATES: dict[str, list[tuple[float, float, str]]] = {
 # the wrong stick misattributes it. Candidates are (ddx, ddy) shifts in points
 # from the label's base spot; the right side is searched nearest-first, with
 # a fine vertical step so crowded readings stack down/up the column.
-_CHEM_DX_STEPS = (0.0, 6.0, 12.0, 22.0, 34.0)
+# Within _CHEM_NEAR_DY_PT of the reading the nearest spot wins; beyond it
+# sideways steps are cheap (0.25 per point vs 1 per point vertically): a
+# hole's values must keep depth order, so crowded readings fan out into a
+# second column beside their depth instead of cascading down the stick.
+_CHEM_DX_STEPS = (0.0, 6.0, 12.0, 22.0, 34.0, 46.0, 58.0)
+_CHEM_NEAR_DY_PT = 8.0
 _CHEM_DY_STEP_PT = 3.0
 _CHEM_DY_MAX_PT = 150.0
 _CHEM_OFFSETS = sorted(
@@ -73,7 +78,11 @@ _CHEM_OFFSETS = sorted(
         for k in range(int(_CHEM_DY_MAX_PT / _CHEM_DY_STEP_PT) + 1)
         for sign in ((1.0,) if k == 0 else (-1.0, 1.0))
     ),
-    key=lambda item: abs(item[1]) + 1.5 * item[0],
+    key=lambda item: (
+        (0, abs(item[1]) + 1.5 * item[0])
+        if abs(item[1]) <= _CHEM_NEAR_DY_PT
+        else (1, abs(item[1]) + 0.25 * item[0])
+    ),
 )
 # Clear gap (points) between a chemistry label (box/dot included) and the
 # right edge of its own column.
@@ -173,13 +182,16 @@ def _set_chem_fontsize(annotation, size: float) -> None:
         halo.set_fontsize(size)
 
 
-def _place_chem_label(annotation, renderer, fig, *, placed_arr, column_arr, own, pad):
+def _place_chem_label(annotation, renderer, fig, *, placed_arr, column_arr, own, pad, ceiling=np.inf):
     """Right-of-column placement with hard constraints.
 
     The label (box and dot included) must start right of its own column's
     right edge, overlap no borehole column and no placed label, and stay on
-    the page; leaving the axes is only penalised. Returns the chosen (dx, dy),
-    or None when nothing fits at any font size (the caller drops the label).
+    the page; leaving the axes is only penalised. Its centre must also sit
+    below ``ceiling`` (display y of the hole's previous, shallower label) so a
+    hole's values keep their readings' depth order. Returns the chosen
+    (dx, dy), or None when nothing fits at any font size (the caller drops
+    the label).
     """
     base = annotation._water_base_xyann
     if not hasattr(annotation, "_chem_base_fontsize"):
@@ -206,10 +218,14 @@ def _place_chem_label(annotation, renderer, fig, *, placed_arr, column_arr, own,
             # title block; sideways past the frame is only penalised.
             if box.y0 < frame.y0 or box.y1 > frame.y1:
                 continue
+            if 0.5 * (box.y0 + box.y1) >= ceiling:
+                continue
             if placed_arr.overlap(box.padded(pad)) > 0.0:
                 continue
             outside = _outside_area(box, frame)
-            if best is None or outside < best[0]:
+            # Tolerance: the overhang is the same for every dy at one dx, and
+            # float noise must not pull a label far from its reading.
+            if best is None or outside < best[0] - 0.5:
                 best = (outside, (base[0] + ddx, base[1] + ddy))
             if outside == 0.0:
                 break
@@ -218,6 +234,34 @@ def _place_chem_label(annotation, renderer, fig, *, placed_arr, column_arr, own,
     _set_chem_fontsize(annotation, annotation._chem_base_fontsize)
     annotation.xyann = base
     return None
+
+
+def _chem_anchor(annotation) -> tuple[float, float]:
+    x, y = annotation.axes.transData.transform([annotation.xy])[0]
+    return float(x), float(y)
+
+
+def _chem_hole_key(annotation) -> float:
+    """Chemistry labels of one hole share the anchor x (its column's right edge)."""
+    return round(_chem_anchor(annotation)[0], 1)
+
+
+def _chem_depth_ordered(labels: list) -> list:
+    """Reorder each hole's chemistry labels top-down (shallowest first on the page).
+
+    The slots a hole's labels occupy in the placement order are kept, so the
+    interleaving with other holes and label kinds is unchanged.
+    """
+    slots: dict[float, list[int]] = {}
+    for index, (kind, annotation, _color) in enumerate(labels):
+        if kind == "chem":
+            slots.setdefault(_chem_hole_key(annotation), []).append(index)
+    result = list(labels)
+    for indices in slots.values():
+        by_depth = sorted((labels[i] for i in indices), key=lambda item: -_chem_anchor(item[1])[1])
+        for slot, item in zip(indices, by_depth):
+            result[slot] = item
+    return result
 
 
 _LEADER_THRESHOLD_PT = 14.0
@@ -528,7 +572,10 @@ class RendererWaterMixin:
         # column hides the stick/markers, and over a neighbour's column it
         # misattributes the value.
         column_boxes = self._column_obstacle_boxes(fig)
-        ordered = sorted(labels, key=lambda item: _LABEL_PRIORITY.get(item[0], 9))
+        ordered = _chem_depth_ordered(sorted(labels, key=lambda item: _LABEL_PRIORITY.get(item[0], 9)))
+        # Display y of each hole's lowest placed chemistry label: the next
+        # (deeper) value of that hole must land below it.
+        chem_ceiling: dict[float, float] = {}
         # Obstacles as an (N, 4) array: with hundreds of labels x dozens of
         # candidates the per-box Python loop dominated render time.
         placed_arr = _ObstacleArray(placed)
@@ -539,6 +586,7 @@ class RendererWaterMixin:
                 annotation._water_base_xyann = tuple(annotation.xyann)
             base = annotation._water_base_xyann
             if kind == "chem":
+                hole_key = _chem_hole_key(annotation)
                 spot = _place_chem_label(
                     annotation,
                     renderer,
@@ -547,6 +595,7 @@ class RendererWaterMixin:
                     column_arr=column_arr,
                     own=_own_column(annotation, column_boxes),
                     pad=pad,
+                    ceiling=chem_ceiling.get(hole_key, np.inf),
                 )
                 if spot is None:
                     # Nowhere right of its column is free: keep the stick/marker,
@@ -558,7 +607,9 @@ class RendererWaterMixin:
                 dx, dy = spot
                 annotation.xyann = (dx, dy)
                 _sync_label_companions(annotation, fig, dx, dy, "left")
-                final_box = _chem_footprint(annotation, renderer).padded(pad)
+                chem_box = _chem_footprint(annotation, renderer)
+                chem_ceiling[hole_key] = 0.5 * (chem_box.y0 + chem_box.y1)
+                final_box = chem_box.padded(pad)
                 placed.append(final_box)
                 placed_arr.add(final_box)
                 shift = max(abs(dy - base[1]), abs(dx - base[0]))

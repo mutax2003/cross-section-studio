@@ -522,7 +522,11 @@ def _build_consulting_title_block(
     logo_prepared_by_bytes: bytes | None,
 ) -> ConsultingTitleBlock:
     notes = tuple(line.strip() for line in notes_text.splitlines() if line.strip())
+    # Only a scale the user entered is passed on; left blank, the title block
+    # prints "AS SHOWN" and defers to the true-scale bar.
+    scale_kwargs = {"map_scale": map_scale.strip()} if map_scale.strip() else {}
     return ConsultingTitleBlock(
+        **scale_kwargs,
         section_label=section_label or section_title,
         transect_start_label=transect_start_label.strip(),
         transect_end_label=transect_end_label.strip(),
@@ -530,7 +534,6 @@ def _build_consulting_title_block(
         transect_start_secondary=transect_start_secondary.strip(),
         transect_end_primary=transect_end_primary.strip(),
         transect_end_secondary=transect_end_secondary.strip(),
-        map_scale=map_scale.strip() or "1:1000",
         figure_number=figure_number.strip(),
         project_number=project_number.strip(),
         source=source.strip(),

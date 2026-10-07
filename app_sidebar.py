@@ -1009,7 +1009,8 @@ def _render_import_settings(*, expanded: bool = False) -> tuple[str, str | None,
 def _seed_title_block_defaults() -> None:
     """Init keyed title-block widgets only when absent (keeps Project-sheet seeding)."""
     if "consulting_map_scale" not in st.session_state:
-        st.session_state.consulting_map_scale = "1:1000"
+        # Blank = "AS SHOWN": the drawn scale bar is true to scale.
+        st.session_state.consulting_map_scale = ""
     if "consulting_notes" not in st.session_state:
         st.session_state.consulting_notes = "\n".join(_default_consulting_notes())
     for key in (
@@ -1064,7 +1065,13 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
             "Start label (used if no start letter)", key="consulting_start_label"
         )
         transect_end_label = st.text_input("End label (used if no end letter)", key="consulting_end_label")
-        map_scale = st.text_input("Map scale", key="consulting_map_scale")
+        map_scale = st.text_input(
+            "Map scale",
+            key="consulting_map_scale",
+            placeholder="As shown (scale bar)",
+            help="Leave blank to print AS SHOWN; the scale bar is drawn true to scale. "
+            "A value you enter (e.g. 1:1000) is printed as written.",
+        )
         source = st.text_input("Source", key="consulting_source")
         drawn_by = st.text_input("Drawn by", key="consulting_drawn_by")
         revised = st.text_input("Revised", key="consulting_revised")

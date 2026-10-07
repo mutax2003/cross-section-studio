@@ -79,6 +79,16 @@ def check_workbook_row_counts(source: WorkbookSource, *, limit: int = MAX_WORKBO
             source.seek(0)
 
 
+def _close_owned_workbook(workbook: pd.ExcelFile | None) -> None:
+    """Close an ExcelFile this module opened (releases the Windows file lock)."""
+    if workbook is None:
+        return
+    try:
+        workbook.close()
+    except Exception:  # pragma: no cover - closing must never mask a parse result
+        logger.debug("Failed to close workbook handle", exc_info=True)
+
+
 def _as_excel(source: WorkbookSource) -> pd.ExcelFile:
     if isinstance(source, pd.ExcelFile):
         return source
@@ -322,199 +332,204 @@ class DataParser:
         data_entry_precedence_warnings: list[str] = []
         data_entry = None
         supplied_geology = collars_df is not None and lithology_df is not None
+        _owned_workbook = None
         if workbook is None:
             try:
                 workbook = _as_excel(source)
+                _owned_workbook = workbook if workbook is not source else None
             except Exception:
                 if not supplied_geology:
                     raise
                 workbook = None
-        if supplied_geology:
-            collars_frame = _normalize_columns(collars_df)
-            lithology_frame = _normalize_columns(lithology_df)
-        else:
-            data_entry_sheet = self._find_sheet(workbook.sheet_names, "Data Entry")
-            collars_name = collars_sheet or self.COLLARS_SHEET
-            lithology_name = lithology_sheet or self.LITHOLOGY_SHEET
-            has_native = (
-                self._find_sheet(workbook.sheet_names, collars_name) is not None
-                and self._find_sheet(workbook.sheet_names, lithology_name) is not None
-            )
-            if data_entry_sheet:
-                from workbook_template import parse_data_entry_sheet
-
-                entry_frame = pd.read_excel(workbook, sheet_name=data_entry_sheet, header=None)
-                data_entry = parse_data_entry_sheet(entry_frame)
-                if not data_entry.environmental.empty:
-                    environmental_frame = _normalize_columns(data_entry.environmental)
-
-            if data_entry is not None and not has_native:
-                collars_frame = _normalize_columns(data_entry.collars)
-                lithology_frame = _normalize_columns(data_entry.lithology)
+        try:
+            if supplied_geology:
+                collars_frame = _normalize_columns(collars_df)
+                lithology_frame = _normalize_columns(lithology_df)
             else:
-                missing = [
-                    sheet
-                    for sheet in (collars_name, lithology_name)
-                    if self._find_sheet(workbook.sheet_names, sheet) is None
-                ]
-                if missing:
-                    raise ValueError(f"Missing required sheet(s): {', '.join(missing)}")
+                data_entry_sheet = self._find_sheet(workbook.sheet_names, "Data Entry")
+                collars_name = collars_sheet or self.COLLARS_SHEET
+                lithology_name = lithology_sheet or self.LITHOLOGY_SHEET
+                has_native = (
+                    self._find_sheet(workbook.sheet_names, collars_name) is not None
+                    and self._find_sheet(workbook.sheet_names, lithology_name) is not None
+                )
+                if data_entry_sheet:
+                    from workbook_template import parse_data_entry_sheet
 
-                # Read by the sheet's actual name: detection is case-insensitive.
-                collars_frame = _normalize_columns(
-                    pd.read_excel(
-                        workbook, sheet_name=self._find_sheet(workbook.sheet_names, collars_name)
-                    )
-                )
-                lithology_frame = _normalize_columns(
-                    pd.read_excel(
-                        workbook, sheet_name=self._find_sheet(workbook.sheet_names, lithology_name)
-                    )
-                )
-                # Empty header-only native tabs: fall back to Data Entry geology when present.
-                if (
-                    data_entry is not None
-                    and not data_entry.collars.empty
-                    and not data_entry.lithology.empty
-                    and not self._frame_has_hole_rows(collars_frame)
-                ):
+                    entry_frame = pd.read_excel(workbook, sheet_name=data_entry_sheet, header=None)
+                    data_entry = parse_data_entry_sheet(entry_frame)
+                    if not data_entry.environmental.empty:
+                        environmental_frame = _normalize_columns(data_entry.environmental)
+
+                if data_entry is not None and not has_native:
                     collars_frame = _normalize_columns(data_entry.collars)
                     lithology_frame = _normalize_columns(data_entry.lithology)
+                else:
+                    missing = [
+                        sheet
+                        for sheet in (collars_name, lithology_name)
+                        if self._find_sheet(workbook.sheet_names, sheet) is None
+                    ]
+                    if missing:
+                        raise ValueError(f"Missing required sheet(s): {', '.join(missing)}")
 
-        collars, collar_errors = self._parse_collars(collars_frame)
-        lithologies, lithology_errors = self._parse_lithologies(lithology_frame, collars)
+                    # Read by the sheet's actual name: detection is case-insensitive.
+                    collars_frame = _normalize_columns(
+                        pd.read_excel(
+                            workbook, sheet_name=self._find_sheet(workbook.sheet_names, collars_name)
+                        )
+                    )
+                    lithology_frame = _normalize_columns(
+                        pd.read_excel(
+                            workbook, sheet_name=self._find_sheet(workbook.sheet_names, lithology_name)
+                        )
+                    )
+                    # Empty header-only native tabs: fall back to Data Entry geology when present.
+                    if (
+                        data_entry is not None
+                        and not data_entry.collars.empty
+                        and not data_entry.lithology.empty
+                        and not self._frame_has_hole_rows(collars_frame)
+                    ):
+                        collars_frame = _normalize_columns(data_entry.collars)
+                        lithology_frame = _normalize_columns(data_entry.lithology)
 
-        if data_entry is not None:
-            # Data Entry overlay rows win over native optional tabs, but only
-            # when they reference the winning collar universe — otherwise the
-            # native tabs stay in effect (and no misleading warning is emitted).
-            valid_ids = {collar.hole_id for collar in collars}
+            collars, collar_errors = self._parse_collars(collars_frame)
+            lithologies, lithology_errors = self._parse_lithologies(lithology_frame, collars)
 
-            def _data_entry_matches(frame: pd.DataFrame, label: str) -> bool:
-                ids = {
-                    _clean_text(value)
-                    for value in frame.get("hole_id", [])
-                    if not self._blank_hole_id(value)
-                }
-                if not valid_ids or bool(ids & valid_ids):
-                    return True
-                data_entry_precedence_warnings.append(
-                    f"Data Entry {label} rows ignored: hole_ids do not match Collars "
-                    f"({', '.join(sorted(ids)) or 'blank'})."
+            if data_entry is not None:
+                # Data Entry overlay rows win over native optional tabs, but only
+                # when they reference the winning collar universe — otherwise the
+                # native tabs stay in effect (and no misleading warning is emitted).
+                valid_ids = {collar.hole_id for collar in collars}
+
+                def _data_entry_matches(frame: pd.DataFrame, label: str) -> bool:
+                    ids = {
+                        _clean_text(value)
+                        for value in frame.get("hole_id", [])
+                        if not self._blank_hole_id(value)
+                    }
+                    if not valid_ids or bool(ids & valid_ids):
+                        return True
+                    data_entry_precedence_warnings.append(
+                        f"Data Entry {label} rows ignored: hole_ids do not match Collars "
+                        f"({', '.join(sorted(ids)) or 'blank'})."
+                    )
+                    return False
+
+                if not data_entry.water.empty:
+                    candidate = _normalize_columns(data_entry.water)
+                    if _data_entry_matches(candidate, "water"):
+                        water_frame = candidate
+                        if self._native_optional_sheet_has_rows(workbook, self.WATER_SHEET):
+                            data_entry_precedence_warnings.append(
+                                "Native Water sheet was ignored because Data Entry supplied water rows."
+                            )
+                if not data_entry.screens.empty:
+                    candidate = _normalize_columns(data_entry.screens)
+                    if _data_entry_matches(candidate, "screen"):
+                        screens_frame = candidate
+                        if self._native_optional_sheet_has_rows(workbook, self.SCREENS_SHEET):
+                            data_entry_precedence_warnings.append(
+                                "Native Screens sheet was ignored because Data Entry supplied screen rows."
+                            )
+                if not data_entry.gradients.empty:
+                    candidate = _normalize_columns(data_entry.gradients)
+                    if _data_entry_matches(candidate, "gradient"):
+                        gradients_frame = candidate
+                        if self._native_optional_sheet_has_rows(workbook, self.GRADIENTS_SHEET):
+                            data_entry_precedence_warnings.append(
+                                "Native Gradients sheet was ignored because Data Entry supplied gradient rows."
+                            )
+            water_levels: list[WaterLevel] = []
+            water_errors: list[str] = []
+            deviation_readings: list[DeviationReading] = []
+            correlation_overrides: list[CorrelationOverride] = []
+            environmental_readings: list[EnvironmentalReading] = []
+            environmental_errors: list[str] = []
+            faults: list[Fault] = []
+            unconformities: list[Unconformity] = []
+            screen_intervals: list[ScreenInterval] = []
+            vertical_gradients: list[VerticalGradient] = []
+            screen_errors: list[str] = []
+            gradient_errors: list[str] = []
+            structure_errors: list[str] = []
+            section_specs: list[WorkbookSectionSpec] = []
+            if water_df is not None:
+                water_levels, water_errors = self._parse_water_levels(
+                    _normalize_columns(water_df), collars
                 )
-                return False
-
-            if not data_entry.water.empty:
-                candidate = _normalize_columns(data_entry.water)
-                if _data_entry_matches(candidate, "water"):
-                    water_frame = candidate
-                    if self._native_optional_sheet_has_rows(workbook, self.WATER_SHEET):
-                        data_entry_precedence_warnings.append(
-                            "Native Water sheet was ignored because Data Entry supplied water rows."
-                        )
-            if not data_entry.screens.empty:
-                candidate = _normalize_columns(data_entry.screens)
-                if _data_entry_matches(candidate, "screen"):
-                    screens_frame = candidate
-                    if self._native_optional_sheet_has_rows(workbook, self.SCREENS_SHEET):
-                        data_entry_precedence_warnings.append(
-                            "Native Screens sheet was ignored because Data Entry supplied screen rows."
-                        )
-            if not data_entry.gradients.empty:
-                candidate = _normalize_columns(data_entry.gradients)
-                if _data_entry_matches(candidate, "gradient"):
-                    gradients_frame = candidate
-                    if self._native_optional_sheet_has_rows(workbook, self.GRADIENTS_SHEET):
-                        data_entry_precedence_warnings.append(
-                            "Native Gradients sheet was ignored because Data Entry supplied gradient rows."
-                        )
-        water_levels: list[WaterLevel] = []
-        water_errors: list[str] = []
-        deviation_readings: list[DeviationReading] = []
-        correlation_overrides: list[CorrelationOverride] = []
-        environmental_readings: list[EnvironmentalReading] = []
-        environmental_errors: list[str] = []
-        faults: list[Fault] = []
-        unconformities: list[Unconformity] = []
-        screen_intervals: list[ScreenInterval] = []
-        vertical_gradients: list[VerticalGradient] = []
-        screen_errors: list[str] = []
-        gradient_errors: list[str] = []
-        structure_errors: list[str] = []
-        section_specs: list[WorkbookSectionSpec] = []
-        if water_df is not None:
-            water_levels, water_errors = self._parse_water_levels(
-                _normalize_columns(water_df), collars
-            )
-        elif workbook is not None:
-            if water_frame is None:
-                water_sheet = self._find_sheet(workbook.sheet_names, self.WATER_SHEET)
-                if water_sheet:
-                    water_frame = _normalize_columns(pd.read_excel(workbook, sheet_name=water_sheet))
-            if water_frame is not None and not water_frame.empty:
-                water_levels, water_errors = self._parse_water_levels(water_frame, collars)
-            if environmental_frame is not None and not environmental_frame.empty:
-                environmental_readings, environmental_errors = self._parse_environmental_dataframe(
-                    environmental_frame, collars
-                )
-            else:
-                environmental_readings, environmental_errors = self._parse_environmental_sheet(
+            elif workbook is not None:
+                if water_frame is None:
+                    water_sheet = self._find_sheet(workbook.sheet_names, self.WATER_SHEET)
+                    if water_sheet:
+                        water_frame = _normalize_columns(pd.read_excel(workbook, sheet_name=water_sheet))
+                if water_frame is not None and not water_frame.empty:
+                    water_levels, water_errors = self._parse_water_levels(water_frame, collars)
+                if environmental_frame is not None and not environmental_frame.empty:
+                    environmental_readings, environmental_errors = self._parse_environmental_dataframe(
+                        environmental_frame, collars
+                    )
+                else:
+                    environmental_readings, environmental_errors = self._parse_environmental_sheet(
+                        workbook, collars
+                    )
+                field_readings, field_errors = self._parse_field_data_environmental_sheet(
                     workbook, collars
                 )
-            field_readings, field_errors = self._parse_field_data_environmental_sheet(
-                workbook, collars
+                environmental_readings.extend(field_readings)
+                environmental_errors.extend(field_errors)
+                if screens_frame is not None and not screens_frame.empty:
+                    screen_intervals, screen_errors = self._parse_screens_dataframe(screens_frame, collars)
+                else:
+                    screen_intervals, screen_errors = self._parse_screens_sheet(workbook, collars)
+                if gradients_frame is not None and not gradients_frame.empty:
+                    vertical_gradients, gradient_errors = self._parse_gradients_dataframe(
+                        gradients_frame, collars
+                    )
+                else:
+                    vertical_gradients, gradient_errors = self._parse_gradients_sheet(workbook, collars)
+                deviation_readings = self._parse_deviation_sheet(workbook, structure_errors)
+                correlation_overrides = self._parse_correlation_sheet(workbook)
+                faults = self._parse_fault_sheet(workbook, structure_errors)
+                unconformities = self._parse_unconformity_sheet(workbook, structure_errors)
+
+            if workbook is not None:
+                section_specs = self._parse_sections_sheet(workbook, collars, structure_errors)
+
+            if lithology_aliases:
+                lithologies = self._apply_lithology_aliases(lithologies, lithology_aliases)
+
+            errors = tuple(
+                collar_errors
+                + lithology_errors
+                + water_errors
+                + screen_errors
+                + gradient_errors
+                + environmental_errors
+                + structure_errors
+                + data_entry_precedence_warnings
             )
-            environmental_readings.extend(field_readings)
-            environmental_errors.extend(field_errors)
-            if screens_frame is not None and not screens_frame.empty:
-                screen_intervals, screen_errors = self._parse_screens_dataframe(screens_frame, collars)
-            else:
-                screen_intervals, screen_errors = self._parse_screens_sheet(workbook, collars)
-            if gradients_frame is not None and not gradients_frame.empty:
-                vertical_gradients, gradient_errors = self._parse_gradients_dataframe(
-                    gradients_frame, collars
-                )
-            else:
-                vertical_gradients, gradient_errors = self._parse_gradients_sheet(workbook, collars)
-            deviation_readings = self._parse_deviation_sheet(workbook, structure_errors)
-            correlation_overrides = self._parse_correlation_sheet(workbook)
-            faults = self._parse_fault_sheet(workbook, structure_errors)
-            unconformities = self._parse_unconformity_sheet(workbook, structure_errors)
+            if errors:
+                for message in errors:
+                    logger.warning("Parse issue: %s", message)
 
-        if workbook is not None:
-            section_specs = self._parse_sections_sheet(workbook, collars, structure_errors)
-
-        if lithology_aliases:
-            lithologies = self._apply_lithology_aliases(lithologies, lithology_aliases)
-
-        errors = tuple(
-            collar_errors
-            + lithology_errors
-            + water_errors
-            + screen_errors
-            + gradient_errors
-            + environmental_errors
-            + structure_errors
-            + data_entry_precedence_warnings
-        )
-        if errors:
-            for message in errors:
-                logger.warning("Parse issue: %s", message)
-
-        return ParseResult(
-            collars=tuple(collars),
-            lithologies=tuple(lithologies),
-            errors=errors,
-            water_levels=tuple(water_levels),
-            screen_intervals=tuple(screen_intervals),
-            vertical_gradients=tuple(vertical_gradients),
-            deviation_readings=tuple(deviation_readings),
-            correlation_overrides=tuple(correlation_overrides),
-            faults=tuple(faults),
-            unconformities=tuple(unconformities),
-            environmental_readings=tuple(environmental_readings),
-            section_specs=tuple(section_specs),
-        )
+            return ParseResult(
+                collars=tuple(collars),
+                lithologies=tuple(lithologies),
+                errors=errors,
+                water_levels=tuple(water_levels),
+                screen_intervals=tuple(screen_intervals),
+                vertical_gradients=tuple(vertical_gradients),
+                deviation_readings=tuple(deviation_readings),
+                correlation_overrides=tuple(correlation_overrides),
+                faults=tuple(faults),
+                unconformities=tuple(unconformities),
+                environmental_readings=tuple(environmental_readings),
+                section_specs=tuple(section_specs),
+            )
+        finally:
+            _close_owned_workbook(_owned_workbook)
 
     def _apply_lithology_aliases(
         self,

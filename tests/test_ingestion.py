@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import gc
 import sys
+import warnings
 from io import BytesIO
 from pathlib import Path
 
@@ -467,9 +469,68 @@ def test_screens_and_gradients_sheets_parsed() -> None:
 
 
 def test_parse_file_reuses_open_excel_file() -> None:
-    result = DataParser().parse_file(pd.ExcelFile(SAMPLE_WORKBOOK))
+    with pd.ExcelFile(SAMPLE_WORKBOOK) as workbook:
+        result = DataParser().parse_file(workbook)
+        # A caller-owned ExcelFile is borrowed, not closed, by the parser.
+        assert workbook.parse(workbook.sheet_names[0], nrows=1) is not None
     assert result.collars
     assert result.lithologies
+
+
+def _assert_no_unclosed_file_warnings(action, scope: Path) -> object:
+    gc.collect()  # flush handles leaked by earlier tests so they are not blamed here
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ResourceWarning)
+        value = action()
+        gc.collect()
+    leaked = [
+        w
+        for w in caught
+        if issubclass(w.category, ResourceWarning) and str(scope) in str(w.message)
+    ]
+    assert not leaked, [str(w.message) for w in leaked]
+    return value
+
+
+@pytest.mark.parametrize(
+    "entry_point",
+    ["parse_file", "ingest_workbook", "detect", "export_platform_workbook"],
+)
+def test_workbook_handle_released_after_parse(tmp_path: Path, entry_point: str) -> None:
+    """Parsing from a path must not keep the file open (Windows locks open workbooks)."""
+    path = tmp_path / "upload.xlsx"
+    path.write_bytes(Path(SAMPLE_WORKBOOK).read_bytes())
+
+    def run() -> object:
+        if entry_point == "parse_file":
+            return DataParser().parse_file(path)
+        if entry_point == "ingest_workbook":
+            return ingest_workbook(path)
+        if entry_point == "detect":
+            return FormatDetector().detect(path)
+        return export_platform_workbook(path, tmp_path / "out" / "platform.xlsx")
+
+    assert _assert_no_unclosed_file_warnings(run, tmp_path)
+    # Rename + delete succeed on every platform only when no handle is held.
+    renamed = path.rename(tmp_path / "renamed.xlsx")
+    renamed.unlink()
+    assert not renamed.exists()
+
+
+def test_workbook_handle_released_on_parse_error(tmp_path: Path) -> None:
+    path = tmp_path / "missing_sheets.xlsx"
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        pd.DataFrame({"a": [1]}).to_excel(writer, sheet_name="Other", index=False)
+
+    def run() -> None:
+        with pytest.raises(ValueError):
+            DataParser().parse_file(path)
+        with pytest.raises(ValueError):
+            ingest_workbook(path)
+
+    _assert_no_unclosed_file_warnings(run, tmp_path)
+    path.unlink()
+    assert not path.exists()
 
 
 def test_screens_and_gradients_unknown_hole_surface_errors() -> None:

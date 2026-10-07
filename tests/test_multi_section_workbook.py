@@ -519,25 +519,26 @@ def test_site_wide_unit_order_correlates_units_across_each_section(site_ingest, 
     assert not geometry.overlap_pairs
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known gap: with no unit_order column, parse_ops.assign_missing_unit_orders numbers "
-        "each hole 1..n by depth, and stratigraphy keys on (unit_order, code), so a unit "
-        "present in only some holes (Silt, upper Sand, Gravel) shifts every deeper number "
-        "and the aquifer stops correlating with its neighbours."
-    ),
-)
 def test_auto_unit_order_still_correlates_the_aquifer() -> None:
+    """With no unit_order column the app aligns one site-wide sequence, so units
+    present in only some holes (Silt, upper Sand, Gravel) don't shift deeper ones."""
     from ingestion import ingest_workbook
 
     parse_result, report = ingest_workbook(
         BytesIO(build_site_workbook_bytes(site_unit_order=False))
     )
     assert any("assigned unit_order" in warning for warning in report.warnings)
+    # The aligned numbering reproduces the geologist's site-wide column exactly.
+    explicit, _ = ingest_workbook(BytesIO(build_site_workbook_bytes(site_unit_order=True)))
+
+    def numbering(result) -> list[tuple[str, float, int | None]]:
+        return sorted((lit.hole_id, lit.from_depth, lit.unit_order) for lit in result.lithologies)
+
+    assert numbering(parse_result) == numbering(explicit)
     for label, holes in SECTIONS.items():
         geometry = _section_geometry(parse_result, holes)
         assert _continuous_pairs(geometry, "Sand and Gravel") == len(holes) - 1, label
+        assert _continuous_pairs(geometry, "Clay") == 2 * (len(holes) - 1), label
 
 
 # ---------------------------------------------------------------------------

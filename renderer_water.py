@@ -84,6 +84,39 @@ _CHEM_OFFSETS = sorted(
         else (1, abs(item[1]) + 0.25 * item[0])
     ),
 )
+# Crowded-hole fallback (a hole whose values would otherwise be dropped, e.g.
+# a long list on the last hole): sideways steps are nearly free so values
+# zig-zag between two or more columns right of the stick (each only needs to
+# sit below the previous value's centre), the vertical search reaches the
+# whole frame, values sit one label pad apart (not two), and the text may
+# shrink a little further. Level 1 keeps the normal sizes; level 2 starts one
+# step smaller so every value fits.
+_CHEM_COMPACT_DX_STEPS = (0.0, 6.0, 12.0, 22.0, 30.0, 38.0, 46.0, 58.0, 72.0, 88.0, 104.0, 120.0)
+_CHEM_COMPACT_DY_MAX_PT = 720.0
+_CHEM_COMPACT_DX_COST = 0.05
+_CHEM_COMPACT_FONT_SCALES = {1: (1.0, 0.88, 0.76), 2: (0.88, 0.76, 0.68)}
+_CHEM_MAX_COMPACT_LEVEL = 2
+
+
+def _compact_chem_offsets() -> list[tuple[float, float]]:
+    return sorted(
+        (
+            (ddx, sign * k * _CHEM_DY_STEP_PT)
+            for ddx in _CHEM_COMPACT_DX_STEPS
+            for k in range(int(_CHEM_COMPACT_DY_MAX_PT / _CHEM_DY_STEP_PT) + 1)
+            for sign in ((1.0,) if k == 0 else (-1.0, 1.0))
+        ),
+        key=lambda item: (
+            (0, abs(item[1]) + 1.5 * item[0])
+            if abs(item[1]) <= _CHEM_NEAR_DY_PT
+            else (1, abs(item[1]) + _CHEM_COMPACT_DX_COST * item[0])
+        ),
+    )
+
+
+_CHEM_COMPACT_OFFSETS = _compact_chem_offsets()
+_CHEM_OFFSETS_ARR = np.asarray(_CHEM_OFFSETS, dtype=float)
+_CHEM_COMPACT_OFFSETS_ARR = np.asarray(_CHEM_COMPACT_OFFSETS, dtype=float)
 # Clear gap (points) between a chemistry label (box/dot included) and the
 # right edge of its own column.
 _CHEM_COLUMN_GAP_PT = 2.0
@@ -125,6 +158,19 @@ class _ObstacleArray:
         w = np.minimum(self._arr[:, 2], box.x1) - np.maximum(self._arr[:, 0], box.x0)
         h = np.minimum(self._arr[:, 3], box.y1) - np.maximum(self._arr[:, 1], box.y0)
         return float(np.sum(np.clip(w, 0.0, None) * np.clip(h, 0.0, None)))
+
+    def overlaps_many(self, boxes: np.ndarray) -> np.ndarray:
+        """Boolean per row of ``boxes`` (K, 4): does it overlap any stored box?"""
+        if self._arr.shape[0] == 0 or boxes.shape[0] == 0:
+            return np.zeros(boxes.shape[0], dtype=bool)
+        hit = np.zeros(boxes.shape[0], dtype=bool)
+        # Chunked so K candidates x N obstacles stays small in memory.
+        for start in range(0, self._arr.shape[0], 256):
+            arr = self._arr[start : start + 256]
+            w = np.minimum(arr[None, :, 2], boxes[:, None, 2]) - np.maximum(arr[None, :, 0], boxes[:, None, 0])
+            h = np.minimum(arr[None, :, 3], boxes[:, None, 3]) - np.maximum(arr[None, :, 1], boxes[:, None, 1])
+            hit |= np.any((w > 0.0) & (h > 0.0), axis=1)
+        return hit
 
 
 def _set_label_visible(annotation, visible: bool) -> None:
@@ -182,16 +228,19 @@ def _set_chem_fontsize(annotation, size: float) -> None:
         halo.set_fontsize(size)
 
 
-def _place_chem_label(annotation, renderer, fig, *, placed_arr, column_arr, own, pad, ceiling=np.inf):
+def _place_chem_label(
+    annotation, renderer, fig, *, placed_arr, column_arr, own, pad, ceiling=np.inf, compact=0
+):
     """Right-of-column placement with hard constraints.
 
     The label (box and dot included) must start right of its own column's
     right edge, overlap no borehole column and no placed label, and stay on
     the page; leaving the axes is only penalised. Its centre must also sit
     below ``ceiling`` (display y of the hole's previous, shallower label) so a
-    hole's values keep their readings' depth order. Returns the chosen
-    (dx, dy), or None when nothing fits at any font size (the caller drops
-    the label).
+    hole's values keep their readings' depth order. ``compact`` (1 or 2)
+    switches a crowded hole to the zig-zag / full-frame / smaller-text
+    fallback. Returns the chosen (dx, dy), or None when nothing fits at any
+    font size (the caller drops the label).
     """
     base = annotation._water_base_xyann
     if not hasattr(annotation, "_chem_base_fontsize"):
@@ -201,36 +250,61 @@ def _place_chem_label(annotation, renderer, fig, *, placed_arr, column_arr, own,
     px_per_pt = renderer.points_to_pixels(1.0)
     min_x0 = own.x1 + _CHEM_COLUMN_GAP_PT * px_per_pt if own is not None else -np.inf
     annotation.set_horizontalalignment("left")
-    for scale in _CHEM_FONT_SCALES:
+    if compact:
+        scales = _CHEM_COMPACT_FONT_SCALES[min(compact, _CHEM_MAX_COMPACT_LEVEL)]
+        offsets = _CHEM_COMPACT_OFFSETS_ARR
+    else:
+        scales = _CHEM_FONT_SCALES
+        offsets = _CHEM_OFFSETS_ARR
+    for scale in scales:
         _set_chem_fontsize(annotation, annotation._chem_base_fontsize * scale)
         annotation.xyann = base
         # With ha fixed the footprint only translates with the offset, so it
-        # is measured once per font size and shifted per candidate.
+        # is measured once per font size and shifted per candidate (all
+        # candidates at once).
         box0 = _chem_footprint(annotation, renderer)
         ddx_min = max(0.0, (min_x0 - box0.x0) / px_per_pt)
-        best: tuple[float, tuple[float, float]] | None = None
-        for ddx, ddy in _CHEM_OFFSETS:
-            ddx += ddx_min
-            box = box0.translated(ddx * px_per_pt, ddy * px_per_pt)
-            if column_arr.overlap(box) > 0.0 or _outside_area(box, page) > 0.0:
-                continue
-            # Above/below the plot it would land on headers, notes or the
-            # title block; sideways past the frame is only penalised.
-            if box.y0 < frame.y0 or box.y1 > frame.y1:
-                continue
-            if 0.5 * (box.y0 + box.y1) >= ceiling:
-                continue
-            if placed_arr.overlap(box.padded(pad)) > 0.0:
-                continue
-            outside = _outside_area(box, frame)
+        ddx = offsets[:, 0] + ddx_min
+        ddy = offsets[:, 1]
+        sx = ddx * px_per_pt
+        sy = ddy * px_per_pt
+        boxes = np.column_stack((box0.x0 + sx, box0.y0 + sy, box0.x1 + sx, box0.y1 + sy))
+        # On the page; above/below the plot it would land on headers, notes
+        # or the title block (sideways past the frame is only penalised);
+        # below the hole's previous value.
+        ok = (
+            (boxes[:, 0] >= page.x0)
+            & (boxes[:, 2] <= page.x1)
+            & (boxes[:, 1] >= max(page.y0, frame.y0))
+            & (boxes[:, 3] <= min(page.y1, frame.y1))
+            & (0.5 * (boxes[:, 1] + boxes[:, 3]) < ceiling)
+        )
+        idx = np.flatnonzero(ok)
+        if idx.size:
+            idx = idx[~column_arr.overlaps_many(boxes[idx])]
+        if idx.size:
+            # Placed boxes already carry the pad; a crowded hole's candidates
+            # skip their own so values stack one pad apart instead of two.
+            own_pad = 0.0 if compact else pad
+            padded = boxes[idx] + np.array([-own_pad, -own_pad, own_pad, own_pad])
+            idx = idx[~placed_arr.overlaps_many(padded)]
+        if not idx.size:
+            continue
+        cand = boxes[idx]
+        inside_w = np.clip(np.minimum(cand[:, 2], frame.x1) - np.maximum(cand[:, 0], frame.x0), 0.0, None)
+        inside_h = np.clip(np.minimum(cand[:, 3], frame.y1) - np.maximum(cand[:, 1], frame.y0), 0.0, None)
+        outside = (cand[:, 2] - cand[:, 0]) * (cand[:, 3] - cand[:, 1]) - inside_w * inside_h
+        best: tuple[float, int] | None = None
+        for position, value in enumerate(outside.tolist()):
             # Tolerance: the overhang is the same for every dy at one dx, and
             # float noise must not pull a label far from its reading.
-            if best is None or outside < best[0] - 0.5:
-                best = (outside, (base[0] + ddx, base[1] + ddy))
-            if outside == 0.0:
+            if best is None or value < best[0] - 0.5:
+                best = (value, position)
+            if value <= 0.0:
                 break
-        if best is not None:
-            return best[1]
+        assert best is not None
+        chosen = int(idx[best[1]])
+        return (base[0] + float(ddx[chosen]), base[1] + float(ddy[chosen]))
     _set_chem_fontsize(annotation, annotation._chem_base_fontsize)
     annotation.xyann = base
     return None
@@ -541,6 +615,23 @@ class RendererWaterMixin:
         if not labels:
             return
         renderer = _figure_renderer(fig)
+        # A hole whose values would be dropped is re-placed in compact mode
+        # (zig-zag columns, full-frame stack, then smaller text); the whole
+        # pass restarts so its earlier values make room for the later ones.
+        compact: dict[float, int] = {}
+        while True:
+            dropped_holes = self._label_collision_pass(fig, labels, renderer, compact)
+            escalate = {
+                hole for hole in dropped_holes if compact.get(hole, 0) < _CHEM_MAX_COMPACT_LEVEL
+            }
+            if not escalate:
+                return
+            for hole in escalate:
+                compact[hole] = compact.get(hole, 0) + 1
+
+    def _label_collision_pass(self, fig, labels, renderer, compact: dict[float, int]) -> set[float]:
+        """One greedy placement pass; returns hole keys with dropped chemistry values."""
+        dropped_holes: set[float] = set()
         pad = renderer.points_to_pixels(_LABEL_PAD_PT)
         # A re-run (page resize) starts from scratch: restore labels a previous
         # pass dropped so they get another chance at the new size.
@@ -596,8 +687,10 @@ class RendererWaterMixin:
                     own=_own_column(annotation, column_boxes),
                     pad=pad,
                     ceiling=chem_ceiling.get(hole_key, np.inf),
+                    compact=compact.get(hole_key, 0),
                 )
                 if spot is None:
+                    dropped_holes.add(hole_key)
                     # Nowhere right of its column is free: keep the stick/marker,
                     # never print the value over a column or another label.
                     annotation._water_dropped = True
@@ -647,6 +740,7 @@ class RendererWaterMixin:
             placed_arr.add(final_box)
             moved = abs(dy - base[1]) > _LEADER_THRESHOLD_PT or abs(dx - base[0]) > _LEADER_THRESHOLD_PT
             annotation.arrow_patch.set_visible(moved and getattr(annotation, "_leader_allowed", True))
+        return dropped_holes
 
     def _column_obstacle_boxes(self, fig) -> list:
         """Display-space boxes of every borehole column on the section."""

@@ -456,6 +456,37 @@ def collars_use_placeholder_elevation(
     return all(abs(collar.elevation - placeholder_m) <= tolerance for collar in collars)
 
 
+def _coordinates_look_like_degrees(collars: Sequence[Collar]) -> QualityIssue | None:
+    """Warn when easting/northing hold latitude/longitude, not metres.
+
+    Degrees typed into easting/northing (e.g. -79.38 / 43.65) project as a
+    section a few centimetres long. Local site grids can also be small
+    numbers (0, 5, 10 m), so only flag a sub-metre spread of non-integer
+    values that all fit the degree range.
+    """
+    if len(collars) < 2:
+        return None
+    eastings = [float(c.easting) for c in collars]
+    northings = [float(c.northing) for c in collars]
+    in_range = all(abs(e) <= 180 for e in eastings) and all(abs(n) <= 90 for n in northings)
+    spread = max(max(eastings) - min(eastings), max(northings) - min(northings))
+    decimal_degrees = any(
+        abs(v) >= 1 and abs(v - round(v)) > 1e-6 for v in (*eastings, *northings)
+    )
+    if not (in_range and 0 < spread < 1.0 and decimal_degrees):
+        return None
+    return QualityIssue(
+        code="coordinates_in_degrees",
+        message=(
+            "Collar easting/northing look like latitude/longitude (all within ±180/±90 and "
+            f"only {spread:.4f} apart), so the section would be a few centimetres long — "
+            "enter projected coordinates in metres (e.g. UTM), or put degrees in latitude/"
+            "longitude columns"
+        ),
+        severity=Severity.WARNING.value,
+    )
+
+
 def analyze_parsed_data(
     collars: Sequence[Collar],
     lithologies: Sequence[Lithology],
@@ -470,6 +501,9 @@ def analyze_parsed_data(
     collar_by_id = {collar.hole_id: collar for collar in collars}
     collar_ids = set(collar_by_id)
     lithology_by_hole: dict[str, list[Lithology]] = {}
+    degrees_issue = _coordinates_look_like_degrees(collars)
+    if degrees_issue is not None:
+        issues.append(degrees_issue)
 
     for lithology in lithologies:
         lithology_by_hole.setdefault(lithology.hole_id, []).append(lithology)

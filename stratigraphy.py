@@ -10,12 +10,16 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from shapely.errors import GEOSException
-from shapely.geometry import Polygon
+from shapely.geometry import LineString, Polygon
 from shapely.strtree import STRtree
 
 from models import CorrelationOverride
 
 logger = logging.getLogger(__name__)
+
+# Fraction of the hole spacing a pinch-out wedge spans from its source hole before
+# tapering to its apex (0.5 = mid-way toward the neighbouring hole).
+PINCH_OUT_FRACTION = 0.5
 
 
 @dataclass(frozen=True)
@@ -285,6 +289,111 @@ def _apply_correlation_overrides(
     return merged_left, merged_right
 
 
+def _rematch_shifted_units(
+    left_intervals: list[_LayerInterval],
+    right_intervals: list[_LayerInterval],
+    left_lookup: dict[Hashable, _LayerInterval],
+    right_lookup: dict[Hashable, _LayerInterval],
+) -> tuple[dict[Hashable, _LayerInterval], dict[Hashable, _LayerInterval]]:
+    """Correlate same-code units whose position keys differ only by an inserted unit.
+
+    ``('order', n, code)`` / ``('pos', i, code)`` keys stop matching as soon as one
+    hole logs an extra unit above (e.g. a Silt lens shifts the underlying Clay from
+    order 4 to 5). Left unmatched, the same Clay is drawn as two crossing pinch-out
+    wedges that cut diagonally across the section and leave gaps beside the holes.
+
+    The same happens when a hole repeats a unit (Clay above and below a Gravel
+    lens): duplicate codes get ``('pos', index, code)`` keys that rarely line up.
+
+    Unmatched intervals of the same lithology code are paired top-down (in each
+    hole's stratigraphic order) under shared ``('shifted', code, n)`` keys, skipping
+    any pairing that would cross an already-matched correlation, so hole-local
+    stratigraphic order is preserved. Surplus repeats stay pinch-outs.
+    """
+    left_unmatched = [key for key in left_lookup if key not in right_lookup]
+    right_unmatched = [key for key in right_lookup if key not in left_lookup]
+    if not left_unmatched or not right_unmatched:
+        return left_lookup, right_lookup
+
+    def _by_code(
+        keys: list[Hashable], lookup: dict[Hashable, _LayerInterval]
+    ) -> dict[str, list[Hashable]]:
+        grouped: dict[str, list[Hashable]] = defaultdict(list)
+        for key in keys:
+            grouped[lookup[key].lithology_code].append(key)
+        return grouped
+
+    left_by_code = _by_code(left_unmatched, left_lookup)
+    right_by_code = _by_code(right_unmatched, right_lookup)
+    left_index = {id(interval): index for index, interval in enumerate(left_intervals)}
+    right_index = {id(interval): index for index, interval in enumerate(right_intervals)}
+    matched_positions = [
+        (left_index[id(left_lookup[key])], right_index[id(right_lookup[key])])
+        for key in left_lookup
+        if key in right_lookup
+        and id(left_lookup[key]) in left_index
+        and id(right_lookup[key]) in right_index
+    ]
+
+    merged_left: dict[Hashable, _LayerInterval] | None = None
+    merged_right: dict[Hashable, _LayerInterval] | None = None
+    def _position(keys: list[Hashable], lookup, index_map) -> list[tuple[int, Hashable]]:
+        return sorted(
+            (index_map[id(lookup[key])], key) for key in keys if id(lookup[key]) in index_map
+        )
+
+    for code, left_keys in left_by_code.items():
+        right_keys = right_by_code.get(code)
+        if not right_keys:
+            continue
+        left_ranked = _position(left_keys, left_lookup, left_index)
+        right_ranked = _position(right_keys, right_lookup, right_index)
+        next_right = 0
+        for left_pos, left_key in left_ranked:
+            for offset, (right_pos, right_key) in enumerate(right_ranked[next_right:]):
+                crosses = any(
+                    (left_pos < other_left) != (right_pos < other_right)
+                    for other_left, other_right in matched_positions
+                )
+                if crosses:
+                    continue
+                if merged_left is None or merged_right is None:
+                    merged_left = dict(left_lookup)
+                    merged_right = dict(right_lookup)
+                new_key: Hashable = ("shifted", code, len(matched_positions))
+                merged_left[new_key] = merged_left.pop(left_key)
+                merged_right[new_key] = merged_right.pop(right_key)
+                matched_positions.append((left_pos, right_pos))
+                next_right += offset + 1
+                break
+
+    if merged_left is None or merged_right is None:
+        return left_lookup, right_lookup
+    return merged_left, merged_right
+
+
+def _correlate_pair(
+    left_hole_id: str,
+    right_hole_id: str,
+    left_intervals: list[_LayerInterval],
+    right_intervals: list[_LayerInterval],
+    left_lookup: dict[Hashable, _LayerInterval],
+    right_lookup: dict[Hashable, _LayerInterval],
+    overrides: Sequence[CorrelationOverride],
+) -> tuple[dict[Hashable, _LayerInterval], dict[Hashable, _LayerInterval]]:
+    """Apply explicit overrides, then re-match same-code units shifted by an inserted unit."""
+    left_lookup, right_lookup = _apply_correlation_overrides(
+        left_hole_id,
+        right_hole_id,
+        left_intervals,
+        right_intervals,
+        left_lookup,
+        right_lookup,
+        overrides,
+    )
+    return _rematch_shifted_units(left_intervals, right_intervals, left_lookup, right_lookup)
+
+
 def _polygons_for_pair(
     left_hole_id: str,
     right_hole_id: str,
@@ -304,7 +413,7 @@ def _polygons_for_pair(
         left_lookup = _correlation_keys(left_intervals)
     if right_lookup is None:
         right_lookup = _correlation_keys(right_intervals)
-    left_lookup, right_lookup = _apply_correlation_overrides(
+    left_lookup, right_lookup = _correlate_pair(
         left_hole_id,
         right_hole_id,
         left_intervals,
@@ -327,7 +436,6 @@ def _polygons_for_pair(
         set(left_lookup) | set(right_lookup),
         key=lambda key: _correlation_sort_key(key, left_lookup, right_lookup),
     )
-    x_mid = (x_left + x_right) / 2.0
     hole_pair = (left_hole_id, right_hole_id)
     left_by_order = {
         interval.unit_order: interval
@@ -339,6 +447,10 @@ def _polygons_for_pair(
         for interval in right_intervals
         if interval.unit_order is not None
     }
+    matched_left_first = [
+        (left_lookup[key], right_lookup[key]) for key in left_lookup if key in right_lookup
+    ]
+    matched_right_first = [(right, left) for left, right in matched_left_first]
 
     for key in all_keys:
         left_layer = left_lookup.get(key)
@@ -365,42 +477,83 @@ def _polygons_for_pair(
         if not allow_pinch_outs:
             continue
 
-        if left_layer and not right_layer:
+        if left_layer is not None:
+            source_layer, x_source, x_other = left_layer, x_left, x_right
+            neighbor_intervals, neighbor_by_order = right_intervals, right_by_order
+            source_matches = matched_left_first
+        else:
+            source_layer, x_source, x_other = right_layer, x_right, x_left  # type: ignore[assignment]
+            neighbor_intervals, neighbor_by_order = left_intervals, left_by_order
+            source_matches = matched_right_first
+        z_mid = _matched_contact_z(source_layer, source_matches)
+        if z_mid is None:
             z_mid = _pinch_out_z_mid(
-                left_layer, right_intervals, by_order=right_by_order
+                source_layer, neighbor_intervals, by_order=neighbor_by_order
             )
-            polygon = _make_polygon(
-                [
-                    (x_left, left_layer.top_elevation),
-                    (x_left, left_layer.bottom_elevation),
-                    (x_mid, z_mid),
-                ],
-                lithology_code,
-                hole_pair,
-                is_pinch_out=True,
-            )
-            if polygon:
-                polygons.append(polygon)
-            continue
-
-        if right_layer and not left_layer:
-            z_mid = _pinch_out_z_mid(
-                right_layer, left_intervals, by_order=left_by_order
-            )
-            polygon = _make_polygon(
-                [
-                    (x_right, right_layer.top_elevation),
-                    (x_right, right_layer.bottom_elevation),
-                    (x_mid, z_mid),
-                ],
-                lithology_code,
-                hole_pair,
-                is_pinch_out=True,
-            )
-            if polygon:
-                polygons.append(polygon)
+        polygon = _make_polygon(
+            _pinch_out_wedge_coords(source_layer, x_source, x_other, z_mid),
+            lithology_code,
+            hole_pair,
+            is_pinch_out=True,
+        )
+        if polygon:
+            polygons.append(polygon)
 
     return polygons
+
+
+def _matched_contact_z(
+    pinch_interval: _LayerInterval,
+    matched_pairs: list[tuple[_LayerInterval, _LayerInterval]],
+) -> float | None:
+    """Apex elevation from the correlated units bracketing the pinch-out.
+
+    ``matched_pairs`` holds ``(source_interval, neighbour_interval)`` for every unit
+    correlated across the pair. The nearest matched unit above the pinch interval in
+    the source hole contributes its neighbour counterpart's bottom; the nearest one
+    below contributes its counterpart's top. Using the actual correlated fills keeps
+    the wedge inside the gap they leave, so overlap clipping does not detach it.
+    Returns ``None`` when no matched unit brackets the interval.
+    """
+    above: tuple[_LayerInterval, _LayerInterval] | None = None
+    below: tuple[_LayerInterval, _LayerInterval] | None = None
+    for source, neighbour in matched_pairs:
+        if source.bottom_elevation >= pinch_interval.top_elevation - 1e-9:
+            if above is None or source.bottom_elevation < above[0].bottom_elevation:
+                above = (source, neighbour)
+        elif source.top_elevation <= pinch_interval.bottom_elevation + 1e-9:
+            if below is None or source.top_elevation > below[0].top_elevation:
+                below = (source, neighbour)
+    contacts: list[float] = []
+    if above is not None:
+        contacts.append(above[1].bottom_elevation)
+    if below is not None:
+        contacts.append(below[1].top_elevation)
+    if not contacts:
+        return None
+    return sum(contacts) / len(contacts)
+
+
+def _pinch_out_wedge_coords(
+    source_layer: _LayerInterval,
+    x_source: float,
+    x_other: float,
+    z_apex: float,
+    *,
+    pinch_fraction: float = PINCH_OUT_FRACTION,
+) -> list[tuple[float, float]]:
+    """Triangle anchored on the logged interval at the source hole, tapering toward the neighbour.
+
+    The wedge's vertical edge sits exactly on ``x_source`` from the logged top to the
+    logged bottom elevation (so the fill attaches to the borehole column); the apex
+    lies ``pinch_fraction`` of the way toward ``x_other`` at ``z_apex``.
+    """
+    x_apex = x_source + pinch_fraction * (x_other - x_source)
+    return [
+        (x_source, source_layer.top_elevation),
+        (x_source, source_layer.bottom_elevation),
+        (x_apex, z_apex),
+    ]
 
 
 def _largest_polygon(geom) -> Polygon | None:
@@ -416,6 +569,42 @@ def _largest_polygon(geom) -> Polygon | None:
             return None
         return max(parts, key=lambda part: part.area)
     return None
+
+
+def _pinch_anchor_edge(polygon: Polygon) -> LineString | None:
+    """Longest vertical exterior edge of a pinch-out wedge (its logged interval at the hole)."""
+    coords = list(polygon.exterior.coords)
+    best: tuple[float, LineString] | None = None
+    for (x0, y0), (x1, y1) in zip(coords, coords[1:]):
+        span = abs(y1 - y0)
+        if span <= 0.0 or abs(x1 - x0) > 1e-9 * max(1.0, abs(x0)):
+            continue
+        if best is None or span > best[0]:
+            best = (span, LineString([(x0, y0), (x1, y1)]))
+    return best[1] if best is not None else None
+
+
+def _anchored_fragment(geom, anchor: LineString | None) -> Polygon | None:
+    """Pick the clip fragment that still touches ``anchor``; fall back to the largest."""
+    if anchor is None or geom.is_empty or geom.geom_type == "Polygon":
+        return _largest_polygon(geom)
+    parts = [
+        part
+        for part in getattr(geom, "geoms", ())
+        if part.geom_type == "Polygon" and not part.is_empty
+    ]
+    attached = [
+        (part.boundary.intersection(anchor).length, part.area)
+        for part in parts
+    ]
+    candidates = [
+        (contact, area, part)
+        for (contact, area), part in zip(attached, parts)
+        if contact > 0.0
+    ]
+    if not candidates:
+        return _largest_polygon(geom)
+    return max(candidates, key=lambda item: (item[1], item[0]))[2]
 
 
 def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[GeologicalPolygon]:
@@ -448,7 +637,19 @@ def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[Geologi
             probe = occupied_prep if occupied_prep is not None else occupied_geom
             if probe.intersects(geom) and not probe.touches(geom):
                 geom = geom.difference(occupied_geom)
-        largest = _largest_polygon(geom)
+        # Polygons kept earlier in the current (not yet unioned) batch also occupy
+        # area; without this, up to ``batch_limit`` fills could stack unclipped.
+        for pending in batch:
+            if geom.is_empty:
+                break
+            if pending.intersects(geom) and not pending.touches(geom):
+                geom = geom.difference(pending)
+        if geo_polygon.is_pinch_out and geom is not geo_polygon.polygon:
+            # A wedge must stay attached to the hole where the unit was logged; the
+            # largest clip fragment can be a sliver floating mid-way between holes.
+            largest = _anchored_fragment(geom, _pinch_anchor_edge(geo_polygon.polygon))
+        else:
+            largest = _largest_polygon(geom)
         if largest is None or largest.is_empty:
             continue
         # Difference + MultiPolygon keep-largest can discard secondary fragments.
@@ -652,7 +853,7 @@ def preview_correlation_health(
         right_intervals,
         right_lookup,
     ) in zip(hole_profiles, hole_profiles[1:]):
-        left_lookup, right_lookup = _apply_correlation_overrides(
+        left_lookup, right_lookup = _correlate_pair(
             left_id,
             right_id,
             left_intervals,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
-from shapely.geometry import Point, Polygon as ShapelyPolygon
+from shapely.geometry import LineString, Point, Polygon as ShapelyPolygon
 
 from models import CorrelationOverride
 from stratigraphy import (
@@ -477,3 +477,176 @@ def test_pinch_out_uses_unit_order_neighbor_contacts() -> None:
     assert clay.is_pinch_out
     apex = Point(25.0, 92.0)
     assert clay.polygon.buffer(0.01).contains(apex)
+
+
+def _shifted_unit_order_pair() -> pd.DataFrame:
+    """GWM fig 3 shape: a Silt lens in BH-02 shifts the underlying Clay's unit_order."""
+    rows = [
+        ("BH-01", 0.0, 632.0, 629.0, "Sand", 1),
+        ("BH-01", 0.0, 629.0, 623.0, "Sand and Clay", 2),
+        ("BH-01", 0.0, 623.0, 602.0, "Clay", 3),
+        ("BH-02", 32.0, 631.5, 629.5, "Sand", 1),
+        ("BH-02", 32.0, 629.5, 624.0, "Sand and Clay", 2),
+        ("BH-02", 32.0, 624.0, 619.5, "Silt", 3),
+        ("BH-02", 32.0, 619.5, 603.5, "Clay", 4),
+    ]
+    return pd.DataFrame(
+        [
+            {
+                "hole_id": hole_id,
+                "x_profile": x,
+                "collar_elevation": 632.0 if hole_id == "BH-01" else 631.5,
+                "top_elevation": top,
+                "bottom_elevation": bottom,
+                "lithology_code": code,
+                "unit_order": order,
+            }
+            for hole_id, x, top, bottom, code, order in rows
+        ]
+    )
+
+
+def test_pinch_out_wedge_attaches_to_source_hole_at_logged_depths() -> None:
+    """Regression: GWM fig 3 wedges floated away from the hole where the unit was logged."""
+    polygons = build_stratigraphy(_shifted_unit_order_pair(), allow_pinch_outs=True)
+    silt = [p for p in polygons if p.lithology_code == "Silt"]
+    assert len(silt) == 1 and silt[0].is_pinch_out
+    wedge = silt[0].polygon
+    # Vertical edge on the source hole (x=32) spans the logged interval 624.0-619.5.
+    assert wedge.bounds[2] == pytest.approx(32.0)
+    for z in (624.0, 619.5, 621.75):
+        assert wedge.boundary.distance(Point(32.0, z)) < 1e-9
+    # Tapers toward the neighbour, reaching mid-way (x=16) and no further.
+    assert wedge.bounds[0] == pytest.approx(16.0)
+    # The same Clay unit correlates as one continuous fill (no crossing pinch-out wedges).
+    clay = [p for p in polygons if p.lithology_code == "Clay"]
+    assert len(clay) == 1 and not clay[0].is_pinch_out
+    assert detect_polygon_overlaps(polygons) == []
+
+
+def test_resolve_overlaps_keeps_pinch_fragment_attached_to_hole() -> None:
+    """A clip that splits a wedge keeps the hole-attached part, not the largest sliver."""
+    blocker = GeologicalPolygon(
+        lithology_code="Clay",
+        polygon=ShapelyPolygon([(0.0, 99.0), (50.0, 99.0), (50.0, 97.0), (0.0, 97.0)]),
+        hole_pair=("BH-01", "BH-02"),
+    )
+    wedge = GeologicalPolygon(
+        lithology_code="Silt",
+        polygon=ShapelyPolygon([(0.0, 100.0), (0.0, 98.0), (25.0, 80.0)]),
+        hole_pair=("BH-01", "BH-02"),
+        is_pinch_out=True,
+    )
+    # Deep fills flush the first clip batch so the wedge is clipped against the blocker.
+    fillers = [
+        GeologicalPolygon(
+            lithology_code="Gravel",
+            polygon=ShapelyPolygon([(0.0, top), (50.0, top), (50.0, top - 2.0), (0.0, top - 2.0)]),
+            hole_pair=("BH-01", "BH-02"),
+        )
+        for top in (60.0, 55.0, 50.0)
+    ]
+    resolved = _resolve_overlaps_in_pair([blocker, *fillers, wedge])
+    silt = next(p for p in resolved if p.lithology_code == "Silt")
+    assert silt.polygon.bounds[0] == pytest.approx(0.0)
+    assert silt.polygon.boundary.distance(Point(0.0, 99.5)) < 1e-9
+
+
+def test_resolve_overlaps_clips_within_unflushed_batch() -> None:
+    """Polygons kept earlier in the same (not yet unioned) batch must also clip later ones."""
+    upper = GeologicalPolygon(
+        lithology_code="Sand",
+        polygon=ShapelyPolygon([(0.0, 100.0), (50.0, 100.0), (50.0, 90.0), (0.0, 90.0)]),
+        hole_pair=("BH-01", "BH-02"),
+    )
+    wedge = GeologicalPolygon(
+        lithology_code="Silt",
+        polygon=ShapelyPolygon([(0.0, 92.0), (0.0, 85.0), (25.0, 95.0)]),
+        hole_pair=("BH-01", "BH-02"),
+        is_pinch_out=True,
+    )
+    resolved = _resolve_overlaps_in_pair([upper, wedge])
+    assert detect_polygon_overlaps(resolved) == []
+
+
+def _rows_df(rows: list[tuple[str, float, float, float, str]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "hole_id": hole_id,
+                "x_profile": x,
+                "collar_elevation": 100.0,
+                "top_elevation": top,
+                "bottom_elevation": bottom,
+                "lithology_code": code,
+            }
+            for hole_id, x, top, bottom, code in rows
+        ]
+    )
+
+
+def _assert_pinch_outs_attached(polygons: list[GeologicalPolygon], hole_x: dict[str, float]) -> None:
+    """Every pinch-out keeps a vertical edge of non-zero length on one of its holes."""
+    for polygon in polygons:
+        if not polygon.is_pinch_out:
+            continue
+        contact = max(
+            polygon.polygon.boundary.intersection(LineString([(x, -1e4), (x, 1e4)])).length
+            for x in (hole_x[hole] for hole in polygon.hole_pair)
+        )
+        assert contact > 0.0, f"{polygon.lithology_code} wedge is detached from its hole"
+
+
+def test_repeated_unit_correlates_without_sliver_pinch_outs() -> None:
+    """Clay above and below a Gravel lens: the Clays correlate top-down instead of
+    becoming crossing pinch-out slivers, and nothing overlaps."""
+    projected = _rows_df(
+        [
+            ("A", 0.0, 100.0, 95.0, "Clay"),
+            ("A", 0.0, 95.0, 90.0, "Gravel"),
+            ("A", 0.0, 90.0, 80.0, "Clay"),
+            ("B", 50.0, 100.0, 92.0, "Sand"),
+            ("B", 50.0, 92.0, 88.0, "Clay"),
+            ("B", 50.0, 88.0, 84.0, "Gravel"),
+            ("B", 50.0, 84.0, 75.0, "Clay"),
+        ]
+    )
+    polygons = build_stratigraphy(projected, allow_pinch_outs=True)
+    clays = [p for p in polygons if p.lithology_code == "Clay"]
+    assert len(clays) == 2 and not any(p.is_pinch_out for p in clays)
+    assert [p.lithology_code for p in polygons if p.is_pinch_out] == ["Sand"]
+    assert detect_polygon_overlaps(polygons) == []
+    _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 50.0})
+
+
+def test_repeated_unit_against_single_unit_keeps_top_correlation() -> None:
+    projected = _rows_df(
+        [
+            ("A", 0.0, 100.0, 95.0, "Clay"),
+            ("A", 0.0, 95.0, 90.0, "Gravel"),
+            ("A", 0.0, 90.0, 80.0, "Clay"),
+            ("B", 50.0, 100.0, 80.0, "Clay"),
+        ]
+    )
+    polygons = build_stratigraphy(projected, allow_pinch_outs=True)
+    continuous = [p for p in polygons if not p.is_pinch_out]
+    assert [p.lithology_code for p in continuous] == ["Clay"]
+    assert continuous[0].polygon.bounds[3] == pytest.approx(100.0)
+    assert detect_polygon_overlaps(polygons) == []
+    _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 50.0})
+
+
+@pytest.mark.parametrize(("bedrock_bottom", "right_bottom"), [(85.0, 80.0), (70.0, 92.0)])
+def test_unique_base_unit_pinch_out_has_no_overlap(bedrock_bottom: float, right_bottom: float) -> None:
+    projected = _rows_df(
+        [
+            ("A", 0.0, 100.0, 90.0, "Clay"),
+            ("A", 0.0, 90.0, bedrock_bottom, "Bedrock"),
+            ("B", 50.0, 100.0, right_bottom, "Clay"),
+        ]
+    )
+    polygons = build_stratigraphy(projected, allow_pinch_outs=True)
+    bedrock = [p for p in polygons if p.lithology_code == "Bedrock"]
+    assert len(bedrock) == 1 and bedrock[0].is_pinch_out
+    assert detect_polygon_overlaps(polygons) == []
+    _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 50.0})

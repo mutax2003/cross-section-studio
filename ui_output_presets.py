@@ -38,6 +38,9 @@ class OutputPresetConfig:
     show_parameter_legend_text: bool | None = None
     # Wave B: dashed CAD-style water connectors when False.
     water_line_solid: bool | None = None
+    # Default chemistry value-label colour mode for the preset (None = black).
+    # Workbook per-reading label_color still wins.
+    chemistry_color_mode: str | None = None
 
 
 OUTPUT_PRESET_LABELS: dict[str, str] = {
@@ -111,6 +114,8 @@ OUTPUT_PRESETS: dict[str, OutputPresetConfig] = {
         parameter_interpolate_segments=False,
         parameter_draw_markers=False,
         show_scale_bar=True,
+        # Client Figs 6/7 print chloride values (and the legend sample) in red.
+        chemistry_color_mode="red",
     ),
     "chemistry_gw": OutputPresetConfig(
         render_layout="consulting_section",

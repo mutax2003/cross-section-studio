@@ -216,6 +216,97 @@ def test_strip_knocks_out_fills_beside_each_labelled_column(profile) -> None:
         assert covered >= 0.95 * inside.width * inside.height, ann.get_text()
 
 
+def test_water_numbers_use_two_decimals_with_trailing_zeros_stripped() -> None:
+    from renderer_water import _fmt_water_number
+
+    assert [_fmt_water_number(v) for v in (745.29, 745.2904, 745.3, 745.0, 2.5, -0.001)] == [
+        "745.29",
+        "745.29",
+        "745.3",
+        "745",
+        "2.5",
+        "0",
+    ]
+
+
+def test_dry_and_nm_on_one_hole_merge_into_one_note() -> None:
+    import matplotlib.pyplot as plt
+
+    renderer = CrossSectionRenderer(show_legend=False)
+    fig, ax = plt.subplots()
+    try:
+        renderer._water_status_notes = {}
+        renderer._water_status_note(ax, "BH-12", (0.0, 0.0), "NM")
+        renderer._water_status_note(ax, "BH-12", (0.0, 0.0), "DRY")
+        renderer._water_status_note(ax, "BH-12", (0.0, 0.0), "NM")
+        renderer._water_status_note(ax, "BH-13", (5.0, 0.0), "NM")
+        notes = [ann.get_text() for kind, ann, _c in renderer._water_labels if kind == "nm"]
+        assert notes == ["DRY / NM", "NM"]
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize("layout", ["consulting_section", "section_sheet"])
+def test_multi_section_site_labels_stay_attributable(monkeypatch, layout) -> None:
+    """QA on the 14-hole multi-section workbook: displaced chloride values need
+    a leader, RLs print <= 2 decimals, DRY + NM merge into one note."""
+    import re
+    from io import BytesIO
+
+    from batch_export import build_multi_transect_exports, clear_batch_geometry_memo
+    from ingestion import ingest_workbook
+    from renderer_water import _chem_footprint, _figure_renderer
+    from tests.test_multi_section_workbook import (
+        _base_request,
+        _batch_specs,
+        build_site_workbook_bytes,
+    )
+
+    captured: list = []
+    original = CrossSectionRenderer.render
+
+    def capture(self, *args, **kwargs):
+        figure = original(self, *args, **kwargs)
+        captured.append((self, figure))
+        return figure
+
+    monkeypatch.setattr(CrossSectionRenderer, "render", capture)
+    parse_result, _report = ingest_workbook(BytesIO(build_site_workbook_bytes()))
+    clear_batch_geometry_memo()
+    build_multi_transect_exports(
+        parse_result, _base_request(layout), _batch_specs(parse_result), export_formats=frozenset({"png"})
+    )
+    assert len(captured) == 3
+    for renderer, figure in captured:
+        figure.draw_without_rendering()
+        mpl_renderer = _figure_renderer(figure)
+        px_per_pt = mpl_renderer.points_to_pixels(1.0)
+        for kind, ann, _c in renderer._water_labels:
+            if not ann.get_visible():
+                continue
+            text = ann.get_text()
+            if kind == "rl":
+                assert not re.search(r"\d\.\d{3}", text), text
+            if kind == "nm":
+                assert text in {"NM", "DRY", "DRY / NM"}, text
+            if kind != "chem":
+                continue
+            base = ann._water_base_xyann
+            shift = max(abs(ann.xyann[0] - base[0]), abs(ann.xyann[1] - base[1]))
+            height_pt = _chem_footprint(ann, mpl_renderer).height / px_per_pt
+            if shift > height_pt:
+                assert ann.arrow_patch.get_visible(), text
+        nm_by_anchor: dict[tuple[float, float], int] = {}
+        for kind, ann, _c in renderer._water_labels:
+            if kind == "nm":
+                key = (round(ann.xy[0], 3), round(ann.xy[1], 3))
+                nm_by_anchor[key] = nm_by_anchor.get(key, 0) + 1
+        assert all(count == 1 for count in nm_by_anchor.values())
+    # C-C carries the dry well BH-12: one merged note there.
+    texts = [ann.get_text() for kind, ann, _c in captured[2][0]._water_labels if kind == "nm"]
+    assert "DRY" in " ".join(texts)
+
+
 @pytest.mark.parametrize("style", ["plain", "box", "dot", "stroke"])
 def test_other_styles_draw_no_strip(style) -> None:
     _renderer, figure = _render_threshold(SECTION_SHEET_PROFILE, _readings(5, 20.0), chemistry_label_style=style)

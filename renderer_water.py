@@ -64,12 +64,17 @@ _LABEL_CANDIDATES: dict[str, list[tuple[float, float, str]]] = {
 # the wrong stick misattributes it. Candidates are (ddx, ddy) shifts in points
 # from the label's base spot; the right side is searched nearest-first, with
 # a fine vertical step so crowded readings stack down/up the column.
-# Within _CHEM_NEAR_DY_PT of the reading the nearest spot wins; beyond it
+# Within _CHEM_NEAR_DY_PT / _CHEM_NEAR_DX_PT of the reading the nearest spot
+# wins; beyond it
 # sideways steps are cheap (0.25 per point vs 1 per point vertically): a
 # hole's values must keep depth order, so crowded readings fan out into a
 # second column beside their depth instead of cascading down the stick.
 _CHEM_DX_STEPS = (0.0, 6.0, 12.0, 22.0, 34.0, 46.0, 58.0)
 _CHEM_NEAR_DY_PT = 8.0
+# Only small sideways nudges count as "near": a value pushed past a water
+# label must not jump a long way right at its own depth (it read as the
+# next hole's) while a short step down beside its column is free.
+_CHEM_NEAR_DX_PT = 12.0
 _CHEM_DY_STEP_PT = 3.0
 _CHEM_DY_MAX_PT = 150.0
 _CHEM_OFFSETS = sorted(
@@ -81,7 +86,7 @@ _CHEM_OFFSETS = sorted(
     ),
     key=lambda item: (
         (0, abs(item[1]) + 1.5 * item[0])
-        if abs(item[1]) <= _CHEM_NEAR_DY_PT
+        if abs(item[1]) <= _CHEM_NEAR_DY_PT and item[0] <= _CHEM_NEAR_DX_PT
         else (1, abs(item[1]) + 0.25 * item[0])
     ),
 )
@@ -109,7 +114,7 @@ def _compact_chem_offsets() -> list[tuple[float, float]]:
         ),
         key=lambda item: (
             (0, abs(item[1]) + 1.5 * item[0])
-            if abs(item[1]) <= _CHEM_NEAR_DY_PT
+            if abs(item[1]) <= _CHEM_NEAR_DY_PT and item[0] <= _CHEM_NEAR_DX_PT
             else (1, abs(item[1]) + _CHEM_COMPACT_DX_COST * item[0])
         ),
     )
@@ -132,9 +137,9 @@ _CHEM_STRIP_COLUMN_TOL_PT = 8.0
 # Last resorts before a value is dropped (the stick/marker stays): slightly
 # smaller text. A value is never printed over a column or another label.
 _CHEM_FONT_SCALES = (1.0, 0.88, 0.76)
-# A label moved this far from its reading always gets a leader, even when
-# leaders are otherwise off, so a stacked value still points at its depth.
-_CHEM_FORCED_LEADER_PT = 20.0
+# A value moved more than one label height (and at least this many points)
+# from its reading always gets a leader, even when leaders are otherwise off.
+_CHEM_MIN_LEADER_SHIFT_PT = 6.0
 # Placement order: RL values matter most, then chemistry, gradients least.
 _LABEL_PRIORITY = {"rl": 0, "nm": 1, "chem": 2, "gradient": 3}
 # Water numbers that still collide after every candidate are dropped (marker
@@ -149,6 +154,13 @@ _SERIES_MARKER_STEP_PT = 7.5
 # Line dash per series slot on non-consulting sheets (consulting keeps its
 # solid client lines; marker shape separates series there).
 _SERIES_DASHES = ("--", "-.", ":", (0, (6, 2, 1, 2)))
+
+
+def _fmt_water_number(value: float) -> str:
+    """Water level / depth text: at most 2 decimals, trailing zeros stripped
+    (745.29, 745.3, 745), like the chemistry values."""
+    text = f"{float(value):.2f}".rstrip("0").rstrip(".")
+    return "0" if text in ("-0", "") else text
 
 
 class _ObstacleArray:
@@ -545,15 +557,15 @@ class RendererWaterMixin:
     def _water_elevation_label(self, level: WaterLevel, collar_rl: float) -> str:
         """Annotate water as RL (masl) in elevation mode, or depth (mbgs) in relative mode."""
         if self.profile.y_axis_mode == "depth_below_collar":
-            return f"{level.depth:.2f} mbgs"
+            return f"{_fmt_water_number(level.depth)} mbgs"
         water_rl = (
             float(level.elevation_masl)
             if level.elevation_masl is not None
             else collar_rl - level.depth
         )
         if self.profile.layout == "consulting_section":
-            return f"{water_rl:.3f}"
-        return f"{water_rl:.2f} m"
+            return _fmt_water_number(water_rl)
+        return f"{_fmt_water_number(water_rl)} m"
 
     def _water_legend_captions(
         self,
@@ -576,6 +588,33 @@ class RendererWaterMixin:
         return (
             f"GROUNDWATER LEVEL ({display_label})",
             f"GROUNDWATER ELEVATION masl ({display_label})",
+        )
+
+    def _water_status_note(self, ax, hole_id: str, xy: tuple[float, float], text: str) -> None:
+        """One NM / DRY note per hole: a second status merges into it ("DRY / NM")
+        instead of a second label crowding the first and the hole's values."""
+        notes = self.__dict__.setdefault("_water_status_notes", {})
+        key = (id(ax), str(hole_id))
+        existing = notes.get(key)
+        if existing is not None:
+            parts = existing.get_text().split(" / ")
+            if text not in parts:
+                parts.append(text)
+                order = {"DRY": 0, "NM": 1}
+                parts.sort(key=lambda part: order.get(part, 2))
+                existing.set_text(" / ".join(parts))
+                halo = getattr(existing, "_halo", None)
+                if halo is not None:
+                    halo.set_text(existing.get_text())
+            return
+        notes[key] = self._water_annotate(
+            ax,
+            text,
+            xy,
+            kind="nm",
+            color=CONSULTING_NM_COLOR,
+            fontsize=8,
+            xytext=(4, 0),
         )
 
     def _water_annotate(
@@ -790,10 +829,13 @@ class RendererWaterMixin:
                 final_box = chem_box.padded(pad)
                 placed.append(final_box)
                 placed_arr.add(final_box)
+                # A value moved more than about one label height from its
+                # reading (either direction) always gets a thin leader back to
+                # it, even with leaders off, so it is never read against the
+                # wrong hole or depth.
                 shift = max(abs(dy - base[1]), abs(dx - base[0]))
-                leader = shift > _LEADER_THRESHOLD_PT and (
-                    getattr(annotation, "_leader_allowed", True) or abs(dy - base[1]) > _CHEM_FORCED_LEADER_PT
-                )
+                label_height_pt = chem_box.height / renderer.points_to_pixels(1.0)
+                leader = shift > max(label_height_pt, _CHEM_MIN_LEADER_SHIFT_PT)
                 annotation.arrow_patch.set_visible(leader)
                 continue
             best: tuple[float, tuple[float, float, str]] | None = None
@@ -802,6 +844,10 @@ class RendererWaterMixin:
                 annotation.set_horizontalalignment(ha)
                 box = _text_box(annotation, renderer).padded(pad)
                 collision = placed_arr.overlap(box)
+                if kind == "nm":
+                    # A DRY / NM note anchors on the column centre: keep it
+                    # off the column so it reads beside its hole.
+                    collision += column_arr.overlap(box)
                 # Off the axes is bad; off the page is worse (it is cut off).
                 outside = _outside_area(box, frame) + 4.0 * _outside_area(box, fig.bbox)
                 score = (collision + 4.0 * outside) * 1000.0 + index
@@ -853,6 +899,7 @@ class RendererWaterMixin:
     ) -> None:
         if hole_summary.empty:
             return
+        self._water_status_notes = {}
         if not water_levels:
             # No water data at all: 'NM' would just label every hole (documented:
             # NM only when dry-well labeling is on AND water data exist).
@@ -877,15 +924,7 @@ class RendererWaterMixin:
                 dry_y = self._plot_y_values(dry_collars - 1.0, dry_collars)
                 for hole_id, x_profile, y in zip(dry_lookup.keys(), dry_x, dry_y, strict=True):
                     fully_dry_nm_drawn.add(str(hole_id))
-                    self._water_annotate(
-                        ax,
-                        "NM",
-                        (float(x_profile), float(y)),
-                        kind="nm",
-                        color=CONSULTING_NM_COLOR,
-                        fontsize=8,
-                        xytext=(4, 0),
-                    )
+                    self._water_status_note(ax, str(hole_id), (float(x_profile), float(y)), "NM")
         if not series_groups:
             return
         self.water_series_legend = []
@@ -945,15 +984,7 @@ class RendererWaterMixin:
                         continue
                     x_profile, collar_rl = profile
                     y = self._plot_y(collar_rl - 1.0, collar_rl)
-                    self._water_annotate(
-                        ax,
-                        "NM",
-                        (float(x_profile), float(y)),
-                        kind="nm",
-                        color=CONSULTING_NM_COLOR,
-                        fontsize=8,
-                        xytext=(4, 0),
-                    )
+                    self._water_status_note(ax, hole_id, (float(x_profile), float(y)), "NM")
             # Draw each connect_group nest separately so shallow/deep do not join.
             for group_id, group_levels in _connect_subgroups(levels).items():
                 level_by_id = {item.hole_id: item for item in group_levels}
@@ -972,14 +1003,8 @@ class RendererWaterMixin:
                     status = water_status(level)
                     if status in {"dry", "nm"}:
                         y_nm = self._plot_y(collar_rl - 1.0, collar_rl)
-                        self._water_annotate(
-                            ax,
-                            "NM" if status == "nm" else "DRY",
-                            (float(x_profile), float(y_nm)),
-                            kind="nm",
-                            color=CONSULTING_NM_COLOR,
-                            fontsize=8,
-                            xytext=(4, 0),
+                        self._water_status_note(
+                            ax, hole_id, (float(x_profile), float(y_nm)), "NM" if status == "nm" else "DRY"
                         )
                         continue
                     xs.append(x_profile)

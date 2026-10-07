@@ -75,38 +75,59 @@ mpl.rcParams["svg.hashsalt"] = "cross-section-studio"
 logger = logging.getLogger(__name__)
 
 
+# Auto-fit bounds for borehole columns, as fractions of the hole span. All
+# columns together cover at most this share of the section, so fills between
+# holes stay readable on short sections (7 holes over 32 m drew 44% grey bars).
+TRACK_MAX_SPAN_COVERAGE = 0.15
+# Floor per column so auto-fit never shrinks a column to a hairline on long
+# sections (never wider than the requested width or the spacing cap).
+TRACK_MIN_SPAN_FRACTION = 0.004
+
+
 def resolve_track_half_width(
     track_width_m: float,
     *,
     auto_fit: bool = True,
     x_profiles: np.ndarray | None = None,
     x_sorted: bool = False,
-    min_half_m: float = 0.25,
     spacing_fraction: float = 0.4,
+    max_span_coverage: float = TRACK_MAX_SPAN_COVERAGE,
+    min_span_fraction: float = TRACK_MIN_SPAN_FRACTION,
 ) -> float:
     """Resolve borehole column half-width in profile metres.
 
     ``track_width_m`` is schematic fence width on the X axis (not well diameter).
-    When ``auto_fit`` is on, columns shrink so full width stays within
-    ``spacing_fraction`` of the closest hole spacing (avoids overlapping tracks).
+    With ``auto_fit`` on, the requested width is kept when it fits and
+    otherwise narrowed so that:
+
+    * each column is at most ``spacing_fraction`` of the closest hole spacing
+      (tracks never overlap and the fill between them stays visible);
+    * all columns together cover at most ``max_span_coverage`` of the hole span;
+    * each column stays at least ``min_span_fraction`` of the span wide (capped
+      by the request and the spacing limit) so it never vanishes.
+
+    ``auto_fit=False`` draws exactly the requested width.
     Pass ``x_sorted=True`` when ``x_profiles`` is already ascending.
     """
     half = max(float(track_width_m) * 0.5, 1e-6)
     if not auto_fit or x_profiles is None:
         return half
     xs = np.asarray(x_profiles, dtype=float).ravel()
+    xs = xs[np.isfinite(xs)]
     if xs.size < 2:
         return half
     if not x_sorted:
         xs = np.sort(xs)
+    span = float(xs[-1] - xs[0])
     gaps = np.diff(xs)
     positive = gaps[gaps > 1e-6]
-    if positive.size == 0:
+    if span <= 1e-6 or positive.size == 0:
         return half
-    max_half = float(positive.min()) * float(spacing_fraction) * 0.5
-    if max_half >= min_half_m:
-        return min(half, max_half)
-    return min(half, max(max_half, 1e-6))
+    spacing_half = float(positive.min()) * float(spacing_fraction) * 0.5
+    coverage_half = span * float(max_span_coverage) * 0.5 / xs.size
+    floor_half = min(half, span * float(min_span_fraction) * 0.5)
+    fitted = max(min(half, coverage_half), floor_half)
+    return max(min(fitted, spacing_half), 1e-6)
 
 
 @dataclass(frozen=True)

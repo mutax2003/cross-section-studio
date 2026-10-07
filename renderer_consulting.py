@@ -590,6 +590,17 @@ class ConsultingLayoutMixin:
         # sections keep the 5 m they always had.
         span = max(x_max - x_min, 1.0)
         x_pad = max(track_half + max(0.25 * track_half, 0.3), min(5.0, 0.06 * span))
+        last_hole = str(hole_summary.loc[hole_summary["x_profile"].idxmax(), "hole_id"])
+        if self.profile.show_parameter_labels and any(
+            str(getattr(reading, "hole_id", "")) == last_hole
+            for reading in getattr(self, "environmental_readings", ()) or ()
+        ):
+            # The last hole's values print to its right: leave room for a
+            # ~40 pt label inside the frame (they were shrunk against the
+            # right frame line on portrait pages). Axes width ~ 0.85 x page.
+            axes_width_pt = 0.85 * float(ax.figure.get_size_inches()[0]) * 72.0
+            label_room = 44.0 * span / max(axes_width_pt - 44.0, 1.0)
+            x_pad = max(x_pad, track_half + label_room)
         # The first hole sits at x = 0; an axis starting at exactly 0 cut its
         # left half off. Start slightly negative (column half width + margin)
         # and keep the tick labels non-negative.

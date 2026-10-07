@@ -25,7 +25,6 @@ from models import ConsultingTitleBlock, VerticalGradient, WaterLevel
 from render_theme import (
     CONSULTING_COLUMN_FILL,
     CONSULTING_FIGURE_BG,
-    CONSULTING_SCALE_BAR_M,
     CONSULTING_SURFACE_COLOR,
     CONSULTING_WATER_COLOR,
     DEFAULT_CONSULTING_NOTES,
@@ -178,6 +177,92 @@ def true_metre_minor_step(major_step: float) -> float:
     if major_step <= _Y_MIN_STEP_M:
         return major_step / 2.0
     return max(_Y_MIN_STEP_M, major_step / 10.0)
+
+
+# --- Subtitle-band scale bar -------------------------------------------------
+
+_INCHES_PER_METRE = 39.37
+# Standard engineering drawing scales: (1, 1.25, 2, 2.5, 5) x 10^n.
+_STANDARD_SCALE_MANTISSAS = (1.0, 1.25, 2.0, 2.5, 5.0)
+# A computed ratio within this of a standard scale prints as that scale.
+_STANDARD_SCALE_TOLERANCE = 0.03
+# User map_scale disagreeing with the printed scale by more than this is logged.
+_MAP_SCALE_MISMATCH_TOLERANCE = 0.10
+_SCALE_BAR_MAX_FRACTION = 0.80
+_SCALE_BAR_X = 0.02
+_SCALE_BAR_Y = 0.55
+_SCALE_BAR_UNITS = "Metres"
+
+
+def nice_scale_bar_length(max_m: float) -> float:
+    """Largest 1/2/5 x 10^n metres that is <= ``max_m``."""
+    max_m = float(max_m)
+    if not np.isfinite(max_m) or max_m <= 0.0:
+        return 0.0
+    exponent = 10.0 ** np.floor(np.log10(max_m))
+    for mantissa in (5.0, 2.0, 1.0):
+        if mantissa * exponent <= max_m * (1.0 + 1e-9):
+            return float(mantissa * exponent)
+    return float(exponent)  # pragma: no cover - mantissa 1 always fits
+
+
+def scale_bar_tick_step(length_m: float) -> float:
+    """Round tick step giving 3-5 equal segments of ``length_m`` (else 2, else 1)."""
+    length_m = float(length_m)
+    if length_m <= 0.0:
+        return 0.0
+    for segments in (5, 4, 3, 2):
+        step = length_m / segments
+        exponent = 10.0 ** np.floor(np.log10(step))
+        mantissa = step / exponent
+        if any(abs(mantissa - nice) < 1e-6 for nice in (1.0, 2.0, 2.5, 5.0, 10.0)):
+            return step
+    return length_m
+
+
+def nearest_standard_scale(ratio: float) -> int:
+    """Standard engineering scale denominator nearest ``ratio`` (log distance)."""
+    ratio = max(float(ratio), 1.0)
+    exponent = int(np.floor(np.log10(ratio)))
+    candidates = [
+        mantissa * 10.0**power
+        for power in (exponent - 1, exponent, exponent + 1)
+        for mantissa in _STANDARD_SCALE_MANTISSAS
+    ]
+    return int(round(min(candidates, key=lambda c: abs(np.log(c / ratio)))))
+
+
+def scale_ratio_text(ratio: float) -> str:
+    """Honest band text for a printed scale of 1:``ratio``.
+
+    Prints a standard scale only when the drawing really is at it (within
+    3 %); otherwise the ratio to two significant figures, marked approximate.
+    """
+    ratio = float(ratio)
+    standard = nearest_standard_scale(ratio)
+    if abs(standard / ratio - 1.0) <= _STANDARD_SCALE_TOLERANCE:
+        return f"SCALE 1:{standard}"
+    digits = int(np.floor(np.log10(max(ratio, 1.0))))
+    rounded = int(round(ratio, -max(digits - 1, 0)))
+    return f"APPROX. SCALE 1:{rounded}"
+
+
+def parse_map_scale(text: str | None) -> float | None:
+    """Denominator of a "1:1 000"-style scale string, or None."""
+    if not text:
+        return None
+    match = re.fullmatch(r"\s*1\s*:\s*([\d\s,]+(?:\.\d+)?)\s*", str(text))
+    if not match:
+        return None
+    try:
+        value = float(re.sub(r"[\s,]", "", match.group(1)))
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _scale_bar_label(value_m: float) -> str:
+    return f"{value_m:g}"
 
 
 class _TrueMetreLocator(Locator):
@@ -781,6 +866,147 @@ class ConsultingLayoutMixin:
                 linespacing=0.9,
             )
 
+    @staticmethod
+    def _main_axes_metres_per_px(figure: Figure) -> float | None:
+        axes = getattr(figure, "_css_main_axes", None)
+        if not axes:
+            return None
+        main_ax = axes[0]
+        lo, hi = main_ax.get_xlim()
+        width_px = main_ax.bbox.width
+        span = abs(float(hi) - float(lo))
+        if width_px <= 0.0 or span <= 0.0 or not np.isfinite(span):
+            return None
+        return span / width_px
+
+    @staticmethod
+    def _scale_bar_key(figure: Figure) -> tuple:
+        axes = getattr(figure, "_css_main_axes", None)
+        if not axes:
+            return ()
+        main_ax = axes[0]
+        return (tuple(main_ax.get_position().bounds), tuple(main_ax.get_xlim()))
+
+    def _draw_consulting_scale_bar(self, ax_scale, title_block: ConsultingTitleBlock) -> None:
+        """Scale bar drawn to the main section's true horizontal scale.
+
+        Length is a round 1/2/5 x 10^n metres (or the title block's
+        ``scale_bar_m`` when explicitly set and it fits) measured through the
+        main axes' data->display transform; the SCALE text is the ratio at the
+        current page size, never the title block's nominal ``map_scale``.
+        """
+        figure = ax_scale.figure
+        metres_per_px = self._main_axes_metres_per_px(figure)
+        panel_px = ax_scale.bbox.width
+        if metres_per_px is None or panel_px <= 0.0:
+            return
+        font_pt = self._fs(7)
+        bar_x, bar_y = _SCALE_BAR_X, _SCALE_BAR_Y
+        renderer = figure.canvas.get_renderer()
+
+        units = ax_scale.text(
+            0.0,
+            bar_y,
+            _SCALE_BAR_UNITS,
+            ha="left",
+            va="center",
+            fontsize=font_pt,
+            color=LABEL_COLOR,
+            transform=ax_scale.transAxes,
+        )
+        gap = 0.03
+        units_frac = units.get_window_extent(renderer).width / panel_px
+        max_frac = min(_SCALE_BAR_MAX_FRACTION, 1.0 - bar_x - gap - units_frac - 0.01)
+        max_m = max(max_frac, 0.2) * panel_px * metres_per_px
+
+        length_m = nice_scale_bar_length(max_m)
+        requested = title_block.scale_bar_m if "scale_bar_m" in title_block.model_fields_set else None
+        if requested and 0.4 * max_m <= float(requested) <= max_m:
+            length_m = float(requested)
+        if length_m <= 0.0:
+            units.remove()
+            return
+        bar_w = length_m / metres_per_px / panel_px
+        units.set_x(bar_x + bar_w + gap)
+
+        step = scale_bar_tick_step(length_m)
+        count = int(round(length_m / step))
+        ticks = [step * i for i in range(count + 1)]
+        tick_xs = [bar_x + (tick_m / length_m) * bar_w for tick_m in ticks]
+        for tick_x in tick_xs:
+            ax_scale.plot(
+                [tick_x, tick_x],
+                [bar_y - 0.05, bar_y + 0.05],
+                color=STICK_COLOR,
+                linewidth=1.0,
+                transform=ax_scale.transAxes,
+                clip_on=False,
+            )
+        labels = [
+            ax_scale.text(
+                tick_x,
+                bar_y - 0.10,
+                _scale_bar_label(tick_m),
+                ha="center",
+                va="top",
+                fontsize=font_pt,
+                color=LABEL_COLOR,
+                transform=ax_scale.transAxes,
+            )
+            for tick_x, tick_m in zip(tick_xs, ticks)
+        ]
+        # Thin the labels (never the ends) if neighbours would touch.
+        pad_px = 2.0 * figure.dpi / 72.0
+        boxes = [label.get_window_extent(renderer) for label in labels]
+        for stride in range(1, len(labels)):
+            keep = {i for i in range(0, len(labels), stride)} | {len(labels) - 1}
+            kept = sorted(keep)
+            if all(
+                boxes[a].x1 + pad_px <= boxes[b].x0 for a, b in zip(kept, kept[1:])
+            ):
+                break
+        else:  # pragma: no cover - two end labels always fit an 80 % bar
+            kept = [0, len(labels) - 1]
+        for index, label in enumerate(labels):
+            if index not in kept:
+                label.remove()
+
+        ax_scale.plot(
+            [bar_x, bar_x + bar_w],
+            [bar_y, bar_y],
+            color=STICK_COLOR,
+            linewidth=2.5,
+            solid_capstyle="butt",
+            transform=ax_scale.transAxes,
+            clip_on=False,
+        )
+        ratio = metres_per_px * figure.dpi * _INCHES_PER_METRE
+        ax_scale.text(
+            bar_x + bar_w / 2.0,
+            0.12,
+            scale_ratio_text(ratio),
+            ha="center",
+            va="center",
+            fontsize=font_pt,
+            fontweight="bold",
+            color=LABEL_COLOR,
+            transform=ax_scale.transAxes,
+        )
+        nominal = (
+            parse_map_scale(title_block.map_scale)
+            if "map_scale" in title_block.model_fields_set
+            else None
+        )
+        if nominal and abs(nominal / ratio - 1.0) > _MAP_SCALE_MISMATCH_TOLERANCE:
+            logger.warning(
+                "Title block map scale %s differs from the printed section scale "
+                "1:%.0f on this %.1f x %.1f in page; the scale bar shows the "
+                "printed scale.",
+                title_block.map_scale,
+                ratio,
+                *figure.get_size_inches(),
+            )
+
     def _draw_subtitle_band(
         self,
         ax_scale,
@@ -793,63 +1019,13 @@ class ConsultingLayoutMixin:
             panel.set_xlim(0, 1)
             panel.set_ylim(0, 1)
 
-        map_scale = title_block.map_scale or "1:1000"
-        scale_bar_m = title_block.scale_bar_m or CONSULTING_SCALE_BAR_M
         if self.profile.show_scale_bar:
-            bar_x = 0.02
-            bar_y = 0.55
-            bar_w = 0.72
-            tick_step = 10.0
-            tick_marks = tuple(np.arange(0.0, scale_bar_m + tick_step * 0.5, tick_step))
-            for tick_m in tick_marks:
-                tick_x = bar_x + (tick_m / scale_bar_m) * bar_w
-                ax_scale.plot(
-                    [tick_x, tick_x],
-                    [bar_y - 0.05, bar_y + 0.05],
-                    color=STICK_COLOR,
-                    linewidth=1.0,
-                    transform=ax_scale.transAxes,
-                    clip_on=False,
-                )
-                ax_scale.text(
-                    tick_x,
-                    bar_y - 0.10,
-                    f"{int(tick_m)}",
-                    ha="center",
-                    va="top",
-                    fontsize=self._fs(7),
-                    color=LABEL_COLOR,
-                    transform=ax_scale.transAxes,
-                )
-            ax_scale.plot(
-                [bar_x, bar_x + bar_w],
-                [bar_y, bar_y],
-                color=STICK_COLOR,
-                linewidth=2.5,
-                solid_capstyle="butt",
-                transform=ax_scale.transAxes,
-                clip_on=False,
-            )
-            ax_scale.text(
-                bar_x + bar_w + 0.03,
-                bar_y,
-                "Metres",
-                ha="left",
-                va="center",
-                fontsize=self._fs(7),
-                color=LABEL_COLOR,
-                transform=ax_scale.transAxes,
-            )
-            ax_scale.text(
-                bar_x + bar_w / 2.0,
-                0.12,
-                f"SCALE {map_scale}",
-                ha="center",
-                va="center",
-                fontsize=self._fs(7),
-                fontweight="bold",
-                color=LABEL_COLOR,
-                transform=ax_scale.transAxes,
+            # The bar's length depends on the main axes' metres per inch, which
+            # an export page resize or margin fit changes: record it for re-fit.
+            self._draw_refittable(
+                ax_scale,
+                lambda: self._draw_consulting_scale_bar(ax_scale, title_block),
+                key_extra=lambda: self._scale_bar_key(ax_scale.figure),
             )
 
         section_title = self._consulting_display_title(title_block.section_label or self.title)
@@ -1697,7 +1873,7 @@ class ConsultingLayoutMixin:
     def _refit_key(ax) -> tuple:
         return (tuple(ax.figure.get_size_inches()), tuple(ax.get_position().bounds))
 
-    def _draw_refittable(self, ax, draw) -> None:
+    def _draw_refittable(self, ax, draw, *, key_extra=None) -> None:
         """Run ``draw`` (a measured, fitted drawing unit) and record it for re-fit.
 
         Fitting measures pixels at the figure's current size and margins. An
@@ -1705,6 +1881,8 @@ class ConsultingLayoutMixin:
         size) or a margin change would leave the fitted text too wide, so the
         artists ``draw`` adds are recorded and ``refit_consulting_fitted_text``
         removes and redraws them once the export page geometry is applied.
+        ``key_extra`` adds state outside ``ax`` the unit depends on (the scale
+        bar follows the main axes' position and x limits).
         """
         before = {id(child) for child in ax.get_children()}
         draw()
@@ -1712,7 +1890,8 @@ class ConsultingLayoutMixin:
         registry = getattr(ax.figure, "_css_fitted_cells", None)
         if registry is None:
             registry = ax.figure._css_fitted_cells = []
-        registry.append({"ax": ax, "draw": draw, "artists": artists, "key": self._refit_key(ax)})
+        key_fn = (lambda: (self._refit_key(ax), key_extra())) if key_extra else (lambda: self._refit_key(ax))
+        registry.append({"ax": ax, "draw": draw, "artists": artists, "key": key_fn(), "key_fn": key_fn})
 
     def refit_consulting_fitted_text(self, figure: Figure) -> None:
         """Redo every recorded fitted unit whose axes moved or resized.
@@ -1727,7 +1906,7 @@ class ConsultingLayoutMixin:
             ax = unit["ax"]
             if ax.figure is not figure:
                 continue
-            key = self._refit_key(ax)
+            key = unit["key_fn"]() if "key_fn" in unit else self._refit_key(ax)
             if unit["key"] == key:
                 continue
             for artist in unit["artists"]:

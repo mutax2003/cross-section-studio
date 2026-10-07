@@ -160,3 +160,50 @@ def test_scale_helpers() -> None:
     assert parse_map_scale("1:1 500") == 1500.0
     assert parse_map_scale("1:1,000") == 1000.0
     assert parse_map_scale("NTS") is None
+
+
+def test_scale_text_keeps_a_decimal_on_very_short_sections() -> None:
+    from renderer_consulting import scale_ratio_text
+
+    assert scale_ratio_text(3.3) == "APPROX. SCALE 1:3.3"
+    assert scale_ratio_text(671) == "APPROX. SCALE 1:670"
+
+
+def test_title_block_scale_defers_to_the_bar_when_not_set() -> None:
+    """The model default "1:1000" printed in the SCALE row contradicted the
+    true-scale bar ("APPROX. SCALE 1:170")."""
+    import matplotlib.pyplot as plt
+
+    import renderer as renderer_mod
+    from models import Collar, ConsultingTitleBlock, Lithology
+    from pipeline import build_cross_section
+
+    collars = [
+        Collar(hole_id=h, easting=20.0 * i, northing=0.0, elevation=100.0, total_depth=10.0)
+        for i, h in enumerate(("BH-1", "BH-2", "BH-3"))
+    ]
+    liths = [Lithology(hole_id=c.hole_id, from_depth=0, to_depth=10, lithology_code="Clay") for c in collars]
+    texts = {}
+    original = renderer_mod.CrossSectionRenderer.render
+
+    def spy(self, *args, **kwargs):
+        fig = original(self, *args, **kwargs)
+        texts["t"] = [t.get_text() for t in fig.findobj(lambda o: hasattr(o, "get_text"))]
+        texts.setdefault("figs", []).append(fig)
+        return fig
+
+    renderer_mod.CrossSectionRenderer.render = spy
+    try:
+        for block, expected in (
+            (ConsultingTitleBlock(section_label="A-A'"), "AS SHOWN"),
+            (ConsultingTitleBlock(section_label="A-A'", map_scale="1:500"), "1:500"),
+        ):
+            build_cross_section(
+                collars, liths, [(0.0, 0.0), (40.0, 0.0)],
+                render_layout="consulting_section", consulting_title_block=block,
+            )
+            assert expected in texts["t"]
+    finally:
+        renderer_mod.CrossSectionRenderer.render = original
+        for fig in texts.get("figs", []):
+            plt.close(fig)

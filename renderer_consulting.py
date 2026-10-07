@@ -246,7 +246,10 @@ def scale_ratio_text(ratio: float) -> str:
     standard = nearest_standard_scale(ratio)
     if abs(standard / ratio - 1.0) <= _STANDARD_SCALE_TOLERANCE:
         return f"SCALE 1:{standard}"
-    digits = int(np.floor(np.log10(max(ratio, 1.0))))
+    if ratio < 10:
+        # Very short sections: keep a decimal (1:3.3, not a 10 %-off 1:3).
+        return f"APPROX. SCALE 1:{ratio:.1f}"
+    digits = int(np.floor(np.log10(ratio)))
     rounded = int(round(ratio, -max(digits - 1, 0)))
     return f"APPROX. SCALE 1:{rounded}"
 
@@ -1022,10 +1025,12 @@ class ConsultingLayoutMixin:
         )
         ratio = metres_per_px * figure.dpi * _INCHES_PER_METRE
         ax_scale.text(
-            bar_x + bar_w / 2.0,
+            # Left-aligned with the bar so the text can't spill out of the
+            # panel's left edge (centred, it overflowed at large fonts).
+            bar_x,
             0.12,
             scale_ratio_text(ratio),
-            ha="center",
+            ha="left",
             va="center",
             fontsize=font_pt,
             fontweight="bold",
@@ -1317,7 +1322,10 @@ class ConsultingLayoutMixin:
         if title_block.source:
             meta_rows.append(("SOURCE", title_block.source))
         if title_block.map_scale:
-            meta_rows.append(("SCALE", title_block.map_scale))
+            # A scale the user never set (the model default "1:1000") would
+            # contradict the true-scale bar; "AS SHOWN" defers to the bar.
+            user_scale = "map_scale" in title_block.model_fields_set
+            meta_rows.append(("SCALE", title_block.map_scale if user_scale else "AS SHOWN"))
         if title_block.date:
             meta_rows.append(("DATE", title_block.date))
         if title_block.drawn_by:

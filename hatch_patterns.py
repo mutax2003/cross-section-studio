@@ -251,6 +251,11 @@ def _with_gravel_linewidth(set_hatch):
         linewidth = hatch_linewidth_for(hatch)
         if linewidth is not None:
             self._hatch_linewidth = linewidth
+        elif getattr(self, "_hatch_linewidth", None) == GRAVEL_HATCH_LINEWIDTH_PT:
+            # Hatch changed away from gravel: back to the normal hatch line.
+            import matplotlib
+
+            self._hatch_linewidth = matplotlib.rcParams["hatch.linewidth"]
 
     wrapped._template_gravel_linewidth = True
     wrapped.__doc__ = set_hatch.__doc__

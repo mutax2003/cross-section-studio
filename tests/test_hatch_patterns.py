@@ -97,3 +97,12 @@ def test_gravel_outlines_are_thin_on_every_hatched_artist() -> None:
     assert patch.get_hatch_linewidth() == GRAVEL_HATCH_LINEWIDTH_PT
     assert collection.get_hatch_linewidth() == GRAVEL_HATCH_LINEWIDTH_PT
     assert Rectangle((0, 0), 1, 1, hatch="/").get_hatch_linewidth() != GRAVEL_HATCH_LINEWIDTH_PT
+
+
+def test_hatch_change_away_from_gravel_restores_the_normal_line() -> None:
+    import matplotlib
+    from matplotlib.patches import Rectangle
+
+    patch = Rectangle((0, 0), 1, 1, hatch="O")
+    patch.set_hatch("/")
+    assert patch.get_hatch_linewidth() == matplotlib.rcParams["hatch.linewidth"]

@@ -312,7 +312,8 @@ def test_dot_style_dot_follows_its_label_when_moved() -> None:
         # Dot sits just left of the text, vertically centred on it.
         assert text_box.x0 - 12 <= dot_xy[0] <= text_box.x0 + 1
         assert abs(dot_xy[1] - (text_box.y0 + text_box.y1) / 2) < 3
-        if abs(ann.xyann[1]) > 14:
+        base_dx, base_dy = ann._water_base_xyann
+        if abs(ann.xyann[1] - base_dy) > 10 or abs(ann.xyann[0] - base_dx) > 10:
             moved += 1
     assert moved > 0  # the scenario really exercised the collision pass
 

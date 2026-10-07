@@ -90,7 +90,8 @@ def test_pinch_out_triangle_apex() -> None:
     clay = next(item for item in polygons if item.lithology_code == "Clay")
     assert clay.is_pinch_out
     assert clay.polygon.geom_type in {"Polygon", "MultiPolygon"}
-    apex = Point(25.0, 90.0)
+    # Tip sits on the matched Sandstone base interpolated mid-way (95 -> 90).
+    apex = Point(25.0, 92.5)
     assert clay.polygon.buffer(0.01).contains(apex)
 
     expected_area = 0.5 * (95.0 - 85.0) * 25.0
@@ -475,7 +476,8 @@ def test_pinch_out_uses_unit_order_neighbor_contacts() -> None:
     polygons = build_stratigraphy(projected, allow_pinch_outs=True)
     clay = next(item for item in polygons if item.lithology_code == "Clay")
     assert clay.is_pinch_out
-    apex = Point(25.0, 92.0)
+    # Matched Sand (unit_order 1) base interpolated mid-way between holes (95 -> 92).
+    apex = Point(25.0, 93.5)
     assert clay.polygon.buffer(0.01).contains(apex)
 
 
@@ -650,3 +652,118 @@ def test_unique_base_unit_pinch_out_has_no_overlap(bedrock_bottom: float, right_
     assert len(bedrock) == 1 and bedrock[0].is_pinch_out
     assert detect_polygon_overlaps(polygons) == []
     _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 50.0})
+
+
+def _fence_gap_area(polygons: list[GeologicalPolygon], x0: float, x1: float, z_top, z_bot) -> float:
+    """Uncovered area of the fence region between two holes bounded by contact lines."""
+    from shapely.ops import unary_union
+
+    region = ShapelyPolygon([(x0, z_top[0]), (x1, z_top[1]), (x1, z_bot[1]), (x0, z_bot[0])])
+    covered = unary_union([p.polygon for p in polygons])
+    return region.difference(covered).area
+
+
+def _pairwise_overlap_area(polygons: list[GeologicalPolygon]) -> float:
+    total = 0.0
+    for i, first in enumerate(polygons):
+        for second in polygons[i + 1 :]:
+            total += first.polygon.intersection(second.polygon).area
+    return total
+
+
+def test_pinch_out_bends_bounding_units_so_fence_has_no_gap() -> None:
+    """Regression (GWM fig 3 MW18-06B/MW18-16): Silt wedge between Sand-and-Clay and
+    Clay left a white triangle from its tip to the neighbour hole."""
+    polygons = build_stratigraphy(_shifted_unit_order_pair(), allow_pinch_outs=True)
+    # Fence between the top of Sand-and-Clay and the base of Clay at both holes.
+    gap = _fence_gap_area(polygons, 0.0, 32.0, (629.0, 629.5), (602.0, 603.5))
+    assert gap == pytest.approx(0.0, abs=1e-6)
+    assert _pairwise_overlap_area(polygons) == pytest.approx(0.0, abs=1e-6)
+    assert detect_polygon_overlaps(polygons) == []
+    _assert_pinch_outs_attached(polygons, {"BH-01": 0.0, "BH-02": 32.0})
+    silt = next(p for p in polygons if p.lithology_code == "Silt").polygon
+    # Tip mid-way, on the mean of the bracketing contacts: ((623+623)/2 + (624+619.5)/2) / 2.
+    assert silt.boundary.distance(Point(16.0, 622.375)) < 1e-9
+    sand_clay = next(p for p in polygons if p.lithology_code == "Sand and Clay").polygon
+    clay = next(p for p in polygons if p.lithology_code == "Clay").polygon
+    assert sand_clay.boundary.distance(Point(16.0, 622.375)) < 1e-9
+    assert clay.boundary.distance(Point(16.0, 622.375)) < 1e-9
+
+
+@pytest.mark.parametrize("source_left", [True, False])
+def test_stacked_pinch_outs_fan_to_shared_tip_without_gaps(source_left: bool) -> None:
+    """Two stacked lenses in one hole between matched Sand and Clay, either direction."""
+    lensed = [
+        (100.0, 95.0, "Sand"),
+        (95.0, 92.0, "Silt"),
+        (92.0, 88.0, "Gravel"),
+        (88.0, 70.0, "Clay"),
+    ]
+    plain = [(99.0, 90.0, "Sand"), (90.0, 72.0, "Clay")]
+    left, right = (lensed, plain) if source_left else (plain, lensed)
+    rows = [("A", 0.0, *row) for row in left] + [("B", 40.0, *row) for row in right]
+    polygons = build_stratigraphy(_rows_df(rows), allow_pinch_outs=True)
+    wedges = [p for p in polygons if p.is_pinch_out]
+    assert sorted(p.lithology_code for p in wedges) == ["Gravel", "Silt"]
+    z_top = (left[0][0], right[0][0])
+    z_bot = (left[-1][1], right[-1][1])
+    assert _fence_gap_area(polygons, 0.0, 40.0, z_top, z_bot) == pytest.approx(0.0, abs=1e-6)
+    assert _pairwise_overlap_area(polygons) == pytest.approx(0.0, abs=1e-6)
+    _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 40.0})
+    for wedge in wedges:
+        assert wedge.polygon.bounds[0 if source_left else 2] == pytest.approx(
+            0.0 if source_left else 40.0
+        )
+
+
+def test_opposing_pinch_outs_in_one_gap_meet_at_common_tip() -> None:
+    """Different lenses logged in each hole between the same matched units tile the gap."""
+    rows = [
+        ("A", 0.0, 100.0, 95.0, "Sand"),
+        ("A", 0.0, 95.0, 90.0, "Silt"),
+        ("A", 0.0, 90.0, 80.0, "Clay"),
+        ("B", 50.0, 100.0, 96.0, "Sand"),
+        ("B", 50.0, 96.0, 88.0, "Gravel"),
+        ("B", 50.0, 88.0, 78.0, "Clay"),
+    ]
+    polygons = build_stratigraphy(_rows_df(rows), allow_pinch_outs=True)
+    assert sorted(p.lithology_code for p in polygons if p.is_pinch_out) == ["Gravel", "Silt"]
+    assert _fence_gap_area(polygons, 0.0, 50.0, (100.0, 100.0), (80.0, 78.0)) == pytest.approx(
+        0.0, abs=1e-6
+    )
+    assert _pairwise_overlap_area(polygons) == pytest.approx(0.0, abs=1e-6)
+    _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 50.0})
+
+
+@pytest.mark.parametrize("at_top", [True, False])
+def test_single_bounded_pinch_out_tip_on_matched_contact(at_top: bool) -> None:
+    """A wedge at the top or base of a hole has one bounding unit: the tip lies on its
+    straight contact, so nothing overlaps and the fill below/above is unchanged."""
+    if at_top:
+        rows = [
+            ("A", 0.0, 100.0, 97.0, "Fill"),
+            ("A", 0.0, 97.0, 85.0, "Clay"),
+            ("B", 50.0, 99.0, 80.0, "Clay"),
+        ]
+    else:
+        rows = [
+            ("A", 0.0, 100.0, 90.0, "Clay"),
+            ("A", 0.0, 90.0, 82.0, "Bedrock"),
+            ("B", 50.0, 100.0, 86.0, "Clay"),
+        ]
+    polygons = build_stratigraphy(_rows_df(rows), allow_pinch_outs=True)
+    clay = next(p for p in polygons if p.lithology_code == "Clay")
+    assert len(clay.polygon.exterior.coords) == 5  # straight quadrilateral, no bend
+    wedge = next(p for p in polygons if p.is_pinch_out)
+    tip_z = (97.0 + 99.0) / 2 if at_top else (90.0 + 86.0) / 2
+    assert wedge.polygon.boundary.distance(Point(25.0, tip_z)) < 1e-9
+    assert _pairwise_overlap_area(polygons) == pytest.approx(0.0, abs=1e-6)
+    _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 50.0})
+
+
+def test_pinch_out_tiling_skipped_without_pinch_outs() -> None:
+    """allow_pinch_outs=False keeps straight hole-to-hole fills (no bends, gap left)."""
+    polygons = build_stratigraphy(_shifted_unit_order_pair(), allow_pinch_outs=False)
+    assert not any(p.is_pinch_out for p in polygons)
+    for polygon in polygons:
+        assert len(polygon.polygon.exterior.coords) == 5

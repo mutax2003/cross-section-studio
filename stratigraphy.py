@@ -447,52 +447,75 @@ def _polygons_for_pair(
         for interval in right_intervals
         if interval.unit_order is not None
     }
-    matched_left_first = [
-        (left_lookup[key], right_lookup[key]) for key in left_lookup if key in right_lookup
+    matched = [
+        (key, left_lookup[key], right_lookup[key]) for key in all_keys if key in left_lookup and key in right_lookup
     ]
-    matched_right_first = [(right, left) for left, right in matched_left_first]
+    matched_right_first = [(key, right, left) for key, left, right in matched]
 
-    for key in all_keys:
-        left_layer = left_lookup.get(key)
-        right_layer = right_lookup.get(key)
-        if left_layer is None and right_layer is None:
-            continue
-        lithology_code = (left_layer or right_layer).lithology_code  # type: ignore[union-attr]
+    # Pass 1: plan pinch-out wedges. Each wedge tapers to a tip on the "mean contact
+    # line" of the matched units bracketing it, and those bracketing fills are bent
+    # through the same tip so upper unit, wedge(s) and lower unit tile the fence.
+    top_bends: dict[Hashable, list[tuple[float, float]]] = defaultdict(list)
+    bottom_bends: dict[Hashable, list[tuple[float, float]]] = defaultdict(list)
+    wedges: list[tuple[_LayerInterval, float, float, float]] = []
+    if allow_pinch_outs:
+        for key in all_keys:
+            left_layer = left_lookup.get(key)
+            right_layer = right_lookup.get(key)
+            if (left_layer is None) == (right_layer is None):
+                continue
+            if left_layer is not None:
+                source_layer, x_source, x_other = left_layer, x_left, x_right
+                neighbor_intervals, neighbor_by_order = right_intervals, right_by_order
+                source_matches = matched
+            else:
+                source_layer, x_source, x_other = right_layer, x_right, x_left  # type: ignore[assignment]
+                neighbor_intervals, neighbor_by_order = left_intervals, left_by_order
+                source_matches = matched_right_first
+            x_tip = x_source + PINCH_OUT_FRACTION * (x_other - x_source)
+            above, below = _bracketing_matches(source_layer, source_matches)
+            if above is not None or below is not None:
+                z_tip = _bracket_tip_z(
+                    above,
+                    below,
+                    left_lookup,
+                    right_lookup,
+                    x_left,
+                    x_right,
+                    x_tip,
+                )
+                if above is not None and below is not None:
+                    bottom_bends[above].append((x_tip, z_tip))
+                    top_bends[below].append((x_tip, z_tip))
+            else:
+                z_tip = _pinch_out_z_mid(
+                    source_layer, neighbor_intervals, by_order=neighbor_by_order
+                )
+            wedges.append((source_layer, x_source, x_other, z_tip))
 
-        if left_layer and right_layer:
-            polygon = _make_polygon(
-                [
-                    (x_left, left_layer.top_elevation),
-                    (x_right, right_layer.top_elevation),
-                    (x_right, right_layer.bottom_elevation),
-                    (x_left, left_layer.bottom_elevation),
-                ],
-                lithology_code,
-                hole_pair,
-            )
-            if polygon:
-                polygons.append(polygon)
-            continue
-
-        if not allow_pinch_outs:
-            continue
-
-        if left_layer is not None:
-            source_layer, x_source, x_other = left_layer, x_left, x_right
-            neighbor_intervals, neighbor_by_order = right_intervals, right_by_order
-            source_matches = matched_left_first
-        else:
-            source_layer, x_source, x_other = right_layer, x_right, x_left  # type: ignore[assignment]
-            neighbor_intervals, neighbor_by_order = left_intervals, left_by_order
-            source_matches = matched_right_first
-        z_mid = _matched_contact_z(source_layer, source_matches)
-        if z_mid is None:
-            z_mid = _pinch_out_z_mid(
-                source_layer, neighbor_intervals, by_order=neighbor_by_order
-            )
+    # Pass 2: continuous fills (with bent contacts), then wedges.
+    for key, left_layer, right_layer in matched:
+        top_path = _bend_path(top_bends.get(key, ()), x_left, x_right)
+        bottom_path = _bend_path(bottom_bends.get(key, ()), x_left, x_right)
         polygon = _make_polygon(
-            _pinch_out_wedge_coords(source_layer, x_source, x_other, z_mid),
-            lithology_code,
+            [
+                (x_left, left_layer.top_elevation),
+                *top_path,
+                (x_right, right_layer.top_elevation),
+                (x_right, right_layer.bottom_elevation),
+                *reversed(bottom_path),
+                (x_left, left_layer.bottom_elevation),
+            ],
+            left_layer.lithology_code,
+            hole_pair,
+        )
+        if polygon:
+            polygons.append(polygon)
+
+    for source_layer, x_source, x_other, z_tip in wedges:
+        polygon = _make_polygon(
+            _pinch_out_wedge_coords(source_layer, x_source, x_other, z_tip),
+            source_layer.lithology_code,
             hole_pair,
             is_pinch_out=True,
         )
@@ -502,36 +525,71 @@ def _polygons_for_pair(
     return polygons
 
 
-def _matched_contact_z(
+def _bracketing_matches(
     pinch_interval: _LayerInterval,
-    matched_pairs: list[tuple[_LayerInterval, _LayerInterval]],
-) -> float | None:
-    """Apex elevation from the correlated units bracketing the pinch-out.
+    matched: list[tuple[Hashable, _LayerInterval, _LayerInterval]],
+) -> tuple[Hashable | None, Hashable | None]:
+    """Correlation keys of the nearest matched units above and below a pinch-out.
 
-    ``matched_pairs`` holds ``(source_interval, neighbour_interval)`` for every unit
-    correlated across the pair. The nearest matched unit above the pinch interval in
-    the source hole contributes its neighbour counterpart's bottom; the nearest one
-    below contributes its counterpart's top. Using the actual correlated fills keeps
-    the wedge inside the gap they leave, so overlap clipping does not detach it.
-    Returns ``None`` when no matched unit brackets the interval.
+    ``matched`` holds ``(key, source_interval, neighbour_interval)`` for every unit
+    correlated across the pair; "above"/"below" are judged in the source hole.
     """
-    above: tuple[_LayerInterval, _LayerInterval] | None = None
-    below: tuple[_LayerInterval, _LayerInterval] | None = None
-    for source, neighbour in matched_pairs:
+    above: tuple[float, Hashable] | None = None
+    below: tuple[float, Hashable] | None = None
+    for key, source, _neighbour in matched:
         if source.bottom_elevation >= pinch_interval.top_elevation - 1e-9:
-            if above is None or source.bottom_elevation < above[0].bottom_elevation:
-                above = (source, neighbour)
+            if above is None or source.bottom_elevation < above[0]:
+                above = (source.bottom_elevation, key)
         elif source.top_elevation <= pinch_interval.bottom_elevation + 1e-9:
-            if below is None or source.top_elevation > below[0].top_elevation:
-                below = (source, neighbour)
-    contacts: list[float] = []
+            if below is None or source.top_elevation > below[0]:
+                below = (source.top_elevation, key)
+    return (
+        above[1] if above is not None else None,
+        below[1] if below is not None else None,
+    )
+
+
+def _bracket_tip_z(
+    above: Hashable | None,
+    below: Hashable | None,
+    left_lookup: dict[Hashable, _LayerInterval],
+    right_lookup: dict[Hashable, _LayerInterval],
+    x_left: float,
+    x_right: float,
+    x_tip: float,
+) -> float:
+    """Wedge-tip elevation on the mean line of the bracketing matched contacts.
+
+    The contact line of each bracketing unit (bottom of the unit above, top of the
+    unit below) is interpolated hole-to-hole; the tip sits on their average at
+    ``x_tip``. With a single bracketing unit the tip lies exactly on its straight
+    contact, so that fill needs no bending; with two, both fills are bent through
+    the tip and stay ordered (the tip lies between their interpolated contacts).
+    """
+    left_contacts: list[float] = []
+    right_contacts: list[float] = []
     if above is not None:
-        contacts.append(above[1].bottom_elevation)
+        left_contacts.append(left_lookup[above].bottom_elevation)
+        right_contacts.append(right_lookup[above].bottom_elevation)
     if below is not None:
-        contacts.append(below[1].top_elevation)
-    if not contacts:
-        return None
-    return sum(contacts) / len(contacts)
+        left_contacts.append(left_lookup[below].top_elevation)
+        right_contacts.append(right_lookup[below].top_elevation)
+    z_left = sum(left_contacts) / len(left_contacts)
+    z_right = sum(right_contacts) / len(right_contacts)
+    span = x_right - x_left
+    t = (x_tip - x_left) / span if span else 0.5
+    return z_left + t * (z_right - z_left)
+
+
+def _bend_path(
+    bends: Sequence[tuple[float, float]], x_left: float, x_right: float
+) -> list[tuple[float, float]]:
+    """Interior bend vertices of a contact edge, ordered left→right, deduplicated by x."""
+    by_x: dict[float, float] = {}
+    for x, z in bends:
+        if min(x_left, x_right) < x < max(x_left, x_right):
+            by_x.setdefault(x, z)
+    return sorted(by_x.items())
 
 
 def _pinch_out_wedge_coords(

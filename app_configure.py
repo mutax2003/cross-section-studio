@@ -52,6 +52,22 @@ def override_warnings_label(warning_count: int) -> str:
     return f"{OVERRIDE_WARNINGS_LABEL} ({warning_count} {noun})"
 
 
+# Logging gaps draw grey ("Not logged") and are flagged in Validate; real logs
+# often have no-recovery intervals, so they warn without locking Generate.
+NON_GATING_WARNING_CODES = frozenset({"depth_gap"})
+
+
+def gating_warning_count(quality_report) -> int:
+    """Warnings that need the override tick before Generate (coverage gaps excluded)."""
+    if quality_report is None:
+        return 0
+    return sum(
+        1
+        for issue in quality_report.issues
+        if issue.severity == "warning" and issue.code not in NON_GATING_WARNING_CODES
+    )
+
+
 @dataclass(frozen=True)
 class ConfigureState:
     selected_holes: list[str]
@@ -387,7 +403,7 @@ def render_configure_step(
             "Water levels are given as elevations, but collar elevations are missing. "
             "Add surveyed elevations or switch to depth below ground."
         )
-    warning_count = int(quality_report.warning_count) if quality_report is not None else 0
+    warning_count = gating_warning_count(quality_report)
     has_warnings = warning_count > 0
     warnings_default = not is_consulting_layout
     if "override_warnings_checkbox" not in st.session_state:

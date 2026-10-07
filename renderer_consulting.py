@@ -45,7 +45,12 @@ from render_theme import (
     primary_water_depth_by_hole,
     water_has_multiple_series,
 )
-from renderer_common import UNLOGGED_FILL_COLOR, UNLOGGED_LEGEND_LABEL, legend_swatch_hatch
+from renderer_common import (
+    UNLOGGED_FILL_COLOR,
+    UNLOGGED_LEGEND_LABEL,
+    legend_swatch_hatch,
+    settle_figure_layout,
+)
 from stratigraphy import GeologicalPolygon
 
 logger = logging.getLogger(__name__)
@@ -725,7 +730,7 @@ class ConsultingLayoutMixin:
         if not headers or not formatters:
             return
         renderer = figure.canvas.get_renderer()
-        figure.draw_without_rendering()
+        settle_figure_layout(figure)
         pad = renderer.points_to_pixels(1.0)
         header_boxes = []
         for text in headers:
@@ -753,7 +758,7 @@ class ConsultingLayoutMixin:
                     if any(box.overlaps(other) for other in header_boxes):
                         formatter.suppressed.add(round(loc / formatter._ve, 6))
         if any(formatter.suppressed for _ax, formatter in formatters):
-            figure.draw_without_rendering()
+            settle_figure_layout(figure)
 
     def _orphan_unit_geometry(
         self,

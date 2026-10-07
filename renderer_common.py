@@ -6,8 +6,12 @@ from collections.abc import Sequence
 
 import numpy as np
 import pandas as pd
+from matplotlib.backends.backend_agg import RendererAgg
 from matplotlib.collections import PolyCollection
+from matplotlib.path import Path
+from matplotlib.text import Annotation
 from matplotlib.ticker import FuncFormatter, Locator, MaxNLocator
+from shapely.geometry import Polygon as ShapelyPolygon
 
 import hatch_patterns
 from constants import get_lithology_style
@@ -212,7 +216,219 @@ def legend_swatch_hatch(hatch: str | None, height_in: float) -> str | None:
         factor = min(factor, 2)
     return densify_hatch(hatch, factor) if factor > 1 else hatch
 
-class ThinUnitHatchCollection(PolyCollection):
+
+_AGG_SNAP_MAX_VERTICES = 1024  # Agg PathSnapper: SNAP_AUTO never snaps longer paths
+
+
+def _agg_auto_snaps(display_verts: np.ndarray, codes: np.ndarray | None) -> bool:
+    """Replicate Agg's SNAP_AUTO ``should_snap`` test for one path (display coords).
+
+    Only LINETO segments are checked; every vertex (MOVETO / CLOSEPOLY too)
+    becomes the previous point, exactly as the C++ iterator walks the path.
+    """
+    if len(display_verts) > _AGG_SNAP_MAX_VERTICES or len(display_verts) < 1:
+        return False
+    if codes is not None and np.any((codes == Path.CURVE3) | (codes == Path.CURVE4)):
+        return False
+    delta = np.abs(np.diff(display_verts, axis=0))
+    if codes is None:
+        line_to = np.ones(len(delta), dtype=bool)
+    else:
+        line_to = codes[1:] == Path.LINETO
+    bad = line_to & (delta[:, 0] >= 1e-4) & (delta[:, 1] >= 1e-4)
+    return not bool(np.any(bad))
+
+
+def _overlaps_by_area(verts_a, codes_a, verts_b, codes_b, *, min_area_px: float = 0.25) -> bool:
+    """True unless two single-ring paths provably meet only along edges / points."""
+    for codes in (codes_a, codes_b):
+        if codes is not None and np.count_nonzero(codes == Path.MOVETO) > 1:
+            return True
+    try:
+        ring_a = ShapelyPolygon(verts_a)
+        ring_b = ShapelyPolygon(verts_b)
+        if not (ring_a.is_valid and ring_b.is_valid):
+            return True
+        return bool(ring_a.intersection(ring_b).area > min_area_px)
+    except Exception:  # degenerate ring: keep the original order
+        return True
+
+
+class HatchBatchedPolyCollection(PolyCollection):
+    """PolyCollection whose hatch is rasterised once per batch of disjoint paths.
+
+    Agg re-renders the full one-inch hatch tile (300 x 300 px at export dpi)
+    for every path in a hatched collection, which made dense gravel / sand
+    stipple dominate PNG export time.  On the Agg renderer this draw merges
+    paths whose (padded) display boxes do not touch into one compound path for
+    the face + hatch pass, then strokes the same paths in a second pass.
+
+    Pixels are unchanged: members of a batch are separated by more than the
+    stroke width plus antialiasing, overlapping paths keep their original
+    relative draw order (a later path always lands in a later batch), the
+    hatch pattern is anchored to the canvas origin either way, and each pass
+    keeps the original line width, face presence (so no path clipping or
+    simplification kicks in) and Agg pixel-snapping decision.  Vector
+    backends (SVG / PDF) and any collection outside the simple single-style
+    case fall back to the stock draw.
+
+    ``merge_shared_edges=True`` (fence polygons) also batches neighbours that
+    only share an edge (zero-area intersection), e.g. one unit's panels either
+    side of a borehole.  Their common edge is stroked identically by both, so
+    the only change is antialiasing on that seam (at most 1/255 per channel in the
+    60-hole parity check; up to 5/255 under the semi-opaque borehole columns
+    in the 12-hole sweep); paths that overlap by area stay ordered.
+    """
+
+    def __init__(self, *args, merge_shared_edges: bool = False, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.merge_shared_edges = bool(merge_shared_edges)
+
+    def draw(self, renderer) -> None:  # type: ignore[override]
+        batches = self._hatch_batches(renderer)
+        if batches is None:
+            super().draw(renderer)
+            return
+        paths = self._paths
+        facecolors = self._facecolors
+        edgecolors = self._edgecolors
+        hatchcolors = self._hatchcolors
+        hatch = self._hatch
+        resolved_edge = np.array(self.get_edgecolor(), dtype=float)
+        resolved_hatch_color = np.array(self.get_hatchcolor(), dtype=float)
+        clear_edge = resolved_edge.copy()
+        clear_edge[:, 3] = 0.0
+        clear_face = np.zeros((1, 4), dtype=float)
+        try:
+            for fill_groups, members in batches:
+                # Face + hatch: one compound path per snap-consistent group;
+                # a fully transparent stroke keeps the original line width so
+                # Agg snaps the fill exactly as it did per path.
+                self._paths = [Path.make_compound_path(*group) for group in fill_groups]
+                self._facecolors = facecolors
+                self._edgecolors = clear_edge
+                self._hatchcolors = resolved_hatch_color
+                self._hatch = hatch
+                PolyCollection.draw(self, renderer)
+                # Strokes: transparent face (not 'none') so the stroke path
+                # is neither clipped nor simplified, as in the stock draw.
+                self._paths = members
+                self._facecolors = clear_face
+                self._edgecolors = resolved_edge
+                self._hatch = None
+                PolyCollection.draw(self, renderer)
+        finally:
+            self._paths = paths
+            self._facecolors = facecolors
+            self._edgecolors = edgecolors
+            self._hatchcolors = hatchcolors
+            self._hatch = hatch
+
+    def _hatch_batches(self, renderer):
+        """``[(fill_groups, member_paths), ...]`` in draw order, or None for the stock draw."""
+        if not isinstance(renderer, RendererAgg) or not self._hatch or not self.get_visible():
+            return None
+        if hasattr(vars(renderer).get("draw_path_collection"), "__wrapped__"):
+            # RendererBase._draw_disabled (draw_without_rendering) swaps in
+            # wrapped no-ops: nothing is rasterised, so there is nothing to batch.
+            return None
+        paths = self.get_paths()
+        if len(paths) < 2:
+            return None
+        if (
+            self.get_path_effects()
+            or self.get_sketch_params() is not None
+            or self._gapcolor is not None
+            or self.get_array() is not None
+            or self.get_agg_filter() is not None
+            or len(self.get_transforms())
+            or len(self._facecolors) != 1
+            or len(self.get_edgecolor()) != 1
+            or len(self.get_hatchcolor()) != 1
+            or len(self._linewidths) != 1
+            or len(self._linestyles) != 1
+            or len(self._antialiaseds) != 1
+            or len(self._urls) != 1
+        ):
+            return None
+        offsets = self.get_offsets()
+        if len(offsets) != 1 or np.any(np.asarray(offsets) != 0):
+            return None
+        transform = self.get_transform()
+        if not transform.is_affine:
+            return None
+        affine = transform.get_affine()
+        display = []
+        for path in paths:
+            verts = np.asarray(path.vertices, dtype=float)
+            if verts.ndim != 2 or len(verts) == 0 or not np.all(np.isfinite(verts)):
+                return None
+            display.append(affine.transform(verts))
+        snap = self.get_snap()
+        if snap is None:
+            snaps = [_agg_auto_snaps(d, p.codes) for d, p in zip(display, paths, strict=True)]
+        else:
+            snaps = [bool(snap)] * len(paths)
+        # Pad: half the stroke, plus antialiasing / snapping slack on each side.
+        pad = renderer.points_to_pixels(float(self._linewidths[0])) / 2.0 + 2.0
+        boxes = np.array(
+            [(d[:, 0].min(), d[:, 1].min(), d[:, 0].max(), d[:, 1].max()) for d in display]
+        )
+        boxes[:, :2] -= pad
+        boxes[:, 2:] += pad
+        # Level of path j = 1 + max level of any earlier path it touches, so
+        # touching paths keep their original order and each level is disjoint.
+        levels = np.zeros(len(paths), dtype=int)
+        for j in range(1, len(paths)):
+            earlier = boxes[:j]
+            touch = (
+                (earlier[:, 0] <= boxes[j, 2])
+                & (earlier[:, 2] >= boxes[j, 0])
+                & (earlier[:, 1] <= boxes[j, 3])
+                & (earlier[:, 3] >= boxes[j, 1])
+            )
+            if touch.any() and self.merge_shared_edges:
+                touch[touch] = [
+                    _overlaps_by_area(display[i], paths[i].codes, display[j], paths[j].codes)
+                    for i in np.flatnonzero(touch)
+                ]
+            if touch.any():
+                levels[j] = int(levels[:j][touch].max()) + 1
+        if int(levels.max()) + 1 >= len(paths):
+            return None  # nothing to merge
+        batches = []
+        for level in range(int(levels.max()) + 1):
+            members = [paths[i] for i in np.flatnonzero(levels == level)]
+            groups: list[list] = []
+            snapped_group: list = []
+            snapped_vertices = 0
+            unsnapped_group: list = []
+            for i in np.flatnonzero(levels == level):
+                path = paths[i]
+                if snaps[i] and snap is None:
+                    # Keep each merged snapped path under Agg's vertex limit.
+                    if (
+                        snapped_vertices + len(path.vertices) > _AGG_SNAP_MAX_VERTICES
+                        and snapped_group
+                    ):
+                        groups.append(snapped_group)
+                        snapped_group, snapped_vertices = [], 0
+                    snapped_group.append(path)
+                    snapped_vertices += len(path.vertices)
+                else:
+                    unsnapped_group.append(path)
+            groups.extend(group for group in (snapped_group, unsnapped_group) if group)
+            batches.append((groups, members))
+        return batches
+
+
+# SVG / PDF backends name each collection group after ``type(obj).__name__``
+# ("PolyCollection_7"); keep that name so vector exports stay byte-identical.
+# Pickle and repr use ``__qualname__``, which still names this class.
+HatchBatchedPolyCollection.__name__ = "PolyCollection"
+
+
+class ThinUnitHatchCollection(HatchBatchedPolyCollection):
     """Lithology rectangles whose hatch is densified for thin intervals at draw time.
 
     The split between "thin" and "thick" intervals needs the final axes
@@ -306,6 +522,152 @@ class ThinUnitHatchCollection(PolyCollection):
         """Swap the draw-time hatch without flagging the artist stale."""
         if self.get_hatch() != hatch:
             self._hatch = hatch
+
+
+# --- Layout settling for the label-collision passes ------------------------
+#
+# The header / tick / water-label passes each call ``draw_without_rendering``
+# so tick labels, axis labels and titles sit where a draw puts them.  Most of
+# those draws repeat an identical layout: only label texts moved in between,
+# and text extents are computed lazily anyway.  ``settle_figure_layout`` skips
+# the draw when no draw of any kind has happened since its previous settle of
+# the same figure (tracked with a ``draw_event`` counter, so a savefig at
+# another dpi always forces a fresh settle) and nothing that positions ticks,
+# axis labels or titles has changed (``_layout_fingerprint``).
+
+
+def _figure_draw_count(fig) -> int | None:
+    """Draws of ``fig`` seen by our ``draw_event`` hook, or None if just (re)installed."""
+    registry = fig.canvas.callbacks
+    holder = fig.__dict__.get("_css_draw_count")
+    cid = fig.__dict__.get("_css_draw_cid")
+    if holder is not None and cid is not None:
+        ref = registry.callbacks.get("draw_event", {}).get(cid)
+        hook = ref() if ref is not None else None
+        if getattr(hook, "_css_holder", None) is holder:
+            return holder[0]
+    # First use, or the hook was lost (unpickled / copied figure): no history.
+    holder = [0]
+
+    def count_draw(_event, holder=holder) -> None:
+        holder[0] += 1
+
+    count_draw._css_holder = holder
+    fig._css_draw_count = holder
+    fig._css_draw_cid = registry.connect("draw_event", count_draw)
+    return None
+
+
+def _axis_layout_key(axis) -> tuple:
+    formatter = axis.get_major_formatter()
+    suppressed = getattr(formatter, "suppressed", None)
+    return (
+        id(formatter),
+        id(axis.get_major_locator()),
+        id(axis.get_minor_formatter()),
+        id(axis.get_minor_locator()),
+        tuple(sorted(suppressed)) if suppressed is not None else None,
+        axis.get_visible(),
+        axis.get_scale(),
+        axis.get_ticks_position(),
+        axis.get_label_position(),
+        axis.label.get_text(),
+        axis.label.get_visible(),
+        axis.labelpad,
+        repr(sorted(axis._major_tick_kw.items())),
+        repr(sorted(axis._minor_tick_kw.items())),
+    )
+
+
+def _layout_fingerprint(fig) -> tuple | None:
+    """Everything a no-render draw commits for tick, axis-label and title layout."""
+    if fig.get_layout_engine() is not None:
+        return None  # layout engines reposition axes from every artist's extent
+    params = fig.subplotpars
+    parts: list = [
+        tuple(fig.get_size_inches()),
+        float(fig.dpi),
+        (params.left, params.right, params.bottom, params.top, params.wspace, params.hspace),
+    ]
+    for ax in fig.axes:
+        parts.append(
+            (
+                id(ax),
+                ax.get_visible(),
+                ax.get_position().bounds,
+                tuple(ax.get_xlim()),
+                tuple(ax.get_ylim()),
+                tuple(title.get_text() for title in (ax.title, ax._left_title, ax._right_title)),
+                tuple(
+                    (name, repr(spine._position), spine.get_visible())
+                    for name, spine in ax.spines.items()
+                ),
+                _axis_layout_key(ax.xaxis),
+                _axis_layout_key(ax.yaxis),
+            )
+        )
+    # Axes that draw their axis artists, kept apart: turning an axes' axis
+    # *off* (title-block panels) changes nothing a no-render draw commits, as
+    # its ticks are then simply not updated; turning one on needs a draw.
+    axis_on = frozenset(id(ax) for ax in fig.axes if ax.axison)
+    return tuple(parts), axis_on
+
+
+def _same_settled_layout(previous: tuple, current: tuple) -> bool:
+    previous_parts, previous_on = previous
+    current_parts, current_on = current
+    return previous_parts == current_parts and current_on <= previous_on
+
+
+def _annotation_arrows(fig) -> list:
+    arrows = []
+    for container in (fig, *fig.axes):
+        for text in container.texts:
+            if isinstance(text, Annotation) and text.arrow_patch is not None:
+                arrows.append(text.arrow_patch)
+    return arrows
+
+
+def _settle_arrow_draw(arrow):
+    def draw(renderer) -> None:
+        # The only state FancyArrowPatch.draw keeps is the dpi correction its
+        # get_window_extent reads; the clipped leader path itself is only
+        # needed when pixels are produced.
+        if arrow.get_visible():
+            arrow._dpi_cor = renderer.points_to_pixels(1.0)
+
+    return draw
+
+
+def _draw_without_rendering_fast(fig) -> None:
+    """``fig.draw_without_rendering()`` minus annotation leader path geometry."""
+    arrows = _annotation_arrows(fig)
+    for arrow in arrows:
+        arrow.draw = _settle_arrow_draw(arrow)
+    try:
+        fig.draw_without_rendering()
+    finally:
+        for arrow in arrows:
+            arrow.__dict__.pop("draw", None)
+
+
+def settle_figure_layout(fig) -> None:
+    """``fig.draw_without_rendering()`` for the label passes, skipped when the
+    figure has not been drawn since its last settle and its layout is unchanged."""
+    draws = _figure_draw_count(fig)
+    key = _layout_fingerprint(fig)
+    previous = fig.__dict__.get("_css_settled_layout")
+    if (
+        draws is not None
+        and key is not None
+        and previous is not None
+        and previous[0] == draws
+        and previous[1] is not None
+        and _same_settled_layout(previous[1], key)
+    ):
+        return
+    _draw_without_rendering_fast(fig)
+    fig._css_settled_layout = (_figure_draw_count(fig), _layout_fingerprint(fig))
 
 
 class RendererGeometryMixin:
@@ -429,7 +791,7 @@ class RendererGeometryMixin:
         hatch: str | None = None,
         alpha: float | None = None,
     ) -> None:
-        collection = PolyCollection(
+        collection = (HatchBatchedPolyCollection if hatch else PolyCollection)(
             self._rect_verts(*geometry),
             facecolors=facecolors,
             edgecolors=edgecolors,

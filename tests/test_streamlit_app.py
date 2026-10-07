@@ -272,12 +272,24 @@ def test_parse_failure_is_shown_on_screen_with_technical_details() -> None:
     assert any("Technical details" in x.label for x in at.expander)
 
 
-def test_stale_generate_button_is_disabled_with_the_reason_when_blocked(sample_workbook: Path) -> None:
+def test_stale_generate_button_is_disabled_with_the_reason_when_blocked(
+    sample_workbook: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """After a section exists, a settings change marks it stale; if Generate
     is blocked the stale button used to stay enabled and silently do nothing."""
+    import app_configure
+
     at = _generated_app(sample_workbook)
-    # Pinch-outs on the sample produce polygon overlaps; blocking on them
+    # Per-pair clipping now resolves the sample's pinch-out overlaps, so inject a
+    # residual overlap warning into the Configure preflight; blocking on it
     # disables Generate. Changing VE then marks the existing section stale.
+    real_preflight = app_configure.cached_configure_preflight
+
+    def preflight_with_overlap(*args, **kwargs):
+        warnings, summaries = real_preflight(*args, **kwargs)
+        return (*warnings, "Polygon overlap: 1 inter-hole contact conflict(s) detected"), summaries
+
+    monkeypatch.setattr(app_configure, "cached_configure_preflight", preflight_with_overlap)
     at.session_state["allow_pinch_outs"] = True
     at.session_state["fail_on_overlaps_checkbox"] = True
     at.session_state["vertical_exaggeration"] = 3.0

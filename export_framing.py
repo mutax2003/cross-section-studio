@@ -216,16 +216,44 @@ def build_report_package_bytes(
         )
         archive.writestr(
             "README_deliverable.txt",
-            (readme or _default_readme(stem)).encode("utf-8"),
+            (
+                readme
+                or _default_readme(
+                    stem,
+                    has_svg=bool(svg_bytes),
+                    has_png=bool(png_bytes),
+                    has_pdf=bool(pdf_bytes),
+                    has_docx=bool(docx_bytes),
+                )
+            ).encode("utf-8"),
         )
     buffer.seek(0)
     return buffer.getvalue()
 
 
-def _default_readme(stem: str) -> str:
+def _default_readme(
+    stem: str,
+    *,
+    has_svg: bool = True,
+    has_png: bool = True,
+    has_pdf: bool = True,
+    has_docx: bool = False,
+) -> str:
+    """README listing exactly the files in the package."""
+    contents = [
+        label
+        for present, label in (
+            (has_svg, "SVG (CAD)"),
+            (has_png, "PNG (reports)"),
+            (has_pdf, "PDF (print)"),
+            (has_docx, "Word figure (.docx)"),
+        )
+        if present
+    ]
+    contents.append("metadata JSON")
     return (
         f"Cross Section Studio deliverable package: {stem}\n"
-        "Contents: SVG (CAD), PNG (reports), PDF (print), metadata JSON.\n"
+        f"Contents: {', '.join(contents)}.\n"
         "Import SVG into CAD; paste PNG into Word; file PDF for client binders.\n"
         f"{CREATED_BY}. {COPYRIGHT_NOTICE}\n"
     )

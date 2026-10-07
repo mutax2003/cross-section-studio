@@ -277,3 +277,17 @@ def test_export_filename_does_not_repeat_the_section_title() -> None:
     )
     assert stem.count("Test_Section") == 1, stem
     assert "MW-01" in stem and "MW-04" in stem
+
+
+def test_report_zip_readme_lists_the_word_file_when_included() -> None:
+    import zipfile
+    from io import BytesIO
+
+    from export_framing import build_report_package_bytes
+
+    payload = build_report_package_bytes(
+        stem="A-A", svg_bytes=b"<svg/>", png_bytes=b"png", pdf_bytes=b"%PDF",
+        metadata={}, docx_bytes=b"PK",
+    )
+    readme = zipfile.ZipFile(BytesIO(payload)).read("README_deliverable.txt").decode()
+    assert "Word figure (.docx)" in readme

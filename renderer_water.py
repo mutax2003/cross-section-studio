@@ -59,15 +59,36 @@ _LABEL_CANDIDATES: dict[str, list[tuple[float, float, str]]] = {
         [(dx, dy, "center") for dx in (0.0, 20.0, -20.0, 40.0, -40.0, 60.0, -60.0) for dy in _DY_GRID],
     ),
 }
-# Chemistry values: start beside the reading, then step along the column
-# and sideways; offsets are relative to each label's own base position.
-# Right of the label's own column only: a leftward move could print a value
-# over the neighbouring borehole with nothing tying it back.
-_CHEM_RELATIVE_OFFSETS = [(dx, dy, "left") for dx in (0.0, 10.0, 22.0) for dy in _DY_GRID]
+# Chemistry values sit only to the RIGHT of their own column: a value beside
+# the wrong stick misattributes it. Candidates are (ddx, ddy) shifts in points
+# from the label's base spot; the right side is searched nearest-first, with
+# a fine vertical step so crowded readings stack down/up the column.
+_CHEM_DX_STEPS = (0.0, 6.0, 12.0, 22.0, 34.0)
+_CHEM_DY_STEP_PT = 3.0
+_CHEM_DY_MAX_PT = 150.0
+_CHEM_OFFSETS = sorted(
+    (
+        (ddx, sign * k * _CHEM_DY_STEP_PT)
+        for ddx in _CHEM_DX_STEPS
+        for k in range(int(_CHEM_DY_MAX_PT / _CHEM_DY_STEP_PT) + 1)
+        for sign in ((1.0,) if k == 0 else (-1.0, 1.0))
+    ),
+    key=lambda item: abs(item[1]) + 1.5 * item[0],
+)
+# Clear gap (points) between a chemistry label (box/dot included) and the
+# right edge of its own column.
+_CHEM_COLUMN_GAP_PT = 2.0
+# Last resorts before a value is dropped (the stick/marker stays): slightly
+# smaller text. A value is never printed over a column or another label.
+_CHEM_FONT_SCALES = (1.0, 0.88, 0.76)
+# A label moved this far from its reading always gets a leader, even when
+# leaders are otherwise off, so a stacked value still points at its depth.
+_CHEM_FORCED_LEADER_PT = 20.0
 # Placement order: RL values matter most, then chemistry, gradients least.
 _LABEL_PRIORITY = {"rl": 0, "nm": 1, "chem": 2, "gradient": 3}
 # Water numbers that still collide after every candidate are dropped (marker
-# stays) — overlapping digits misreport a level. Chemistry keeps best-effort.
+# stays) — overlapping digits misreport a level. Chemistry values use their
+# own hard-constraint pass (_place_chem_label) and are dropped as a last resort.
 _DROP_ON_COLLISION = frozenset({"rl", "nm", "gradient"})
 # Clearance around each label box (points) so neighbours never touch.
 _LABEL_PAD_PT = 2.0
@@ -118,30 +139,87 @@ def _sync_label_companions(annotation, fig, dx: float, dy: float, ha: str) -> No
         )
 
 
-def _candidates_for(
-    kind: str, base: tuple[float, float], annotation=None, column_boxes=(), fig=None
-) -> list[tuple[float, float, str]]:
-    fixed = _LABEL_CANDIDATES.get(kind)
-    if fixed is not None:
-        return fixed
-    relative = [(base[0] + dx, base[1] + dy, ha) for dx, dy, ha in _CHEM_RELATIVE_OFFSETS]
-    candidates = _nearest_first(base, relative)
-    if annotation is not None and fig is not None:
-        # Lowest-priority fallback: the far side of the label's OWN column,
-        # for the last hole on a sheet whose right-hand options leave the page.
-        candidates += _left_of_column_offsets(annotation, column_boxes, fig)
-    return candidates
+def _chem_footprint(annotation, renderer):
+    """Display box of a chemistry label: text plus its bbox patch and colour dot."""
+    box = _text_box(annotation, renderer)
+    patch = annotation.get_bbox_patch()
+    if patch is not None:
+        annotation.update_bbox_position_size(renderer)
+        box = Bbox.union([box, patch.get_window_extent(renderer)])
+    dot = getattr(annotation, "_chem_dot", None)
+    if dot is not None:
+        # The dot sits 4.5 pt left of the text anchor (see _sync_label_companions).
+        anchor_x, anchor_y = annotation.axes.transData.transform([annotation.xy])[0]
+        dx, dy = annotation.xyann
+        cx = anchor_x + renderer.points_to_pixels(dx - 4.5)
+        cy = anchor_y + renderer.points_to_pixels(dy)
+        radius = renderer.points_to_pixels(dot.get_markersize() / 2.0 + 0.3)
+        box = Bbox.union([box, Bbox([[cx - radius, cy - radius], [cx + radius, cy + radius]])])
+    return box
 
 
-def _left_of_column_offsets(annotation, column_boxes, fig) -> list[tuple[float, float, str]]:
-    ax = annotation.axes
-    anchor_x = ax.transData.transform([annotation.xy])[0][0]
-    own = next((b for b in column_boxes if b.x0 - 1 <= anchor_x <= b.x1 + 1), None)
-    if own is None:
-        return []
-    width_pt = (own.x1 - own.x0) * 72.0 / fig.dpi
-    dx = -(width_pt + 6.0)
-    return [(dx, dy, "right") for dy in _DY_GRID]
+def _own_column(annotation, column_boxes):
+    """The column a chemistry label belongs to (anchored at its right edge)."""
+    if not column_boxes:
+        return None
+    anchor_x = annotation.axes.transData.transform([annotation.xy])[0][0]
+    return min(column_boxes, key=lambda col: abs(col.x1 - anchor_x))
+
+
+def _set_chem_fontsize(annotation, size: float) -> None:
+    annotation.set_fontsize(size)
+    halo = getattr(annotation, "_halo", None)
+    if halo is not None:
+        halo.set_fontsize(size)
+
+
+def _place_chem_label(annotation, renderer, fig, *, placed_arr, column_arr, own, pad):
+    """Right-of-column placement with hard constraints.
+
+    The label (box and dot included) must start right of its own column's
+    right edge, overlap no borehole column and no placed label, and stay on
+    the page; leaving the axes is only penalised. Returns the chosen (dx, dy),
+    or None when nothing fits at any font size (the caller drops the label).
+    """
+    base = annotation._water_base_xyann
+    if not hasattr(annotation, "_chem_base_fontsize"):
+        annotation._chem_base_fontsize = float(annotation.get_fontsize())
+    frame = annotation.axes.get_window_extent(renderer)
+    page = fig.bbox
+    px_per_pt = renderer.points_to_pixels(1.0)
+    min_x0 = own.x1 + _CHEM_COLUMN_GAP_PT * px_per_pt if own is not None else -np.inf
+    annotation.set_horizontalalignment("left")
+    for scale in _CHEM_FONT_SCALES:
+        _set_chem_fontsize(annotation, annotation._chem_base_fontsize * scale)
+        annotation.xyann = base
+        # With ha fixed the footprint only translates with the offset, so it
+        # is measured once per font size and shifted per candidate.
+        box0 = _chem_footprint(annotation, renderer)
+        ddx_min = max(0.0, (min_x0 - box0.x0) / px_per_pt)
+        best: tuple[float, tuple[float, float]] | None = None
+        for ddx, ddy in _CHEM_OFFSETS:
+            ddx += ddx_min
+            box = box0.translated(ddx * px_per_pt, ddy * px_per_pt)
+            if column_arr.overlap(box) > 0.0 or _outside_area(box, page) > 0.0:
+                continue
+            # Above/below the plot it would land on headers, notes or the
+            # title block; sideways past the frame is only penalised.
+            if box.y0 < frame.y0 or box.y1 > frame.y1:
+                continue
+            if placed_arr.overlap(box.padded(pad)) > 0.0:
+                continue
+            outside = _outside_area(box, frame)
+            if best is None or outside < best[0]:
+                best = (outside, (base[0] + ddx, base[1] + ddy))
+            if outside == 0.0:
+                break
+        if best is not None:
+            return best[1]
+    _set_chem_fontsize(annotation, annotation._chem_base_fontsize)
+    annotation.xyann = base
+    return None
+
+
 _LEADER_THRESHOLD_PT = 14.0
 
 
@@ -460,14 +538,41 @@ class RendererWaterMixin:
             if not hasattr(annotation, "_water_base_xyann"):
                 annotation._water_base_xyann = tuple(annotation.xyann)
             base = annotation._water_base_xyann
+            if kind == "chem":
+                spot = _place_chem_label(
+                    annotation,
+                    renderer,
+                    fig,
+                    placed_arr=placed_arr,
+                    column_arr=column_arr,
+                    own=_own_column(annotation, column_boxes),
+                    pad=pad,
+                )
+                if spot is None:
+                    # Nowhere right of its column is free: keep the stick/marker,
+                    # never print the value over a column or another label.
+                    annotation._water_dropped = True
+                    annotation.arrow_patch.set_visible(False)
+                    _set_label_visible(annotation, False)
+                    continue
+                dx, dy = spot
+                annotation.xyann = (dx, dy)
+                _sync_label_companions(annotation, fig, dx, dy, "left")
+                final_box = _chem_footprint(annotation, renderer).padded(pad)
+                placed.append(final_box)
+                placed_arr.add(final_box)
+                shift = max(abs(dy - base[1]), abs(dx - base[0]))
+                leader = shift > _LEADER_THRESHOLD_PT and (
+                    getattr(annotation, "_leader_allowed", True) or abs(dy - base[1]) > _CHEM_FORCED_LEADER_PT
+                )
+                annotation.arrow_patch.set_visible(leader)
+                continue
             best: tuple[float, tuple[float, float, str]] | None = None
-            for index, (dx, dy, ha) in enumerate(_candidates_for(kind, base, annotation, column_boxes, fig)):
+            for index, (dx, dy, ha) in enumerate(_LABEL_CANDIDATES[kind]):
                 annotation.xyann = (dx, dy)
                 annotation.set_horizontalalignment(ha)
                 box = _text_box(annotation, renderer).padded(pad)
                 collision = placed_arr.overlap(box)
-                if kind == "chem":
-                    collision += column_arr.overlap(box)
                 # Off the axes is bad; off the page is worse (it is cut off).
                 outside = _outside_area(box, frame) + 4.0 * _outside_area(box, fig.bbox)
                 score = (collision + 4.0 * outside) * 1000.0 + index

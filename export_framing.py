@@ -121,9 +121,26 @@ def export_figsize_in(
     return None
 
 
+_WINDOWS_RESERVED_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
+def avoid_windows_reserved_name(stem: str) -> str:
+    """Append ``_`` to stems Windows reserves for devices (``CON``, ``LPT1`` …).
+
+    ``CON.svg`` can't be created on Windows (the desktop build saves to a
+    project folder) and confuses ZIP extractors there.
+    """
+    base = stem.split(".", 1)[0]
+    return f"{stem}_" if base.upper() in _WINDOWS_RESERVED_STEMS else stem
+
+
 def _sanitize_stem(text: str, *, fallback: str = "cross_section") -> str:
     cleaned = _FILENAME_SAFE_RE.sub("_", text.strip())[:80].strip("_")
-    return cleaned or fallback
+    return avoid_windows_reserved_name(cleaned) if cleaned else fallback
 
 
 def build_export_filename(

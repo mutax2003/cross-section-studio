@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from app_identity import APP_NAME, COPYRIGHT_NOTICE, CREATED_BY
+from export_framing import avoid_windows_reserved_name
 from models import Collar, Lithology, ScreenInterval, Transect
 from projection import (
     DEFAULT_OFFSET_WARNING_M,
@@ -269,7 +270,7 @@ def holes_missing_lithology(
 def sanitize_filename(text: str, *, fallback: str = "cross_section") -> str:
     """Return a safe filename stem for downloads."""
     cleaned = re.sub(r"[^\w\-]+", "_", text.strip())[:80].strip("_")
-    return cleaned or fallback
+    return avoid_windows_reserved_name(cleaned) if cleaned else fallback
 
 
 def screen_interval_warnings(

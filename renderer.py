@@ -1052,6 +1052,30 @@ class CrossSectionRenderer(
         if self._cad_svg_layers_enabled():
             self._set_cad_gid(legend, "legend")
 
+    def fit_right_margin_for_legend(self, figure: Figure) -> None:
+        """Widen the right margin so an outside lithology legend fits the page.
+
+        Section sheets and the chart anchor the legend just right of the plot
+        with a fixed margin; long names in two columns ran off the page
+        ("Sandy Clay Lo…"). Measure the legend and move the plot's right edge
+        in until it fits (no-op without an outside legend, or for consulting
+        sheets, whose legend lives in the title block).
+        """
+        if str(getattr(self.profile, "layout", "")) == "consulting_section" or not figure.axes:
+            return
+        ax = figure.axes[0]
+        legend = ax.get_legend()
+        if legend is None:
+            return
+        figure.draw_without_rendering()
+        renderer = figure.canvas.get_renderer()
+        legend_w = legend.get_window_extent(renderer).width / figure.bbox.width
+        # Legend starts 1% of the axes width right of the plot; keep a 1.5% page gap.
+        right = 1.0 - 0.015 - legend_w - 0.01 * ax.get_position().width
+        right = min(figure.subplotpars.right, max(0.45, right))
+        if right < figure.subplotpars.right - 1e-3:
+            figure.subplots_adjust(right=right)
+
     def _draw_ve_annotation(self, ax) -> None:
         x_min, x_max = ax.get_xlim()
         y_min, y_max = ax.get_ylim()
@@ -1139,6 +1163,8 @@ class CrossSectionRenderer(
             figure.subplots_adjust(right=0.925)
         # Consulting sheets: keep RL axis labels on the page (no-op otherwise).
         self.fit_consulting_page_margins(figure)
+        # Section sheet / chart: keep the outside lithology legend on the page.
+        self.fit_right_margin_for_legend(figure)
         if tuple(figure.get_size_inches()) == tuple(getattr(figure, "_css_prepared_size", ())):
             self.refit_consulting_fitted_text(figure)
             return figure  # already prepared at this size: label passes are current

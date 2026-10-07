@@ -1242,3 +1242,33 @@ def test_palette_matches_cad_template_261002() -> None:
         if get_lithology_style(code).color.upper() != expected
     }
     assert not mismatched, mismatched
+
+
+def test_section_sheet_legend_stays_on_the_page() -> None:
+    """Long lithology names in a two-column legend ran off the right edge."""
+    import matplotlib.pyplot as plt
+
+    codes = ["Sandy Clay Loam", "Silty Clay Loam", "Sand and Gravel", "Loamy Sand", "Clay Loam", "Fill"]
+    collars = [Collar(hole_id=f"BH-{i}", easting=10.0 * i, northing=0.0, elevation=100.0, total_depth=12.0) for i in range(3)]
+    liths = [
+        Lithology(hole_id=c.hole_id, from_depth=2.0 * k, to_depth=2.0 * (k + 1), lithology_code=code)
+        for c in collars
+        for k, code in enumerate(codes)
+    ]
+    projected, polygons, _ = run_pipeline(collars, liths, [(0.0, 0.0), (20.0, 0.0)])
+    for page in ("letter_landscape", "letter_portrait"):
+        from export_framing import ExportFramingConfig
+
+        renderer = CrossSectionRenderer(
+            show_legend=True,
+            render_profile=SECTION_SHEET_PROFILE,
+            export_framing=ExportFramingConfig(page_preset=page),
+        )
+        fig = renderer.render(polygons, projected, collar_depths={c.hole_id: 12.0 for c in collars})
+        try:
+            renderer._prepare_export_figure(fig)
+            fig.draw_without_rendering()
+            box = fig.axes[0].get_legend().get_window_extent(fig.canvas.get_renderer())
+            assert box.x1 <= fig.bbox.x1 + 0.5, page
+        finally:
+            plt.close(fig)

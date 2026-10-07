@@ -165,6 +165,7 @@ class SectionSheetLayoutMixin:
         bottom_margin = self._section_bottom_margin()
         if self.show_legend and lithology_codes:
             fig.subplots_adjust(right=0.78, bottom=bottom_margin)
+            self.fit_right_margin_for_legend(fig)
         else:
             fig.subplots_adjust(bottom=bottom_margin)
 

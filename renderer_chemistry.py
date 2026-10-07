@@ -213,6 +213,9 @@ class RendererChemistryMixin:
         """
         annotation._water_base_xyann = (_PARAMETER_LABEL_DX, _PARAMETER_LABEL_BASE_DY)
         annotation._leader_allowed = allow_leader
+        # Values (and their leaders) draw just above water labels, so a
+        # leader is never hidden under a water label's white box.
+        annotation.set_zorder(max(float(annotation.get_zorder()), 9.1))
         if not hasattr(self, "_water_labels"):
             self._water_labels = []
         self._water_labels.append(("chem", annotation, color))

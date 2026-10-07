@@ -736,7 +736,8 @@ class RendererWaterMixin:
                 x0 = max(x0, own.x1)
                 x1 = min(x1, right_limit)
                 y0 = max(y0, frame.y0)
-                y1 = min(y1, frame.y1)
+                # Never above the ground line: the column box starts at the collar.
+                y1 = min(y1, frame.y1, own.y1)
                 if x1 <= x0 or y1 <= y0:
                     continue
                 (dx0, dy0), (dx1, dy1) = ax.transData.inverted().transform([[x0, y0], [x1, y1]])

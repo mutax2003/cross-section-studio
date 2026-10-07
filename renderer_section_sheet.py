@@ -79,6 +79,9 @@ class SectionSheetLayoutMixin:
                 collar_lookup,
                 collar_arr=interval_collars,
             )
+            self._draw_unlogged_intervals(
+                ax, projected_df, collar_depths, collar_lookup, track_half
+            )
         if self.profile.show_track_border:
             self._draw_track_borders(ax, hole_summary, collar_depths, collar_lookup, track_half)
         profile_lookup = ctx.profile_lookup

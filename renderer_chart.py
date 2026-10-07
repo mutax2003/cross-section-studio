@@ -134,6 +134,9 @@ class ChartLayoutMixin:
             )
             if self.show_stick_logs:
                 self._draw_track_lithology(ax, projected_df, style_cache, track_half, collar_lookup)
+                self._draw_unlogged_intervals(
+                    ax, projected_df, collar_depths, collar_lookup, track_half
+                )
 
             if self.profile.show_centerline:
                 self._draw_chart_centerlines(ax, hole_summary, collar_depths, collar_lookup)

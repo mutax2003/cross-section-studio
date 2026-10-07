@@ -50,7 +50,8 @@ def test_cross_section_input_template_prefers_multi_tab() -> None:
         pytest.skip("Input template xlsx not present (gitignored; run build_input_template.py)")
     import pandas as pd
 
-    names = set(pd.ExcelFile(path).sheet_names)
+    with pd.ExcelFile(path) as workbook:
+        names = set(workbook.sheet_names)
     assert {"Collars", "Lithology", "Instructions"}.issubset(names)
 
 

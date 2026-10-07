@@ -39,11 +39,12 @@ def test_build_input_template_writes_multi_tabs(tmp_path: Path) -> None:
     path = build_input_template(tmp_path / "template.xlsx")
     import pandas as pd
 
-    workbook = pd.ExcelFile(path)
-    assert EXPECTED_SHEETS.issubset(set(workbook.sheet_names))
-    assert workbook.sheet_names[0] == "Instructions"
-    assert workbook.sheet_names[1] == "Project"
-    assert workbook.sheet_names[-1] == "Data Entry"
+    with pd.ExcelFile(path) as workbook:
+        sheet_names = workbook.sheet_names
+    assert EXPECTED_SHEETS.issubset(set(sheet_names))
+    assert sheet_names[0] == "Instructions"
+    assert sheet_names[1] == "Project"
+    assert sheet_names[-1] == "Data Entry"
 
 
 def test_build_input_template_bytes_matches_sheet_set() -> None:

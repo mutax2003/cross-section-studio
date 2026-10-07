@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
 from matplotlib.markers import MarkerStyle
+from matplotlib.patches import Rectangle
 from matplotlib.text import Text
 from matplotlib.transforms import Bbox, offset_copy
 
@@ -63,12 +64,17 @@ _LABEL_CANDIDATES: dict[str, list[tuple[float, float, str]]] = {
 # the wrong stick misattributes it. Candidates are (ddx, ddy) shifts in points
 # from the label's base spot; the right side is searched nearest-first, with
 # a fine vertical step so crowded readings stack down/up the column.
-# Within _CHEM_NEAR_DY_PT of the reading the nearest spot wins; beyond it
+# Within _CHEM_NEAR_DY_PT / _CHEM_NEAR_DX_PT of the reading the nearest spot
+# wins; beyond it
 # sideways steps are cheap (0.25 per point vs 1 per point vertically): a
 # hole's values must keep depth order, so crowded readings fan out into a
 # second column beside their depth instead of cascading down the stick.
 _CHEM_DX_STEPS = (0.0, 6.0, 12.0, 22.0, 34.0, 46.0, 58.0)
 _CHEM_NEAR_DY_PT = 8.0
+# Only small sideways nudges count as "near": a value pushed past a water
+# label must not jump a long way right at its own depth (it read as the
+# next hole's) while a short step down beside its column is free.
+_CHEM_NEAR_DX_PT = 12.0
 _CHEM_DY_STEP_PT = 3.0
 _CHEM_DY_MAX_PT = 150.0
 _CHEM_OFFSETS = sorted(
@@ -80,19 +86,60 @@ _CHEM_OFFSETS = sorted(
     ),
     key=lambda item: (
         (0, abs(item[1]) + 1.5 * item[0])
-        if abs(item[1]) <= _CHEM_NEAR_DY_PT
+        if abs(item[1]) <= _CHEM_NEAR_DY_PT and item[0] <= _CHEM_NEAR_DX_PT
         else (1, abs(item[1]) + 0.25 * item[0])
     ),
 )
+# Crowded-hole fallback (a hole whose values would otherwise be dropped, e.g.
+# a long list on the last hole): sideways steps are nearly free so values
+# zig-zag between two or more columns right of the stick (each only needs to
+# sit below the previous value's centre), the vertical search reaches the
+# whole frame, values sit one label pad apart (not two), and the text may
+# shrink a little further. Level 1 keeps the normal sizes; level 2 starts one
+# step smaller so every value fits.
+_CHEM_COMPACT_DX_STEPS = (0.0, 6.0, 12.0, 22.0, 30.0, 38.0, 46.0, 58.0, 72.0, 88.0, 104.0, 120.0)
+_CHEM_COMPACT_DY_MAX_PT = 720.0
+_CHEM_COMPACT_DX_COST = 0.05
+_CHEM_COMPACT_FONT_SCALES = {1: (1.0, 0.88, 0.76), 2: (0.88, 0.76, 0.68)}
+_CHEM_MAX_COMPACT_LEVEL = 2
+
+
+def _compact_chem_offsets() -> list[tuple[float, float]]:
+    return sorted(
+        (
+            (ddx, sign * k * _CHEM_DY_STEP_PT)
+            for ddx in _CHEM_COMPACT_DX_STEPS
+            for k in range(int(_CHEM_COMPACT_DY_MAX_PT / _CHEM_DY_STEP_PT) + 1)
+            for sign in ((1.0,) if k == 0 else (-1.0, 1.0))
+        ),
+        key=lambda item: (
+            (0, abs(item[1]) + 1.5 * item[0])
+            if abs(item[1]) <= _CHEM_NEAR_DY_PT and item[0] <= _CHEM_NEAR_DX_PT
+            else (1, abs(item[1]) + _CHEM_COMPACT_DX_COST * item[0])
+        ),
+    )
+
+
+_CHEM_COMPACT_OFFSETS = _compact_chem_offsets()
+_CHEM_OFFSETS_ARR = np.asarray(_CHEM_OFFSETS, dtype=float)
+_CHEM_COMPACT_OFFSETS_ARR = np.asarray(_CHEM_COMPACT_OFFSETS, dtype=float)
 # Clear gap (points) between a chemistry label (box/dot included) and the
 # right edge of its own column.
 _CHEM_COLUMN_GAP_PT = 2.0
+# "strip" style: background knock-out beside a labelled column. Above the
+# lithology fills (2) and contact lines (3), below track fills, water lines /
+# markers (5-8) and the values (9).
+_CHEM_STRIP_ZORDER = 3.5
+_CHEM_STRIP_PAD_PT = 2.5
+# Values starting within this many points of a hole's left-most value form
+# its main column (one strip); the rest get their own knock-outs.
+_CHEM_STRIP_COLUMN_TOL_PT = 8.0
 # Last resorts before a value is dropped (the stick/marker stays): slightly
 # smaller text. A value is never printed over a column or another label.
 _CHEM_FONT_SCALES = (1.0, 0.88, 0.76)
-# A label moved this far from its reading always gets a leader, even when
-# leaders are otherwise off, so a stacked value still points at its depth.
-_CHEM_FORCED_LEADER_PT = 20.0
+# A value moved more than one label height (and at least this many points)
+# from its reading always gets a leader, even when leaders are otherwise off.
+_CHEM_MIN_LEADER_SHIFT_PT = 6.0
 # Placement order: RL values matter most, then chemistry, gradients least.
 _LABEL_PRIORITY = {"rl": 0, "nm": 1, "chem": 2, "gradient": 3}
 # Water numbers that still collide after every candidate are dropped (marker
@@ -107,6 +154,13 @@ _SERIES_MARKER_STEP_PT = 7.5
 # Line dash per series slot on non-consulting sheets (consulting keeps its
 # solid client lines; marker shape separates series there).
 _SERIES_DASHES = ("--", "-.", ":", (0, (6, 2, 1, 2)))
+
+
+def _fmt_water_number(value: float) -> str:
+    """Water level / depth text: at most 2 decimals, trailing zeros stripped
+    (745.29, 745.3, 745), like the chemistry values."""
+    text = f"{float(value):.2f}".rstrip("0").rstrip(".")
+    return "0" if text in ("-0", "") else text
 
 
 class _ObstacleArray:
@@ -125,6 +179,19 @@ class _ObstacleArray:
         w = np.minimum(self._arr[:, 2], box.x1) - np.maximum(self._arr[:, 0], box.x0)
         h = np.minimum(self._arr[:, 3], box.y1) - np.maximum(self._arr[:, 1], box.y0)
         return float(np.sum(np.clip(w, 0.0, None) * np.clip(h, 0.0, None)))
+
+    def overlaps_many(self, boxes: np.ndarray) -> np.ndarray:
+        """Boolean per row of ``boxes`` (K, 4): does it overlap any stored box?"""
+        if self._arr.shape[0] == 0 or boxes.shape[0] == 0:
+            return np.zeros(boxes.shape[0], dtype=bool)
+        hit = np.zeros(boxes.shape[0], dtype=bool)
+        # Chunked so K candidates x N obstacles stays small in memory.
+        for start in range(0, self._arr.shape[0], 256):
+            arr = self._arr[start : start + 256]
+            w = np.minimum(arr[None, :, 2], boxes[:, None, 2]) - np.maximum(arr[None, :, 0], boxes[:, None, 0])
+            h = np.minimum(arr[None, :, 3], boxes[:, None, 3]) - np.maximum(arr[None, :, 1], boxes[:, None, 1])
+            hit |= np.any((w > 0.0) & (h > 0.0), axis=1)
+        return hit
 
 
 def _set_label_visible(annotation, visible: bool) -> None:
@@ -182,16 +249,19 @@ def _set_chem_fontsize(annotation, size: float) -> None:
         halo.set_fontsize(size)
 
 
-def _place_chem_label(annotation, renderer, fig, *, placed_arr, column_arr, own, pad, ceiling=np.inf):
+def _place_chem_label(
+    annotation, renderer, fig, *, placed_arr, column_arr, own, pad, ceiling=np.inf, compact=0
+):
     """Right-of-column placement with hard constraints.
 
     The label (box and dot included) must start right of its own column's
     right edge, overlap no borehole column and no placed label, and stay on
     the page; leaving the axes is only penalised. Its centre must also sit
     below ``ceiling`` (display y of the hole's previous, shallower label) so a
-    hole's values keep their readings' depth order. Returns the chosen
-    (dx, dy), or None when nothing fits at any font size (the caller drops
-    the label).
+    hole's values keep their readings' depth order. ``compact`` (1 or 2)
+    switches a crowded hole to the zig-zag / full-frame / smaller-text
+    fallback. Returns the chosen (dx, dy), or None when nothing fits at any
+    font size (the caller drops the label).
     """
     base = annotation._water_base_xyann
     if not hasattr(annotation, "_chem_base_fontsize"):
@@ -201,36 +271,61 @@ def _place_chem_label(annotation, renderer, fig, *, placed_arr, column_arr, own,
     px_per_pt = renderer.points_to_pixels(1.0)
     min_x0 = own.x1 + _CHEM_COLUMN_GAP_PT * px_per_pt if own is not None else -np.inf
     annotation.set_horizontalalignment("left")
-    for scale in _CHEM_FONT_SCALES:
+    if compact:
+        scales = _CHEM_COMPACT_FONT_SCALES[min(compact, _CHEM_MAX_COMPACT_LEVEL)]
+        offsets = _CHEM_COMPACT_OFFSETS_ARR
+    else:
+        scales = _CHEM_FONT_SCALES
+        offsets = _CHEM_OFFSETS_ARR
+    for scale in scales:
         _set_chem_fontsize(annotation, annotation._chem_base_fontsize * scale)
         annotation.xyann = base
         # With ha fixed the footprint only translates with the offset, so it
-        # is measured once per font size and shifted per candidate.
+        # is measured once per font size and shifted per candidate (all
+        # candidates at once).
         box0 = _chem_footprint(annotation, renderer)
         ddx_min = max(0.0, (min_x0 - box0.x0) / px_per_pt)
-        best: tuple[float, tuple[float, float]] | None = None
-        for ddx, ddy in _CHEM_OFFSETS:
-            ddx += ddx_min
-            box = box0.translated(ddx * px_per_pt, ddy * px_per_pt)
-            if column_arr.overlap(box) > 0.0 or _outside_area(box, page) > 0.0:
-                continue
-            # Above/below the plot it would land on headers, notes or the
-            # title block; sideways past the frame is only penalised.
-            if box.y0 < frame.y0 or box.y1 > frame.y1:
-                continue
-            if 0.5 * (box.y0 + box.y1) >= ceiling:
-                continue
-            if placed_arr.overlap(box.padded(pad)) > 0.0:
-                continue
-            outside = _outside_area(box, frame)
+        ddx = offsets[:, 0] + ddx_min
+        ddy = offsets[:, 1]
+        sx = ddx * px_per_pt
+        sy = ddy * px_per_pt
+        boxes = np.column_stack((box0.x0 + sx, box0.y0 + sy, box0.x1 + sx, box0.y1 + sy))
+        # On the page; above/below the plot it would land on headers, notes
+        # or the title block (sideways past the frame is only penalised);
+        # below the hole's previous value.
+        ok = (
+            (boxes[:, 0] >= page.x0)
+            & (boxes[:, 2] <= page.x1)
+            & (boxes[:, 1] >= max(page.y0, frame.y0))
+            & (boxes[:, 3] <= min(page.y1, frame.y1))
+            & (0.5 * (boxes[:, 1] + boxes[:, 3]) < ceiling)
+        )
+        idx = np.flatnonzero(ok)
+        if idx.size:
+            idx = idx[~column_arr.overlaps_many(boxes[idx])]
+        if idx.size:
+            # Placed boxes already carry the pad; a crowded hole's candidates
+            # skip their own so values stack one pad apart instead of two.
+            own_pad = 0.0 if compact else pad
+            padded = boxes[idx] + np.array([-own_pad, -own_pad, own_pad, own_pad])
+            idx = idx[~placed_arr.overlaps_many(padded)]
+        if not idx.size:
+            continue
+        cand = boxes[idx]
+        inside_w = np.clip(np.minimum(cand[:, 2], frame.x1) - np.maximum(cand[:, 0], frame.x0), 0.0, None)
+        inside_h = np.clip(np.minimum(cand[:, 3], frame.y1) - np.maximum(cand[:, 1], frame.y0), 0.0, None)
+        outside = (cand[:, 2] - cand[:, 0]) * (cand[:, 3] - cand[:, 1]) - inside_w * inside_h
+        best: tuple[float, int] | None = None
+        for position, value in enumerate(outside.tolist()):
             # Tolerance: the overhang is the same for every dy at one dx, and
             # float noise must not pull a label far from its reading.
-            if best is None or outside < best[0] - 0.5:
-                best = (outside, (base[0] + ddx, base[1] + ddy))
-            if outside == 0.0:
+            if best is None or value < best[0] - 0.5:
+                best = (value, position)
+            if value <= 0.0:
                 break
-        if best is not None:
-            return best[1]
+        assert best is not None
+        chosen = int(idx[best[1]])
+        return (base[0] + float(ddx[chosen]), base[1] + float(ddy[chosen]))
     _set_chem_fontsize(annotation, annotation._chem_base_fontsize)
     annotation.xyann = base
     return None
@@ -462,15 +557,15 @@ class RendererWaterMixin:
     def _water_elevation_label(self, level: WaterLevel, collar_rl: float) -> str:
         """Annotate water as RL (masl) in elevation mode, or depth (mbgs) in relative mode."""
         if self.profile.y_axis_mode == "depth_below_collar":
-            return f"{level.depth:.2f} mbgs"
+            return f"{_fmt_water_number(level.depth)} mbgs"
         water_rl = (
             float(level.elevation_masl)
             if level.elevation_masl is not None
             else collar_rl - level.depth
         )
         if self.profile.layout == "consulting_section":
-            return f"{water_rl:.3f}"
-        return f"{water_rl:.2f} m"
+            return _fmt_water_number(water_rl)
+        return f"{_fmt_water_number(water_rl)} m"
 
     def _water_legend_captions(
         self,
@@ -493,6 +588,33 @@ class RendererWaterMixin:
         return (
             f"GROUNDWATER LEVEL ({display_label})",
             f"GROUNDWATER ELEVATION masl ({display_label})",
+        )
+
+    def _water_status_note(self, ax, hole_id: str, xy: tuple[float, float], text: str) -> None:
+        """One NM / DRY note per hole: a second status merges into it ("DRY / NM")
+        instead of a second label crowding the first and the hole's values."""
+        notes = self.__dict__.setdefault("_water_status_notes", {})
+        key = (id(ax), str(hole_id))
+        existing = notes.get(key)
+        if existing is not None:
+            parts = existing.get_text().split(" / ")
+            if text not in parts:
+                parts.append(text)
+                order = {"DRY": 0, "NM": 1}
+                parts.sort(key=lambda part: order.get(part, 2))
+                existing.set_text(" / ".join(parts))
+                halo = getattr(existing, "_halo", None)
+                if halo is not None:
+                    halo.set_text(existing.get_text())
+            return
+        notes[key] = self._water_annotate(
+            ax,
+            text,
+            xy,
+            kind="nm",
+            color=CONSULTING_NM_COLOR,
+            fontsize=8,
+            xytext=(4, 0),
         )
 
     def _water_annotate(
@@ -541,6 +663,99 @@ class RendererWaterMixin:
         if not labels:
             return
         renderer = _figure_renderer(fig)
+        # A hole whose values would be dropped is re-placed in compact mode
+        # (zig-zag columns, full-frame stack, then smaller text); the whole
+        # pass restarts so its earlier values make room for the later ones.
+        compact: dict[float, int] = {}
+        while True:
+            dropped_holes = self._label_collision_pass(fig, labels, renderer, compact)
+            escalate = {
+                hole for hole in dropped_holes if compact.get(hole, 0) < _CHEM_MAX_COMPACT_LEVEL
+            }
+            if not escalate:
+                break
+            for hole in escalate:
+                compact[hole] = compact.get(hole, 0) + 1
+        self._draw_chem_label_strips(fig, labels, renderer)
+
+    def _draw_chem_label_strips(self, fig, labels, renderer) -> None:
+        """Knock a background strip out of the fills beside each labelled column.
+
+        "strip" style: values read on a clean strip immediately right of their
+        column (widest placed value + pad, spanning the hole's placed values)
+        with the hatching resuming beyond it. The strip sits above lithology
+        fills and contacts but below columns, water lines and markers, and is
+        clipped so it never reaches another column or leaves the frame.
+        """
+        for strip in getattr(self, "_chem_strips", ()):
+            strip.remove()
+        self._chem_strips = []
+        if str(getattr(self.profile, "chemistry_label_style", "") or "") != "strip":
+            return
+        column_boxes = self._column_obstacle_boxes(fig)
+        if not column_boxes:
+            return
+        pad = renderer.points_to_pixels(_CHEM_STRIP_PAD_PT)
+        holes: dict[tuple[int, float], list] = {}
+        for kind, annotation, _color in labels:
+            if kind == "chem" and annotation.get_visible():
+                key = (id(annotation.axes), _chem_hole_key(annotation))
+                holes.setdefault(key, []).append(annotation)
+        for hole_labels in holes.values():
+            ax = hole_labels[0].axes
+            own = _own_column(hole_labels[0], column_boxes)
+            if own is None:
+                continue
+            boxes = [_chem_footprint(annotation, renderer) for annotation in hole_labels]
+            frame = ax.get_window_extent(renderer)
+            # Never over the next column to the right, nor past the frame.
+            right_limit = min(
+                [frame.x1] + [col.x0 for col in column_boxes if col is not own and col.x0 > own.x1]
+            )
+            # The strip spans the hole's main value column; a value nudged
+            # further right (around a water label, or a crowded hole's
+            # zig-zag column) gets its own knock-out instead of widening the
+            # whole strip.
+            first_x0 = min(box.x0 for box in boxes)
+            tol = renderer.points_to_pixels(_CHEM_STRIP_COLUMN_TOL_PT)
+            main = [box for box in boxes if box.x0 <= first_x0 + tol]
+            rects = [
+                (
+                    own.x1,
+                    min(box.y0 for box in main) - pad,
+                    max(box.x1 for box in main) + pad,
+                    max(box.y1 for box in main) + pad,
+                )
+            ]
+            rects += [
+                (box.x0 - pad, box.y0 - pad, box.x1 + pad, box.y1 + pad)
+                for box in boxes
+                if box.x0 > first_x0 + tol
+            ]
+            for x0, y0, x1, y1 in rects:
+                x0 = max(x0, own.x1)
+                x1 = min(x1, right_limit)
+                y0 = max(y0, frame.y0)
+                y1 = min(y1, frame.y1)
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                (dx0, dy0), (dx1, dy1) = ax.transData.inverted().transform([[x0, y0], [x1, y1]])
+                strip = Rectangle(
+                    (min(dx0, dx1), min(dy0, dy1)),
+                    abs(dx1 - dx0),
+                    abs(dy1 - dy0),
+                    facecolor=ax.get_facecolor(),
+                    edgecolor="none",
+                    linewidth=0.0,
+                    zorder=_CHEM_STRIP_ZORDER,
+                )
+                strip.set_gid("chemistry-label-strip")
+                ax.add_patch(strip)
+                self._chem_strips.append(strip)
+
+    def _label_collision_pass(self, fig, labels, renderer, compact: dict[float, int]) -> set[float]:
+        """One greedy placement pass; returns hole keys with dropped chemistry values."""
+        dropped_holes: set[float] = set()
         pad = renderer.points_to_pixels(_LABEL_PAD_PT)
         # A re-run (page resize) starts from scratch: restore labels a previous
         # pass dropped so they get another chance at the new size.
@@ -596,8 +811,10 @@ class RendererWaterMixin:
                     own=_own_column(annotation, column_boxes),
                     pad=pad,
                     ceiling=chem_ceiling.get(hole_key, np.inf),
+                    compact=compact.get(hole_key, 0),
                 )
                 if spot is None:
+                    dropped_holes.add(hole_key)
                     # Nowhere right of its column is free: keep the stick/marker,
                     # never print the value over a column or another label.
                     annotation._water_dropped = True
@@ -612,10 +829,13 @@ class RendererWaterMixin:
                 final_box = chem_box.padded(pad)
                 placed.append(final_box)
                 placed_arr.add(final_box)
+                # A value moved more than about one label height from its
+                # reading (either direction) always gets a thin leader back to
+                # it, even with leaders off, so it is never read against the
+                # wrong hole or depth.
                 shift = max(abs(dy - base[1]), abs(dx - base[0]))
-                leader = shift > _LEADER_THRESHOLD_PT and (
-                    getattr(annotation, "_leader_allowed", True) or abs(dy - base[1]) > _CHEM_FORCED_LEADER_PT
-                )
+                label_height_pt = chem_box.height / renderer.points_to_pixels(1.0)
+                leader = shift > max(label_height_pt, _CHEM_MIN_LEADER_SHIFT_PT)
                 annotation.arrow_patch.set_visible(leader)
                 continue
             best: tuple[float, tuple[float, float, str]] | None = None
@@ -624,6 +844,10 @@ class RendererWaterMixin:
                 annotation.set_horizontalalignment(ha)
                 box = _text_box(annotation, renderer).padded(pad)
                 collision = placed_arr.overlap(box)
+                if kind == "nm":
+                    # A DRY / NM note anchors on the column centre: keep it
+                    # off the column so it reads beside its hole.
+                    collision += column_arr.overlap(box)
                 # Off the axes is bad; off the page is worse (it is cut off).
                 outside = _outside_area(box, frame) + 4.0 * _outside_area(box, fig.bbox)
                 score = (collision + 4.0 * outside) * 1000.0 + index
@@ -647,6 +871,7 @@ class RendererWaterMixin:
             placed_arr.add(final_box)
             moved = abs(dy - base[1]) > _LEADER_THRESHOLD_PT or abs(dx - base[0]) > _LEADER_THRESHOLD_PT
             annotation.arrow_patch.set_visible(moved and getattr(annotation, "_leader_allowed", True))
+        return dropped_holes
 
     def _column_obstacle_boxes(self, fig) -> list:
         """Display-space boxes of every borehole column on the section."""
@@ -674,6 +899,7 @@ class RendererWaterMixin:
     ) -> None:
         if hole_summary.empty:
             return
+        self._water_status_notes = {}
         if not water_levels:
             # No water data at all: 'NM' would just label every hole (documented:
             # NM only when dry-well labeling is on AND water data exist).
@@ -698,15 +924,7 @@ class RendererWaterMixin:
                 dry_y = self._plot_y_values(dry_collars - 1.0, dry_collars)
                 for hole_id, x_profile, y in zip(dry_lookup.keys(), dry_x, dry_y, strict=True):
                     fully_dry_nm_drawn.add(str(hole_id))
-                    self._water_annotate(
-                        ax,
-                        "NM",
-                        (float(x_profile), float(y)),
-                        kind="nm",
-                        color=CONSULTING_NM_COLOR,
-                        fontsize=8,
-                        xytext=(4, 0),
-                    )
+                    self._water_status_note(ax, str(hole_id), (float(x_profile), float(y)), "NM")
         if not series_groups:
             return
         self.water_series_legend = []
@@ -766,15 +984,7 @@ class RendererWaterMixin:
                         continue
                     x_profile, collar_rl = profile
                     y = self._plot_y(collar_rl - 1.0, collar_rl)
-                    self._water_annotate(
-                        ax,
-                        "NM",
-                        (float(x_profile), float(y)),
-                        kind="nm",
-                        color=CONSULTING_NM_COLOR,
-                        fontsize=8,
-                        xytext=(4, 0),
-                    )
+                    self._water_status_note(ax, hole_id, (float(x_profile), float(y)), "NM")
             # Draw each connect_group nest separately so shallow/deep do not join.
             for group_id, group_levels in _connect_subgroups(levels).items():
                 level_by_id = {item.hole_id: item for item in group_levels}
@@ -793,14 +1003,8 @@ class RendererWaterMixin:
                     status = water_status(level)
                     if status in {"dry", "nm"}:
                         y_nm = self._plot_y(collar_rl - 1.0, collar_rl)
-                        self._water_annotate(
-                            ax,
-                            "NM" if status == "nm" else "DRY",
-                            (float(x_profile), float(y_nm)),
-                            kind="nm",
-                            color=CONSULTING_NM_COLOR,
-                            fontsize=8,
-                            xytext=(4, 0),
+                        self._water_status_note(
+                            ax, hole_id, (float(x_profile), float(y_nm)), "NM" if status == "nm" else "DRY"
                         )
                         continue
                     xs.append(x_profile)

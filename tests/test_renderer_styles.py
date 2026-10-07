@@ -314,8 +314,8 @@ def test_consulting_relative_mode_water_labels_use_mbgs() -> None:
         ],
     )
     text = renderer.to_svg_bytes(figure).decode("utf-8", errors="ignore")
-    assert "2.50 mbgs" in text
-    assert "3.00 mbgs" in text
+    assert "2.5 mbgs" in text  # 2 decimals max, trailing zeros stripped
+    assert "3 mbgs" in text
     assert "97.500 masl" not in text
     assert "mbgs" in text
 

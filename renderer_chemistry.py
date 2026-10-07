@@ -325,16 +325,32 @@ class RendererChemistryMixin:
                 x_profile = float(profile_lookup[hole_id][0])
                 for reading in hole_readings:
                     y = y_cache[(hole_id, float(reading.sample_depth))]
+                    # A colour picked in the workbook wins over the Configure
+                    # threshold / black setting.
+                    label_color = CHEMISTRY_FIXED_COLORS.get(
+                        reading.label_color
+                    ) or chemistry_label_color(
+                        reading.value,
+                        self.profile.chemistry_color_mode,
+                        green_max=self.profile.chemistry_threshold_green_max,
+                        yellow_max=self.profile.chemistry_threshold_yellow_max,
+                    )
                     if draw_markers:
                         marker_xs.append(x_profile)
                         marker_ys.append(y)
-                        # "dot" style carries the workbook colour on the marker
-                        # itself instead of adding a second dot beside the label.
-                        marker_colors.append(
-                            (CHEMISTRY_FIXED_COLORS.get(reading.label_color) or color)
-                            if str(self.profile.chemistry_label_style or "plain") == "dot"
-                            else color
-                        )
+                        # Threshold mode colours each reading's dot like its
+                        # value (green / orange / red, or the workbook colour),
+                        # so a dot never contradicts its label. "dot" style
+                        # carries the workbook colour on the marker itself
+                        # instead of adding a second dot beside the label.
+                        if threshold_active:
+                            marker_colors.append(label_color)
+                        elif str(self.profile.chemistry_label_style or "plain") == "dot":
+                            marker_colors.append(
+                                CHEMISTRY_FIXED_COLORS.get(reading.label_color) or color
+                            )
+                        else:
+                            marker_colors.append(color)
                         if (
                             reading.from_depth is not None
                             and reading.to_depth is not None
@@ -357,16 +373,6 @@ class RendererChemistryMixin:
                             label_text = reading.display_label
                         else:
                             label_text = f"{reading.value:g}"
-                        # A colour picked in the workbook wins over the
-                        # Configure threshold / black setting.
-                        label_color = CHEMISTRY_FIXED_COLORS.get(
-                            reading.label_color
-                        ) or chemistry_label_color(
-                            reading.value,
-                            self.profile.chemistry_color_mode,
-                            green_max=self.profile.chemistry_threshold_green_max,
-                            yellow_max=self.profile.chemistry_threshold_yellow_max,
-                        )
                         marker_labels.append((x_profile, y, label_text, label_color))
                         if threshold_active and reading.label_color not in CHEMISTRY_FIXED_COLORS:
                             threshold_units.add((reading.unit or "").strip())
@@ -428,7 +434,9 @@ class RendererChemistryMixin:
                 "ha": "left",
                 "va": "center",
             }
-            if draw_markers or label_style == "box":
+            # "strip" values sit on a knocked-out background strip (drawn by
+            # the collision pass once they are placed), so they need no box.
+            if (draw_markers and label_style != "strip") or label_style == "box":
                 label_base_kwargs["bbox"] = (
                     _PARAMETER_LABEL_BBOX_SOLID if label_style == "box" else _PARAMETER_LABEL_BBOX
                 )

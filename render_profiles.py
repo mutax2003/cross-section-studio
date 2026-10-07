@@ -15,8 +15,10 @@ ColumnHeaderDetail = Literal["id_only", "id_rl_td"]
 # matches the client P2 chloride figures); "threshold" bands green/orange/red.
 # A per-reading workbook label_color always wins. Blue stays for groundwater.
 ChemistryColorMode = Literal["black", "red", "threshold"]
-# How a value label is kept legible over hatched fills.
-ChemistryLabelStyle = Literal["plain", "box", "dot", "stroke"]
+# How a value label is kept legible over hatched fills. "strip" (default)
+# knocks a clean background strip out of the fills beside each column, so
+# values read on white with the hatching resuming beyond them.
+ChemistryLabelStyle = Literal["strip", "plain", "box", "dot", "stroke"]
 
 
 class CrossSectionRenderProfile(BaseModel, frozen=True):
@@ -84,7 +86,7 @@ class CrossSectionRenderProfile(BaseModel, frozen=True):
     chemistry_color_mode: ChemistryColorMode = "black"
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
-    chemistry_label_style: ChemistryLabelStyle = "plain"
+    chemistry_label_style: ChemistryLabelStyle = "strip"
     x_major_grid_m: float = 10.0
     y_axis_label: str = ""
 

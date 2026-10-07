@@ -494,3 +494,22 @@ def test_real_project_sharing_the_sample_number_and_date_is_not_flagged() -> Non
     at.file_uploader[0].upload("bb.xlsx", buffer.getvalue()).run()
     assert not at.exception
     assert not any("template's sample values" in w.value for w in at.warning)
+
+
+def test_chemistry_columns_style_starts_with_red_labels() -> None:
+    """The client's P2 figures print chloride values in red; the app always
+    sent black or threshold, so the Chemistry columns style printed black."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("t.xlsx", (ROOT / "data" / "test_workbook.xlsx").read_bytes()).run()
+    at.session_state["output_preset"] = "p2_chemistry_sticks"
+    at.run()
+    at.run()
+    assert not at.exception
+    assert at.radio(key="chemistry_color_mode_radio").value == "All red (client P2 style)"
+    at.session_state["output_preset"] = "section_sheet"
+    at.run()
+    at.run()
+    assert at.radio(key="chemistry_color_mode_radio").value == "All black"

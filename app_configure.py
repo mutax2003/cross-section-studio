@@ -25,6 +25,7 @@ from app_upload import queue_session_values
 from batch_export import validate_batch_transect_lines
 from models import Collar, CorrelationOverride, ParseResult, subset_parse_result
 from render_profiles import ChemistryLabelStyle
+from ui_output_presets import resolve_output_preset
 
 OVERRIDE_WARNINGS_LABEL = "Generate even if data checks found warnings"
 FAIL_ON_OVERLAPS_LABEL = "Stop if matched layers overlap"
@@ -533,20 +534,37 @@ def render_configure_step(
                             parameter_interpolate_segments_default
                         )
                 st.markdown("**Parameter label colour**")
+                mode_labels = {
+                    "black": "All black",
+                    "red": "All red (client P2 style)",
+                    "threshold": "Green / orange / red thresholds",
+                }
+                # The output style sets the starting colour (Chemistry columns
+                # prints red like the client's P2 figures); switching style
+                # resets it, otherwise the user's choice is kept.
+                output_preset = str(st.session_state.get("output_preset", "section_sheet"))
+                style_mode = resolve_output_preset(output_preset).chemistry_color_mode
+                if (
+                    "chemistry_color_mode_radio" not in st.session_state
+                    or st.session_state.get("_chem_color_mode_preset") != output_preset
+                ):
+                    st.session_state["chemistry_color_mode_radio"] = mode_labels.get(
+                        style_mode, mode_labels["black"]
+                    )
+                    st.session_state["_chem_color_mode_preset"] = output_preset
                 color_mode_choice = st.radio(
                     "Chemistry value labels",
-                    options=["All black (default)", "Green / orange / red thresholds"],
-                    index=0,
+                    options=list(mode_labels.values()),
                     key="chemistry_color_mode_radio",
                     help=(
-                        "Black labels for data presentation. Threshold mode colours each "
-                        "value green, orange, or red using site-specific limits set below."
+                        "Black or red labels for data presentation. Threshold mode colours "
+                        "each value green, orange, or red using site-specific limits set below. "
+                        "A colour given in the workbook's label_color column always wins."
                     ),
                 )
-                chemistry_color_mode = (
-                    "threshold"
-                    if color_mode_choice == "Green / orange / red thresholds"
-                    else "black"
+                chemistry_color_mode = next(
+                    (mode for mode, label in mode_labels.items() if label == color_mode_choice),
+                    "black",
                 )
                 chemistry_threshold_green_max = None
                 chemistry_threshold_yellow_max = None

@@ -546,7 +546,11 @@ class ConsultingLayoutMixin:
         ve = self.vertical_exaggeration
         x_max = float(hole_summary["x_profile"].max())
         x_min = float(hole_summary["x_profile"].min())
-        x_pad = max(track_half, 5.0)
+        # Right margin: room for the last column and its labels, scaled to the
+        # section (a fixed 5 m left ~15% blank on a 32 m section); long
+        # sections keep the 5 m they always had.
+        span = max(x_max - x_min, 1.0)
+        x_pad = max(track_half + max(0.25 * track_half, 0.3), min(5.0, 0.06 * span))
         # The first hole sits at x = 0; an axis starting at exactly 0 cut its
         # left half off. Start slightly negative (column half width + margin)
         # and keep the tick labels non-negative.
@@ -1496,6 +1500,8 @@ class ConsultingLayoutMixin:
                         "color": entry.get("color", PARAMETER_READING_COLOR),
                         "marker": entry.get("marker", "D"),
                         "linestyle": "--",
+                        # Red P2-style sample value ("120") shown in the swatch column.
+                        "parameter_entry": entry,
                     },
                 )
             )
@@ -1663,7 +1669,17 @@ class ConsultingLayoutMixin:
                     )
                     line.set_clip_path(clip_rect)
                 elif kind == "text":
-                    pass
+                    sample = self._draw_parameter_legend_sample(
+                        ax,
+                        col_left,
+                        y,
+                        style.get("parameter_entry") or {},
+                        font_size=font_size,
+                        clip_path=clip_rect,
+                    )
+                    if sample is not None:
+                        # Label moves to the text column, beside its sample.
+                        kind = "sampled_text"
                 else:  # line_marker
                     (lm_line,) = ax.plot(
                         [col_left, col_left + 0.03],
@@ -1678,7 +1694,7 @@ class ConsultingLayoutMixin:
                     )
                     lm_line.set_clip_path(clip_rect)
                 label_artist = ax.text(
-                    col_left if kind == "text" else col_text_x,
+                    col_left if kind == "text" else col_text_x,  # sampled_text → text column
                     y,
                     display,
                     fontsize=font_size,

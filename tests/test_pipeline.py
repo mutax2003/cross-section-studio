@@ -453,3 +453,17 @@ def test_unknown_render_layout_is_rejected() -> None:
     liths = [Lithology(hole_id=c.hole_id, from_depth=0.0, to_depth=5.0, lithology_code="Clay") for c in collars]
     with pytest.raises(ValueError, match="render_layout"):
         build_cross_section(collars, liths, [(0.0, 0.0), (10.0, 0.0)], render_layout="consulting")
+
+
+def test_layers_logged_in_opposite_order_are_reported() -> None:
+    from models import Collar, Lithology
+    from pipeline import compute_section_geometry
+
+    collars = [
+        Collar(hole_id="A", easting=0, northing=0, elevation=100, total_depth=10),
+        Collar(hole_id="B", easting=50, northing=0, elevation=100, total_depth=10),
+    ]
+    rows = [("A", 0, 5, "Sand"), ("A", 5, 10, "Clay"), ("B", 0, 5, "Clay"), ("B", 5, 10, "Sand")]
+    lithology = [Lithology(hole_id=h, from_depth=a, to_depth=b, lithology_code=c) for h, a, b, c in rows]
+    geometry = compute_section_geometry(collars, lithology, [(0, 0), (50, 0)])
+    assert any(message.startswith("Crossing correlation A–B") for message in geometry.overlap_warnings)

@@ -1667,7 +1667,12 @@ class ConsultingLayoutMixin:
 
         draw_param_markers = self.profile.parameter_draw_markers
         for entry in self.parameter_series_legend or []:
-            kind = "line_marker" if draw_param_markers else "text"
+            if entry.get("threshold_colors"):
+                # Threshold mode: values are green / orange / red, so the
+                # key is a three-dot band sample, not the series line.
+                kind = "threshold_dots"
+            else:
+                kind = "line_marker" if draw_param_markers else "text"
             entries.append(
                 (
                     kind,
@@ -1777,7 +1782,15 @@ class ConsultingLayoutMixin:
                     # "+N MORE UNITS (SEE LOG)": drop a word, never cut mid-word.
                     label = label.replace(" UNITS", "")
                     display = label
-                if len(label) > max_label_chars:
+                wrapped_lines = 1
+                if len(label) > max_label_chars and kind != "text":
+                    # Keys wrap to a second line rather than losing words
+                    # ("CHLORIDE CONCENTRATION" / "(mg/kg)" on portrait pages).
+                    lines = textwrap.wrap(label, width=max_label_chars)
+                    if len(lines) == 2 and all(len(line) <= max_label_chars for line in lines):
+                        display = "\n".join(lines)
+                        wrapped_lines = 2
+                if wrapped_lines == 1 and len(label) > max_label_chars:
                     paren = label.rfind("(")
                     if paren > 0 and label.endswith(")") and len(label) - paren <= 14:
                         prefix_budget = max_label_chars - (len(label) - paren) - 1
@@ -1856,6 +1869,21 @@ class ConsultingLayoutMixin:
                     if sample is not None:
                         # Label moves to the text column, beside its sample.
                         kind = "sampled_text"
+                elif kind == "threshold_dots":
+                    band_colors = list(style.get("parameter_entry", {}).get("threshold_colors", ()))
+                    dots = ax.scatter(
+                        [col_left + 0.004 + 0.011 * i for i in range(len(band_colors))],
+                        [y] * len(band_colors),
+                        c=band_colors,
+                        marker="o",
+                        s=14.0,
+                        linewidths=0,
+                        transform=ax.transAxes,
+                        clip_on=True,
+                        zorder=3,
+                    )
+                    dots.set_gid("parameter-legend-threshold-dots")
+                    dots.set_clip_path(clip_rect)
                 else:  # line_marker
                     (lm_line,) = ax.plot(
                         [col_left, col_left + 0.03],
@@ -1869,18 +1897,25 @@ class ConsultingLayoutMixin:
                         clip_on=True,
                     )
                     lm_line.set_clip_path(clip_rect)
+                # A wrapped key keeps its symbol beside the first line.
+                line_h = (
+                    font_size * 1.15 / 72.0
+                    / max(ax.get_position().height * ax.figure.get_size_inches()[1], 1e-6)
+                )
+                text_y = y - 0.5 * line_h * (wrapped_lines - 1)
                 label_artist = ax.text(
                     col_left if kind == "text" else col_text_x,  # sampled_text → text column
-                    y,
+                    text_y,
                     display,
                     fontsize=font_size,
+                    linespacing=1.0 if wrapped_lines > 1 else None,
                     va="center",
                     color=style.get("color", LABEL_COLOR) if kind == "text" else LABEL_COLOR,
                     transform=ax.transAxes,
                     clip_on=True,
                 )
                 label_artist.set_clip_path(clip_rect)
-                y -= step
+                y -= step + line_h * (wrapped_lines - 1)
 
     def _draw_logo_image(self, ax, logo_bytes: bytes | None, position: tuple[float, float]) -> None:
         if not logo_bytes:
@@ -2120,13 +2155,27 @@ class ConsultingLayoutMixin:
         column holds (~11 pt per line over ~0.7 of the page height) zig-zag
         into a second / third column.
         """
-        if not self.profile.show_parameter_labels or hole_summary.empty:
+        if (
+            not self.profile.show_parameter_labels
+            or not self.profile.show_parameter_markers
+            or hole_summary.empty
+        ):
+            return 0.0
+        # Only readings that will actually be labelled: hidden parameters
+        # must not widen the frame.
+        active = {
+            str(name).strip()
+            for name in getattr(self, "environmental_parameters", ()) or ()
+            if str(name).strip()
+        }
+        if not active:
             return 0.0
         last_hole = str(hole_summary.loc[hole_summary["x_profile"].idxmax(), "hole_id"])
         last_readings = sum(
             1
             for reading in getattr(self, "environmental_readings", ()) or ()
             if str(getattr(reading, "hole_id", "")) == last_hole
+            and getattr(reading, "parameter", None) in active
         )
         if not last_readings:
             return 0.0

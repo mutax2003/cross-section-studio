@@ -330,6 +330,8 @@ def render_welcome_card() -> None:
 
 
 _PENDING_PROJECT_SEED_KEY = "_pending_project_seed"
+# Vertical exaggeration from the workbook's Project tab (a VE choice), if any.
+WORKBOOK_VE_KEY = "_workbook_vertical_exaggeration"
 
 
 def _seed_consulting_fields_from_project_metadata(project: dict[str, str]) -> None:
@@ -435,6 +437,15 @@ def apply_pending_project_seed() -> None:
             st.session_state.pop(key, None)
             if isinstance(store, dict):
                 store.pop(key, None)
+        # Output style and VE can come from the Project tab too: a workbook
+        # that sets neither (or Clear workbook) starts from the defaults, not
+        # from whatever the previous workbook chose.
+        from ui_output_presets import DEFAULT_VE_CHOICE
+
+        st.session_state["output_preset"] = DEFAULT_SESSION["output_preset"]
+        st.session_state.pop("_synced_output_preset", None)
+        st.session_state["vertical_exaggeration"] = DEFAULT_VE_CHOICE
+        st.session_state.pop(WORKBOOK_VE_KEY, None)
     pending = st.session_state.pop(_PENDING_PROJECT_SEED_KEY, None)
     if not isinstance(pending, dict):
         return
@@ -447,7 +458,11 @@ def apply_pending_project_seed() -> None:
         from ui_output_presets import normalize_ve_choice
 
         # "5" -> exact 5x; "auto" (or anything unreadable) -> Auto (fit page).
-        st.session_state.vertical_exaggeration = normalize_ve_choice(ve_raw)
+        choice = normalize_ve_choice(ve_raw)
+        st.session_state.vertical_exaggeration = choice
+        # Remembered so a style's default VE (Groundwater fence = Auto) does
+        # not override it when the style syncs; locked styles still lock.
+        st.session_state[WORKBOOK_VE_KEY] = choice
 
 
 def handle_workbook_upload(

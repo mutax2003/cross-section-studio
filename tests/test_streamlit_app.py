@@ -542,6 +542,11 @@ def _project_workbook_bytes(**project_values: str) -> bytes:
     for row in book["Project"].iter_rows(min_row=2):
         if row[0].value in project_values:
             row[2].value = project_values[row[0].value]
+    # Data Entry keeps a fallback copy of the same fields (blank Project cells
+    # fall back to it), so keep the two in step.
+    for row in book["Data Entry"].iter_rows(min_row=2, max_col=2):
+        if row[0].value in project_values:
+            row[1].value = project_values[row[0].value]
     buffer = BytesIO()
     book.save(buffer)
     return buffer.getvalue()
@@ -725,3 +730,46 @@ def test_one_hole_workbook_has_no_section_label_or_batch_panel() -> None:
     assert not any(f"{hole} → {hole}" in text for text in captions)
     assert any("at least one more hole" in text for text in captions)
     assert not _batch_expanders(at)
+
+
+def test_workbook_ve_wins_over_the_style_default_and_does_not_leak() -> None:
+    """The template's Project tab (VE 5, Groundwater fence) drew at Auto
+    (≈3×): the fence style's Auto default overrode the workbook. The next
+    workbook without a VE (and Clear workbook) then kept 5× and the style."""
+    from streamlit.testing.v1 import AppTest
+
+    from workbook_template import build_input_template_bytes
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("template.xlsx", build_input_template_bytes()).run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["output_preset"] == "gwm_fence"
+    assert at.session_state["vertical_exaggeration"] == 5.0
+    assert at.selectbox(key="vertical_exaggeration").value == 5.0
+
+    no_ve = _project_workbook_bytes(vertical_exaggeration=None, figure_preset=None)
+    at.file_uploader[0].upload("no_ve.xlsx", no_ve).run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["output_preset"] == "section_sheet"
+    assert at.session_state["vertical_exaggeration"] == "auto"
+
+    at.file_uploader[0].upload("template2.xlsx", _project_workbook_bytes(
+        vertical_exaggeration="10", figure_preset="consulting_report"
+    )).run()
+    at.run()
+    assert at.session_state["vertical_exaggeration"] == 10.0
+    at.button(key="sidebar_clear_workbook").click().run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["output_preset"] == "section_sheet"
+    assert at.session_state["vertical_exaggeration"] == "auto"
+
+    # A style that fixes VE still locks it (Chemistry columns: exactly 1x).
+    locked = _project_workbook_bytes(vertical_exaggeration="5", figure_preset="p2_chemistry_sticks")
+    at.file_uploader[0].upload("p2.xlsx", locked).run()
+    at.run()
+    assert at.session_state["output_preset"] == "p2_chemistry_sticks"
+    assert at.session_state["vertical_exaggeration"] == 1.0

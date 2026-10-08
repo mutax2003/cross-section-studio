@@ -25,6 +25,7 @@ from app_common import (
 from app_identity import COPYRIGHT_SHORT, CREATED_BY
 from app_upload import (
     DESTRUCTIVE_PROMPTS,
+    WORKBOOK_VE_KEY,
     apply_pending_project_seed,
     render_input_template_download,
     request_destructive,
@@ -530,8 +531,13 @@ def render_sidebar() -> SidebarState:
             if preset_config.elevation_mode is not None:
                 st.session_state.elevation_mode = preset_config.elevation_mode
             if preset_config.vertical_exaggeration is not None:
+                workbook_ve = st.session_state.get(WORKBOOK_VE_KEY)
+                # The workbook's Project VE beats a style's default (Auto);
+                # a style that fixes VE (Chemistry columns, 1x) still wins.
                 st.session_state.vertical_exaggeration = normalize_ve_choice(
-                    preset_config.vertical_exaggeration
+                    workbook_ve
+                    if workbook_ve is not None and visibility.vertical_exaggeration_editable
+                    else preset_config.vertical_exaggeration
                 )
             st.session_state._synced_output_preset = output_preset
 

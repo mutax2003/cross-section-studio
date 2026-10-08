@@ -21,6 +21,7 @@ from batch_export import (
     build_batch_zip,
     build_one_transect_exports,
     export_binder_pdf,
+    label_in_title,
     split_batch_transect_lines,
 )
 from docx_export import build_figure_docx_bytes
@@ -291,7 +292,7 @@ def _render_batch_export(
                     export_framing=export_framing,
                     consulting_title_block=consulting_title_block,
                     transect_label=label,
-                    include_transect_label=label not in sheet_title,
+                    include_transect_label=not label_in_title(label, sheet_title),
                 )
                 entries.append((sanitize_filename(stem), svg_bytes, png_bytes, pdf_bytes))
             pdfs = [pdf for _stem, _svg, _png, pdf in entries if pdf]

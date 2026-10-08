@@ -243,6 +243,22 @@ def _consulting_for_spec(
 
 
 
+def label_in_title(label: str, title: str) -> bool:
+    """True when ``label`` appears in ``title`` as a whole token.
+
+    A plain substring test treated label "A" as present in "Bay Area Site"
+    and dropped it from batch file names.
+    """
+    label = label.strip()
+    if not label:
+        return False
+    return re.search(_label_pattern(label), title) is not None
+
+
+def _label_pattern(label: str) -> str:
+    return rf"(?<![A-Za-z0-9]){re.escape(label.strip())}(?![A-Za-z0-9])"
+
+
 def _batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
     """Title for one batch transect.
 
@@ -254,16 +270,14 @@ def _batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
         return title
     block = base_request.consulting_title_block
     base_label = (block.section_label if block else "").strip()
-    if base_label and base_label != label and base_label in title:
-        return title.replace(base_label, label)
-    if label in title:
+    if base_label and base_label != label and label_in_title(base_label, title):
+        return re.sub(_label_pattern(base_label), lambda _m: label, title, count=1)
+    if label_in_title(label, title):
         return title
     # No title block (section-sheet styles): look for an "A-A'" style label.
     match = _TITLE_SECTION_LABEL_RE.search(title)
     if match is not None and _SECTION_ENDS_RE.match(label):
         return title[: match.start()] + label + title[match.end() :]
-    if label in title:
-        return title
     return f"{title} — {label}"
 
 def batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
@@ -279,8 +293,8 @@ def batch_cover_title(base_request: SectionBuildRequest, labels: Sequence[str]) 
     title = base_request.section_title.strip()
     block = base_request.consulting_title_block
     base_label = (block.section_label if block else "").strip()
-    if base_label and base_label in title:
-        title = title.replace(base_label, "")
+    if base_label and label_in_title(base_label, title):
+        title = re.sub(_label_pattern(base_label), "", title)
     else:
         title = _TITLE_SECTION_LABEL_RE.sub("", title)
     title = title.strip(" -—–:,")
@@ -532,7 +546,9 @@ def build_batch_zip(
 ) -> bytes:
     """Zip multiple transect exports. Each entry is (stem, svg, png, pdf)."""
     buffer = BytesIO()
-    used: dict[str, int] = {}
+    # The binder and readme names are taken up front so no section stem can
+    # collide with them (a section labelled "report_binder").
+    used: dict[str, int] = {"report_binder": 1, "readme": 1}
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for stem, svg_bytes, png_bytes, pdf_bytes in entries:
             # Sanitize (labels may carry path separators) and uniquify — zipfile

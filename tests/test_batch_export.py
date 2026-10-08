@@ -283,3 +283,36 @@ def test_batch_cover_title_names_the_whole_batch() -> None:
     bare = SimpleNamespace(section_title="B-B'", consulting_title_block=None)
     assert batch_cover_title(bare, labels) == "Cross Sections A-A', B-B', C-C'"
     assert batch_cover_title(bare, ["A-A'"]) == "Cross Section A-A'"
+
+
+def test_single_letter_labels_survive_titles_that_contain_the_letter() -> None:
+    from types import SimpleNamespace
+
+    from batch_export import _batch_section_title, label_in_title
+
+    request = SimpleNamespace(section_title="Bay Area Site 12 Cross Section", consulting_title_block=None)
+    assert not label_in_title("A", request.section_title)
+    assert not label_in_title("1", request.section_title)
+    assert _batch_section_title(request, "A") == "Bay Area Site 12 Cross Section — A"
+    assert _batch_section_title(request, "2") == "Bay Area Site 12 Cross Section — 2"
+    block = SimpleNamespace(section_label="A")
+    swap = SimpleNamespace(section_title="Area A Section", consulting_title_block=block)
+    assert _batch_section_title(swap, "B") == "Area B Section"
+
+
+def test_batch_zip_never_reuses_the_binder_name() -> None:
+    import io
+    import zipfile
+
+    from batch_export import build_batch_zip
+
+    payload = build_batch_zip([("report_binder", b"<svg/>", b"", b"%PDF")], binder_pdf=b"%PDF")
+    names = zipfile.ZipFile(io.BytesIO(payload)).namelist()
+    assert len(names) == len(set(names))
+    assert "report_binder.pdf" in names and "report_binder_2.pdf" in names
+
+
+def test_word_export_accepts_very_long_titles() -> None:
+    from docx_export import build_figure_docx_bytes
+
+    assert build_figure_docx_bytes(png_bytes=b"", caption="c", title="A" * 300)

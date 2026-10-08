@@ -40,7 +40,8 @@ def build_figure_docx_bytes(
     document.core_properties.author = f"{AUTHOR}, {ORGANIZATION}"
     document.core_properties.last_modified_by = f"{AUTHOR}, {ORGANIZATION}"
     document.core_properties.comments = COPYRIGHT_NOTICE
-    document.core_properties.title = title or "Cross Section"
+    # Word caps core properties at 255 characters; the heading keeps the full title.
+    document.core_properties.title = (title or "Cross Section")[:255]
     document.add_heading(title or "Cross Section", level=1)
     if caption:
         document.add_paragraph(caption)

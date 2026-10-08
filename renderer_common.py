@@ -328,6 +328,13 @@ class HatchBatchedPolyCollection(PolyCollection):
         """``[(fill_groups, member_paths), ...]`` in draw order, or None for the stock draw."""
         if not isinstance(renderer, RendererAgg) or not self._hatch or not self.get_visible():
             return None
+        # A separate stroke pass does not reproduce the stock hatched draw's
+        # edge pixels (edges came out up to ~100/255 darker), so collections
+        # with a visible outline keep the stock draw.
+        edges = np.asarray(self.get_edgecolor(), dtype=float).reshape(-1, 4)
+        widths = np.asarray(self.get_linewidth(), dtype=float)
+        if edges.size and np.any(edges[:, 3] > 0) and np.any(widths > 0):
+            return None
         if hasattr(vars(renderer).get("draw_path_collection"), "__wrapped__"):
             # RendererBase._draw_disabled (draw_without_rendering) swaps in
             # wrapped no-ops: nothing is rasterised, so there is nothing to batch.
@@ -420,12 +427,6 @@ class HatchBatchedPolyCollection(PolyCollection):
             groups.extend(group for group in (snapped_group, unsnapped_group) if group)
             batches.append((groups, members))
         return batches
-
-
-# SVG / PDF backends name each collection group after ``type(obj).__name__``
-# ("PolyCollection_7"); keep that name so vector exports stay byte-identical.
-# Pickle and repr use ``__qualname__``, which still names this class.
-HatchBatchedPolyCollection.__name__ = "PolyCollection"
 
 
 class ThinUnitHatchCollection(HatchBatchedPolyCollection):

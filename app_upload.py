@@ -406,8 +406,13 @@ def queue_session_values(**values: object) -> None:
 def apply_pending_project_seed() -> None:
     """Apply queued Project metadata before sidebar widgets are created."""
     if st.session_state.pop("_reset_project_seed", False):
+        # The sidebar keeps a non-widget copy of these fields (so they survive
+        # output-style switches); the new workbook must not inherit it.
+        store = st.session_state.get("_sidebar_widget_store")
         for key in PROJECT_SEEDED_KEYS:
             st.session_state.pop(key, None)
+            if isinstance(store, dict):
+                store.pop(key, None)
     pending = st.session_state.pop(_PENDING_PROJECT_SEED_KEY, None)
     if not isinstance(pending, dict):
         return

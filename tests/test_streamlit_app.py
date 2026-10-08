@@ -528,3 +528,109 @@ def test_chemistry_columns_style_starts_with_red_labels() -> None:
     at.run()
     at.run()
     assert at.radio(key="chemistry_color_mode_radio").value == "All black"
+
+
+def _project_workbook_bytes(**project_values: str) -> bytes:
+    """Committed template with Project-sheet values replaced."""
+    from io import BytesIO
+
+    import openpyxl
+
+    from workbook_template import build_input_template_bytes
+
+    book = openpyxl.load_workbook(BytesIO(build_input_template_bytes()))
+    for row in book["Project"].iter_rows(min_row=2):
+        if row[0].value in project_values:
+            row[2].value = project_values[row[0].value]
+    buffer = BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
+
+
+def _browser_value(widget) -> object:
+    """What the browser shows for a widget that has just re-mounted.
+
+    A value carried over in session state but not flagged ``set_value`` is
+    not sent; the browser then shows the widget's default (and sends that
+    back on the next run), which blanked the title block after a style switch.
+    """
+    proto = widget.proto
+    return proto.value if proto.set_value else proto.default
+
+
+_TITLE_FIELDS = {
+    "consulting_prepared_for": "ACME PIPELINES LTD.",
+    "consulting_project_number": "P-77",
+    "consulting_date": "01/02/26",
+    "consulting_prepared_by": "NORTH CONSULTING",
+    "consulting_drawn_by": "QA",
+    "consulting_source": "QA 2026",
+    "consulting_map_scale": "1:2500",
+}
+
+
+def test_title_block_survives_output_style_switches() -> None:
+    """Switching Output style to Section sheet and back blanked the Section
+    title and every title-block field in the browser (and so the PDF)."""
+    from streamlit.testing.v1 import AppTest
+
+    workbook = _project_workbook_bytes(
+        client_name="ACME PIPELINES LTD.",
+        prepared_by="NORTH CONSULTING",
+        project_number="P-77",
+        section_title="B - B' QA TITLE",
+        report_date="01/02/26",
+        drawn_by="QA",
+        data_source="QA 2026",
+        map_scale="1:2500",
+        figure_preset="consulting_report",
+    )
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("project.xlsx", workbook).run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["output_preset"] == "consulting_report"
+
+    styles = ("section_sheet", "consulting_report", "quick_preview", "p2_chemistry_sticks")
+    for style in styles + ("consulting_report",):
+        at.selectbox(key="output_preset").set_value(style).run()
+        assert not at.exception
+        titles = [w for w in at.text_input if w.key in ("consulting_section_label", "section_title")]
+        assert len(titles) == 1, style
+        assert _browser_value(titles[0]) == "B - B' QA TITLE", style
+        for widget in at.text_input:
+            if widget.key in _TITLE_FIELDS:
+                assert _browser_value(widget) == _TITLE_FIELDS[widget.key], (style, widget.key)
+        if any(w.key == "export_include_title_block" for w in at.toggle):
+            toggle = at.toggle(key="export_include_title_block")
+            assert _browser_value(toggle) == at.session_state["export_include_title_block"], style
+        at.run()  # e.g. a Generate rerun
+        assert at.session_state["section_title"] == "B - B' QA TITLE", style
+    shown = {w.key: w.value for w in at.text_input if w.key in _TITLE_FIELDS}
+    assert shown == _TITLE_FIELDS
+
+
+def test_new_workbook_reseeds_title_block_after_style_switches() -> None:
+    from streamlit.testing.v1 import AppTest
+
+    first = _project_workbook_bytes(
+        client_name="FIRST CLIENT", section_title="A - A' FIRST", figure_preset="consulting_report"
+    )
+    second = _project_workbook_bytes(
+        client_name="SECOND CLIENT", section_title="B - B' SECOND", figure_preset="consulting_report"
+    )
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("first.xlsx", first).run()
+    at.selectbox(key="output_preset").set_value("section_sheet").run()
+    at.selectbox(key="output_preset").set_value("consulting_report").run()
+    assert at.text_input(key="consulting_prepared_for").value == "FIRST CLIENT"
+    at.selectbox(key="output_preset").set_value("section_sheet").run()
+    at.file_uploader[0].upload("second.xlsx", second).run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["section_title"] == "B - B' SECOND"
+    at.selectbox(key="output_preset").set_value("consulting_report").run()
+    assert at.text_input(key="consulting_prepared_for").value == "SECOND CLIENT"
+    assert at.text_input(key="consulting_section_label").value == "B - B' SECOND"

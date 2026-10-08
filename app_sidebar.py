@@ -159,10 +159,62 @@ def _keep_widget_state(*keys: str) -> None:
 
     Streamlit drops a widget's session value when the widget is not rendered;
     re-assigning it keeps the user's choice for when the control comes back.
+    Call it again right before the widget re-appears: a value carried over
+    from an earlier run is not sent to the browser, which then shows (and
+    sends back) the widget's default, e.g. "Include title block" off.
     """
     for key in keys:
         if key in st.session_state:
             st.session_state[key] = st.session_state[key]
+
+
+# Non-widget copy of text fields that come and go with the output style
+# (section title, title block). Streamlit may drop a hidden widget's key, and
+# a value carried over from an earlier run is not pushed to the browser when
+# the widget re-mounts (the box showed blank, then sent the blank back).
+WIDGET_STORE_KEY = "_sidebar_widget_store"
+
+
+def _widget_store() -> dict[str, object]:
+    store = st.session_state.get(WIDGET_STORE_KEY)
+    if not isinstance(store, dict):
+        store = {}
+        st.session_state[WIDGET_STORE_KEY] = store
+    return store
+
+
+def _stash_widget_values(*keys: str) -> None:
+    """Hidden this run: copy the values to the store and keep the keys alive."""
+    store = _widget_store()
+    for key in keys:
+        if key in st.session_state:
+            store[key] = st.session_state[key]
+    _keep_widget_state(*keys)
+
+
+def _bind_widget_value(key: str, default: object = "") -> object:
+    """Call right before creating a keyed widget that may have been hidden.
+
+    The live value (typed in the browser, or seeded this run) wins, then the
+    stored copy, then ``default``. Re-assigning the key in the same run, before
+    the widget exists, makes Streamlit send the value to the browser instead
+    of letting the re-mounted box start blank.
+    """
+    store = _widget_store()
+    if key in st.session_state:
+        value = st.session_state[key]
+    else:
+        value = store.get(key, default)
+    st.session_state[key] = value
+    store[key] = value
+    return value
+
+
+def _bound_text_input(label: str, *, key: str, default: str = "", **kwargs: object) -> str:
+    _bind_widget_value(key, default)
+    value = st.text_input(label, key=key, **kwargs)
+    _widget_store()[key] = value
+    return value
 
 
 def _is_filled(key: str) -> bool:
@@ -552,17 +604,23 @@ def render_sidebar() -> SidebarState:
         # One title field per style. Consulting layouts print the title block's
         # section label as the figure title, so that field is shown here as
         # "Section title" and section_title (file names, metadata) follows it.
+        title_store = _widget_store()
         if "section_title" not in st.session_state:
-            st.session_state.section_title = "Borehole Cross-Section"
+            st.session_state.section_title = title_store.get(
+                "section_title", "Borehole Cross-Section"
+            )
         if is_consulting_layout:
             if (
                 st.session_state.pop("_reset_consulting_section_label", False)
-                or "consulting_section_label" not in st.session_state
+                or (
+                    "consulting_section_label" not in st.session_state
+                    and "consulting_section_label" not in title_store
+                )
             ):
                 st.session_state.consulting_section_label = (
                     st.session_state.get("section_title") or "Borehole Cross-Section"
                 )
-            consulting_section_label = st.text_input(
+            consulting_section_label = _bound_text_input(
                 "Section title",
                 key="consulting_section_label",
                 help="Printed as the figure title and used in file names.",
@@ -571,14 +629,17 @@ def render_sidebar() -> SidebarState:
                 st.session_state.get("section_title") or "Borehole Cross-Section"
             )
             st.session_state["section_title"] = section_title
+            title_store["section_title"] = section_title
         else:
-            section_title = st.text_input(
+            section_title = _bound_text_input(
                 "Section title",
                 key="section_title",
+                default="Borehole Cross-Section",
                 help="Printed on the figure and used in file names.",
             )
             # Same value for the consulting styles' title block (one field).
             st.session_state["consulting_section_label"] = section_title
+            title_store["consulting_section_label"] = section_title
 
         # Groundwater
         if visibility.groundwater_editable:
@@ -613,6 +674,7 @@ def render_sidebar() -> SidebarState:
         # Labels and legend
         with st.expander("Labels and legend", expanded=False):
             if visibility.label_detail_editable:
+                _keep_widget_state("column_header_detail")
                 st.selectbox(
                     "Borehole label detail",
                     options=["id_only", "id_rl_td"],
@@ -625,6 +687,7 @@ def render_sidebar() -> SidebarState:
             else:
                 _keep_widget_state("column_header_detail")
             if visibility.chart_legend_editable:
+                _keep_widget_state("show_legend")
                 show_legend = st.toggle(
                     "Legend on chart",
                     key="show_legend",
@@ -655,6 +718,7 @@ def render_sidebar() -> SidebarState:
                 help="Prints the vertical exaggeration (e.g. 'Vertical exaggeration 5×') on the figure.",
             )
             if visibility.parameter_text_block_editable:
+                _keep_widget_state("show_parameter_legend_text")
                 st.toggle(
                     "Show lab parameters note",
                     key="show_parameter_legend_text",
@@ -670,6 +734,7 @@ def render_sidebar() -> SidebarState:
         if has_chemistry:
             with st.expander("Chemistry", expanded=False):
                 if visibility.chemistry_marker_size_editable:
+                    _keep_widget_state("parameter_marker_size")
                     st.number_input(
                         "Chemistry dot size",
                         min_value=4.0,
@@ -716,7 +781,7 @@ def render_sidebar() -> SidebarState:
     if not visibility.title_block_shown:
         # Keep typed / Project-sheet values for when a consulting style returns
         # (file uploaders cannot be re-assigned, so logos are not kept).
-        _keep_widget_state(
+        _stash_widget_values(
             *(key for key in _TITLE_BLOCK_MAIN_KEYS + _TITLE_BLOCK_MORE_KEYS if "logo" not in key),
         )
     if visibility.title_block_shown:
@@ -730,6 +795,8 @@ def render_sidebar() -> SidebarState:
 
     # ---------------------------------------------------------------- Export
     if visibility.export_shown:
+        # Re-send values kept while a style hid this panel (see _keep_widget_state).
+        _keep_widget_state(*_EXPORT_WIDGET_KEYS)
         with st.expander("Export", expanded=False):
             _render_export_framing_panel()
     else:
@@ -1039,7 +1106,15 @@ def _render_import_settings(*, expanded: bool = False) -> tuple[str, str | None,
 
 
 def _seed_title_block_defaults() -> None:
-    """Init keyed title-block widgets only when absent (keeps Project-sheet seeding)."""
+    """Init keyed title-block widgets only when absent (keeps Project-sheet seeding).
+
+    A value kept in the widget store (field hidden by another output style)
+    comes back before any blank default is applied.
+    """
+    store = _widget_store()
+    for key in _TITLE_BLOCK_MAIN_KEYS + _TITLE_BLOCK_MORE_KEYS:
+        if key not in st.session_state and key in store:
+            st.session_state[key] = store[key]
     if "consulting_map_scale" not in st.session_state:
         # Blank = "AS SHOWN": the drawn scale bar is true to scale.
         st.session_state.consulting_map_scale = ""
@@ -1070,10 +1145,10 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
     Figure style (one field); ``section_title`` follows it."""
     _seed_title_block_defaults()
     consulting_section_label = str(st.session_state.get("consulting_section_label") or "")
-    figure_number = st.text_input("Figure no.", key="consulting_figure_number")
-    project_number = st.text_input("Project no.", key="consulting_project_number")
-    report_date = st.text_input("Date", key="consulting_date")
-    prepared_by = st.text_input("Prepared by", key="consulting_prepared_by")
+    figure_number = _bound_text_input("Figure no.", key="consulting_figure_number")
+    project_number = _bound_text_input("Project no.", key="consulting_project_number")
+    report_date = _bound_text_input("Date", key="consulting_date")
+    prepared_by = _bound_text_input("Prepared by", key="consulting_prepared_by")
     with st.expander(
         f"More title block fields ({_filled_count(_TITLE_BLOCK_MORE_KEYS)})",
         expanded=False,
@@ -1082,33 +1157,35 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
         st.caption("Section line ends (printed at each end of the cross-section)")
         transect_cols = st.columns(2)
         with transect_cols[0]:
-            transect_start_primary = st.text_input("Start letter (e.g. B)", key="consulting_start_primary")
-            transect_start_secondary = st.text_input(
+            transect_start_primary = _bound_text_input("Start letter (e.g. B)", key="consulting_start_primary")
+            transect_start_secondary = _bound_text_input(
                 "Start direction (e.g. SOUTHWEST)",
                 key="consulting_start_secondary",
             )
         with transect_cols[1]:
-            transect_end_primary = st.text_input("End letter (e.g. B')", key="consulting_end_primary")
-            transect_end_secondary = st.text_input(
+            transect_end_primary = _bound_text_input("End letter (e.g. B')", key="consulting_end_primary")
+            transect_end_secondary = _bound_text_input(
                 "End direction (e.g. NORTHEAST)",
                 key="consulting_end_secondary",
             )
-        transect_start_label = st.text_input(
+        transect_start_label = _bound_text_input(
             "Start label (used if no start letter)", key="consulting_start_label"
         )
-        transect_end_label = st.text_input("End label (used if no end letter)", key="consulting_end_label")
-        map_scale = st.text_input(
+        transect_end_label = _bound_text_input("End label (used if no end letter)", key="consulting_end_label")
+        map_scale = _bound_text_input(
             "Map scale",
             key="consulting_map_scale",
             placeholder="As shown (scale bar)",
             help="Leave blank to print AS SHOWN; the scale bar is drawn true to scale. "
             "A value you enter (e.g. 1:1000) is printed as written.",
         )
-        source = st.text_input("Source", key="consulting_source")
-        drawn_by = st.text_input("Drawn by", key="consulting_drawn_by")
-        revised = st.text_input("Revised", key="consulting_revised")
-        prepared_for = st.text_input("Prepared for", key="consulting_prepared_for")
+        source = _bound_text_input("Source", key="consulting_source")
+        drawn_by = _bound_text_input("Drawn by", key="consulting_drawn_by")
+        revised = _bound_text_input("Revised", key="consulting_revised")
+        prepared_for = _bound_text_input("Prepared for", key="consulting_prepared_for")
+        _bind_widget_value("consulting_notes", "\n".join(_default_consulting_notes()))
         notes_text = st.text_area("Notes", key="consulting_notes", help="One note per line.")
+        _widget_store()["consulting_notes"] = notes_text
         logo_for = st.file_uploader(
             "Client logo (PNG)",
             type=["png"],

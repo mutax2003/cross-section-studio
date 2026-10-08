@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections import Counter, defaultdict
 from collections.abc import Hashable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -76,6 +76,64 @@ def _intervals_for_hole(hole_df: pd.DataFrame) -> list[_LayerInterval]:
         )
         for index in order
     ]
+
+
+def _close_logging_gaps(intervals: list[_LayerInterval]) -> list[_LayerInterval]:
+    """Fence-only copy of a hole's intervals with internal logging gaps closed.
+
+    A not-logged interval (no recovery) between two logged units is unknown only
+    *at* the hole — the column renders it grey. For correlation between holes the
+    gap is treated as absent: the unit above extends down and the unit below
+    extends up to the gap midpoint, so the inter-hole fence tiles without a white
+    wedge. Gaps above the first or below the last logged interval are left alone
+    (the fence simply follows the logged extent there), as are overlapping
+    intervals. Returned in the same order as ``intervals``; unchanged intervals
+    keep their identity.
+    """
+    if len(intervals) < 2:
+        return intervals
+    by_elevation = sorted(
+        range(len(intervals)),
+        key=lambda index: (-intervals[index].top_elevation, -intervals[index].bottom_elevation),
+    )
+    tops = {index: intervals[index].top_elevation for index in by_elevation}
+    bottoms = {index: intervals[index].bottom_elevation for index in by_elevation}
+    changed = False
+    # Walk down the hole tracking the deepest logged base seen so far, so an
+    # interval nested inside a longer one never reads as a gap.
+    upper: int | None = None
+    for lower in by_elevation:
+        lower_top = intervals[lower].top_elevation
+        lower_bottom = intervals[lower].bottom_elevation
+        if not (np.isfinite(lower_top) and np.isfinite(lower_bottom)):
+            continue
+        if upper is not None:
+            upper_bottom = intervals[upper].bottom_elevation
+            if upper_bottom - lower_top > 1e-9:
+                middle = 0.5 * (upper_bottom + lower_top)
+                bottoms[upper] = middle
+                tops[lower] = middle
+                changed = True
+        if upper is None or lower_bottom < intervals[upper].bottom_elevation:
+            upper = lower
+    if not changed:
+        return intervals
+    closed: list[_LayerInterval] = []
+    for index, interval in enumerate(intervals):
+        top, bottom = tops[index], bottoms[index]
+        if top == interval.top_elevation and bottom == interval.bottom_elevation:
+            closed.append(interval)
+            continue
+        closed.append(
+            replace(
+                interval,
+                from_depth=interval.from_depth - (top - interval.top_elevation),
+                to_depth=interval.to_depth - (bottom - interval.bottom_elevation),
+                top_elevation=top,
+                bottom_elevation=bottom,
+            )
+        )
+    return closed
 
 
 def _correlation_keys(intervals: list[_LayerInterval]) -> dict[Hashable, _LayerInterval]:
@@ -335,37 +393,64 @@ def _rematch_shifted_units(
         and id(right_lookup[key]) in right_index
     ]
 
-    merged_left: dict[Hashable, _LayerInterval] | None = None
-    merged_right: dict[Hashable, _LayerInterval] | None = None
-    def _position(keys: list[Hashable], lookup, index_map) -> list[tuple[int, Hashable]]:
-        return sorted(
-            (index_map[id(lookup[key])], key) for key in keys if id(lookup[key]) in index_map
-        )
-
+    # Rank every same-code candidate pair globally (not hole-by-hole greedy) so the
+    # result does not depend on transect direction: most shared elevation range
+    # first (thick units that clearly line up win), then nearest mid-elevations,
+    # then shallowest stratigraphic position. All criteria are symmetric in L/R.
+    candidates: list[tuple[tuple[float, float, int, int, int], str, Hashable, Hashable, int, int]] = []
     for code, left_keys in left_by_code.items():
         right_keys = right_by_code.get(code)
         if not right_keys:
             continue
-        left_ranked = _position(left_keys, left_lookup, left_index)
-        right_ranked = _position(right_keys, right_lookup, right_index)
-        next_right = 0
-        for left_pos, left_key in left_ranked:
-            for offset, (right_pos, right_key) in enumerate(right_ranked[next_right:]):
-                crosses = any(
-                    (left_pos < other_left) != (right_pos < other_right)
-                    for other_left, other_right in matched_positions
-                )
-                if crosses:
+        for left_key in left_keys:
+            left_layer = left_lookup[left_key]
+            left_pos = left_index.get(id(left_layer))
+            if left_pos is None:
+                continue
+            for right_key in right_keys:
+                right_layer = right_lookup[right_key]
+                right_pos = right_index.get(id(right_layer))
+                if right_pos is None:
                     continue
-                if merged_left is None or merged_right is None:
-                    merged_left = dict(left_lookup)
-                    merged_right = dict(right_lookup)
-                new_key: Hashable = ("shifted", code, len(matched_positions))
-                merged_left[new_key] = merged_left.pop(left_key)
-                merged_right[new_key] = merged_right.pop(right_key)
-                matched_positions.append((left_pos, right_pos))
-                next_right += offset + 1
-                break
+                overlap = min(left_layer.top_elevation, right_layer.top_elevation) - max(
+                    left_layer.bottom_elevation, right_layer.bottom_elevation
+                )
+                mid_offset = abs(
+                    (left_layer.top_elevation + left_layer.bottom_elevation)
+                    - (right_layer.top_elevation + right_layer.bottom_elevation)
+                ) / 2.0
+                rank = (
+                    -max(overlap, 0.0),
+                    mid_offset,
+                    left_pos + right_pos,
+                    min(left_pos, right_pos),
+                    abs(left_pos - right_pos),
+                )
+                candidates.append((rank, code, left_key, right_key, left_pos, right_pos))
+    candidates.sort(key=lambda item: item[0])
+
+    merged_left: dict[Hashable, _LayerInterval] | None = None
+    merged_right: dict[Hashable, _LayerInterval] | None = None
+    used_left: set[int] = set()
+    used_right: set[int] = set()
+    for _rank, code, left_key, right_key, left_pos, right_pos in candidates:
+        if left_pos in used_left or right_pos in used_right:
+            continue
+        crosses = any(
+            (left_pos < other_left) != (right_pos < other_right)
+            for other_left, other_right in matched_positions
+        )
+        if crosses:
+            continue
+        if merged_left is None or merged_right is None:
+            merged_left = dict(left_lookup)
+            merged_right = dict(right_lookup)
+        new_key: Hashable = ("shifted", code, min(left_pos, right_pos), max(left_pos, right_pos))
+        merged_left[new_key] = merged_left.pop(left_key)
+        merged_right[new_key] = merged_right.pop(right_key)
+        matched_positions.append((left_pos, right_pos))
+        used_left.add(left_pos)
+        used_right.add(right_pos)
 
     if merged_left is None or merged_right is None:
         return left_lookup, right_lookup
@@ -484,7 +569,13 @@ def _polygons_for_pair(
                     x_right,
                     x_tip,
                 )
-                if above is not None and below is not None:
+                if (
+                    above is not None
+                    and below is not None
+                    and _bend_keeps_fills_valid(
+                        above, below, left_lookup, right_lookup, x_left, x_right, x_tip, z_tip
+                    )
+                ):
                     bottom_bends[above].append((x_tip, z_tip))
                     top_bends[below].append((x_tip, z_tip))
             else:
@@ -579,6 +670,42 @@ def _bracket_tip_z(
     span = x_right - x_left
     t = (x_tip - x_left) / span if span else 0.5
     return z_left + t * (z_right - z_left)
+
+
+def _bend_keeps_fills_valid(
+    above: Hashable,
+    below: Hashable,
+    left_lookup: dict[Hashable, _LayerInterval],
+    right_lookup: dict[Hashable, _LayerInterval],
+    x_left: float,
+    x_right: float,
+    x_tip: float,
+    z_tip: float,
+) -> bool:
+    """Whether bending both bracketing fills through ``(x_tip, z_tip)`` stays sane.
+
+    Crossing correlations (explicit overrides, or code keys matched in crossing
+    order) can put the "above" unit below the "below" unit in one hole. Bending
+    then drags a fill's bottom edge above its own top, and ``buffer(0)`` repair
+    silently drops area. Only bend when the bracketing contacts are ordered in
+    both holes and the tip lies inside both fills' vertical extent at ``x_tip``.
+    """
+    tol = 1e-9
+    upper_left, upper_right = left_lookup[above], right_lookup[above]
+    lower_left, lower_right = left_lookup[below], right_lookup[below]
+    if upper_left.bottom_elevation < lower_left.top_elevation - tol:
+        return False
+    if upper_right.bottom_elevation < lower_right.top_elevation - tol:
+        return False
+    span = x_right - x_left
+    t = (x_tip - x_left) / span if span else 0.5
+
+    def _at_tip(left_z: float, right_z: float) -> float:
+        return left_z + t * (right_z - left_z)
+
+    upper_top = _at_tip(upper_left.top_elevation, upper_right.top_elevation)
+    lower_bottom = _at_tip(lower_left.bottom_elevation, lower_right.bottom_elevation)
+    return lower_bottom - tol <= z_tip <= upper_top + tol
 
 
 def _bend_path(
@@ -844,7 +971,7 @@ def _sorted_hole_profiles(
         tuple[float, str, list[_LayerInterval], dict[Hashable, _LayerInterval]]
     ] = []
     for hole_id, group in sorted_df.groupby("hole_id", sort=False):
-        intervals = _intervals_for_hole(group)
+        intervals = _close_logging_gaps(_intervals_for_hole(group))
         hole_profiles.append(
             (
                 float(group["x_profile"].iloc[0]),

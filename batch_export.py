@@ -461,40 +461,51 @@ def build_multi_transect_exports(
     ]
 
 
+_LETTER_LANDSCAPE_IN = (11.0, 8.5)
+
+
+def _cover_page_pdf(title: str, subtitle: str, *, page_size_in: tuple[float, float]) -> bytes:
+    """One cover page at exactly ``page_size_in`` (no tight bbox: that cropped
+    the page to the text, a non-standard ~489 x 624 pt sheet)."""
+    buffer = BytesIO()
+    with PdfPages(buffer) as pdf:
+        cover, ax = plt.subplots(figsize=page_size_in)
+        ax.axis("off")
+        ax.text(
+            0.5,
+            0.55,
+            title,
+            ha="center",
+            va="center",
+            fontsize=18,
+            fontweight="bold",
+            wrap=True,
+            transform=ax.transAxes,
+        )
+        ax.text(0.5, 0.45, subtitle, ha="center", va="center", fontsize=12, transform=ax.transAxes)
+        pdf.savefig(cover)
+        plt.close(cover)
+    return buffer.getvalue()
+
+
 def _merge_pdfs_pypdf(section_pdfs: Sequence[bytes], *, cover_title: str) -> bytes | None:
     try:
         from pypdf import PdfReader, PdfWriter
     except ImportError:
         return None
     writer = PdfWriter()
-    cover_buf = BytesIO()
-    with PdfPages(cover_buf) as pdf:
-        cover, ax = plt.subplots(figsize=(8.5, 11.0))
-        ax.axis("off")
-        ax.text(
-            0.5,
-            0.55,
-            cover_title,
-            ha="center",
-            va="center",
-            fontsize=18,
-            fontweight="bold",
-            transform=ax.transAxes,
-        )
-        ax.text(
-            0.5,
-            0.45,
-            f"{len(section_pdfs)} section(s)",
-            ha="center",
-            va="center",
-            fontsize=12,
-            transform=ax.transAxes,
-        )
-        pdf.savefig(cover, bbox_inches="tight")
-        plt.close(cover)
-    writer.append(PdfReader(BytesIO(cover_buf.getvalue())))
-    for payload in section_pdfs:
-        writer.append(PdfReader(BytesIO(payload)))
+    readers = [PdfReader(BytesIO(payload)) for payload in section_pdfs]
+    page_size_in = _LETTER_LANDSCAPE_IN
+    if readers and readers[0].pages:
+        # Same sheet size and orientation as the section pages that follow.
+        box = readers[0].pages[0].mediabox
+        page_size_in = (float(box.width) / 72.0, float(box.height) / 72.0)
+    cover = _cover_page_pdf(
+        cover_title, f"{len(section_pdfs)} section(s)", page_size_in=page_size_in
+    )
+    writer.append(PdfReader(BytesIO(cover)))
+    for reader in readers:
+        writer.append(reader)
     out = BytesIO()
     writer.write(out)
     return out.getvalue()
@@ -511,32 +522,11 @@ def export_binder_pdf(section_pdfs: Sequence[bytes], *, cover_title: str = "Cros
     if merged is not None:
         return merged
     # Fallback without pypdf: cover page only (individual PDFs still land in the ZIP).
-    buffer = BytesIO()
-    with PdfPages(buffer) as pdf:
-        cover, ax = plt.subplots(figsize=(8.5, 11.0))
-        ax.axis("off")
-        ax.text(
-            0.5,
-            0.55,
-            cover_title,
-            ha="center",
-            va="center",
-            fontsize=18,
-            fontweight="bold",
-            transform=ax.transAxes,
-        )
-        ax.text(
-            0.5,
-            0.45,
-            f"{len(valid)} section(s) — install pypdf for full binder merge",
-            ha="center",
-            va="center",
-            fontsize=11,
-            transform=ax.transAxes,
-        )
-        pdf.savefig(cover, bbox_inches="tight")
-        plt.close(cover)
-    return buffer.getvalue()
+    return _cover_page_pdf(
+        cover_title,
+        f"{len(valid)} section(s) — install pypdf for full binder merge",
+        page_size_in=_LETTER_LANDSCAPE_IN,
+    )
 
 
 def build_batch_zip(

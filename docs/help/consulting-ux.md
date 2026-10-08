@@ -23,7 +23,7 @@ Inter-hole fills are a **rule-based fence** (linear contacts, midpoint pinch-out
 - **Status strip** — shows the figure title, Up to date / Out of date, and the **Generate section** button (`Alt+Shift+G`); use it after changing the figure style or section line.
 - **Plan mini-map** — collar scatter in Configure mirrors a plan-view pick for fence orientation.
 - **Hole order** — numbered sequence with ↑/↓ matches Strater-style hole ordering for A–A′.
-- **Export ribbon** — chips show preset, VE, hole count, transect, up to date / out of date, PNG/PDF readiness.
+- **Export ribbon** — chips show preset, VE (`auto (fit page)` or the exact value), hole count, transect, up to date / out of date, PNG/PDF readiness.
 - **Sidebar sections** — Data, Figure style, Section line, Title block (consulting styles), Export, Advanced. Controls an output style doesn't use are hidden with a "Set by <style>" note.
 
 ## Output presets

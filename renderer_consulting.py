@@ -48,6 +48,7 @@ from render_theme import (
 from renderer_common import (
     UNLOGGED_FILL_COLOR,
     UNLOGGED_LEGEND_LABEL,
+    add_ve_caption,
     legend_swatch_hatch,
     settle_figure_layout,
 )
@@ -521,7 +522,9 @@ class ConsultingLayoutMixin:
                 y_label = "DEPTH (mbgs)"
             ax.set_xlabel("DISTANCE (m)", fontsize=self._fs(10), labelpad=2, color=LABEL_COLOR)
             ax.set_ylabel(y_label, fontsize=self._fs(10), labelpad=6, color=LABEL_COLOR)
-            ax.set_aspect("auto")
+            # Exact VE locks the plot box (centred in its frame region); auto
+            # fills the frame and the band caption prints the measured VE.
+            self._apply_ve_aspect(ax)
             for spine in ax.spines.values():
                 spine.set_color("#374151")
                 spine.set_linewidth(1.0)
@@ -552,6 +555,8 @@ class ConsultingLayoutMixin:
                 for spine in ax_right.spines.values():
                     spine.set_color("#374151")
                     spine.set_linewidth(1.0)
+                # The right RL axis follows the (possibly box-locked) main axes.
+                self._apply_ve_aspect(ax, twins=(ax_right,))
 
             if self.profile.show_report_grid:
                 x_grid = 20.0 if ctx.x_span > 200.0 else self.profile.x_major_grid_m
@@ -994,13 +999,23 @@ class ConsultingLayoutMixin:
         # treats these as obstacles and steps the end headers aside. (In the
         # page margins a long "NORTHWEST" ran off the sheet.)
         header_transform = blended_transform_factory(ax.transAxes, ax.figure.transFigure)
+        label_y = 0.992
+        if not getattr(self, "ve_auto", True):
+            # Exact VE: the plot box may sit lower than the page top; keep the
+            # labels the same distance above the box top as on a filled page.
+            top = ax.get_position(original=True).y1
+            gap_pt = (label_y - top) * ax.figure.get_size_inches()[1] * 72.0
+            header_transform = offset_copy(
+                ax.transAxes, fig=ax.figure, x=0.0, y=gap_pt, units="points"
+            )
+            label_y = 1.0
         start_transform = offset_copy(header_transform, fig=ax.figure, x=2.0, y=0.0, units="points")
         end_transform = offset_copy(header_transform, fig=ax.figure, x=-2.0, y=0.0, units="points")
         if start_primary or start_secondary:
             start_lines = [line for line in (start_primary, start_secondary) if line]
             ax.text(
                 0.0,
-                0.992,
+                label_y,
                 "\n".join(start_lines),
                 transform=start_transform,
                 ha="left",
@@ -1016,7 +1031,7 @@ class ConsultingLayoutMixin:
             end_lines = [line for line in (end_primary, end_secondary) if line]
             ax.text(
                 1.0,
-                0.992,
+                label_y,
                 "\n".join(end_lines),
                 transform=end_transform,
                 ha="right",
@@ -1035,6 +1050,8 @@ class ConsultingLayoutMixin:
         if not axes:
             return None
         main_ax = axes[0]
+        # Exact VE shrinks the box at draw time; measure the applied box.
+        main_ax.apply_aspect()
         lo, hi = main_ax.get_xlim()
         width_px = main_ax.bbox.width
         span = abs(float(hi) - float(lo))
@@ -1225,15 +1242,13 @@ class ConsultingLayoutMixin:
         # Subtitle VE follows report chrome: on with the scale band, or when
         # show_ve_annotation is explicitly enabled. Both off = GIS paste mode.
         if self.profile.show_scale_bar or self.profile.show_ve_annotation:
-            ve_text = (
-                "NO VERTICAL EXAGGERATION"
-                if abs(float(self.vertical_exaggeration) - 1.0) < 1e-9
-                else f"{self.vertical_exaggeration:.0f}× VERTICAL EXAGGERATION"
-            )
-            ax_center.text(
+            # Chosen VE printed exactly; auto prints the VE measured from the
+            # main axes box at draw time (re-measured on export page resize).
+            add_ve_caption(
+                ax_center,
                 0.5,
                 0.18,
-                ve_text,
+                **self._ve_caption_kwargs("consulting"),
                 ha="center",
                 va="center",
                 fontsize=self._fs(8),

@@ -28,7 +28,7 @@ result = build_cross_section(
     lithologies,
     transect_points,  # min 2 points
     *,
-    vertical_exaggeration=1.0,
+    vertical_exaggeration=None,  # None = auto (fit page, caption = measured VE); number = exact VE
     show_hatches=True,
     render_layout="section_sheet",  # or consulting_section / chart
     export_formats=None,  # default {"svg"}; use SVG_PNG_EXPORT_FORMATS or ALL_EXPORT_FORMATS

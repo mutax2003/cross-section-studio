@@ -329,6 +329,7 @@ class CrossSectionRenderer(
         lithology_codes: Sequence[str] | None = None,
     ) -> Figure:
         self.water_series_legend = []
+        self._ve_main_ax = None
         self._water_labels = []
         self._header_labels = []
         self._has_unlogged_intervals = False
@@ -723,6 +724,21 @@ class CrossSectionRenderer(
         collar_lookup: dict[str, float],
     ) -> None:
         header_transform = ax.get_xaxis_transform()
+        header_shift_axes = 0.05
+        if not self.ve_auto:
+            # Exact VE may shrink the plot box: a fixed axes fraction would put
+            # the headers on the tick labels of a short box. Keep the offset
+            # the frame-filling layout gives, in points.
+            from matplotlib.transforms import offset_copy
+
+            slot_h_pt = ax.get_position(original=True).height * ax.figure.get_size_inches()[1] * 72.0
+            # At least clear of the x tick labels (tick + pad + 8 pt label).
+            shift_pt = max(header_shift_axes * slot_h_pt, 22.0)
+            down = self.profile.y_axis_mode == "elevation_rl"
+            header_transform = offset_copy(
+                header_transform, fig=ax.figure, x=0.0, y=-shift_pt if down else shift_pt, units="points"
+            )
+            header_shift_axes = 0.0
         detail = self.profile.column_header_detail
         for row in hole_summary.itertuples(index=False):
             hole_id = str(row.hole_id)
@@ -739,10 +755,10 @@ class CrossSectionRenderer(
                 )
                 header_text = f"{hole_id}\n{rl_text}\n{td_text}".strip()
             if self.profile.y_axis_mode == "elevation_rl":
-                y_pos = -0.05
+                y_pos = 0.0 - header_shift_axes
                 va = "top"
             else:
-                y_pos = 1.05
+                y_pos = 1.0 + header_shift_axes
                 va = "bottom"
             text_artist = ax.text(
                 float(row.x_profile),
@@ -1381,12 +1397,24 @@ class CrossSectionRenderer(
         depth_mode = self.profile.y_axis_mode == "depth_below_collar"
         if depth_mode:
             y_pos = y_max - 0.06 * y_span
-            label_y = y_pos - 0.025 * y_span
         else:
             y_pos = y_min + 0.06 * y_span
-            label_y = y_pos + 0.025 * y_span
         tick = 0.01 * y_span
         ax.plot([x_start, x_start + bar_length], [y_pos, y_pos], color=STICK_COLOR, linewidth=4, solid_capstyle="butt", zorder=9)
         ax.plot([x_start, x_start], [y_pos - tick, y_pos + tick], color=STICK_COLOR, linewidth=1.5, zorder=9)
         ax.plot([x_start + bar_length, x_start + bar_length], [y_pos - tick, y_pos + tick], color=STICK_COLOR, linewidth=1.5, zorder=9)
-        ax.text(x_start + bar_length / 2.0, label_y, f"{bar_length:g} m", ha="center", va="bottom", fontsize=8, fontweight="bold", color=LABEL_COLOR, zorder=9)
+        # Label offset in points (visually above the bar, also on an inverted
+        # depth axis): a fraction of the y span overprinted the bar on the
+        # short plot box of a low exact VE.
+        ax.annotate(
+            f"{bar_length:g} m",
+            xy=(x_start + bar_length / 2.0, y_pos),
+            xytext=(0.0, 4.0),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            fontweight="bold",
+            color=LABEL_COLOR,
+            zorder=9,
+        )

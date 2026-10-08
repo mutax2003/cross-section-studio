@@ -35,6 +35,7 @@ from export_framing import (
 from models import ConsultingTitleBlock
 from pipeline import ALL_EXPORT_FORMATS
 from ui_helpers import export_metadata_payload, sanitize_filename
+from ui_output_presets import ve_short_text
 
 try:
     from ops_audit import audit_event as _audit_event
@@ -333,7 +334,7 @@ def render_profile_and_downloads(
     *,
     section_title: str,
     interpretation_mode: str,
-    vertical_exaggeration: float,
+    vertical_exaggeration: float | None,
     is_stale: bool,
     parse_result_available: bool,
     preset_label: str | None = None,
@@ -488,7 +489,7 @@ def render_profile_and_downloads(
             alt_text=(
                 f"{section_title}: {transect_label or 'cross-section'}, "
                 f"{st.session_state.section_hole_count} boreholes, "
-                f"vertical exaggeration {vertical_exaggeration:g}×"
+                f"vertical exaggeration {ve_short_text(vertical_exaggeration)}"
             ),
             zoom_slot=zoom_col,
         )

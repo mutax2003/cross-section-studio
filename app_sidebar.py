@@ -44,13 +44,18 @@ from models import ConsultingTitleBlock
 from pipeline import DEFAULT_UNCERTAINTY_SPACING_M
 from render_theme import water_has_multiple_series
 from ui_output_presets import (
+    DEFAULT_VE_CHOICE,
     INTERPRETATION_LABELS,
     OUTPUT_PRESET_LABELS,
     locked_figure_summary,
     locked_groundwater_summary,
+    normalize_ve_choice,
     output_preset_short_name,
     resolve_output_preset,
     sidebar_visibility,
+    ve_choice_label,
+    ve_choice_options,
+    ve_choice_to_request,
 )
 
 
@@ -200,7 +205,8 @@ class SidebarState:
     show_legend: bool
     section_title: str
     consulting_title_block: ConsultingTitleBlock | None
-    vertical_exaggeration: float
+    # None = auto (fit page, caption prints the measured VE); else exact VE.
+    vertical_exaggeration: float | None
     transect_mode: str
     offset_warning_m: float
     max_offset_for_interpolation_m: float
@@ -448,7 +454,7 @@ def render_sidebar() -> SidebarState:
             if preset_config.elevation_mode is not None:
                 st.session_state.elevation_mode = preset_config.elevation_mode
             if preset_config.vertical_exaggeration is not None:
-                st.session_state.vertical_exaggeration = float(
+                st.session_state.vertical_exaggeration = normalize_ve_choice(
                     preset_config.vertical_exaggeration
                 )
             st.session_state._synced_output_preset = output_preset
@@ -494,21 +500,34 @@ def render_sidebar() -> SidebarState:
             _keep_widget_state("show_ground_surface")
             show_ground_surface = True
 
-        ve_default = float(preset_config.vertical_exaggeration or 5.0)
+        ve_default = normalize_ve_choice(
+            preset_config.vertical_exaggeration
+            if preset_config.vertical_exaggeration is not None
+            else DEFAULT_VE_CHOICE
+        )
         if "vertical_exaggeration" not in st.session_state:
             st.session_state.vertical_exaggeration = ve_default
-        if visibility.vertical_exaggeration_editable:
-            vertical_exaggeration = st.slider(
-                "Vertical exaggeration",
-                min_value=1.0,
-                max_value=20.0,
-                step=0.5,
-                key="vertical_exaggeration",
-                help="How many times the vertical scale is stretched compared with the horizontal.",
+        else:
+            # Older sessions / workbook seeds hold "5" or 5.0: keep a valid option.
+            st.session_state.vertical_exaggeration = normalize_ve_choice(
+                st.session_state.vertical_exaggeration
             )
+        if visibility.vertical_exaggeration_editable:
+            ve_choice = st.selectbox(
+                "Vertical exaggeration",
+                options=ve_choice_options(st.session_state.vertical_exaggeration),
+                format_func=ve_choice_label,
+                key="vertical_exaggeration",
+                help=(
+                    "Auto fits the section to the page and prints the vertical exaggeration "
+                    "it really ends up with. A number draws exactly that exaggeration "
+                    "(1× = true scale); the plot shrinks inside its frame to keep it."
+                ),
+            )
+            vertical_exaggeration = ve_choice_to_request(ve_choice)
         else:
             _keep_widget_state("vertical_exaggeration")
-            vertical_exaggeration = float(preset_config.vertical_exaggeration or ve_default)
+            vertical_exaggeration = ve_choice_to_request(ve_default)
 
         figure_summary = locked_figure_summary(output_preset)
         if figure_summary:
@@ -627,7 +646,10 @@ def render_sidebar() -> SidebarState:
             st.toggle(
                 "Show vertical exaggeration note",
                 key="show_ve_annotation",
-                help="Prints the vertical exaggeration (e.g. 'Vertical exaggeration 5×') on the figure.",
+                help=(
+                    "Prints the vertical exaggeration on the figure: the chosen value, "
+                    "or with Auto the value measured on the page (e.g. 'V.E. ≈2.2×')."
+                ),
             )
             if visibility.parameter_text_block_editable:
                 st.toggle(
@@ -1100,8 +1122,8 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
                 context = _report_context_from_selection(
                     st.session_state.parse_result,
                     report_holes,
-                    vertical_exaggeration=float(
-                        st.session_state.get("vertical_exaggeration", 5.0)
+                    vertical_exaggeration=ve_choice_to_request(
+                        st.session_state.get("vertical_exaggeration", DEFAULT_VE_CHOICE)
                     ),
                     map_scale=map_scale,
                     section_title=label_for_context,
@@ -1112,7 +1134,9 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
                     "map_scale": map_scale,
                     "section_label": label_for_context,
                     "workbook_name": st.session_state.get("uploaded_name", ""),
-                    "vertical_exaggeration": 5.0,
+                    "vertical_exaggeration": ve_choice_to_request(
+                        st.session_state.get("vertical_exaggeration", DEFAULT_VE_CHOICE)
+                    ),
                 }
             st.session_state.ai_report_suggestion = (
                 _build_assistant().suggest_report_metadata(context)

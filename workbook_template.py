@@ -58,7 +58,7 @@ PROJECT_FIELDS: tuple[tuple[str, str], ...] = (
     ("coordinate_reference", "CRS (e.g. EPSG:32611)"),
     ("transect_start", "Transect start label (e.g. A / NORTHWEST)"),
     ("transect_end", "Transect end label (e.g. A' / SOUTHEAST)"),
-    ("vertical_exaggeration", "Suggested vertical exaggeration (e.g. 5)"),
+    ("vertical_exaggeration", "Vertical exaggeration: auto (fit page) or an exact value (e.g. 5)"),
     (
         "figure_preset",
         "Output style preset: gwm_fence | p2_chemistry_sticks | consulting_report | section_sheet",

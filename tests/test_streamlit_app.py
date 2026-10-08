@@ -661,3 +661,23 @@ def test_template_without_lithology_shows_the_missing_sheet_error() -> None:
     assert not any("Loaded **" in str(item.value) for item in at.success)
     # The template is not a field export: no "Field Data sheet" note.
     assert not any("Field Data sheet" in str(item.value) for item in at.info)
+
+
+def _batch_expanders(at) -> list:
+    return [e for e in at.expander if "Several section lines" in (e.label or "")]
+
+
+def test_batch_section_lines_expander_is_not_keyed_and_stays_single(sample_workbook: Path) -> None:
+    """The keyed (stateful) batch expander moved from Configure into the
+    post-Generate Setup expander and the browser kept faded ghost copies of
+    it (3 in the DOM, duplicate text areas after a workbook switch)."""
+    at = _generated_app(sample_workbook)
+    expanders = _batch_expanders(at)
+    assert len(expanders) == 1
+    # A widget-style id is what made the browser keep the stale copies.
+    assert not expanders[0].proto.id
+    assert len([w for w in at.text_area if w.key == "batch_transect_specs"]) == 1
+    # Its own buttons ask for it to stay open across their rerun.
+    [btn for btn in at.button if btn.key == "batch_fill_recommended"][0].click().run()
+    expanders = _batch_expanders(at)
+    assert len(expanders) == 1 and expanders[0].proto.expanded

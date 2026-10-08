@@ -157,8 +157,25 @@ _CHEM_MIN_FONT_SCALE = min(
 # A value moved more than one label height (and at least this many points)
 # from its reading always gets a leader, even when leaders are otherwise off.
 _CHEM_MIN_LEADER_SHIFT_PT = 6.0
-# Placement order: RL values matter most, then chemistry, gradients least.
-_LABEL_PRIORITY = {"rl": 0, "nm": 1, "chem": 2, "gradient": 3}
+# Placement order: chemistry values first. A value must sit beside its own
+# column at its reading's depth (it has nowhere else to go), while a water
+# number may sit either side of its groundwater marker; RL numbers before
+# DRY / NM notes, gradients last.
+_LABEL_PRIORITY = {"chem": 0, "rl": 1, "nm": 2, "gradient": 3}
+# Water labels avoid the chemistry strips (knock-outs beside labelled
+# columns) whenever a clear spot exists; overlapping one costs like a label
+# collision but never drops the water number.
+_STRIP_OBSTACLE_WEIGHT = 1.0
+# "strip" style: a strip wider than this share of the gap to the next column
+# hides the geology between the holes; that hole's values get solid boxes
+# ("box" style) instead.
+_CHEM_STRIP_MAX_GAP_SHARE = 0.45
+# A value never drifts past this share of the gap to the next column (it
+# would read as belonging to the next hole, or to none) unless the value
+# itself needs more room than that.
+_CHEM_MAX_GAP_DRIFT_SHARE = 0.5
+# Re-runs that settle one font size per hole (no tiny stragglers).
+_CHEM_FONT_SETTLE_PASSES = 3
 # Water numbers that still collide after every candidate are dropped (marker
 # stays) — overlapping digits misreport a level. Chemistry values use their
 # own hard-constraint pass (_place_chem_label) and are dropped as a last resort.
@@ -316,6 +333,8 @@ def _chem_footprint(annotation, renderer):
         float(annotation.figure.dpi),
         float(renderer.points_to_pixels(1.0)),
         annotation.get_visible(),
+        # A strip value swapped to a box (too narrow for a strip) grows by it.
+        annotation.get_bbox_patch() is not None,
     )
     cache = annotation.__dict__.setdefault("_chem_footprint_cache", {})
     cached = cache.get(key)
@@ -378,7 +397,8 @@ def _chem_right_limit(
     """
     if own is None:
         return np.inf
-    edge = float(frame.x1) if consulting else np.inf
+    # Inside the frame line, not on it (the spine would strike the text).
+    edge = float(frame.x1) - 0.5 * clearance if consulting else np.inf
     right = memo.get(id(own)) if memo is not None else None
     if right is None:
         right = sorted(
@@ -396,7 +416,12 @@ def _chem_right_limit(
     first = right[0]
     own_gap = first.x0 - own.x1
     if own_gap >= need + clearance or own_gap >= 0.5 * typical_gap:
-        return float(first.x0)
+        # Near its own hole: never past the middle of the gap (on a long,
+        # thin section a value slid sideways read as the next hole's), unless
+        # the value alone (at full size) needs more than that.
+        full_width = need / _CHEM_MIN_FONT_SCALE + 2.0 * clearance
+        near = own.x1 + max(_CHEM_MAX_GAP_DRIFT_SHARE * own_gap, full_width)
+        return float(min(first.x0, near))
     beyond = float(right[1].x0) if len(right) > 1 else edge
     if beyond - first.x1 >= need + clearance:
         return beyond
@@ -420,6 +445,24 @@ def _chem_min_width(annotation, renderer) -> float:
     return _chem_footprint(annotation, renderer).width * _CHEM_MIN_FONT_SCALE
 
 
+# Solid box a "strip" value takes when its hole is too close to the next one
+# for a strip (matches the "box" label style).
+_CHEM_FALLBACK_BBOX = {
+    "boxstyle": "square,pad=0.18",
+    "facecolor": "white",
+    "edgecolor": "none",
+    "alpha": 1.0,
+}
+
+
+def _set_chem_box_fallback(annotation, on: bool) -> None:
+    """Give a strip-style value a solid box (or take it away again)."""
+    if bool(getattr(annotation, "_chem_box_fallback", False)) == on:
+        return
+    annotation._chem_box_fallback = on
+    annotation.set_bbox(dict(_CHEM_FALLBACK_BBOX) if on else None)
+
+
 def _set_chem_fontsize(annotation, size: float) -> None:
     annotation.set_fontsize(size)
     halo = getattr(annotation, "_halo", None)
@@ -441,6 +484,7 @@ def _place_chem_label(
     line_segs=None,
     prev_box=None,
     right_limit=np.inf,
+    font_cap=1.0,
 ):
     """Right-of-column placement with hard constraints.
 
@@ -460,7 +504,9 @@ def _place_chem_label(
     and its leader (when the shift earns one) does not run under another
     label. ``prev_box`` ((footprint, anchor y) of the hole's previous value)
     switches a value read at practically the same depth (anchors less than
-    half a label height apart) to stacking directly below it.
+    half a label height apart) to stacking directly below it. ``font_cap``
+    (a font scale) starts the search at that size, so every value of a hole
+    whose crowded value needed smaller text prints at one size.
     """
     base = annotation._water_base_xyann
     if not hasattr(annotation, "_chem_base_fontsize"):
@@ -476,6 +522,8 @@ def _place_chem_label(
     else:
         scales = _CHEM_FONT_SCALES
         offsets = _CHEM_OFFSETS_ARR
+    if font_cap < 1.0:
+        scales = tuple(scale for scale in scales if scale <= font_cap + 1e-9) or (font_cap,)
     line_clear = _CHEM_WATER_LINE_CLEAR_PT * px_per_pt
     anchor_x, anchor_y = _chem_anchor(annotation)
     for scale in scales:
@@ -631,6 +679,28 @@ def _chem_drop_notes(labels) -> list[str]:
         f"at this scale ({detail}). Markers are still drawn; a wider page or fewer "
         "boreholes per section shows them."
     ]
+
+
+def _chem_mixed_size_holes(labels) -> dict[float, float]:
+    """Hole key -> font scale cap when the printed values differ in size.
+
+    One reduced size for the whole figure: when any value had to shrink,
+    every hole is capped at that smallest scale (a few tiny values among
+    normal ones read as a different kind of label).
+    """
+    holes: set[float] = set()
+    scales: list[float] = []
+    for kind, annotation, _color in labels:
+        if kind != "chem" or not annotation.get_visible():
+            continue
+        base = getattr(annotation, "_chem_base_fontsize", None)
+        if not base:
+            continue
+        scales.append(float(annotation.get_fontsize()) / float(base))
+        holes.add(_chem_hole_key(annotation))
+    if not scales or max(scales) - min(scales) <= 1e-6:
+        return {}
+    return dict.fromkeys(holes, min(scales))
 
 
 def _chem_anchor(annotation) -> tuple[float, float]:
@@ -1117,15 +1187,32 @@ class RendererWaterMixin:
         # (zig-zag columns, full-frame stack, then smaller text); the whole
         # pass restarts so its earlier values make room for the later ones.
         compact: dict[float, int] = {}
-        while True:
-            dropped_holes = self._label_collision_pass(fig, labels, renderer, compact)
-            escalate = {
-                hole for hole in dropped_holes if compact.get(hole, 0) < _CHEM_MAX_COMPACT_LEVEL
+        # Values that came out at mixed sizes (a crowded value shrank) are
+        # placed again with every value at the smallest size used: one
+        # consistent size per figure reads better than a few tiny values
+        # among normal ones.
+        font_caps: dict[float, float] = {}
+        for _settle in range(_CHEM_FONT_SETTLE_PASSES + 1):
+            while True:
+                dropped_holes = self._label_collision_pass(
+                    fig, labels, renderer, compact, font_caps=font_caps
+                )
+                escalate = {
+                    hole for hole in dropped_holes if compact.get(hole, 0) < _CHEM_MAX_COMPACT_LEVEL
+                }
+                if not escalate:
+                    break
+                for hole in escalate:
+                    compact[hole] = compact.get(hole, 0) + 1
+            mixed = _chem_mixed_size_holes(labels)
+            mixed = {
+                hole: scale
+                for hole, scale in mixed.items()
+                if scale < font_caps.get(hole, 1.0) - 1e-9
             }
-            if not escalate:
+            if not mixed or _settle == _CHEM_FONT_SETTLE_PASSES:
                 break
-            for hole in escalate:
-                compact[hole] = compact.get(hole, 0) + 1
+            font_caps.update(mixed)
 
     def _widen_frame_for_chem_labels(self, fig, labels, renderer) -> bool:
         """Extend the right x limit so no visible chemistry value crosses the frame.
@@ -1161,50 +1248,52 @@ class RendererWaterMixin:
             ax.set_xlim(left, target)
         return bool(needed)
 
-    def _draw_chem_label_strips(self, fig, labels, renderer) -> None:
-        """Knock a background strip out of the fills beside each labelled column.
+    def _chem_strip_layout(self, fig, labels, renderer, column_boxes=None):
+        """Where the "strip" knock-outs go: ``(rects, boxed)``.
 
-        "strip" style: values read on a clean strip immediately right of their
-        column (widest placed value + pad, spanning the hole's placed values)
-        with the hatching resuming beyond it. The strip sits above lithology
-        fills and contacts but below columns, water lines and markers, and is
-        clipped so it never reaches another column or leaves the frame.
+        ``rects`` are ``(ax, x0, y0, x1, y1)`` display rectangles; ``boxed``
+        lists the values of holes too close to their right-hand neighbour for
+        a strip (wider than ``_CHEM_STRIP_MAX_GAP_SHARE`` of the gap): those
+        take solid boxes instead, so the geology between the holes shows.
         """
-        # Strips belong to their figure: a second render() on this renderer
-        # must not strip the knock-outs off an earlier, still-open figure.
-        for strip in getattr(fig, "_chem_strips", ()):
-            strip.remove()
-        fig._chem_strips = []
-        self._chem_strips = fig._chem_strips
         if str(getattr(self.profile, "chemistry_label_style", "") or "") != "strip":
-            return
-        column_boxes = self._column_obstacle_boxes(fig)
+            return [], []
+        if column_boxes is None:
+            column_boxes = self._column_obstacle_boxes(fig)
         if not column_boxes:
-            return
+            return [], []
         pad = renderer.points_to_pixels(_CHEM_STRIP_PAD_PT)
+        tol = renderer.points_to_pixels(_CHEM_STRIP_COLUMN_TOL_PT)
         holes: dict[tuple[int, float], list] = {}
         for kind, annotation, _color in labels:
             if kind == "chem" and annotation.get_visible():
                 key = (id(annotation.axes), _chem_hole_key(annotation))
                 holes.setdefault(key, []).append(annotation)
+        result: list[tuple[object, float, float, float, float]] = []
+        boxed: list = []
         for hole_labels in holes.values():
             ax = hole_labels[0].axes
             own = _own_column(hole_labels[0], column_boxes)
             if own is None:
                 continue
+            if any(getattr(annotation, "_chem_box_fallback", False) for annotation in hole_labels):
+                boxed.extend(hole_labels)
+                continue
             boxes = [_chem_footprint(annotation, renderer) for annotation in hole_labels]
             frame = ax.get_window_extent(renderer)
             # Never over the next column to the right, nor past the frame.
-            right_limit = min(
-                [frame.x1] + [col.x0 for col in column_boxes if col is not own and col.x0 > own.x1]
-            )
+            next_x0 = [col.x0 for col in column_boxes if col is not own and col.x0 > own.x1]
+            right_limit = min([frame.x1] + next_x0)
             # The strip spans the hole's main value column; a value nudged
             # further right (around a water label, or a crowded hole's
             # zig-zag column) gets its own knock-out instead of widening the
             # whole strip.
             first_x0 = min(box.x0 for box in boxes)
-            tol = renderer.points_to_pixels(_CHEM_STRIP_COLUMN_TOL_PT)
             main = [box for box in boxes if box.x0 <= first_x0 + tol]
+            main_x1 = max(box.x1 for box in main) + pad
+            if next_x0 and main_x1 - own.x1 > _CHEM_STRIP_MAX_GAP_SHARE * (min(next_x0) - own.x1):
+                boxed.extend(hole_labels)
+                continue
             rects = [
                 (
                     own.x1,
@@ -1224,32 +1313,98 @@ class RendererWaterMixin:
                 y0 = max(y0, frame.y0)
                 # Never above the ground line: the column box starts at the collar.
                 y1 = min(y1, frame.y1, own.y1)
-                if x1 <= x0 or y1 <= y0:
-                    continue
-                (dx0, dy0), (dx1, dy1) = ax.transData.inverted().transform([[x0, y0], [x1, y1]])
-                strip = Rectangle(
-                    (min(dx0, dx1), min(dy0, dy1)),
-                    abs(dx1 - dx0),
-                    abs(dy1 - dy0),
-                    facecolor=ax.get_facecolor(),
-                    edgecolor="none",
-                    linewidth=0.0,
-                    zorder=_CHEM_STRIP_ZORDER,
-                )
-                strip.set_gid("chemistry-label-strip")
-                ax.add_patch(strip)
-                self._chem_strips.append(strip)
+                if x1 > x0 and y1 > y0:
+                    result.append((ax, x0, y0, x1, y1))
+        return result, boxed
 
-    def _label_collision_pass(self, fig, labels, renderer, compact: dict[float, int]) -> set[float]:
+    def _pick_chem_box_fallback(self, labels, renderer, column_boxes) -> None:
+        """Before placement: box the values of holes too close to the next one for a strip.
+
+        A hole's strip is at least its widest value (full size) plus the
+        column clearance and strip pad wide; when that exceeds
+        ``_CHEM_STRIP_MAX_GAP_SHARE`` of the gap to the next column the strip
+        would hide the geology between the holes, so its values take solid
+        boxes, measured with the box from the start.
+        """
+        if str(getattr(self.profile, "chemistry_label_style", "") or "") != "strip":
+            return
+        if not column_boxes:
+            return
+        extra = renderer.points_to_pixels(_CHEM_COLUMN_GAP_PT + _CHEM_STRIP_PAD_PT)
+        holes: dict[tuple[int, float], list] = {}
+        for kind, annotation, _color in labels:
+            if kind == "chem":
+                holes.setdefault((id(annotation.axes), _chem_hole_key(annotation)), []).append(annotation)
+        for hole_labels in holes.values():
+            own = _own_column(hole_labels[0], column_boxes)
+            if own is None:
+                continue
+            next_x0 = [col.x0 for col in column_boxes if col is not own and col.x0 > own.x1]
+            if not next_x0:
+                continue
+            gap = min(next_x0) - own.x1
+            widest = max(
+                _chem_min_width(annotation, renderer) / _CHEM_MIN_FONT_SCALE for annotation in hole_labels
+            )
+            if widest + extra > _CHEM_STRIP_MAX_GAP_SHARE * gap:
+                for annotation in hole_labels:
+                    _set_chem_box_fallback(annotation, True)
+
+    def _draw_chem_label_strips(self, fig, labels, renderer) -> None:
+        """Knock a background strip out of the fills beside each labelled column.
+
+        "strip" style: values read on a clean strip immediately right of their
+        column (widest placed value + pad, spanning the hole's placed values)
+        with the hatching resuming beyond it. The strip sits above lithology
+        fills and contacts but below columns, water lines and markers, and is
+        clipped so it never reaches another column or leaves the frame. A hole
+        too close to the next one for a strip gets boxed values instead.
+        """
+        # Strips belong to their figure: a second render() on this renderer
+        # must not strip the knock-outs off an earlier, still-open figure.
+        for strip in getattr(fig, "_chem_strips", ()):
+            strip.remove()
+        fig._chem_strips = []
+        self._chem_strips = fig._chem_strips
+        rects, boxed = self._chem_strip_layout(fig, labels, renderer)
+        for annotation in boxed:
+            _set_chem_box_fallback(annotation, True)
+        for ax, x0, y0, x1, y1 in rects:
+            (dx0, dy0), (dx1, dy1) = ax.transData.inverted().transform([[x0, y0], [x1, y1]])
+            strip = Rectangle(
+                (min(dx0, dx1), min(dy0, dy1)),
+                abs(dx1 - dx0),
+                abs(dy1 - dy0),
+                facecolor=ax.get_facecolor(),
+                edgecolor="none",
+                linewidth=0.0,
+                zorder=_CHEM_STRIP_ZORDER,
+            )
+            strip.set_gid("chemistry-label-strip")
+            ax.add_patch(strip)
+            self._chem_strips.append(strip)
+
+    def _label_collision_pass(
+        self,
+        fig,
+        labels,
+        renderer,
+        compact: dict[float, int],
+        *,
+        font_caps: dict[float, float] | None = None,
+    ) -> set[float]:
         """One greedy placement pass; returns hole keys with dropped chemistry values."""
         dropped_holes: set[float] = set()
+        font_caps = font_caps or {}
         pad = renderer.points_to_pixels(_LABEL_PAD_PT)
         # A re-run (page resize) starts from scratch: restore labels a previous
-        # pass dropped so they get another chance at the new size.
+        # pass dropped so they get another chance at the new size, and take
+        # off the boxes a too-narrow strip swapped in (re-decided afterwards).
         for _kind, annotation, _color in labels:
             if getattr(annotation, "_water_dropped", False):
                 annotation._water_dropped = False
                 _set_label_visible(annotation, True)
+            _set_chem_box_fallback(annotation, False)
         water_artists = {id(annotation) for _kind, annotation, _color in labels}
         water_artists |= {
             id(annotation._halo) for _k, annotation, _c in labels if hasattr(annotation, "_halo")
@@ -1274,6 +1429,7 @@ class RendererWaterMixin:
         # column hides the stick/markers, and over a neighbour's column it
         # misattributes the value.
         column_boxes = self._column_obstacle_boxes(fig)
+        self._pick_chem_box_fallback(labels, renderer, column_boxes)
         ordered = _chem_depth_ordered(sorted(labels, key=lambda item: _LABEL_PRIORITY.get(item[0], 9)))
         # Display y of each hole's lowest placed chemistry label: the next
         # (deeper) value of that hole must land below it.
@@ -1288,8 +1444,17 @@ class RendererWaterMixin:
         # candidates the per-box Python loop dominated render time.
         placed_arr = _ObstacleArray(placed)
         column_arr = _ObstacleArray(column_boxes)
+        # Strip knock-outs of the placed values (chemistry goes first), built
+        # once the first water label comes up: water numbers and DRY / NM
+        # notes keep off them whenever they can.
+        strip_arr: _ObstacleArray | None = None
         for kind, annotation, _color in ordered:
             frame = annotation.axes.get_window_extent(renderer)
+            if kind != "chem" and strip_arr is None:
+                rects, _boxed = self._chem_strip_layout(fig, labels, renderer, column_boxes)
+                strip_arr = _ObstacleArray(
+                    Bbox.from_extents(x0, y0, x1, y1) for _ax, x0, y0, x1, y1 in rects
+                )
             if not hasattr(annotation, "_water_base_xyann"):
                 annotation._water_base_xyann = tuple(annotation.xyann)
             base = annotation._water_base_xyann
@@ -1327,6 +1492,7 @@ class RendererWaterMixin:
                         compact=compact.get(hole_key, 0),
                         line_segs=line_segs,
                         prev_box=chem_prev_box.get(hole_key),
+                        font_cap=font_caps.get(hole_key, 1.0),
                     )
                 if spot is None:
                     if too_wide:
@@ -1370,6 +1536,8 @@ class RendererWaterMixin:
                     # A DRY / NM note anchors on the column centre: keep it
                     # off the column so it reads beside its hole.
                     collision += column_arr.overlap(box)
+                if strip_arr is not None:
+                    collision += _STRIP_OBSTACLE_WEIGHT * strip_arr.overlap(box)
                 # Off the axes is bad; off the page is worse (it is cut off).
                 outside = _outside_area(box, frame) + 4.0 * _outside_area(box, fig.bbox)
                 score = (collision + 4.0 * outside) * 1000.0 + index

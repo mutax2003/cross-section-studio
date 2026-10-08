@@ -33,6 +33,9 @@ class ParameterLegendEntry(TypedDict):
     color: str
     marker: str
     label: str
+    # "--" when a dashed fence joins the readings on the plot, "none" when
+    # the markers stand alone; the legend glyph follows it.
+    linestyle: NotRequired[str]
     # Single fixed colour mode other than black (P2 red): a value from the
     # figure in that colour, drawn beside the label as the client legend does.
     sample_text: NotRequired[str]
@@ -456,12 +459,12 @@ class RendererChemistryMixin:
                 "ha": "left",
                 "va": "center",
             }
-            # "strip" values sit on a knocked-out background strip (drawn by
-            # the collision pass once they are placed), so they need no box.
-            if (draw_markers and label_style != "strip") or label_style == "box":
-                label_base_kwargs["bbox"] = (
-                    _PARAMETER_LABEL_BBOX_SOLID if label_style == "box" else _PARAMETER_LABEL_BBOX
-                )
+            # Only "box" draws a background box. "strip" values sit on a
+            # knocked-out strip (drawn by the collision pass once they are
+            # placed), "stroke" carries a white halo only and "plain" is bare
+            # text, so the four styles read differently.
+            if label_style == "box":
+                label_base_kwargs["bbox"] = _PARAMETER_LABEL_BBOX_SOLID
             draw_leaders = self.profile.parameter_draw_leaders
             for (x_profile, y, label_text, label_color), (dx, dy, _draw_leader), hole_id in zip(
                 marker_labels, label_offsets, label_holes, strict=True
@@ -529,10 +532,11 @@ class RendererChemistryMixin:
                     annotation._chem_dot = dot
                 self._register_chemistry_label(annotation, label_color, allow_leader=draw_leaders)
 
+            fence_drawn = False
             if draw_markers and (
                 use_segments or across_gaps
             ):
-                self._draw_parameter_fence(
+                fence_drawn = self._draw_parameter_fence(
                     ax,
                     transect_hole_ids,
                     transect_x,
@@ -565,6 +569,9 @@ class RendererChemistryMixin:
                 "color": color,
                 "marker": marker,
                 "label": legend_label,
+                # The key draws what the plot draws: a dashed fence line only
+                # when one joins the readings, else the isolated markers.
+                "linestyle": "--" if fence_drawn else "none",
             }
             if legend_sample_color is not None and not draw_markers and marker_labels:
                 legend_entry["sample_text"] = next(
@@ -636,13 +643,14 @@ class RendererChemistryMixin:
         use_segments: bool,
         across_gaps: bool,
         reading_colors: dict[int, str] | None = None,
-    ) -> None:
+    ) -> bool:
         """Dashed lines joining a parameter's readings between holes.
 
         With ``reading_colors`` (threshold mode) each hole-to-hole segment
         takes the band colour its two readings share, or a neutral grey when
         they fall in different bands: a red line under a green dot (or half
-        red / half green) would contradict the values it joins.
+        red / half green) would contradict the values it joins. Returns True
+        when at least one segment was drawn.
         """
         segment_colors: list[str] = []
 
@@ -687,9 +695,9 @@ class RendererChemistryMixin:
                     zorder=7,
                 )
                 ax.add_collection(collection)
-            return
+            return bool(fence_segments)
         if len(measured_holes) < 2:
-            return
+            return False
         if all(len(readings_by_hole[hole_id]) == 1 for hole_id in measured_holes):
             bands = [[(hole_id, readings_by_hole[hole_id][0]) for hole_id in measured_holes]]
         else:
@@ -734,6 +742,7 @@ class RendererChemistryMixin:
                 zorder=7,
             )
             ax.add_collection(collection)
+        return bool(fence_segments)
 
     @staticmethod
     def _draw_parameter_legend_sample(

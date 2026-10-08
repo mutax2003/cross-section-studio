@@ -1695,7 +1695,7 @@ class ConsultingLayoutMixin:
                     {
                         "color": entry.get("color", PARAMETER_READING_COLOR),
                         "marker": entry.get("marker", "D"),
-                        "linestyle": "--",
+                        "linestyle": entry.get("linestyle", "--"),
                         # Red P2-style sample value ("120") shown in the swatch column.
                         "parameter_entry": entry,
                     },

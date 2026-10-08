@@ -773,3 +773,64 @@ def test_workbook_ve_wins_over_the_style_default_and_does_not_leak() -> None:
     at.run()
     assert at.session_state["output_preset"] == "p2_chemistry_sticks"
     assert at.session_state["vertical_exaggeration"] == 1.0
+
+
+def _crossing_workbook_bytes(figure_preset: str) -> bytes:
+    """Two holes with Sand/Clay logged in opposite order (a crossing correlation)."""
+    from io import BytesIO
+
+    import openpyxl
+
+    from workbook_template import build_input_template_bytes
+
+    book = openpyxl.load_workbook(BytesIO(build_input_template_bytes()))
+    for name in ("Collars", "Lithology", "Water", "Environmental", "Screens", "Gradients", "Sections"):
+        for row in book[name].iter_rows(min_row=2):
+            for cell in row:
+                cell.value = None
+    collars = [("BH-01", 512000, 5934198, 748.6, 13.0), ("BH-02", 512062, 5934203, 748.0, 14.0)]
+    for r, values in enumerate(collars, start=2):
+        for c, value in enumerate(values, start=1):
+            book["Collars"].cell(row=r, column=c, value=value)
+    intervals = [("BH-01", 0, 5, "Sand"), ("BH-01", 5, 13, "Clay"),
+                 ("BH-02", 0, 5, "Clay"), ("BH-02", 5, 14, "Sand")]
+    for r, values in enumerate(intervals, start=2):
+        for c, value in enumerate(values, start=1):
+            book["Lithology"].cell(row=r, column=c, value=value)
+    for sheet in ("Project",):
+        for row in book[sheet].iter_rows(min_row=2):
+            if row[0].value == "figure_preset":
+                row[2].value = figure_preset
+    for row in book["Data Entry"].iter_rows(min_row=2, max_col=2):
+        if row[0].value == "figure_preset":
+            row[1].value = figure_preset
+    buffer = BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("style", ["section_sheet", "gwm_fence", "consulting_report"])
+def test_section_notes_after_generate_are_one_warning_for_every_style(style: str) -> None:
+    """The crossing-correlation note showed as a warning in Section sheet but
+    as plain expander text (easy to miss) when a style added a second note."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=180)
+    at.run()
+    at.file_uploader[0].upload("crossing.xlsx", _crossing_workbook_bytes(style)).run()
+    at.run()
+    assert at.session_state["output_preset"] == style
+    for box in at.checkbox:
+        if "Generate even if data checks found warnings" in (box.label or ""):
+            box.set_value(True)
+    at.run()
+    [btn for btn in at.button if btn.label == "Generate section"][0].click().run()
+    assert not at.exception
+    assert at.session_state["svg_bytes"]
+    notes = list(at.session_state["polygon_overlap_warnings"])
+    assert any(note.startswith("Crossing correlation") for note in notes)
+    # One amber box after Generate holds every note (the Configure preflight
+    # box in the collapsed Setup expander is separate).
+    keys = [note.split(":", 1)[0] for note in notes]
+    assert any(all(key in w.value for key in keys) for w in at.warning), [w.value for w in at.warning]
+    assert not any("notes about this section" in (e.label or "") for e in at.expander)

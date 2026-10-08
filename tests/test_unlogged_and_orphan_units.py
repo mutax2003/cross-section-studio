@@ -2,7 +2,7 @@
 
 1. Depths with no lithology row (log gaps, no recovery, unlogged base of hole)
    show the grey column fill; every layout with a lithology legend lists that
-   grey as "Not logged / no recovery" -- but only when such a gap is drawn.
+   grey as "Not logged" -- but only when such a gap is drawn.
 2. A unit logged in a single hole gets no fence polygon when pinch-outs are
    off (the generic consulting default). Consulting columns are plain grey, so
    the unit was listed in the legend but drawn nowhere; it must now show in the

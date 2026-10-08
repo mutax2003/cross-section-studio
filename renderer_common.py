@@ -266,7 +266,9 @@ THIN_UNIT_MAX_DENSIFY = 4
 # an unlogged top / bottom of hole) show the plain grey column fill. They get
 # their own legend key so the grey does not read as an unlisted lithology.
 UNLOGGED_FILL_COLOR = CONSULTING_COLUMN_FILL
-UNLOGGED_LEGEND_LABEL = "Not logged / no recovery"
+# "No Recovery" is a lithology code of its own in template 261002 (white);
+# a depth with no row at all is simply not logged.
+UNLOGGED_LEGEND_LABEL = "Not logged"
 # Gaps thinner than this (metres) are rounding noise between logged rows.
 UNLOGGED_MIN_THICKNESS_M = 0.01
 

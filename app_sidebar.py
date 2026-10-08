@@ -273,18 +273,43 @@ def _render_export_framing_panel() -> None:
         options=list(_FILENAME_PATTERN_LABELS),
         format_func=lambda value: _FILENAME_PATTERN_LABELS.get(value, value),
         key="export_filename_pattern",
+        help="How downloaded files are named, e.g. from the section title or as project_figure_section_rev.",
     )
-    st.text_input("Revision / draft tag", key="export_revision", placeholder="Rev A or DRAFT")
-    st.number_input("Image resolution (DPI)", min_value=150, max_value=600, step=50, key="export_dpi")
-    st.toggle("Section only (no title block or legend)", key="export_fence_only")
-    st.toggle("DRAFT watermark on PNG and PDF", key="export_show_draft_watermark")
+    st.text_input(
+        "Revision / draft tag",
+        key="export_revision",
+        placeholder="Rev A or DRAFT",
+        help="Added to file names (and the title block REVISED field when blank).",
+    )
+    st.number_input(
+        "Image resolution (DPI)",
+        min_value=150,
+        max_value=600,
+        step=50,
+        key="export_dpi",
+        help="PNG resolution. 300 DPI suits reports; higher values make larger, slower files.",
+    )
+    st.toggle(
+        "Section only (no title block or legend)",
+        key="export_fence_only",
+        help="Exports just the cross-section drawing, e.g. to paste into a CAD sheet.",
+    )
+    st.toggle(
+        "DRAFT watermark on PNG and PDF",
+        key="export_show_draft_watermark",
+        help="Prints a light DRAFT watermark and adds DRAFT to file names.",
+    )
     layer_cols = st.columns(2)
     with layer_cols[0]:
-        st.toggle("Include title block", key="export_include_title_block")
-        st.toggle("Include lithology legend", key="export_include_legend")
+        st.toggle("Include title block", key="export_include_title_block", help="Project / figure details box on the sheet.")
+        st.toggle("Include lithology legend", key="export_include_legend", help="Key of soil and rock patterns shown.")
     with layer_cols[1]:
-        st.toggle("Include water table", key="export_include_water_table")
-        st.toggle("Include QA notes (PDF)", key="export_include_qa_footer")
+        st.toggle("Include water table", key="export_include_water_table", help="Groundwater lines and labels.")
+        st.toggle(
+            "Include QA notes (PDF)",
+            key="export_include_qa_footer",
+            help="Adds the data-check notes (overlaps, gaps, crossing layers) to the PDF.",
+        )
     st.text_input(
         "Save exports to folder (optional)",
         key="export_output_dir",
@@ -297,11 +322,11 @@ def _render_export_layout_advanced() -> None:
     st.markdown("**Page margins and crop**")
     margin_cols = st.columns(2)
     with margin_cols[0]:
-        st.number_input("Top margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_top_in")
-        st.number_input("Left margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_left_in")
+        st.number_input("Top margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_top_in", help="White space around the drawing on the exported page.")
+        st.number_input("Left margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_left_in", help="White space around the drawing on the exported page.")
     with margin_cols[1]:
-        st.number_input("Bottom margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_bottom_in")
-        st.number_input("Right margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_right_in")
+        st.number_input("Bottom margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_bottom_in", help="White space around the drawing on the exported page.")
+        st.number_input("Right margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_right_in", help="White space around the drawing on the exported page.")
     with st.expander("Crop to an area (section distance / elevation)", expanded=False):
         crop_cols = st.columns(2)
         with crop_cols[0]:
@@ -697,6 +722,7 @@ def render_sidebar() -> SidebarState:
             options=list(_TRANSECT_MODE_LABELS),
             format_func=lambda value: _TRANSECT_MODE_LABELS.get(value, value),
             key="transect_definition_mode",
+            help="Pick holes in order, use a suggested line through the holes, or type map coordinates.",
         )
         _apply_pending_offset_thresholds()
         offset_warning_m = st.number_input(
@@ -860,7 +886,12 @@ def _render_fill_style_editor() -> None:
     if not style_codes:
         st.info("Load a workbook to edit lithology colours.")
         return
-    style_code = st.selectbox("Lithology code", options=style_codes, key="style_editor_code")
+    style_code = st.selectbox(
+        "Lithology code",
+        options=style_codes,
+        key="style_editor_code",
+        help="Soil / rock code from your workbook whose fill you want to change.",
+    )
     current_style = get_lithology_style(style_code)
     style_color = st.color_picker("Fill colour", value=current_style.color, key="style_editor_color")
     style_hatch_options = sorted(set(USGS_LITHOLOGY_HATCHES.values()))
@@ -868,6 +899,7 @@ def _render_fill_style_editor() -> None:
         "Hatch pattern",
         options=style_hatch_options,
         format_func=lambda hatch: hatch or "None (solid fill)",
+        help="Pattern drawn over the fill colour (template 261002 marks by default).",
         index=style_hatch_options.index(current_style.hatch)
         if current_style.hatch in style_hatch_options
         else 0,

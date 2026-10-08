@@ -68,6 +68,10 @@ from renderer_common import (
     UNLOGGED_LEGEND_LABEL,
     HatchBatchedPolyCollection,
     RendererGeometryMixin,
+    add_ve_caption,
+    apply_ve_aspect,
+    format_ve_caption,
+    measured_vertical_exaggeration,
     settle_figure_layout,
 )
 from renderer_consulting import ConsultingLayoutMixin
@@ -176,7 +180,7 @@ class CrossSectionRenderer(
 
     def __init__(
         self,
-        vertical_exaggeration: float = 1.0,
+        vertical_exaggeration: float | None = 1.0,
         scale_bar_length_m: float = 10.0,
         *,
         show_hatches: bool = True,
@@ -203,7 +207,18 @@ class CrossSectionRenderer(
         stick_up_by_hole: dict[str, float] | None = None,
         export_framing: ExportFramingConfig | None = None,
     ) -> None:
-        self.vertical_exaggeration = vertical_exaggeration
+        # ``None`` = auto (fit page): data are stored at true scale (factor 1)
+        # and the axes fill their frame; the caption prints the measured VE.
+        # A number draws exactly that VE: data stored at x VE, aspect locked.
+        self.ve_auto = vertical_exaggeration is None
+        self.chosen_vertical_exaggeration: float | None = (
+            None if vertical_exaggeration is None else float(vertical_exaggeration)
+        )
+        # Storage factor applied to every plotted y value (see ``_plot_y``).
+        self.vertical_exaggeration = (
+            1.0 if vertical_exaggeration is None else float(vertical_exaggeration)
+        )
+        self._ve_main_ax = None
         self.scale_bar_length_m = scale_bar_length_m
         self.show_hatches = show_hatches
         self.show_legend = show_legend
@@ -1095,28 +1110,73 @@ class CrossSectionRenderer(
         if right < figure.subplotpars.right - 1e-3:
             figure.subplots_adjust(right=right)
 
+    def _apply_ve_aspect(self, ax, twins: Sequence = (), *, anchor: str = "C") -> None:
+        """Exact VE: lock the axes box to the chosen VE; auto: fill the frame."""
+        self._ve_main_ax = ax
+        ax.figure._css_ve_axes = ax
+        ax.figure._css_ve_storage = float(self.vertical_exaggeration)
+        apply_ve_aspect(ax, exact=not self.ve_auto, twins=twins, anchor=anchor)
+
+    def current_vertical_exaggeration(self) -> float | None:
+        """VE the figure prints: the chosen value, or the measured one in auto mode."""
+        if not self.ve_auto:
+            return self.chosen_vertical_exaggeration
+        ax = self._ve_main_ax
+        if ax is None or ax.figure is None:
+            return None
+        return measured_vertical_exaggeration(ax, self.vertical_exaggeration)
+
+    def _ve_caption_kwargs(self, style: str, template: str = "{ve}") -> dict[str, object]:
+        return {
+            "main_ax": self._ve_main_ax,
+            "storage_ve": self.vertical_exaggeration,
+            "auto": self.ve_auto,
+            "chosen_ve": self.chosen_vertical_exaggeration,
+            "style": style,
+            "template": template,
+        }
+
     def _draw_ve_annotation(self, ax) -> None:
-        x_min, x_max = ax.get_xlim()
-        y_min, y_max = ax.get_ylim()
-        ax.text(
-            x_max - 0.02 * (x_max - x_min),
-            y_min + 0.04 * (y_max - y_min),
-            f"V.E. {self.vertical_exaggeration:.0f}×",
+        # Axes-fraction position: a box-adjusted (exact VE) axes keeps the
+        # note in its lower-right corner. Measured VE is filled in at draw time.
+        if self._ve_main_ax is None:
+            self._ve_main_ax = ax
+        add_ve_caption(
+            ax,
+            0.98,
+            0.04,
+            transform=ax.transAxes,
             ha="right",
             va="bottom",
             fontsize=9,
             fontweight="bold",
             color=LABEL_COLOR,
             zorder=10,
+            **self._ve_caption_kwargs("short"),
         )
 
     def _draw_footers(self, fig: Figure) -> None:
         if self.disclaimer:
             fig.text(0.5, 0.008, self.disclaimer, ha="center", va="bottom", fontsize=8, color="#64748B", style="italic")
         footer_y = 0.03 if self.disclaimer else 0.008
-        metadata_lines = self._metadata_footer_lines()
+        metadata_lines = self._metadata_footer_lines(ve_text="{ve}")
         if metadata_lines and self.profile.title_block:
-            fig.text(0.5, footer_y, " | ".join(metadata_lines), ha="center", va="bottom", fontsize=7, color="#475569")
+            line = " | ".join(metadata_lines)
+            if "{ve}" in line and self._ve_main_ax is not None:
+                # The VE item is measured from the final axes box at draw time.
+                add_ve_caption(
+                    fig,
+                    0.5,
+                    footer_y,
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                    color="#475569",
+                    **self._ve_caption_kwargs("footer", template=line),
+                )
+            else:
+                line = line.replace("{ve}", self._ve_footer_text())
+                fig.text(0.5, footer_y, line, ha="center", va="bottom", fontsize=7, color="#475569")
             footer_y += 0.022
         if self.overlap_pairs and self.profile.show_overlap_footer:
             fig.text(
@@ -1129,7 +1189,13 @@ class CrossSectionRenderer(
                 color=OVERLAP_MARKER_COLOR,
             )
 
-    def _metadata_footer_lines(self) -> list[str]:
+    def _ve_footer_text(self) -> str:
+        return format_ve_caption(
+            self.current_vertical_exaggeration(), auto=self.ve_auto, style="footer"
+        )
+
+    def _metadata_footer_lines(self, ve_text: str | None = None) -> list[str]:
+        """Footer items; the VE item is the drawn VE (``ve_text`` overrides it)."""
         if self.figure_metadata is None:
             return []
         meta = self.figure_metadata
@@ -1138,7 +1204,7 @@ class CrossSectionRenderer(
             lines.append(f"CRS: {meta.coordinate_reference}")
         if meta.elevation_datum:
             lines.append(f"Datum: {meta.elevation_datum}")
-        lines.append(f"VE: {meta.vertical_exaggeration:.1f}×")
+        lines.append(ve_text if ve_text is not None else self._ve_footer_text())
         if meta.transect_azimuth_deg is not None:
             lines.append(f"Azimuth: {meta.transect_azimuth_deg:.0f}°")
         lines.append(f"Holes: {meta.hole_count}")

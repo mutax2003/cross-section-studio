@@ -699,6 +699,13 @@ def _polygons_for_pair(
     top_bends: dict[Hashable, list[tuple[float, float]]] = defaultdict(list)
     bottom_bends: dict[Hashable, list[tuple[float, float]]] = defaultdict(list)
     wedges: list[tuple[_LayerInterval, float, float, float]] = []
+    # Wedges with exactly one bracketing match (base / top of the fence), grouped by
+    # their ``(above, below)`` brackets; tiled against the fence base / top line in
+    # pass 1b instead of tapering to a lone tip (see ``_tile_open_wedges``).
+    open_wedges: dict[
+        tuple[Hashable | None, Hashable | None],
+        list[tuple[bool, tuple[_LayerInterval, float, float, float]]],
+    ] = defaultdict(list)
     if allow_pinch_outs:
         for key in all_keys:
             left_layer = left_lookup.get(key)
@@ -738,7 +745,36 @@ def _polygons_for_pair(
                 z_tip = _pinch_out_z_mid(
                     source_layer, neighbor_intervals, by_order=neighbor_by_order
                 )
-            wedges.append((source_layer, x_source, x_other, z_tip))
+            wedge = (source_layer, x_source, x_other, z_tip)
+            if (above is None) != (below is None):
+                open_wedges[(above, below)].append((left_layer is not None, wedge))
+            else:
+                wedges.append(wedge)
+
+    # Pass 1b: wedges open toward the fence base (or top). Opposing groups meet
+    # along a facies-change boundary at mid-span; a lone group runs out to the
+    # neighbour's hole end. Groups that cannot tile cleanly keep their tip wedges.
+    open_polygons: list[GeologicalPolygon] = []
+    for (above, below), members in open_wedges.items():
+        tiles = _tile_open_wedges(
+            above,
+            below,
+            [wedge[0] for is_left, wedge in members if is_left],
+            [wedge[0] for is_left, wedge in members if not is_left],
+            left_intervals,
+            right_intervals,
+            left_lookup,
+            right_lookup,
+            bottom_bends.get(above, ()) if above is not None else (),
+            top_bends.get(below, ()) if below is not None else (),
+            x_left,
+            x_right,
+            hole_pair,
+        )
+        if tiles is None:
+            wedges.extend(wedge for _is_left, wedge in members)
+        else:
+            open_polygons.extend(tiles)
 
     # Pass 2: continuous fills (with bent contacts), then wedges.
     for key, left_layer, right_layer in matched:
@@ -768,8 +804,169 @@ def _polygons_for_pair(
         )
         if polygon:
             polygons.append(polygon)
+    polygons.extend(open_polygons)
 
     return polygons
+
+
+def _tile_open_wedges(
+    above: Hashable | None,
+    below: Hashable | None,
+    left_units: list[_LayerInterval],
+    right_units: list[_LayerInterval],
+    left_intervals: list[_LayerInterval],
+    right_intervals: list[_LayerInterval],
+    left_lookup: dict[Hashable, _LayerInterval],
+    right_lookup: dict[Hashable, _LayerInterval],
+    above_bends: Sequence[tuple[float, float]],
+    below_bends: Sequence[tuple[float, float]],
+    x_left: float,
+    x_right: float,
+    hole_pair: tuple[str, str],
+) -> list[GeologicalPolygon] | None:
+    """Tile unmatched units that sit below the lowest (or above the highest) match.
+
+    Such a unit has a bracketing contact on one side only, so a tip wedge leaves
+    a white triangle against the fence base line (hole bottom to hole bottom) or
+    the fence top line (hole top to hole top). The open region between that
+    contact and the base/top line is instead shared out:
+
+    * **Opposing groups** (unit(s) X only in the left hole, Y only in the right,
+      same bracketing contact, both reaching their hole ends) meet along a
+      vertical facies-change boundary at ``PINCH_OUT_FRACTION`` of the span:
+      X fills the left part, Y the right part.
+    * **A lone group** (nothing logged opposite because the neighbour ends at the
+      contact) extends to the neighbour, thinning to zero at its hole end — the
+      neighbour simply did not penetrate the unit.
+
+    Stacked units in a group keep their thickness proportions across the region.
+    Exactly one of ``above`` / ``below`` must be set (unbracketed wedges, e.g.
+    crossing un-matches in a pair with no correlation, keep their tips). Returns
+    ``None`` (caller keeps the tip wedges) when the group does not reach its hole
+    ends or the region is not well ordered.
+    """
+    if (above is None) == (below is None) or (not left_units and not right_units):
+        return None
+    span = x_right - x_left
+    if not (np.isfinite(span) and span > 0.0):
+        return None
+
+    def _extent(intervals: list[_LayerInterval]) -> tuple[float, float]:
+        return (
+            max(interval.top_elevation for interval in intervals),
+            min(interval.bottom_elevation for interval in intervals),
+        )
+
+    sides = {
+        "left": (left_units, left_intervals, left_lookup, x_left),
+        "right": (right_units, right_intervals, right_lookup, x_right),
+    }
+    upper_ends: dict[str, float] = {}
+    lower_ends: dict[str, float] = {}
+    for side, (units, intervals, lookup, _x) in sides.items():
+        hole_top, hole_bottom = _extent(intervals)
+        unit_top, unit_bottom = _extent(units) if units else (hole_top, hole_bottom)
+        upper = lookup[above].bottom_elevation if above is not None else unit_top
+        lower = lookup[below].top_elevation if below is not None else unit_bottom
+        scale = max(1.0, abs(upper), abs(lower))
+        tol = 1e-6 * scale
+        if units:
+            # The group must fill its hole from the contact to the hole end.
+            if abs(unit_top - upper) > tol or abs(unit_bottom - lower) > tol:
+                return None
+            if above is None and abs(unit_top - hole_top) > tol:
+                return None
+            if below is None and abs(unit_bottom - hole_bottom) > tol:
+                return None
+        else:
+            # Lone group: the neighbour must end exactly at the contact.
+            if below is None and abs(hole_bottom - upper) > tol:
+                return None
+            if above is None and abs(hole_top - lower) > tol:
+                return None
+            lower = upper if below is None else lower
+            upper = lower if above is None else upper
+        if not (np.isfinite(upper) and np.isfinite(lower)) or upper < lower - tol:
+            return None
+        upper_ends[side], lower_ends[side] = upper, lower
+
+    upper_path = [
+        (x_left, upper_ends["left"]),
+        *_bend_path(above_bends, x_left, x_right),
+        (x_right, upper_ends["right"]),
+    ]
+    lower_path = [
+        (x_left, lower_ends["left"]),
+        *_bend_path(below_bends, x_left, x_right),
+        (x_right, lower_ends["right"]),
+    ]
+    upper_xs = np.array([x for x, _z in upper_path])
+    upper_zs = np.array([z for _x, z in upper_path])
+    lower_xs = np.array([x for x, _z in lower_path])
+    lower_zs = np.array([z for _x, z in lower_path])
+
+    def _upper(x: float) -> float:
+        return float(np.interp(x, upper_xs, upper_zs))
+
+    def _lower(x: float) -> float:
+        return float(np.interp(x, lower_xs, lower_zs))
+
+    breaks = sorted({x for x, _z in upper_path} | {x for x, _z in lower_path})
+    for x in breaks:
+        if _upper(x) < _lower(x) - 1e-9 * max(1.0, abs(_upper(x))):
+            return None
+
+    x_mid = x_left + PINCH_OUT_FRACTION * span
+    if left_units and right_units:
+        ranges = {"left": (x_left, x_mid), "right": (x_mid, x_right)}
+    else:
+        ranges = {"left": (x_left, x_right), "right": (x_left, x_right)}
+
+    def _curve(fraction: float, xs: list[float]) -> list[tuple[float, float]]:
+        points = []
+        for x in xs:
+            upper, lower = _upper(x), _lower(x)
+            # Exact ends keep shared edges bit-identical between tiles.
+            if fraction <= 0.0:
+                z = upper
+            elif fraction >= 1.0:
+                z = lower
+            else:
+                z = upper - fraction * (upper - lower)
+            points.append((x, z))
+        return points
+
+    tiles: list[GeologicalPolygon] = []
+    for side, (units, _intervals, _lookup, x_source) in sides.items():
+        if not units:
+            continue
+        x0, x1 = ranges[side]
+        xs = [x0, *(x for x in breaks if x0 < x < x1), x1]
+        source_upper, source_lower = _upper(x_source), _lower(x_source)
+        thickness = source_upper - source_lower
+        if thickness <= 0.0:
+            return None
+        for unit in sorted(units, key=lambda item: (-item.top_elevation, -item.bottom_elevation)):
+            f_top = (source_upper - unit.top_elevation) / thickness
+            f_bottom = (source_upper - unit.bottom_elevation) / thickness
+
+            top_curve = _curve(f_top, xs)
+            bottom_curve = _curve(f_bottom, xs)
+            if x_source == x0:
+                top_curve[0] = (x_source, unit.top_elevation)
+                bottom_curve[0] = (x_source, unit.bottom_elevation)
+            else:
+                top_curve[-1] = (x_source, unit.top_elevation)
+                bottom_curve[-1] = (x_source, unit.bottom_elevation)
+            polygon = _make_polygon(
+                [*top_curve, *reversed(bottom_curve)],
+                unit.lithology_code,
+                hole_pair,
+                is_pinch_out=True,
+            )
+            if polygon:
+                tiles.append(polygon)
+    return tiles
 
 
 def _bracketing_matches(
@@ -912,17 +1109,23 @@ def _largest_polygon(geom) -> Polygon | None:
     return None
 
 
-def _pinch_anchor_edge(polygon: Polygon) -> LineString | None:
-    """Longest vertical exterior edge of a pinch-out wedge (its logged interval at the hole)."""
+def _pinch_anchor_edge(polygon: Polygon, hole_xs: Sequence[float] = ()) -> LineString | None:
+    """Longest vertical exterior edge of a pinch-out wedge (its logged interval at the hole).
+
+    With ``hole_xs``, edges on a hole position win over interior vertical edges
+    (a facies-change tile also has a vertical edge at mid-span).
+    """
     coords = list(polygon.exterior.coords)
-    best: tuple[float, LineString] | None = None
+    best: tuple[bool, float, LineString] | None = None
     for (x0, y0), (x1, y1) in zip(coords, coords[1:]):
         span = abs(y1 - y0)
-        if span <= 0.0 or abs(x1 - x0) > 1e-9 * max(1.0, abs(x0)):
+        tol = 1e-9 * max(1.0, abs(x0))
+        if span <= 0.0 or abs(x1 - x0) > tol:
             continue
-        if best is None or span > best[0]:
-            best = (span, LineString([(x0, y0), (x1, y1)]))
-    return best[1] if best is not None else None
+        on_hole = any(abs(x0 - hole_x) <= tol for hole_x in hole_xs)
+        if best is None or (on_hole, span) > best[:2]:
+            best = (on_hole, span, LineString([(x0, y0), (x1, y1)]))
+    return best[2] if best is not None else None
 
 
 def _anchored_fragment(geom, anchor: LineString | None) -> Polygon | None:
@@ -952,6 +1155,7 @@ def _resolve_overlaps_in_pair(
     polygons: list[GeologicalPolygon],
     *,
     clip_warnings: list[str] | None = None,
+    hole_xs: Sequence[float] = (),
 ) -> list[GeologicalPolygon]:
     """Clip deeper fence polygons so inter-hole fills do not stack on top of shallower units.
 
@@ -997,7 +1201,7 @@ def _resolve_overlaps_in_pair(
         if geo_polygon.is_pinch_out and geom is not geo_polygon.polygon:
             # A wedge must stay attached to the hole where the unit was logged; the
             # largest clip fragment can be a sliver floating mid-way between holes.
-            largest = _anchored_fragment(geom, _pinch_anchor_edge(geo_polygon.polygon))
+            largest = _anchored_fragment(geom, _pinch_anchor_edge(geo_polygon.polygon, hole_xs))
         else:
             largest = _largest_polygon(geom)
         if largest is not None and not largest.is_empty and largest is not geo_polygon.polygon:
@@ -1290,6 +1494,7 @@ def build_stratigraphy(
                 pair_summaries=pair_summaries,
             ),
             clip_warnings=clip_warnings,
+            hole_xs=(x_left, x_right),
         )
         polygons.extend(pair_polygons)
 

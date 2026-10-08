@@ -188,7 +188,13 @@ class ChartLayoutMixin:
                 self._draw_sky_and_surface(ax, hole_summary, collar_lookup)
 
             self._draw_fence_polygons(
-                ax, polygons, style_cache, ve, alpha=0.92, collar_lookup=collar_lookup
+                ax,
+                polygons,
+                style_cache,
+                ve,
+                alpha=0.92,
+                collar_lookup=collar_lookup,
+                hole_x_lookup=ctx.x_by_hole,
             )
 
             if self.profile.show_overlap_markers and self.overlap_pairs:

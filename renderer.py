@@ -439,8 +439,15 @@ class CrossSectionRenderer(
         ve: float,
         collar_lookup: dict[str, float],
         hole_pair: tuple[str, str] | None,
+        hole_x_lookup: dict[str, float] | None = None,
     ) -> np.ndarray:
-        """Map fence polygon (x, elevation) verts into plot Y (RL or depth-below-collar)."""
+        """Map fence polygon (x, elevation) verts into plot Y (RL or depth-below-collar).
+
+        Depth mode measures depth below the ground line between the pair's holes:
+        the collar RL is interpolated linearly in x (``hole_x_lookup``), an affine
+        map, so polygons that tile in elevation still tile in depth. (A per-vertex
+        left/right collar step tore pinch-out wedges off the fills they bend.)
+        """
         out = np.asarray(coords, dtype=float)
         if out.size == 0:
             return out
@@ -455,7 +462,19 @@ class CrossSectionRenderer(
             scaled[:, 1] *= ve
             return scaled
         scaled = out.copy()
-        if left_rl is not None and right_rl is not None:
+        hole_xs = hole_x_lookup or {}
+        left_x = hole_xs.get(hole_pair[0]) if hole_pair else None
+        right_x = hole_xs.get(hole_pair[1]) if hole_pair else None
+        if (
+            left_rl is not None
+            and right_rl is not None
+            and left_x is not None
+            and right_x is not None
+            and left_x != right_x
+        ):
+            (x0, rl0), (x1, rl1) = sorted(((left_x, left_rl), (right_x, right_rl)))
+            collar_rl = np.interp(scaled[:, 0], [x0, x1], [rl0, rl1])
+        elif left_rl is not None and right_rl is not None:
             mid_x = float(scaled[:, 0].mean())
             collar_rl = np.where(scaled[:, 0] <= mid_x + 1e-9, left_rl, right_rl)
         else:
@@ -472,6 +491,7 @@ class CrossSectionRenderer(
         *,
         alpha: float,
         collar_lookup: dict[str, float] | None = None,
+        hole_x_lookup: dict[str, float] | None = None,
     ) -> None:
         if self.interpretation_mode not in {"interpolated", "correlation_lines"}:
             self._has_pinch_out = False
@@ -487,18 +507,18 @@ class CrossSectionRenderer(
                 style_key = (style.edge_color, line_style)
                 if len(coords) >= 4:
                     top_coords = self._fence_plot_coords(
-                        coords[[0, 1]], ve, collars, geo_polygon.hole_pair
+                        coords[[0, 1]], ve, collars, geo_polygon.hole_pair, hole_x_lookup
                     )
                     bottom_coords = self._fence_plot_coords(
-                        coords[[3, 2]], ve, collars, geo_polygon.hole_pair
+                        coords[[3, 2]], ve, collars, geo_polygon.hole_pair, hole_x_lookup
                     )
                     line_groups.setdefault(style_key, []).extend([top_coords, bottom_coords])
                 elif len(coords) == 3:
                     top_coords = self._fence_plot_coords(
-                        coords[[0, 2]], ve, collars, geo_polygon.hole_pair
+                        coords[[0, 2]], ve, collars, geo_polygon.hole_pair, hole_x_lookup
                     )
                     bottom_coords = self._fence_plot_coords(
-                        coords[[1, 2]], ve, collars, geo_polygon.hole_pair
+                        coords[[1, 2]], ve, collars, geo_polygon.hole_pair, hole_x_lookup
                     )
                     line_groups.setdefault(style_key, []).extend([top_coords, bottom_coords])
             for (edge_color, line_style), segments in line_groups.items():
@@ -519,7 +539,9 @@ class CrossSectionRenderer(
             coords = np.asarray(geo_polygon.polygon.exterior.coords, dtype=float)
             linestyle = "--" if geo_polygon.is_pinch_out else "-"
             patch_alpha = PINCH_OUT_ALPHA if geo_polygon.is_pinch_out else alpha
-            verts = self._fence_plot_coords(coords, ve, collars, geo_polygon.hole_pair)
+            verts = self._fence_plot_coords(
+                coords, ve, collars, geo_polygon.hole_pair, hole_x_lookup
+            )
             style_key = (style.color, style.hatch or "", style.edge_color, linestyle, patch_alpha)
             polygon_groups.setdefault(style_key, []).append(verts)
         for style_key, verts_list in polygon_groups.items():

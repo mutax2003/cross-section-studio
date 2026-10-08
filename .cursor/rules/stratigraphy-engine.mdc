@@ -58,7 +58,14 @@ Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) 
 - `is_pinch_out = True` — renderer draws dashed edges and lower alpha
 - `_make_polygon` always stores a single Shapely `Polygon` (largest part after `buffer(0)` repair) so the renderer can use `.exterior`
 
-**Case 3 — `allow_pinch_outs=False`:** skip unmatched intervals (leave inter-hole gap).
+**Case 3 — `allow_pinch_outs=False`:** unmatched intervals are not drawn between the holes, but the fence still tiles — the bracketing matched fills take over their space at the source hole (`_closed_unmatched_ends`; endpoints only, no mid-span bends; hole/column data untouched):
+- **Two-sided** (match above and below): the upper unit's base and the lower unit's top both run to the mid-elevation of the gap at the source hole, so the contacts converge there (the pinch-out bend with its tip on the hole).
+- **Above only** (units below the lowest match): the upper unit's base runs to the deepest unmatched base (fence base line). **Below only**: the lower unit's top runs to the highest unmatched top (fence top line).
+- Unbracketed units and mis-ordered (crossing) brackets keep the old behaviour (gap left).
+
+## Depth mode (depth below collar)
+
+Polygons are always built in elevation (RL). The renderer (`renderer._fence_plot_coords`, `hole_x_lookup=_HoleContext.x_by_hole`) converts to depth with the collar RL **interpolated linearly along x between the pair's holes** — an affine map, so a fence that tiles in elevation tiles identically in depth (mirror), and vertices on a hole land on that hole's exact depths. Never use a per-vertex left/right collar step: it tore pinch-out wedges off their bent fills (white triangle + overlap) whenever collars differ.
 
 ## Overlap clipping (`_resolve_overlaps_in_pair`)
 

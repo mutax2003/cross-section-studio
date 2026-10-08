@@ -776,18 +776,34 @@ def _polygons_for_pair(
         else:
             open_polygons.extend(tiles)
 
+    # Pinch-outs off: unmatched units are not drawn between the holes, so the
+    # bracketing fills close the space they leave at the source hole instead.
+    top_ends: dict[tuple[Hashable, str], float] = {}
+    bottom_ends: dict[tuple[Hashable, str], float] = {}
+    if not allow_pinch_outs:
+        for side, lookup, other, source_matches in (
+            ("left", left_lookup, right_lookup, matched),
+            ("right", right_lookup, left_lookup, matched_right_first),
+        ):
+            sides_top, sides_bottom = _closed_unmatched_ends(
+                [layer for key, layer in lookup.items() if key not in other],
+                source_matches,
+            )
+            top_ends.update({(key, side): z for key, z in sides_top.items()})
+            bottom_ends.update({(key, side): z for key, z in sides_bottom.items()})
+
     # Pass 2: continuous fills (with bent contacts), then wedges.
     for key, left_layer, right_layer in matched:
         top_path = _bend_path(top_bends.get(key, ()), x_left, x_right)
         bottom_path = _bend_path(bottom_bends.get(key, ()), x_left, x_right)
         polygon = _make_polygon(
             [
-                (x_left, left_layer.top_elevation),
+                (x_left, top_ends.get((key, "left"), left_layer.top_elevation)),
                 *top_path,
-                (x_right, right_layer.top_elevation),
-                (x_right, right_layer.bottom_elevation),
+                (x_right, top_ends.get((key, "right"), right_layer.top_elevation)),
+                (x_right, bottom_ends.get((key, "right"), right_layer.bottom_elevation)),
                 *reversed(bottom_path),
-                (x_left, left_layer.bottom_elevation),
+                (x_left, bottom_ends.get((key, "left"), left_layer.bottom_elevation)),
             ],
             left_layer.lithology_code,
             hole_pair,
@@ -807,6 +823,64 @@ def _polygons_for_pair(
     polygons.extend(open_polygons)
 
     return polygons
+
+
+def _closed_unmatched_ends(
+    unmatched: list[_LayerInterval],
+    matched: list[tuple[Hashable, _LayerInterval, _LayerInterval]],
+) -> tuple[dict[Hashable, float], dict[Hashable, float]]:
+    """Source-hole contact elevations that close the space of undrawn unmatched units.
+
+    Used when pinch-outs are off: the unmatched units of one hole are not drawn
+    between the holes, so the matched units bracketing them take over the space
+    (the hole column still shows the logged units). Returns ``(top_ends,
+    bottom_ends)`` keyed by matched correlation key, the new elevation of that
+    fill's top / bottom edge at the source hole:
+
+    * **Two-sided** (matched unit above and below): the upper unit's base and the
+      lower unit's top both run to the mid-elevation of the space between them,
+      so the two contacts converge at the hole — the same tiling a pinch-out bend
+      gives, with the tip on the hole instead of mid-span.
+    * **Above only** (units below the lowest match): the upper unit's base runs
+      down to the deepest unmatched base, i.e. along the fence base line.
+    * **Below only** (units above the highest match): the lower unit's top runs
+      up to the highest unmatched top, i.e. along the fence top line.
+
+    Unbracketed units and crossing (mis-ordered) brackets are left alone.
+    """
+    groups: dict[tuple[Hashable | None, Hashable | None], list[_LayerInterval]] = defaultdict(list)
+    for interval in unmatched:
+        above, below = _bracketing_matches(interval, matched)
+        if above is not None or below is not None:
+            groups[(above, below)].append(interval)
+    source = {key: layer for key, layer, _neighbour in matched}
+    top_ends: dict[Hashable, float] = {}
+    bottom_ends: dict[Hashable, float] = {}
+    for (above, below), members in groups.items():
+        finite = [
+            interval
+            for interval in members
+            if np.isfinite(interval.top_elevation) and np.isfinite(interval.bottom_elevation)
+        ]
+        if not finite:
+            continue
+        if above is not None and below is not None:
+            upper = source[above].bottom_elevation
+            lower = source[below].top_elevation
+            if not (np.isfinite(upper) and np.isfinite(lower)) or upper < lower - 1e-9:
+                continue
+            middle = 0.5 * (upper + lower)
+            bottom_ends[above] = middle
+            top_ends[below] = middle
+        elif above is not None:
+            base = min(interval.bottom_elevation for interval in finite)
+            if base < source[above].bottom_elevation:
+                bottom_ends[above] = base
+        else:
+            top = max(interval.top_elevation for interval in finite)
+            if top > source[below].top_elevation:  # type: ignore[index]
+                top_ends[below] = top
+    return top_ends, bottom_ends
 
 
 def _tile_open_wedges(

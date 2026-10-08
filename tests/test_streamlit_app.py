@@ -634,3 +634,30 @@ def test_new_workbook_reseeds_title_block_after_style_switches() -> None:
     at.selectbox(key="output_preset").set_value("consulting_report").run()
     assert at.text_input(key="consulting_prepared_for").value == "SECOND CLIENT"
     assert at.text_input(key="consulting_section_label").value == "B - B' SECOND"
+
+
+def test_template_without_lithology_shows_the_missing_sheet_error() -> None:
+    """Deleting only the Lithology tab (the Data Entry sheet stays) loaded
+    0 holes with "Data health OK" though Collars listed every hole."""
+    from io import BytesIO
+
+    import openpyxl
+    from streamlit.testing.v1 import AppTest
+
+    from workbook_template import build_input_template_bytes
+
+    book = openpyxl.load_workbook(BytesIO(build_input_template_bytes()))
+    del book["Lithology"]
+    buffer = BytesIO()
+    book.save(buffer)
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("no_lith.xlsx", buffer.getvalue()).run()
+    assert not at.exception
+    assert at.session_state["parse_result"] is None
+    errors = [str(item.value) for item in at.error]
+    assert any("No **Lithology** sheet was found" in text for text in errors), errors
+    assert not any("Loaded **" in str(item.value) for item in at.success)
+    # The template is not a field export: no "Field Data sheet" note.
+    assert not any("Field Data sheet" in str(item.value) for item in at.info)

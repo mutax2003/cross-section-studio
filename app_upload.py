@@ -139,6 +139,21 @@ def _friendly_workbook_error(exc: Exception) -> str:
         # Already plain language from the parser: names the sheet and the column.
         return text
     if "Missing required sheet" in text:
+        missing = {
+            name.strip().casefold() for name in text.split(":", 1)[-1].split(",") if name.strip()
+        }
+        if missing == {"lithology"}:
+            return (
+                "No **Lithology** sheet was found. Add a Lithology sheet with hole_id, "
+                "from_depth, to_depth and lithology_code, or start from **Download template**. "
+                "See Help → Workbook and data entry."
+            )
+        if missing == {"collars"}:
+            return (
+                "No **Collars** sheet was found. Add a Collars sheet with hole_id, easting, "
+                "northing, elevation and total_depth, or start from **Download template**. "
+                "See Help → Workbook and data entry."
+            )
         return f"{text}. Add the missing sheet(s), or start from **Download template**."
     if "rows (limit" in text:
         return f"The workbook is too large to read: {text}"
@@ -489,7 +504,9 @@ def handle_workbook_upload(
                 f"Detected format: **{detection.label}** "
                 f"({detection.confidence:.0%} confidence)"
             )
-        if detection.profile_id != NATIVE_PROFILE_ID:
+        # Field exports only: the native and Data Entry templates have no
+        # Field Data sheet, so the note only confused them.
+        if detection.profile_id != NATIVE_PROFILE_ID and not detection.is_native:
             st.info(
                 "Field Data sheet (if present) is not used for stratigraphy. "
                 "OVA/EC columns map to environmental readings — select them on Configure."

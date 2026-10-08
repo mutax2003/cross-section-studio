@@ -22,7 +22,6 @@ from render_theme import (
     chemistry_fixed_mode_color,
     chemistry_label_color,
     chemistry_threshold_bands,
-    chemistry_threshold_key,
     parameter_series_colors,
 )
 from renderer_water import _GW_MARKER_MAP
@@ -63,6 +62,24 @@ _PARAMETER_LABEL_BBOX = {
 }
 # "box" readability style: fully opaque so hatch lines never show through.
 _PARAMETER_LABEL_BBOX_SOLID = {**_PARAMETER_LABEL_BBOX, "alpha": 1.0, "boxstyle": "square,pad=0.18"}
+
+
+def _shown_threshold_bands(green_max: float, yellow_max: float):
+    """Threshold bands a value can fall in: no orange band when its limits
+    coincide (green 50 / orange 50 reads "green <= 50 . red > 50", not
+    "orange 50-50")."""
+    bands = chemistry_threshold_bands(green_max, yellow_max)
+    if float(yellow_max) <= float(green_max):
+        bands = tuple(band for band in bands if band[0] != "orange")
+    return bands
+
+
+def _threshold_key_text(green_max: float, yellow_max: float, unit: str | None = None) -> str:
+    """Plain-text key, e.g. ``green <= 100 . orange 100-300 . red > 300 mg/L``."""
+    bands = _shown_threshold_bands(green_max, yellow_max)
+    text = " \u00b7 ".join(f"{name} {span}" for name, _hex, span in bands)
+    unit = (unit or "").strip()
+    return f"{text} {unit}" if unit else text
 
 
 def _below_x_axis_anchor(ax):
@@ -582,7 +599,7 @@ class RendererChemistryMixin:
             if threshold_active:
                 legend_entry["threshold_colors"] = tuple(
                     hex_color
-                    for _name, hex_color, _span in chemistry_threshold_bands(green_max, yellow_max)
+                    for _name, hex_color, _span in _shown_threshold_bands(green_max, yellow_max)
                 )
             self.parameter_series_legend.append(legend_entry)
         if threshold_units:
@@ -599,10 +616,10 @@ class RendererChemistryMixin:
         """
         named_units = sorted(unit for unit in units if unit)
         unit = named_units[0] if len(named_units) == 1 else ""
-        self.chemistry_threshold_key_text = chemistry_threshold_key(green_max, yellow_max, unit)
+        self.chemistry_threshold_key_text = _threshold_key_text(green_max, yellow_max, unit)
         text_props = {"fontsize": font_size, "color": LABEL_COLOR}
         parts: list[TextArea] = [TextArea("Label colour:", textprops=text_props)]
-        bands = chemistry_threshold_bands(green_max, yellow_max)
+        bands = _shown_threshold_bands(green_max, yellow_max)
         for index, (name, hex_color, span) in enumerate(bands):
             parts.append(
                 TextArea(name, textprops={**text_props, "color": hex_color, "fontweight": "bold"})

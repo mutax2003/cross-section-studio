@@ -368,3 +368,49 @@ def test_section_sheet_strip_defaults_unchanged_for_wide_holes() -> None:
         assert not any(getattr(a, "_chem_box_fallback", False) for a in _chem(renderer))
     finally:
         plt.close(figure)
+
+
+# --- 5. empty orange band -----------------------------------------------------
+
+
+@pytest.mark.parametrize(("green", "orange"), [(None, 50.0), (300.0, None)])
+def test_threshold_key_drops_an_empty_orange_band(green, orange) -> None:
+    from render_theme import CHEMISTRY_LABEL_GREEN, CHEMISTRY_LABEL_RED
+
+    readings = [_reading(h, 20.0 + 400.0 * k, 3.0) for k, h in enumerate(_WIDE)]
+    renderer, figure = _render(
+        CONSULTING_SECTION_PROFILE,
+        _WIDE,
+        60.0,
+        readings,
+        chemistry_color_mode="threshold",
+        chemistry_threshold_green_max=green,
+        chemistry_threshold_yellow_max=orange,
+    )
+    try:
+        limit = f"{green or orange:g}"
+        assert renderer.chemistry_threshold_key_text == f"green ≤ {limit} · red > {limit} mg/kg"
+        (entry,) = renderer.parameter_series_legend
+        assert entry["threshold_colors"] == (CHEMISTRY_LABEL_GREEN, CHEMISTRY_LABEL_RED)
+    finally:
+        plt.close(figure)
+
+
+def test_threshold_key_keeps_orange_when_the_band_exists() -> None:
+    readings = [_reading(h, 20.0 + 100.0 * k, 3.0) for k, h in enumerate(_WIDE)]
+    renderer, figure = _render(
+        CONSULTING_SECTION_PROFILE,
+        _WIDE,
+        60.0,
+        readings,
+        chemistry_color_mode="threshold",
+        chemistry_threshold_green_max=100.0,
+        chemistry_threshold_yellow_max=300.0,
+    )
+    try:
+        assert renderer.chemistry_threshold_key_text == (
+            "green ≤ 100 · orange 100–300 · red > 300 mg/kg"
+        )
+        assert len(renderer.parameter_series_legend[0]["threshold_colors"]) == 3
+    finally:
+        plt.close(figure)

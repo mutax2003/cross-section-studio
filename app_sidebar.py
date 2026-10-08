@@ -70,15 +70,14 @@ def _render_pending_destructive() -> None:
         return
     confirm_label, question = DESTRUCTIVE_PROMPTS[action]
     st.warning(question + " Download anything you need first.")
-    confirm_col, cancel_col = st.columns(2)
-    with confirm_col:
-        if st.button(confirm_label, key="confirm_destructive", type="primary", width="stretch"):
-            st.session_state.pop("_pending_destructive", None)
-            run_destructive(action)
-    with cancel_col:
-        if st.button("Cancel", key="cancel_destructive", width="stretch"):
-            st.session_state.pop("_pending_destructive", None)
-            st.rerun()
+    # Stacked full-width: side by side in the 300px sidebar the confirm
+    # label was cut to "Clear wor…".
+    if st.button(confirm_label, key="confirm_destructive", type="primary", width="stretch"):
+        st.session_state.pop("_pending_destructive", None)
+        run_destructive(action)
+    if st.button("Cancel", key="cancel_destructive", width="stretch"):
+        st.session_state.pop("_pending_destructive", None)
+        st.rerun()
 
 _OUTPUT_STYLE_HELP: dict[str, str] = {
     "section_sheet": "General-purpose sheet with an elevation axis, hole headers and a side legend. Good default.",

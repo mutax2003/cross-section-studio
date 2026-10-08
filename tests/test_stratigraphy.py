@@ -1491,3 +1491,237 @@ def test_depth_mode_fence_tiles_like_elevation_mode() -> None:
     silt = next(p for p in depth if p.lithology_code == "Silt").polygon
     assert silt.boundary.distance(Point(32.0, 629.0 - 621.5)) < 1e-9
     assert silt.boundary.distance(Point(32.0, 629.0 - 617.0)) < 1e-9
+
+
+# --- unit_order contradicting depth / zero-thickness intervals (fuzz repros) ---
+
+
+def _contradicting_unit_order_geometry(*, with_unit_order: bool):
+    from models import Collar, Lithology
+    from pipeline import compute_section_geometry
+
+    def order(value: int) -> int | None:
+        return value if with_unit_order else None
+
+    collars = [
+        Collar(hole_id="A", easting=0, northing=0, elevation=354.0, total_depth=53),
+        Collar(hole_id="B", easting=13, northing=0, elevation=280.6, total_depth=39),
+    ]
+    lithology = [
+        Lithology(
+            hole_id="A", from_depth=2.37, to_depth=8.13, lithology_code="Till", unit_order=order(41)
+        ),
+        Lithology(
+            hole_id="A", from_depth=25.0, to_depth=29.65, lithology_code="Sand", unit_order=order(5)
+        ),
+        Lithology(
+            hole_id="B", from_depth=0.006, to_depth=6.46, lithology_code="Sand", unit_order=order(2)
+        ),
+        Lithology(
+            hole_id="B",
+            from_depth=11.28,
+            to_depth=17.46,
+            lithology_code="Till",
+            unit_order=order(29),
+        ),
+    ]
+    return compute_section_geometry(collars, lithology, [(0, 0), (13, 0)])
+
+
+def _logged_edge_coverage(polygons, code: str, x: float, top: float, bottom: float) -> float:
+    from shapely.ops import unary_union
+
+    fills = [p.polygon for p in polygons if p.lithology_code == code]
+    if not fills:
+        return 0.0
+    edge = LineString([(x, top), (x, bottom)])
+    return unary_union(fills).buffer(1e-7).intersection(edge).length / edge.length
+
+
+@pytest.mark.parametrize("with_unit_order", [True, False])
+def test_unit_order_against_depth_crossing_is_unmatched(with_unit_order: bool) -> None:
+    """Till over Sand in A, Sand over Till in B. With unit_order numbering (holes were
+    ranked by order, not depth) the crossing went undetected: Sand was clipped to 36%
+    and B's logged Sand vanished from the fence. Now it matches the code-only case."""
+    geometry = _contradicting_unit_order_geometry(with_unit_order=with_unit_order)
+    assert any(w.startswith("Crossing correlation A–B: Till") for w in geometry.overlap_warnings)
+    assert not any(w.startswith("Fence clipped") for w in geometry.overlap_warnings)
+    till = [p for p in geometry.polygons if p.lithology_code == "Till"]
+    sand = [p for p in geometry.polygons if p.lithology_code == "Sand"]
+    assert len(till) == 2 and all(p.is_pinch_out for p in till)
+    assert len(sand) == 1 and not sand[0].is_pinch_out
+    # B's logged Sand (RL 280.594-274.14) is fully covered on B's hole edge.
+    coverage = _logged_edge_coverage(geometry.polygons, "Sand", 13.0, 280.594, 274.14)
+    assert coverage == pytest.approx(1.0)
+
+
+def test_unit_order_and_code_only_crossings_draw_identically() -> None:
+    def signature(geometry) -> list[tuple[str, bool, float]]:
+        return sorted(
+            (p.lithology_code, p.is_pinch_out, round(p.polygon.area, 6)) for p in geometry.polygons
+        )
+
+    numbered = _contradicting_unit_order_geometry(with_unit_order=True)
+    plain = _contradicting_unit_order_geometry(with_unit_order=False)
+    assert signature(numbered) == signature(plain)
+
+
+def _ordered_rows_df(rows: list[tuple[str, float, float, float, str, int]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "hole_id": hole,
+                "x_profile": x,
+                "collar_elevation": 100.0,
+                "top_elevation": top,
+                "bottom_elevation": bottom,
+                "lithology_code": code,
+                "unit_order": order,
+            }
+            for hole, x, top, bottom, code, order in rows
+        ]
+    )
+
+
+def test_matching_unit_order_keys_that_cross_in_depth_are_unmatched() -> None:
+    """Same ``('order', n, code)`` keys in both holes, but B numbers against depth:
+    the crossing is judged on elevation, so the worse-ranked match is dropped."""
+    projected = _ordered_rows_df(
+        [
+            ("A", 0.0, 100.0, 99.0, "Clay", 1),
+            ("A", 0.0, 99.0, 90.0, "Sand", 2),
+            ("B", 50.0, 100.0, 91.0, "Sand", 2),
+            ("B", 50.0, 91.0, 90.0, "Clay", 1),
+        ]
+    )
+    summaries: list = []
+    clip_warnings: list[str] = []
+    polygons = build_stratigraphy(
+        projected, allow_pinch_outs=True, pair_summaries=summaries, clip_warnings=clip_warnings
+    )
+    sand = [p for p in polygons if p.lithology_code == "Sand"]
+    assert len(sand) == 1 and not sand[0].is_pinch_out
+    assert all(p.is_pinch_out for p in polygons if p.lithology_code == "Clay")
+    assert summaries[0].crossing_codes == ("Clay",)
+    assert clip_warnings == []
+    assert preview_correlation_health(projected)[0].crossing_codes == ("Clay",)
+
+
+def test_explicit_override_still_kept_when_unit_order_runs_against_depth() -> None:
+    projected = _ordered_rows_df(
+        [
+            ("A", 0.0, 100.0, 95.0, "Sand", 1),
+            ("A", 0.0, 95.0, 90.0, "Clay", 2),
+            ("B", 50.0, 100.0, 95.0, "Clay", 2),
+            ("B", 50.0, 95.0, 90.0, "Sand", 1),
+        ]
+    )
+    override = CorrelationOverride(
+        left_hole_id="A", right_hole_id="B", left_unit_order=1, right_unit_order=1
+    )
+    polygons = build_stratigraphy(
+        projected, allow_pinch_outs=True, correlation_overrides=(override,)
+    )
+    assert len([p for p in polygons if p.lithology_code == "Sand" and not p.is_pinch_out]) == 1
+
+
+def _zero_thickness_geometry(gravel_to: float):
+    from models import Collar, Lithology
+    from pipeline import compute_section_geometry
+
+    collars = [
+        Collar(hole_id="A", easting=0, northing=0, elevation=116.38, total_depth=3826.9),
+        Collar(hole_id="B", easting=500, northing=0, elevation=0.0, total_depth=1268.9),
+    ]
+    lithology = [
+        Lithology(
+            hole_id="A",
+            from_depth=5.63924,
+            to_depth=1780.90421,
+            lithology_code="Gravel",
+            unit_order=56,
+        ),
+        Lithology(
+            hole_id="B",
+            from_depth=4.94525,
+            to_depth=5.48206,
+            lithology_code="Sand",
+            unit_order=55,
+        ),
+        Lithology(
+            hole_id="B",
+            from_depth=5.48206,
+            to_depth=gravel_to,
+            lithology_code="Gravel",
+            unit_order=56,
+        ),
+        Lithology(
+            hole_id="B",
+            from_depth=1196.39943,
+            to_depth=1268.41425,
+            lithology_code="Gravel",
+            unit_order=80,
+        ),
+    ]
+    return compute_section_geometry(
+        collars, lithology, [(0, 0), (500, 0)], interpretation_mode="correlation_lines"
+    )
+
+
+def test_zero_thickness_interval_is_ignored_in_the_fence() -> None:
+    """A zero-thickness Gravel (from == to) matched to A's thick Gravel collapsed the
+    fill; the overlying logged Sand was clipped to 39% and left its hole edge."""
+    geometry = _zero_thickness_geometry(5.48206)
+    assert not any(w.startswith("Fence clipped") for w in geometry.overlap_warnings)
+    sand_cover = _logged_edge_coverage(geometry.polygons, "Sand", 500.0, -4.94525, -5.48206)
+    assert sand_cover == pytest.approx(1.0)
+    gravel_cover = _logged_edge_coverage(
+        geometry.polygons, "Gravel", 500.0, -1196.39943, -1268.41425
+    )
+    assert gravel_cover == pytest.approx(1.0)
+    assert _pairwise_overlap_area(geometry.polygons) == pytest.approx(0.0, abs=1e-6)
+    # Column data still carries the logged (zero-thickness) interval.
+    assert int((geometry.projected["hole_id"] == "B").sum()) == 3
+
+
+def test_zero_thickness_interval_keeps_mirror_symmetry() -> None:
+    import math
+
+    from shapely import affinity
+    from shapely.ops import unary_union
+
+    from models import Collar, Lithology
+    from pipeline import compute_section_geometry
+
+    a = (735.1829373653935, 834.5264509533242)
+    b = (83.33795035603674, 617.156654246884)
+    collars = [
+        Collar(hole_id="A", easting=a[0], northing=a[1], elevation=337.43738, total_depth=47.8392),
+        Collar(hole_id="B", easting=b[0], northing=b[1], elevation=460.32131, total_depth=25.6182),
+    ]
+    rows = [
+        ("B", 6.70574, 7.77022, "Clay", 9),
+        ("B", 8.44682, 9.17507, "Clay", 11),
+        ("A", 1.75257, 4.21963, "Silt", 2),
+        ("A", 4.21963, 4.21963, "Clay", 9),
+        ("A", 5.7836, 7.73197, "Till", 13),
+        ("A", 1382.00428, 1382.98649, "Clay", 23),
+    ]
+    lithology = [
+        Lithology(hole_id=h, from_depth=f, to_depth=t, lithology_code=c, unit_order=o)
+        for h, f, t, c, o in rows
+    ]
+    length = math.dist(a, b)
+    forward = compute_section_geometry(collars, lithology, [a, b])
+    backward = compute_section_geometry(collars, lithology, [b, a])
+    for code in ("Till", "Silt", "Clay"):
+        fwd = unary_union([p.polygon for p in forward.polygons if p.lithology_code == code])
+        rev = unary_union(
+            [
+                affinity.scale(p.polygon, xfact=-1, origin=(length / 2, 0))
+                for p in backward.polygons
+                if p.lithology_code == code
+            ]
+        )
+        assert fwd.symmetric_difference(rev).area == pytest.approx(0.0, abs=1e-3), code
+    assert forward.overlap_warnings == backward.overlap_warnings == ()

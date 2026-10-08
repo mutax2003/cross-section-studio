@@ -37,6 +37,9 @@ from projection import TransectGeometry
 
 logger = logging.getLogger(__name__)
 MAPPING_CONFIDENCE_THRESHOLD = 0.8
+# Intervals thinner than this are left out of the inter-hole fence by
+# ``stratigraphy.MIN_FENCE_THICKNESS_M`` (kept in sync; no engine import here).
+ZERO_THICKNESS_M = 1e-3
 
 COLLAR_ALIASES: dict[str, set[str]] = {
     "hole_id": {"hole_id", "hole", "bh_id", "borehole", "borehole_id", "id", "bh"},
@@ -442,7 +445,56 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
                 )
             )
 
+    issues.extend(_zero_thickness_issues(collar.hole_id, sorted_intervals))
+    against_depth = _unit_order_against_depth_issue(collar.hole_id, sorted_intervals)
+    if against_depth is not None:
+        issues.append(against_depth)
     return issues
+
+
+def _zero_thickness_issues(hole_id: str, intervals: Sequence[Lithology]) -> list[QualityIssue]:
+    """Warn for intervals with from_depth == to_depth (dropped from the fence)."""
+    return [
+        QualityIssue(
+            code="zero_thickness_interval",
+            message=(
+                f"{hole_id}: zero-thickness interval {interval.lithology_code} at "
+                f"{_m(interval.from_depth)} m (from_depth = to_depth) ignored in the fence — "
+                "fix to_depth or delete the row"
+            ),
+            severity=Severity.WARNING.value,
+            hole_id=hole_id,
+        )
+        for interval in intervals
+        if interval.to_depth - interval.from_depth < ZERO_THICKNESS_M
+    ]
+
+
+def _unit_order_against_depth_issue(
+    hole_id: str, intervals: Sequence[Lithology]
+) -> QualityIssue | None:
+    """Warn once per hole when unit_order decreases going down the hole.
+
+    The fence judges correlation crossings on depth, so contradictory numbering
+    makes numbered matches drop out as crossing pinch-outs.
+    """
+    numbered = [interval for interval in intervals if interval.unit_order is not None]
+    for upper, lower in zip(numbered, numbered[1:]):
+        if lower.from_depth < upper.to_depth - 0.01 or lower.from_depth <= upper.from_depth:
+            continue  # overlapping / same-top rows are reported elsewhere
+        if lower.unit_order < upper.unit_order:
+            return QualityIssue(
+                code="unit_order_against_depth",
+                message=(
+                    f"unit_order runs against depth in {hole_id}: {upper.lithology_code} "
+                    f"(unit_order {upper.unit_order}) at {_m(upper.from_depth)} m sits above "
+                    f"{lower.lithology_code} (unit_order {lower.unit_order}) at "
+                    f"{_m(lower.from_depth)} m — check numbering"
+                ),
+                severity=Severity.WARNING.value,
+                hole_id=hole_id,
+            )
+    return None
 
 
 def collars_use_placeholder_elevation(

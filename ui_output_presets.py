@@ -8,6 +8,63 @@ from typing import Literal
 InterpretationMode = Literal["interpolated", "correlation_lines", "borehole_only"]
 ElevationMode = Literal["absolute", "relative"]
 
+# Vertical exaggeration (VE) choice: "auto" fits the page and prints the VE
+# the figure really ends up with; a number draws exactly that VE.
+VE_AUTO = "auto"
+VEChoice = float | Literal["auto"]
+VE_CHOICES: tuple[VEChoice, ...] = (VE_AUTO, 1.0, 2.0, 5.0, 10.0, 20.0)
+DEFAULT_VE_CHOICE: VEChoice = VE_AUTO
+
+
+def normalize_ve_choice(value: object) -> VEChoice:
+    """Session / workbook value -> ``"auto"`` or a positive float (bad input -> auto)."""
+    if value is None:
+        return VE_AUTO
+    if isinstance(value, str):
+        text = value.strip().lower().rstrip("x×").strip()
+        if text in {"", "auto", "fit", "fit page", "auto (fit page)"}:
+            return VE_AUTO
+        value = text
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return VE_AUTO
+    if not number > 0 or number != number or number == float("inf"):
+        return VE_AUTO
+    return number
+
+
+def ve_choice_to_request(value: object) -> float | None:
+    """VE for ``SectionBuildRequest`` / ``build_cross_section``: None = auto."""
+    choice = normalize_ve_choice(value)
+    return None if choice == VE_AUTO else float(choice)
+
+
+def ve_choice_options(current: object = None) -> list[VEChoice]:
+    """Select options; a custom workbook value (e.g. 3×) is kept in the list."""
+    options = list(VE_CHOICES)
+    choice = normalize_ve_choice(current)
+    if choice != VE_AUTO and choice not in options:
+        options.append(choice)
+        options = [VE_AUTO, *sorted(o for o in options if o != VE_AUTO)]  # type: ignore[type-var]
+    return options
+
+
+def ve_choice_label(value: object) -> str:
+    """Sidebar label: "Auto (fit page)", "1× (true scale)", "5×"."""
+    choice = normalize_ve_choice(value)
+    if choice == VE_AUTO:
+        return "Auto (fit page)"
+    if choice == 1.0:
+        return "1× (true scale)"
+    return f"{choice:g}×"
+
+
+def ve_short_text(value: object) -> str:
+    """Compact VE for chips / alt text: "auto" or "5×"."""
+    choice = normalize_ve_choice(value)
+    return "auto (fit page)" if choice == VE_AUTO else f"{choice:g}×"
+
 
 @dataclass(frozen=True)
 class OutputPresetConfig:
@@ -20,7 +77,9 @@ class OutputPresetConfig:
     # Sample-figure profiles (GWM fence / P2 sticks). None = leave sidebar free.
     interpretation_mode: InterpretationMode | None = None
     elevation_mode: ElevationMode | None = None
-    vertical_exaggeration: float | None = None
+    # None = leave the sidebar choice alone; "auto" = seed Auto (fit page,
+    # still editable); a number = exact VE (locked on sample figures).
+    vertical_exaggeration: VEChoice | None = None
     show_water_elevation_labels: bool | None = None
     show_water_legend: bool | None = None
     show_dry_well_nm: bool | None = None
@@ -84,7 +143,8 @@ OUTPUT_PRESETS: dict[str, OutputPresetConfig] = {
         show_legend=False,
         interpretation_mode="interpolated",
         elevation_mode="absolute",
-        vertical_exaggeration=5.0,
+        # Fit the page; the band prints the true (measured) VE.
+        vertical_exaggeration=VE_AUTO,
         show_water_elevation_labels=True,
         show_water_legend=True,
         show_dry_well_nm=True,
@@ -103,6 +163,7 @@ OUTPUT_PRESETS: dict[str, OutputPresetConfig] = {
         show_legend=False,
         interpretation_mode="borehole_only",
         elevation_mode="relative",
+        # Client Figs 6/7: NO VERTICAL EXAGGERATION (drawn at exactly 1x).
         vertical_exaggeration=1.0,
         show_water_elevation_labels=False,
         show_water_legend=False,
@@ -126,7 +187,8 @@ OUTPUT_PRESETS: dict[str, OutputPresetConfig] = {
         show_legend=False,
         interpretation_mode="borehole_only",
         elevation_mode="absolute",
-        vertical_exaggeration=5.0,
+        # Fit the page; the band prints the true (measured) VE.
+        vertical_exaggeration=VE_AUTO,
         show_water_elevation_labels=True,
         show_water_legend=True,
         show_dry_well_nm=True,
@@ -224,8 +286,11 @@ def sidebar_visibility(preset: str) -> SidebarVisibility:
         pinch_outs_editable=not consulting,
         # report_preset (section sheet) and consulting layouts force it on.
         ground_surface_editable=not (config.report_preset or consulting),
+        # Only an exact VE is locked; an "auto" preset seeds Auto but stays editable.
         vertical_exaggeration_editable=not (
-            config.sample_figure_profile and config.vertical_exaggeration is not None
+            config.sample_figure_profile
+            and config.vertical_exaggeration is not None
+            and config.vertical_exaggeration != VE_AUTO
         ),
         # Generic consulting forces groundwater chrome; sample figures fix it.
         groundwater_editable=not consulting,
@@ -261,7 +326,7 @@ def locked_figure_summary(preset: str) -> str | None:
     if not visibility.ground_surface_editable:
         parts.append("ground surface shown")
     if not visibility.vertical_exaggeration_editable and config.vertical_exaggeration is not None:
-        parts.append(f"vertical exaggeration {config.vertical_exaggeration:g}×")
+        parts.append(f"vertical exaggeration exactly {ve_short_text(config.vertical_exaggeration)}")
     if not visibility.chart_legend_editable:
         parts.append("lithology legend in the title block")
     if not parts:

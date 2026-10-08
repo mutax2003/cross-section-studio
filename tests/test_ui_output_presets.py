@@ -4,10 +4,18 @@ from __future__ import annotations
 
 from app_build import effective_render_options
 from ui_output_presets import (
-    OUTPUT_PRESETS,
     FIGURE_PRESET_IDS,
+    OUTPUT_PRESETS,
+    VE_AUTO,
+    locked_figure_summary,
     normalize_figure_preset,
+    normalize_ve_choice,
     resolve_output_preset,
+    sidebar_visibility,
+    ve_choice_label,
+    ve_choice_options,
+    ve_choice_to_request,
+    ve_short_text,
 )
 
 
@@ -29,7 +37,9 @@ def test_gwm_fence_preset_matches_sample_defaults() -> None:
     assert config.render_layout == "consulting_section"
     assert config.interpretation_mode == "interpolated"
     assert config.elevation_mode == "absolute"
-    assert config.vertical_exaggeration == 5.0
+    # GWM-style sheets fit the page; the band prints the measured VE.
+    assert config.vertical_exaggeration == VE_AUTO
+    assert sidebar_visibility("gwm_fence").vertical_exaggeration_editable
     assert config.interpolate_water_table is True
     assert config.show_water_elevation_labels is True
     assert config.show_dry_well_nm is True
@@ -43,7 +53,9 @@ def test_p2_chemistry_sticks_preset_matches_sample_defaults() -> None:
     assert config.render_layout == "consulting_section"
     assert config.interpretation_mode == "borehole_only"
     assert config.elevation_mode == "relative"
+    # Client P2 figures: NO VERTICAL EXAGGERATION, drawn at exactly 1x (locked).
     assert config.vertical_exaggeration == 1.0
+    assert not sidebar_visibility("p2_chemistry_sticks").vertical_exaggeration_editable
     assert config.interpolate_water_table is False
     assert config.show_water_legend is False
     assert config.prefer_chemistry is True
@@ -171,3 +183,21 @@ def test_output_style_names_are_plain() -> None:
     assert locked_groundwater_summary("section_sheet") is None
     summary = locked_groundwater_summary("consulting_report")
     assert summary and summary.startswith("Set by Consulting report:")
+
+
+def test_ve_choice_helpers() -> None:
+    assert normalize_ve_choice(None) == VE_AUTO
+    assert normalize_ve_choice("auto") == VE_AUTO
+    assert normalize_ve_choice("5") == 5.0
+    assert normalize_ve_choice("5x") == 5.0
+    assert normalize_ve_choice("-2") == VE_AUTO
+    assert ve_choice_to_request(VE_AUTO) is None
+    assert ve_choice_to_request(2.0) == 2.0
+    assert ve_choice_label(VE_AUTO) == "Auto (fit page)"
+    assert ve_choice_label(1.0) == "1× (true scale)"
+    assert ve_choice_label(5.0) == "5×"
+    options = ve_choice_options(3.0)
+    assert options[0] == VE_AUTO and 3.0 in options and 5.0 in options
+    assert ve_short_text(None) == "auto (fit page)"
+    assert ve_short_text(5.0) == "5×"
+    assert "exactly 1×" in (locked_figure_summary("p2_chemistry_sticks") or "")

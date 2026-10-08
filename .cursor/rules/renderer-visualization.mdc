@@ -101,7 +101,7 @@ Fence-first layout matching consulting cross-section figures (`render_layout="co
 9. **Water table** — inverted triangles + compact numeric RL (no `masl` suffix on the plot); solid segments when ≥2 measured holes; **NM** only when dry-well labeling is on and water data exist (P2 borehole-only with no Water sheet turns NM off)
 10. **Faults / unconformities / parameter markers** — consulting `borehole_only` uses red numeric labels (`parameter_draw_markers=False`)
 
-**Subtitle band:** section label, `SCALE {map_scale}`, `{VE}× VERTICAL EXAGGERATION`, graphic scale bar.
+**Subtitle band:** section label, `SCALE {map_scale}`, VE caption (`{VE}× VERTICAL EXAGGERATION` when exact, `VERTICAL EXAGGERATION ≈{measured}×` in auto, `NO VERTICAL EXAGGERATION` at 1×), graphic scale bar.
 
 **Title block:** lithology swatches + GW symbol key + project metadata (`ConsultingTitleBlock` via `SectionBuildRequest.consulting_title_block`).
 
@@ -112,7 +112,7 @@ Streamlit: sidebar **Output style** selectbox preset **Consulting report (title 
 
 - Fill polygons via `matplotlib.collections.PolyCollection` using `constants.get_lithology_style()` (BH Log palette)
 - User overrides via `paths.lithology_styles_path()` (user data dir, not repo `data/`)
-- Expose **`vertical_exaggeration`** (Y-axis multiplier) and **`scale_bar_length_m`**
+- Expose **`vertical_exaggeration`** and **`scale_bar_length_m`**. `None` = auto: data at true scale, `aspect="auto"`, captions are `renderer_common.VECaptionText` (measured from the final axes box at draw time). A number = exact: data stored at ×VE, `renderer_common.apply_ve_aspect` locks aspect 1 / adjustable box (consulting twin RL axis follows the main box). Never `ax.set_aspect("auto")` directly in a layout — call `self._apply_ve_aspect(ax)`.
 - Hatch patterns toggled via `show_hatches` (applies under consulting palette too; parity scripts use hatches on)
 
 ## Y-Axis Modes

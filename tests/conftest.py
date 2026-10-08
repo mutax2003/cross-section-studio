@@ -59,7 +59,7 @@ def run_pipeline(
     lithologies: Sequence[Lithology],
     transect_points: Sequence[tuple[float, float]],
     *,
-    vertical_exaggeration: float = 1.0,
+    vertical_exaggeration: float | None = None,
     show_hatches: bool = True,
     show_legend: bool = True,
     interpretation_mode: str = "interpolated",

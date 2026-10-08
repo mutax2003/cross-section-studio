@@ -23,7 +23,7 @@ Inter-hole fills are a **rule-based fence** (linear contacts, midpoint pinch-out
 - **Status strip** — shows the figure title, Up to date / Out of date, and the **Generate section** button (`Alt+Shift+G`); use it after changing the figure style or section line.
 - **Plan mini-map** — collar scatter in Configure mirrors a plan-view pick for fence orientation.
 - **Hole order** — numbered sequence with ↑/↓ matches Strater-style hole ordering for A–A′.
-- **Export ribbon** — chips show preset, VE, hole count, transect, up to date / out of date, PNG/PDF readiness.
+- **Export ribbon** — chips show preset, VE (`auto (fit page)` or the exact value), hole count, transect, up to date / out of date, PNG/PDF readiness.
 - **Sidebar sections** — Data, Figure style, Section line, Title block (consulting styles), Export, Advanced. Controls an output style doesn't use are hidden with a "Set by <style>" note.
 
 ## Output presets
@@ -36,7 +36,7 @@ Inter-hole fills are a **rule-based fence** (linear contacts, midpoint pinch-out
 
 - Water table polylines and chemistry “fences” are **schematic connectors** between measured sticks — **not** a potentiometric surface or plume envelope. Figure footers append overlay disclaimers when those layers plot.
 - Optional Water column `status`: `measured` (default), `dry`, or `nm` (not measured). Prefer this over omitting rows when a well was visited but dry/NM.
-- Chemistry label colours use Configure green/yellow thresholds (defaults resemble chloride mg/L scales — retune per parameter). Turning on **interpolate chemistry between holes** draws depth-matched segments only; keep it off for P2 stick-style figures.
+- Chemistry label colours: **All black**, **All red (client P2 style)**, or **Green / orange / red thresholds** (defaults green ≤ 100, orange 100–250, red > 250 in the parameter's units, e.g. chloride mg/kg — retune per parameter). The threshold key prints below the distance label. Turning on **interpolate chemistry between holes** draws depth-matched segments only; keep it off for P2 stick-style figures.
 - When water connectors plot, adjacent measured heads may show a schematic **i=Δh/Δx** label. Validate warns if \|i\| is unrealistically large.
 
 ## Keyboard shortcuts

@@ -471,7 +471,8 @@ class SectionFigureMetadata(BaseModel, frozen=True):
 
     coordinate_reference: str = ""
     elevation_datum: str = ""
-    vertical_exaggeration: float = 1.0
+    # None = auto (fit page): footers print the VE measured on the drawn figure.
+    vertical_exaggeration: float | None = None
     transect_azimuth_deg: float | None = None
     hole_count: int = 0
     max_offset_m: float = 0.0

@@ -44,13 +44,18 @@ from models import ConsultingTitleBlock
 from pipeline import DEFAULT_UNCERTAINTY_SPACING_M
 from render_theme import water_has_multiple_series
 from ui_output_presets import (
+    DEFAULT_VE_CHOICE,
     INTERPRETATION_LABELS,
     OUTPUT_PRESET_LABELS,
     locked_figure_summary,
     locked_groundwater_summary,
+    normalize_ve_choice,
     output_preset_short_name,
     resolve_output_preset,
     sidebar_visibility,
+    ve_choice_label,
+    ve_choice_options,
+    ve_choice_to_request,
 )
 
 
@@ -200,7 +205,8 @@ class SidebarState:
     show_legend: bool
     section_title: str
     consulting_title_block: ConsultingTitleBlock | None
-    vertical_exaggeration: float
+    # None = auto (fit page, caption prints the measured VE); else exact VE.
+    vertical_exaggeration: float | None
     transect_mode: str
     offset_warning_m: float
     max_offset_for_interpolation_m: float
@@ -267,18 +273,43 @@ def _render_export_framing_panel() -> None:
         options=list(_FILENAME_PATTERN_LABELS),
         format_func=lambda value: _FILENAME_PATTERN_LABELS.get(value, value),
         key="export_filename_pattern",
+        help="How downloaded files are named, e.g. from the section title or as project_figure_section_rev.",
     )
-    st.text_input("Revision / draft tag", key="export_revision", placeholder="Rev A or DRAFT")
-    st.number_input("Image resolution (DPI)", min_value=150, max_value=600, step=50, key="export_dpi")
-    st.toggle("Section only (no title block or legend)", key="export_fence_only")
-    st.toggle("DRAFT watermark on PNG and PDF", key="export_show_draft_watermark")
+    st.text_input(
+        "Revision / draft tag",
+        key="export_revision",
+        placeholder="Rev A or DRAFT",
+        help="Added to file names (and the title block REVISED field when blank).",
+    )
+    st.number_input(
+        "Image resolution (DPI)",
+        min_value=150,
+        max_value=600,
+        step=50,
+        key="export_dpi",
+        help="PNG resolution. 300 DPI suits reports; higher values make larger, slower files.",
+    )
+    st.toggle(
+        "Section only (no title block or legend)",
+        key="export_fence_only",
+        help="Exports just the cross-section drawing, e.g. to paste into a CAD sheet.",
+    )
+    st.toggle(
+        "DRAFT watermark on PNG and PDF",
+        key="export_show_draft_watermark",
+        help="Prints a light DRAFT watermark and adds DRAFT to file names.",
+    )
     layer_cols = st.columns(2)
     with layer_cols[0]:
-        st.toggle("Include title block", key="export_include_title_block")
-        st.toggle("Include lithology legend", key="export_include_legend")
+        st.toggle("Include title block", key="export_include_title_block", help="Project / figure details box on the sheet.")
+        st.toggle("Include lithology legend", key="export_include_legend", help="Key of soil and rock patterns shown.")
     with layer_cols[1]:
-        st.toggle("Include water table", key="export_include_water_table")
-        st.toggle("Include QA notes (PDF)", key="export_include_qa_footer")
+        st.toggle("Include water table", key="export_include_water_table", help="Groundwater lines and labels.")
+        st.toggle(
+            "Include QA notes (PDF)",
+            key="export_include_qa_footer",
+            help="Adds the data-check notes (overlaps, gaps, crossing layers) to the PDF.",
+        )
     st.text_input(
         "Save exports to folder (optional)",
         key="export_output_dir",
@@ -291,11 +322,11 @@ def _render_export_layout_advanced() -> None:
     st.markdown("**Page margins and crop**")
     margin_cols = st.columns(2)
     with margin_cols[0]:
-        st.number_input("Top margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_top_in")
-        st.number_input("Left margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_left_in")
+        st.number_input("Top margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_top_in", help="White space around the drawing on the exported page.")
+        st.number_input("Left margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_left_in", help="White space around the drawing on the exported page.")
     with margin_cols[1]:
-        st.number_input("Bottom margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_bottom_in")
-        st.number_input("Right margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_right_in")
+        st.number_input("Bottom margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_bottom_in", help="White space around the drawing on the exported page.")
+        st.number_input("Right margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_right_in", help="White space around the drawing on the exported page.")
     with st.expander("Crop to an area (section distance / elevation)", expanded=False):
         crop_cols = st.columns(2)
         with crop_cols[0]:
@@ -448,7 +479,7 @@ def render_sidebar() -> SidebarState:
             if preset_config.elevation_mode is not None:
                 st.session_state.elevation_mode = preset_config.elevation_mode
             if preset_config.vertical_exaggeration is not None:
-                st.session_state.vertical_exaggeration = float(
+                st.session_state.vertical_exaggeration = normalize_ve_choice(
                     preset_config.vertical_exaggeration
                 )
             st.session_state._synced_output_preset = output_preset
@@ -494,21 +525,34 @@ def render_sidebar() -> SidebarState:
             _keep_widget_state("show_ground_surface")
             show_ground_surface = True
 
-        ve_default = float(preset_config.vertical_exaggeration or 5.0)
+        ve_default = normalize_ve_choice(
+            preset_config.vertical_exaggeration
+            if preset_config.vertical_exaggeration is not None
+            else DEFAULT_VE_CHOICE
+        )
         if "vertical_exaggeration" not in st.session_state:
             st.session_state.vertical_exaggeration = ve_default
-        if visibility.vertical_exaggeration_editable:
-            vertical_exaggeration = st.slider(
-                "Vertical exaggeration",
-                min_value=1.0,
-                max_value=20.0,
-                step=0.5,
-                key="vertical_exaggeration",
-                help="How many times the vertical scale is stretched compared with the horizontal.",
+        else:
+            # Older sessions / workbook seeds hold "5" or 5.0: keep a valid option.
+            st.session_state.vertical_exaggeration = normalize_ve_choice(
+                st.session_state.vertical_exaggeration
             )
+        if visibility.vertical_exaggeration_editable:
+            ve_choice = st.selectbox(
+                "Vertical exaggeration",
+                options=ve_choice_options(st.session_state.vertical_exaggeration),
+                format_func=ve_choice_label,
+                key="vertical_exaggeration",
+                help=(
+                    "Auto fits the section to the page and prints the vertical exaggeration "
+                    "it really ends up with. A number draws exactly that exaggeration "
+                    "(1× = true scale); the plot shrinks inside its frame to keep it."
+                ),
+            )
+            vertical_exaggeration = ve_choice_to_request(ve_choice)
         else:
             _keep_widget_state("vertical_exaggeration")
-            vertical_exaggeration = float(preset_config.vertical_exaggeration or ve_default)
+            vertical_exaggeration = ve_choice_to_request(ve_default)
 
         figure_summary = locked_figure_summary(output_preset)
         if figure_summary:
@@ -627,7 +671,10 @@ def render_sidebar() -> SidebarState:
             st.toggle(
                 "Show vertical exaggeration note",
                 key="show_ve_annotation",
-                help="Prints the vertical exaggeration (e.g. 'Vertical exaggeration 5×') on the figure.",
+                help=(
+                    "Prints the vertical exaggeration on the figure: the chosen value, "
+                    "or with Auto the value measured on the page (e.g. 'V.E. ≈2.2×')."
+                ),
             )
             if visibility.parameter_text_block_editable:
                 st.toggle(
@@ -675,6 +722,7 @@ def render_sidebar() -> SidebarState:
             options=list(_TRANSECT_MODE_LABELS),
             format_func=lambda value: _TRANSECT_MODE_LABELS.get(value, value),
             key="transect_definition_mode",
+            help="Pick holes in order, use a suggested line through the holes, or type map coordinates.",
         )
         _apply_pending_offset_thresholds()
         offset_warning_m = st.number_input(
@@ -838,7 +886,12 @@ def _render_fill_style_editor() -> None:
     if not style_codes:
         st.info("Load a workbook to edit lithology colours.")
         return
-    style_code = st.selectbox("Lithology code", options=style_codes, key="style_editor_code")
+    style_code = st.selectbox(
+        "Lithology code",
+        options=style_codes,
+        key="style_editor_code",
+        help="Soil / rock code from your workbook whose fill you want to change.",
+    )
     current_style = get_lithology_style(style_code)
     style_color = st.color_picker("Fill colour", value=current_style.color, key="style_editor_color")
     style_hatch_options = sorted(set(USGS_LITHOLOGY_HATCHES.values()))
@@ -846,6 +899,7 @@ def _render_fill_style_editor() -> None:
         "Hatch pattern",
         options=style_hatch_options,
         format_func=lambda hatch: hatch or "None (solid fill)",
+        help="Pattern drawn over the fill colour (template 261002 marks by default).",
         index=style_hatch_options.index(current_style.hatch)
         if current_style.hatch in style_hatch_options
         else 0,
@@ -1100,8 +1154,8 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
                 context = _report_context_from_selection(
                     st.session_state.parse_result,
                     report_holes,
-                    vertical_exaggeration=float(
-                        st.session_state.get("vertical_exaggeration", 5.0)
+                    vertical_exaggeration=ve_choice_to_request(
+                        st.session_state.get("vertical_exaggeration", DEFAULT_VE_CHOICE)
                     ),
                     map_scale=map_scale,
                     section_title=label_for_context,
@@ -1112,7 +1166,9 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
                     "map_scale": map_scale,
                     "section_label": label_for_context,
                     "workbook_name": st.session_state.get("uploaded_name", ""),
-                    "vertical_exaggeration": 5.0,
+                    "vertical_exaggeration": ve_choice_to_request(
+                        st.session_state.get("vertical_exaggeration", DEFAULT_VE_CHOICE)
+                    ),
                 }
             st.session_state.ai_report_suggestion = (
                 _build_assistant().suggest_report_metadata(context)

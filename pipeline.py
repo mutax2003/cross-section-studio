@@ -322,6 +322,14 @@ def compute_section_geometry(
 
 
 
+def _check_vertical_exaggeration(vertical_exaggeration: float | None) -> None:
+    """``None`` = auto (fit page, caption prints the measured VE); else exact VE."""
+    if vertical_exaggeration is None:
+        return
+    if not math.isfinite(vertical_exaggeration) or vertical_exaggeration <= 0:
+        raise ValueError("vertical_exaggeration must be a positive finite number (or None for auto)")
+
+
 def _check_render_layout(render_layout: str) -> None:
     """Reject unknown layouts; profile_for_layout would silently fall back."""
     if render_layout not in get_args(LayoutMode):
@@ -335,7 +343,7 @@ def build_cross_section(
     lithologies: Sequence[Lithology],
     transect_points: Sequence[tuple[float, float]],
     *,
-    vertical_exaggeration: float = 1.0,
+    vertical_exaggeration: float | None = None,
     show_hatches: bool = True,
     show_legend: bool = True,
     title: str = "Borehole Cross-Section",
@@ -393,11 +401,15 @@ def build_cross_section(
     vertical_gradients: Sequence[VerticalGradient] | None = None,
     export_framing: ExportFramingConfig | None = None,
 ) -> CrossSectionResult:
-    """Project, build stratigraphy, render. Returns ``CrossSectionResult`` (also unpackable as a 7-tuple)."""
+    """Project, build stratigraphy, render. Returns ``CrossSectionResult`` (also unpackable as a 7-tuple).
+
+    ``vertical_exaggeration``: ``None`` (default) = auto — the section fills the
+    page and every VE caption prints the true VE measured after final layout;
+    a number draws exactly that VE (plot box locked, centred in its frame).
+    """
     export_formats = _normalize_export_formats(export_formats)
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
-    if not math.isfinite(vertical_exaggeration) or vertical_exaggeration <= 0:
-        raise ValueError("vertical_exaggeration must be a positive finite number")
+    _check_vertical_exaggeration(vertical_exaggeration)
     if not math.isfinite(uncertainty_spacing_m) or uncertainty_spacing_m <= 0:
         raise ValueError("uncertainty_spacing_m must be a positive finite number")
     if not math.isfinite(uncertainty_offset_m) or uncertainty_offset_m <= 0:
@@ -478,7 +490,7 @@ def render_cross_section_from_geometry(
     geometry: SectionGeometry,
     transect_points: Sequence[tuple[float, float]],
     *,
-    vertical_exaggeration: float = 1.0,
+    vertical_exaggeration: float | None = None,
     show_hatches: bool = True,
     show_legend: bool = True,
     title: str = "Borehole Cross-Section",
@@ -536,8 +548,7 @@ def render_cross_section_from_geometry(
     """
     export_formats = _normalize_export_formats(export_formats)
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
-    if not math.isfinite(vertical_exaggeration) or vertical_exaggeration <= 0:
-        raise ValueError("vertical_exaggeration must be a positive finite number")
+    _check_vertical_exaggeration(vertical_exaggeration)
     if not math.isfinite(uncertainty_spacing_m) or uncertainty_spacing_m <= 0:
         raise ValueError("uncertainty_spacing_m must be a positive finite number")
     if not math.isfinite(uncertainty_offset_m) or uncertainty_offset_m <= 0:

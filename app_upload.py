@@ -417,10 +417,10 @@ def apply_pending_project_seed() -> None:
     for key, value in pending.items():
         st.session_state[key] = value
     if ve_raw is not None:
-        try:
-            st.session_state.vertical_exaggeration = float(ve_raw)
-        except ValueError:
-            pass
+        from ui_output_presets import normalize_ve_choice
+
+        # "5" -> exact 5x; "auto" (or anything unreadable) -> Auto (fit page).
+        st.session_state.vertical_exaggeration = normalize_ve_choice(ve_raw)
 
 
 def handle_workbook_upload(

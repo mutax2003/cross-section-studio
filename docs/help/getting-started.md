@@ -41,7 +41,7 @@ Inter-hole fills are a **rule-based 2D fence** (linear contacts, midpoint pinch-
 ## Configure extras
 
 - **Section (from workbook Sections tab)** — when your workbook has a Sections tab, pick a named line to preview it; the batch ZIP exports every line.
-- **Chemistry value labels** — colour each value in the workbook (`label_color`: green / red / black / orange; blue is reserved for groundwater) or use green / orange / red thresholds; choose a readability style (plain, white box, coloured dot + black text, outlined) for hatched fills. Labels never overlap and stay beside their own borehole.
+- **Chemistry value labels** — colour each value in the workbook (`label_color`: green / red / black / orange; blue is reserved for groundwater) or use green / orange / red thresholds; choose a readability style for hatched fills — **Clear strip beside borehole** (default: values sit on a clean white strip right of the column, no hatching under them), plain, white box, coloured dot + black text, or outlined. Labels never overlap, never sit on a borehole column, and stay beside their own borehole in depth order; a value moved away from its reading gets a thin leader line. In threshold mode the reading dots take the same green / orange / red as their values, and the key sits under the distance label.
 - **Preview size** — Fit width / 100 % / 150 % above the figure; the frame scrolls so small labels can be checked before export.
 - **Confirm before discarding** — Clear workbook and Try sample project ask first when a generated section would be lost.
 - **Upload limit** — 50 MB per workbook; sheets over 200,000 rows are refused (delete empty formatted rows).

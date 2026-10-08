@@ -43,6 +43,7 @@ from ui_helpers import (
     preview_img_style,
     svg_display_meta,
 )
+from ui_output_presets import ve_short_text
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +225,7 @@ def _render_metric_card(value: str | int, label: str, tone: str = "ok") -> None:
 def profile_chips_html(
     *,
     interpretation_mode: str,
-    vertical_exaggeration: float,
+    vertical_exaggeration: float | None,
     hole_count: int | None,
     polygon_count: int | None,
     is_stale: bool,
@@ -241,7 +242,7 @@ def profile_chips_html(
     }.get(interpretation_mode, "Interpolated fence")
     chips = [
         f'<span class="chip brand">{escape_html(preset_label or mode_label)}</span>',
-        f'<span class="chip">VE {escape_html(f"{vertical_exaggeration:g}")}×</span>',
+        f'<span class="chip">VE {escape_html(ve_short_text(vertical_exaggeration))}</span>',
     ]
     if hole_count is not None:
         chips.append(f'<span class="chip">{escape_html(hole_count)} holes</span>')
@@ -697,7 +698,7 @@ def _report_context_from_selection(
     parse_result: ParseResult,
     hole_ids: Sequence[str],
     *,
-    vertical_exaggeration: float,
+    vertical_exaggeration: float | None,
     map_scale: str,
     section_title: str,
 ) -> dict[str, object]:

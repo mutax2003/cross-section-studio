@@ -167,6 +167,7 @@ class ChartLayoutMixin:
             fig, ax = plt.subplots(figsize=(fig_width, 6.8))
             fig.patch.set_facecolor(FIGURE_BG)
             ax.set_facecolor(AXES_BG)
+            self._ve_main_ax = ax
 
             if lithology_codes is None:
                 lithology_codes = collect_lithology_codes(projected_df, polygons)
@@ -261,6 +262,8 @@ class ChartLayoutMixin:
                 self._header_labels.append(header)
 
             self._draw_scale_bar(ax)
+            # The chart has no title block: the VE note is its only VE caption.
+            self._draw_ve_annotation(ax)
             if self.show_legend and lithology_codes:
                 self._draw_legend(ax, style_cache, lithology_codes, polygons)
                 self._extend_chart_legend(ax, hole_summary, water_levels, profile_lookup)
@@ -278,7 +281,7 @@ class ChartLayoutMixin:
             # Room for up to two tiers of 3-line headers between plot and title;
             # _ChartTitleLayout re-measures at draw time (export page sizes).
             ax.set_title(self.title, pad=72, **_TITLE_KWARGS)
-            ax.set_aspect("auto")
+            self._apply_ve_aspect(ax)
             ax.grid(True, linestyle="--", alpha=0.35, color=GRID_COLOR, zorder=0)
             for spine in ax.spines.values():
                 spine.set_color("#CBD5E1")

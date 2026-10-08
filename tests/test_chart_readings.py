@@ -110,7 +110,8 @@ def test_chart_layout_honours_depth_below_collar_mode() -> None:
         assert y_lo <= 0.0 < y_hi
         # Scale bar text stays at the visual bottom (numerically deep end).
         bar = next(t for t in ax.texts if t.get_text().endswith(" m") and "TD" not in t.get_text())
-        assert bar.get_position()[1] > 0.5 * y_hi
+        # The label is offset in points from the bar (anchored at ``xy``).
+        assert bar.xy[1] > 0.5 * y_hi
     finally:
         import matplotlib.pyplot as plt
 

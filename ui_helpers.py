@@ -327,7 +327,7 @@ def export_metadata_payload(
     *,
     section_title: str,
     preset_label: str | None,
-    vertical_exaggeration: float,
+    vertical_exaggeration: float | None,
     hole_count: int | None,
     transect_label: str | None,
     overlap_warnings: Sequence[str],

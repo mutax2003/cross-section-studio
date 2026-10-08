@@ -60,6 +60,10 @@ Validate / Configure guidance only (never changes geometry). Set `GROQ_API_KEY` 
 
 Full schemas: [`docs/workbook-format.md`](docs/workbook-format.md). Short in-app guide: Help → **Workbook & data entry**.
 
+### Vertical exaggeration
+
+Sidebar **Vertical exaggeration** defaults to **Auto (fit page)**: the section fills its frame and every caption (consulting band, `V.E.` note, footer `VE:`) prints the true VE the printed figure ends up with, measured after final layout and re-measured for each export page (letter / tabloid, portrait / landscape), e.g. `VERTICAL EXAGGERATION ≈2.2×`. Choosing a number (1× true scale, 2×, 5×, 10×, 20×) draws exactly that VE on every page — the plot box shrinks inside its frame (centred) and the caption prints the chosen value. Workbook `Project.vertical_exaggeration` (`5`, or `auto`) seeds the choice. API: `build_cross_section(vertical_exaggeration=None)` = auto, a number = exact.
+
 ## Windows desktop
 
 ```powershell

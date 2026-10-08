@@ -94,8 +94,13 @@ def test_pinch_out_triangle_apex() -> None:
     apex = Point(25.0, 92.5)
     assert clay.polygon.buffer(0.01).contains(apex)
 
-    expected_area = 0.5 * (95.0 - 85.0) * 25.0
-    assert clay.polygon.area == pytest.approx(expected_area)
+    # Clay (left only) and Silt (right only) are both base units under the matched
+    # Sandstone: they meet along a facies change at mid-span and fill down to the
+    # base line between the hole bottoms (85 -> 80) instead of tapering to a tip.
+    assert clay.polygon.area == pytest.approx(10.0 * 25.0)
+    silt = next(item for item in polygons if item.lithology_code == "Silt")
+    assert silt.is_pinch_out and silt.polygon.area == pytest.approx(10.0 * 25.0)
+    assert clay.polygon.intersection(silt.polygon).length == pytest.approx(10.0)  # 92.5 -> 82.5
 
 
 def test_pinch_out_uses_elevation_neighbors_when_collars_differ() -> None:
@@ -1136,3 +1141,188 @@ def test_dedupe_vertices_drops_float_noise() -> None:
         (1.0, 1.0),
         (0.0, 1.0),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Single-bounded pinch-outs (base / top units) tile against the fence base / top
+# ---------------------------------------------------------------------------
+
+
+def _fence_envelope_gap_and_overlap(
+    polygons: list[GeologicalPolygon], rows: list[tuple[str, float, float, float, str]]
+) -> tuple[float, float]:
+    """Uncovered and doubly-covered area per adjacent pair, inside the envelope bounded
+    by the line joining hole tops and the base line joining hole bottoms."""
+    holes: dict[str, tuple[float, float, float]] = {}
+    for hole, x, top, bottom, _code in rows:
+        _x, hole_top, hole_bottom = holes.get(hole, (x, top, bottom))
+        holes[hole] = (x, max(hole_top, top), min(hole_bottom, bottom))
+    ordered = sorted(holes.items(), key=lambda item: item[1][0])
+    gap = overlap = 0.0
+    for (left, (x0, top0, bot0)), (right, (x1, top1, bot1)) in zip(ordered, ordered[1:]):
+        in_pair = [p for p in polygons if p.hole_pair == (left, right)]
+        gap += _fence_gap_area(in_pair, x0, x1, (top0, top1), (bot0, bot1))
+        overlap += _pairwise_overlap_area(in_pair)
+    return gap, overlap
+
+
+def _mirror_rows(
+    rows: list[tuple[str, float, float, float, str]], span: float
+) -> list[tuple[str, float, float, float, str]]:
+    return [(hole, span - x, top, bottom, code) for hole, x, top, bottom, code in rows]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_opposing_base_units_meet_at_facies_change_without_gap(reverse: bool) -> None:
+    """Regression (client B-B' BH23-03 / 2017-BH12): the bottom unit changes lithology
+    between holes under a shared contact. The two one-sided wedges used to taper to
+    the midpoint and leave a white triangle down to the base line."""
+    rows = [
+        ("A", 0.0, 100.0, 95.0, "Clay Loam"),
+        ("A", 0.0, 95.0, 85.0, "Sandy Clay Loam"),
+        ("B", 50.0, 100.0, 92.0, "Clay Loam"),
+        ("B", 50.0, 92.0, 88.0, "Sandy Clay"),
+    ]
+    if reverse:
+        rows = _mirror_rows(rows, 50.0)
+    polygons = build_stratigraphy(_rows_df(rows), allow_pinch_outs=True)
+    gap, overlap = _fence_envelope_gap_and_overlap(polygons, rows)
+    assert gap == pytest.approx(0.0, abs=1e-6)
+    assert overlap == pytest.approx(0.0, abs=1e-6)
+    assert detect_polygon_overlaps(polygons) == []
+    _assert_pinch_outs_attached(polygons, {"A": rows[0][1], "B": rows[2][1]})
+    left = next(p for p in polygons if p.lithology_code == "Sandy Clay Loam").polygon
+    right = next(p for p in polygons if p.lithology_code == "Sandy Clay").polygon
+    # Vertical facies boundary at mid-span from the contact (93.5) to the base (86.5).
+    shared = left.intersection(right)
+    assert shared.length == pytest.approx(7.0)
+    assert shared.bounds[0] == pytest.approx(25.0) and shared.bounds[2] == pytest.approx(25.0)
+    # The matched Clay Loam above stays a straight quadrilateral.
+    clay_loam = next(p for p in polygons if p.lithology_code == "Clay Loam")
+    assert not clay_loam.is_pinch_out and len(clay_loam.polygon.exterior.coords) == 5
+
+
+def test_opposing_base_units_stack_proportionally() -> None:
+    """Several unmatched base units per hole keep their thickness ratios across the
+    region and still tile with the opposite hole's units."""
+    rows = [
+        ("A", 0.0, 100.0, 90.0, "Clay"),
+        ("A", 0.0, 90.0, 86.0, "Silt"),
+        ("A", 0.0, 86.0, 80.0, "Gravel"),
+        ("B", 40.0, 100.0, 94.0, "Clay"),
+        ("B", 40.0, 94.0, 92.0, "Sand"),
+        ("B", 40.0, 92.0, 84.0, "Till"),
+        ("B", 40.0, 84.0, 83.0, "Bedrock"),
+    ]
+    polygons = build_stratigraphy(_rows_df(rows), allow_pinch_outs=True)
+    gap, overlap = _fence_envelope_gap_and_overlap(polygons, rows)
+    assert gap == pytest.approx(0.0, abs=1e-6)
+    assert overlap == pytest.approx(0.0, abs=1e-6)
+    _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 40.0})
+    silt = next(p for p in polygons if p.lithology_code == "Silt").polygon
+    # Silt is 40% of A's 10 m base column; at mid-span the column is 92 -> 81.5 thick.
+    assert silt.bounds[2] == pytest.approx(20.0)
+    assert silt.intersection(LineString([(20.0, 0.0), (20.0, 200.0)])).length == pytest.approx(
+        0.4 * 10.5
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_opposing_top_units_meet_at_facies_change_without_gap(reverse: bool) -> None:
+    """Top units differ (Fill vs Topsoil) above a shared Clay: they tile the region
+    between the ground line (hole tops) and the Clay top."""
+    rows = [
+        ("A", 0.0, 101.0, 98.0, "Fill"),
+        ("A", 0.0, 98.0, 85.0, "Clay"),
+        ("B", 30.0, 99.5, 99.0, "Topsoil"),
+        ("B", 30.0, 99.0, 82.0, "Clay"),
+    ]
+    if reverse:
+        rows = _mirror_rows(rows, 30.0)
+    polygons = build_stratigraphy(_rows_df(rows), allow_pinch_outs=True)
+    gap, overlap = _fence_envelope_gap_and_overlap(polygons, rows)
+    assert gap == pytest.approx(0.0, abs=1e-6)
+    assert overlap == pytest.approx(0.0, abs=1e-6)
+    _assert_pinch_outs_attached(polygons, {"A": rows[0][1], "B": rows[2][1]})
+    fill = next(p for p in polygons if p.lithology_code == "Fill").polygon
+    topsoil = next(p for p in polygons if p.lithology_code == "Topsoil").polygon
+    assert fill.intersection(topsoil).length == pytest.approx((101.0 + 99.5) / 2 - 98.5)
+
+
+def test_opposing_base_units_mirror_under_transect_reversal() -> None:
+    rows = [
+        ("A", 0.0, 100.0, 95.0, "Clay"),
+        ("A", 0.0, 95.0, 82.0, "Sand"),
+        ("B", 50.0, 100.0, 91.0, "Clay"),
+        ("B", 50.0, 91.0, 87.0, "Gravel"),
+    ]
+    forward = build_stratigraphy(_rows_df(rows), allow_pinch_outs=True)
+    backward = build_stratigraphy(_rows_df(_mirror_rows(rows, 50.0)), allow_pinch_outs=True)
+    assert _mirrored_signature(forward, False) == _mirrored_signature(backward, True)
+
+
+@pytest.mark.parametrize("at_top", [False, True])
+def test_lone_single_bounded_units_run_to_neighbour_hole_end(at_top: bool) -> None:
+    """Nothing logged opposite (the neighbour stops at the contact): the unit thins to
+    zero at the neighbour's hole end, so its edge follows the fence base (or ground)
+    line instead of leaving a triangle under the tip."""
+    if at_top:
+        rows = [
+            ("A", 0.0, 102.0, 101.0, "Topsoil"),
+            ("A", 0.0, 101.0, 99.0, "Fill"),
+            ("A", 0.0, 99.0, 85.0, "Clay"),
+            ("B", 50.0, 97.0, 80.0, "Clay"),
+        ]
+    else:
+        rows = [
+            ("A", 0.0, 100.0, 90.0, "Clay"),
+            ("A", 0.0, 90.0, 86.0, "Sand"),
+            ("A", 0.0, 86.0, 80.0, "Gravel"),
+            ("B", 50.0, 100.0, 88.0, "Clay"),
+        ]
+    polygons = build_stratigraphy(_rows_df(rows), allow_pinch_outs=True)
+    gap, overlap = _fence_envelope_gap_and_overlap(polygons, rows)
+    assert gap == pytest.approx(0.0, abs=1e-6)
+    assert overlap == pytest.approx(0.0, abs=1e-6)
+    assert detect_polygon_overlaps(polygons) == []
+    _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 50.0})
+    hole_end = Point(50.0, 97.0 if at_top else 88.0)
+    for wedge in (p for p in polygons if p.is_pinch_out):
+        assert wedge.polygon.boundary.distance(hole_end) < 1e-9
+        assert wedge.polygon.bounds[0] == pytest.approx(0.0)
+
+
+def test_client_bb_base_facies_changes_leave_no_white_fence() -> None:
+    """Client B-B' east end: base units change between every hole (Sandy Clay Loam,
+    Sandy Clay, Silty Clay, Sandy Clay) and BH23-03 vs 2017-BH12 swap Sand for
+    Loamy Sand mid-log."""
+    logs = {
+        "BH23-03": (15.0, [(0.0, 0.3, "Fill"), (0.3, 2.0, "Clay"), (2.0, 4.0, "Sand"),
+                           (4.0, 7.0, "Clay Loam"), (7.0, 10.0, "Sandy Clay Loam")]),
+        "2017-BH12": (20.0, [(0.0, 0.4, "Fill"), (0.4, 1.8, "Clay"), (1.8, 3.5, "Loamy Sand"),
+                             (3.5, 6.5, "Clay Loam"), (6.5, 9.0, "Sandy Clay")]),
+        "BH24-08": (26.0, [(0.0, 0.3, "Fill"), (0.3, 1.5, "Clay"), (1.5, 3.5, "Sand"),
+                           (3.5, 6.0, "Clay Loam"), (6.0, 8.0, "Silty Clay")]),
+        "BH23-01": (32.0, [(0.0, 0.3, "Fill"), (0.3, 1.2, "Clay"), (1.2, 2.5, "Sand"),
+                           (2.5, 4.5, "Clay Loam"), (4.5, 6.0, "Sandy Clay")]),
+    }  # fmt: skip
+    rows = [
+        (hole, x, 635.0 - top, 635.0 - bottom, code)
+        for hole, (x, units) in logs.items()
+        for top, bottom, code in units
+    ]
+    polygons = build_stratigraphy(_rows_df(rows), allow_pinch_outs=True)
+    gap, overlap = _fence_envelope_gap_and_overlap(polygons, rows)
+    assert gap == pytest.approx(0.0, abs=1e-6)
+    assert overlap == pytest.approx(0.0, abs=1e-6)
+    assert detect_polygon_overlaps(polygons) == []
+    _assert_pinch_outs_attached(polygons, {hole: x for hole, (x, _units) in logs.items()})
+
+
+def test_pinch_anchor_edge_prefers_hole_edge_over_facies_boundary() -> None:
+    from stratigraphy import _pinch_anchor_edge
+
+    # Facies-change tile: 2 m on the hole (x=0), 20 m on the mid-span boundary (x=25).
+    tile = ShapelyPolygon([(0.0, 10.0), (0.0, 8.0), (25.0, 0.0), (25.0, 20.0)])
+    assert _pinch_anchor_edge(tile).bounds[0] == pytest.approx(25.0)
+    assert _pinch_anchor_edge(tile, (0.0, 50.0)).bounds[0] == pytest.approx(0.0)

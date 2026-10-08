@@ -40,6 +40,7 @@ class SectionSheetLayoutMixin:
         fig, ax = plt.subplots(figsize=(fig_width, 7.2))
         fig.patch.set_facecolor(FIGURE_BG)
         ax.set_facecolor(AXES_BG)
+        self._ve_main_ax = ax
 
         if lithology_codes is None:
             lithology_codes = collect_lithology_codes(projected_df, polygons)
@@ -162,7 +163,9 @@ class SectionSheetLayoutMixin:
         # Depth mode draws the hole headers above the axes; lift the title clear.
         title_pad = 14 if self.profile.y_axis_mode == "elevation_rl" else 48
         ax.set_title(self.title, fontsize=14, fontweight="bold", pad=title_pad, color=LABEL_COLOR)
-        ax.set_aspect("auto")
+        # Exact VE: the plot box is locked to the chosen VE (centred in its
+        # frame); auto: it fills the frame and the captions print the measured VE.
+        self._apply_ve_aspect(ax)
         if self.profile.show_grid:
             ax.grid(True, linestyle="--", alpha=0.35, color=GRID_COLOR, zorder=0)
         else:

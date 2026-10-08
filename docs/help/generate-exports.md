@@ -41,6 +41,10 @@ Helpers: **Add current section line**, **Fill from suggested lines**, and **Load
 
 Download SVG for drafting. With **CAD-friendly SVG layers** on, export promotes known groups (`fence`, `tracks`, `water`, `legend`, `surface`, `headers`) to V1 Inkscape layer groups (`inkscape:groupmode="layer"`) and sets Creator metadata to Cross Section Studio CAD. Default SVG stays unchanged when the toggle is off.
 
+## Vertical exaggeration on exports
+
+With **Auto (fit page)** (the default) the figure fills the page and the VE caption shows the VE actually printed (e.g. `VERTICAL EXAGGERATION ≈2.2×`); it is re-measured for the export page preset, so the PNG, PDF and SVG captions match the sheet they are on. Pick a number (1×, 2×, 5×, …) to draw exactly that VE on every page: the plot keeps its proportions and shrinks inside its frame instead of stretching.
+
 ## QA before export
 
 If **Stop if matched layers overlap** is on in Configure, resolve overlaps (or clear the gate after manual review) before Generate or batch ZIP. Cosmetic changes (title, VE, hatches, fonts, column width) still need Generate for a new SVG; projection/stratigraphy can reuse cached geometry when only cosmetics change.

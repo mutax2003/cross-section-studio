@@ -29,7 +29,8 @@ ElevationMode = Literal["absolute", "relative"]
 
 class SectionBuildRequest(BaseModel, frozen=True):
     transect_points: tuple[tuple[float, float], ...] = Field(min_length=2)
-    vertical_exaggeration: float = 5.0
+    # None = auto (fit page; captions print the measured VE); a number = exact VE.
+    vertical_exaggeration: float | None = Field(default=None, gt=0)
     show_hatches: bool = False
     show_legend: bool = True
     section_title: str = "Borehole Cross-Section"
@@ -90,7 +91,8 @@ class SectionBuildRequest(BaseModel, frozen=True):
     def geometry_cache_payload(self) -> dict:
         """Fields that affect ``compute_section_geometry`` (projection + stratigraphy).
 
-        Excludes render-only cosmetics (title, VE, hatches, fonts, water style, etc.),
+        Excludes render-only cosmetics (title, VE — auto or exact, it only scales the
+        plotted y values and the axes box — hatches, fonts, water style, etc.),
         uncertainty_* thresholds (renderer banding only), and QA flags
         (``fail_on_overlaps``, ``warn_on_correlation_gaps``) — those are applied after
         cache hit and do not change polygons.

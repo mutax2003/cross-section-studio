@@ -70,7 +70,7 @@ def effective_render_options(
 def build_section_request(
     *,
     transect_points: tuple[tuple[float, float], ...],
-    vertical_exaggeration: float,
+    vertical_exaggeration: float | None,
     show_hatches: bool,
     show_legend: bool,
     section_title: str,
@@ -178,7 +178,7 @@ def collect_section_build_request(
     selected_holes: list[str],
     coordinate_text: str,
     offset_warning_m: float,
-    vertical_exaggeration: float,
+    vertical_exaggeration: float | None,
     show_hatches: bool,
     show_legend: bool,
     section_title: str,

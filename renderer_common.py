@@ -9,7 +9,7 @@ import pandas as pd
 from matplotlib.backends.backend_agg import RendererAgg
 from matplotlib.collections import PolyCollection
 from matplotlib.path import Path
-from matplotlib.text import Annotation
+from matplotlib.text import Annotation, Text
 from matplotlib.ticker import FuncFormatter, Locator, MaxNLocator
 from shapely.geometry import Polygon as ShapelyPolygon
 
@@ -50,6 +50,197 @@ def apply_true_value_y_axis(ax, ve: float) -> None:
         return
     ax.yaxis.set_major_locator(_ExaggeratedAxisLocator(ve))
     ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _pos, v=ve: f"{value / v:.6g}"))
+
+
+# --- Vertical exaggeration (VE) -------------------------------------------
+#
+# Data are stored at ``value * storage_ve`` on the y axis. In *exact* mode the
+# axes box is locked to the chosen VE (aspect 1 in stored units, adjustable
+# "box", centred in its frame region); in *auto* mode the axes fill their frame
+# and the caption prints the VE the figure really ends up with, measured from
+# the final axes box at draw time (so export page re-framing is honoured).
+
+# A measured auto VE within this of 1 prints as "no vertical exaggeration".
+VE_UNITY_TOLERANCE = 0.05
+
+
+def measured_vertical_exaggeration(ax, storage_ve: float = 1.0) -> float | None:
+    """True VE drawn by ``ax``: (display px per vertical metre) / (px per horizontal metre).
+
+    ``storage_ve`` is the factor the y data were multiplied by before plotting.
+    Uses the axes' active (aspect-applied) box, so it is exact at draw time.
+    """
+    figure = ax.figure
+    if figure is None:
+        return None
+    if ax.get_axes_locator() is None:
+        ax.apply_aspect()
+    pos = ax.get_position(original=False)
+    width_in, height_in = (float(v) for v in figure.get_size_inches())
+    box_w = pos.width * width_in
+    box_h = pos.height * height_in
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    dx = abs(float(x1) - float(x0))
+    dy = abs(float(y1) - float(y0))
+    storage = float(storage_ve) if storage_ve and storage_ve > 0 else 1.0
+    if box_w <= 0 or box_h <= 0 or dx <= 0 or dy <= 0:
+        return None
+    if not all(np.isfinite(v) for v in (dx, dy, box_w, box_h)):
+        return None
+    vertical = box_h / (dy / storage)
+    horizontal = box_w / dx
+    return vertical / horizontal
+
+
+def round_vertical_exaggeration(ve: float) -> float:
+    """Sensible rounding for a measured VE: 1 decimal under 10x, else whole."""
+    ve = float(ve)
+    if ve < 10.0:
+        return round(ve, 1)
+    return float(round(ve))
+
+
+def is_unit_ve(ve: float, *, auto: bool) -> bool:
+    """True when the drawing has no vertical exaggeration (auto: within 5 %)."""
+    if auto:
+        return abs(float(ve) - 1.0) <= VE_UNITY_TOLERANCE
+    return abs(float(ve) - 1.0) < 1e-9
+
+
+def format_ve_value(ve: float, *, auto: bool) -> str:
+    """``"5×"`` for a chosen VE, ``"≈2.2×"`` for a measured (auto) one."""
+    if auto:
+        return f"≈{round_vertical_exaggeration(ve):g}×"
+    return f"{float(ve):g}×"
+
+
+def format_ve_caption(ve: float | None, *, auto: bool, style: str = "consulting") -> str:
+    """VE wording for the figure.
+
+    ``style``: ``"consulting"`` (subtitle band, upper case), ``"short"``
+    (in-plot "V.E." note) or ``"footer"`` (metadata footer item).
+    """
+    if ve is None or not np.isfinite(ve) or ve <= 0:
+        return {
+            "consulting": "VERTICAL EXAGGERATION: AUTO",
+            "short": "V.E. auto",
+            "footer": "VE: auto",
+        }.get(style, "VE: auto")
+    unit = is_unit_ve(ve, auto=auto)
+    if style == "consulting":
+        if unit:
+            return "NO VERTICAL EXAGGERATION"
+        if auto:
+            return f"VERTICAL EXAGGERATION {format_ve_value(ve, auto=True)}"
+        return f"{format_ve_value(ve, auto=False)} VERTICAL EXAGGERATION"
+    if style == "short":
+        if unit:
+            return "No V.E. (1×)"
+        return f"V.E. {format_ve_value(ve, auto=auto)}"
+    if unit:
+        return "VE: none (1×)"
+    return f"VE: {format_ve_value(ve, auto=auto)}"
+
+
+class VECaptionText(Text):
+    """Text whose VE wording is recomputed from the final axes box at draw time.
+
+    ``template`` holds ``{ve}`` where the caption goes (e.g. a footer line).
+    In exact mode the chosen VE is printed; in auto mode the VE measured from
+    ``main_ax`` once layout (and any export page resize) is final.
+    """
+
+    def __init__(
+        self,
+        x: float,
+        y: float,
+        *,
+        main_ax,
+        storage_ve: float,
+        auto: bool,
+        chosen_ve: float | None,
+        style: str = "consulting",
+        template: str = "{ve}",
+        **kwargs,
+    ) -> None:
+        self._ve_main_ax = main_ax
+        self._ve_storage = float(storage_ve)
+        self._ve_auto = bool(auto)
+        self._ve_chosen = chosen_ve
+        self._ve_style = style
+        self._ve_template = template
+        super().__init__(x, y, "", **kwargs)
+        self.refresh_ve_text()
+
+    def current_ve(self) -> float | None:
+        if not self._ve_auto:
+            return self._ve_chosen
+        return measured_vertical_exaggeration(self._ve_main_ax, self._ve_storage)
+
+    def refresh_ve_text(self) -> None:
+        caption = format_ve_caption(self.current_ve(), auto=self._ve_auto, style=self._ve_style)
+        text = self._ve_template.replace("{ve}", caption)
+        if text != self.get_text():
+            self.set_text(text)
+
+    def get_window_extent(self, renderer=None, dpi=None):
+        if self._ve_auto:
+            self.refresh_ve_text()
+        return super().get_window_extent(renderer=renderer, dpi=dpi)
+
+    def draw(self, renderer) -> None:
+        if self._ve_auto:
+            self.refresh_ve_text()
+        super().draw(renderer)
+
+
+def add_ve_caption(container, x: float, y: float, **kwargs) -> VECaptionText:
+    """Add a :class:`VECaptionText` to an Axes or Figure (like ``.text``)."""
+    from matplotlib.axes import Axes
+
+    if isinstance(container, Axes):
+        kwargs.setdefault("transform", container.transData)
+        text = VECaptionText(x, y, **kwargs)
+        text.set_clip_path(container.patch)
+        container._add_text(text)
+    else:
+        kwargs.setdefault("transform", container.transSubfigure)
+        text = VECaptionText(x, y, **kwargs)
+        container.texts.append(text)
+        text._remove_method = container.texts.remove
+        text.set_figure(container)
+        container.stale = True
+    return text
+
+
+def apply_ve_aspect(ax, *, exact: bool, twins: Sequence = (), anchor: str = "C") -> None:
+    """Lock ``ax`` to the chosen VE (data stored at x VE) or let it fill its frame.
+
+    Exact mode: aspect 1 in stored units with adjustable "box" — the plot
+    shrinks inside its frame region, anchored at ``anchor``. Twinned axes (the
+    consulting right-hand RL axis) are released from matplotlib's twin group
+    (which forbids adjustable "box") and follow the main axes box instead.
+    Auto mode keeps ``aspect="auto"`` (the axes fill their frame).
+    """
+    if not exact:
+        ax.set_aspect("auto")
+        return
+    from matplotlib.axes._base import _TransformedBoundsLocator
+
+    for twin in twins:
+        if twin is None:
+            continue
+        group = ax._twinned_axes
+        if group.joined(ax, twin):
+            group.remove(twin)
+            if len(group.get_siblings(ax)) <= 1:
+                group.remove(ax)
+        twin.set_adjustable("box")
+        twin.set_aspect("auto")
+        twin.set_axes_locator(_TransformedBoundsLocator([0, 0, 1, 1], ax.transAxes))
+    ax.set_adjustable("box")
+    ax.set_aspect(1.0, adjustable="box", anchor=anchor)
 
 
 # Column intervals drawn shorter than this (in inches on the output page) get a

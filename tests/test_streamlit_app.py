@@ -292,7 +292,7 @@ def test_stale_generate_button_is_disabled_with_the_reason_when_blocked(
     monkeypatch.setattr(app_configure, "cached_configure_preflight", preflight_with_overlap)
     at.session_state["allow_pinch_outs"] = True
     at.session_state["fail_on_overlaps_checkbox"] = True
-    at.session_state["vertical_exaggeration"] = 3.0
+    at.session_state["vertical_exaggeration"] = 10.0  # one of the select options
     at.run()
     assert not at.exception
     generate_buttons = [b for b in at.button if b.label == "Generate section"]

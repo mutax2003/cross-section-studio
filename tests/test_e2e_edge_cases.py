@@ -302,10 +302,12 @@ def test_e2e_pinch_out_wedge_between_holes() -> None:
     projected, polygons, svg_bytes = run_pipeline(collars, lithologies, [(0.0, 0.0), (50.0, 0.0)])
     clay = next(p for p in polygons if p.lithology_code == "Clay")
     assert clay.polygon.area > 0
-    # Tip lies on the matched Sandstone base interpolated mid-way (95 -> 90).
+    # The facies change starts on the matched Sandstone base mid-way (95 -> 90).
     apex = Point(25.0, 92.5)
     assert clay.polygon.covers(apex)
-    assert clay.polygon.area == pytest.approx(125.0)
+    # Opposing base units (Clay left, Silt right) meet at a mid-span facies change
+    # and fill down to the base line between the hole bottoms (no white triangle).
+    assert clay.polygon.area == pytest.approx(250.0)
     assert_valid_svg(svg_bytes)
 
 

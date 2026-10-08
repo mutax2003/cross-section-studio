@@ -697,3 +697,31 @@ def test_empty_upload_keeps_upload_current_and_offers_recovery() -> None:
     assert any(btn.key == "main_clear_workbook" for btn in at.button)
     stepper = [str(md.value) for md in at.markdown if 'class="workflow"' in str(md.value)]
     assert stepper and "✓ Upload" not in stepper[0] and "1. Upload" in stepper[0]
+
+
+def test_one_hole_workbook_has_no_section_label_or_batch_panel() -> None:
+    """One hole read "Section A - A': BH-01 → BH-01" and still offered the
+    several-section-lines batch panel."""
+    from io import BytesIO
+
+    import openpyxl
+    from streamlit.testing.v1 import AppTest
+
+    from workbook_template import build_input_template_bytes
+
+    book = openpyxl.load_workbook(BytesIO(build_input_template_bytes()))
+    collars = book["Collars"]
+    collars.delete_rows(3, collars.max_row)
+    buffer = BytesIO()
+    book.save(buffer)
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("one.xlsx", buffer.getvalue()).run()
+    assert not at.exception
+    assert len(at.session_state["hole_ids"]) == 1
+    hole = at.session_state["hole_ids"][0]
+    captions = [str(c.value) for c in at.caption]
+    assert not any(f"{hole} → {hole}" in text for text in captions)
+    assert any("at least one more hole" in text for text in captions)
+    assert not _batch_expanders(at)

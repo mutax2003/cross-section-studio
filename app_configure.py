@@ -783,11 +783,13 @@ def render_configure_step(
     elif fail_on_overlaps and has_overlap_warnings:
         st.error(OVERLAP_GATE_MESSAGE)
 
-    _render_batch_section_lines(
-        preflight_selection,
-        known_hole_ids=all_hole_ids,
-        collapsed_for_errors=blocking,
-    )
+    if len(all_hole_ids) >= 2:
+        # A one-hole workbook cannot make any section line, let alone several.
+        _render_batch_section_lines(
+            preflight_selection,
+            known_hole_ids=all_hole_ids,
+            collapsed_for_errors=blocking,
+        )
 
     return ConfigureState(
         selected_holes=selected_holes,
@@ -1121,6 +1123,10 @@ def _render_hole_sequence_order(hole_ids: list[str]) -> None:
                 sequence[index + 1], sequence[index] = sequence[index], sequence[index + 1]
                 st.session_state.hole_sequence_multiselect = sequence
                 st.rerun()
+    if len(sequence) < 2:
+        # "BH-01 → BH-01" read as a section line; one hole is not one yet.
+        st.caption("Add at least one more hole to make a section line.")
+        return
     section_label = st.session_state.get("consulting_section_label") or "A-A'"
     st.caption(f"Section {section_label}: **{sequence[0]} → {sequence[-1]}**")
 

@@ -499,3 +499,33 @@ def test_wedge_only_pairs_do_not_report_correlation_conflicts() -> None:
     lithology = [Lithology(hole_id=h, from_depth=a, to_depth=b, lithology_code=c) for h, a, b, c in rows]
     geometry = compute_section_geometry(collars, lithology, [(0, 0), (30, 0)])
     assert not [m for m in geometry.overlap_warnings if m.startswith("Fence clipped")]
+
+
+def test_render_notes_are_appended_after_export_framing(monkeypatch) -> None:
+    import renderer as renderer_module
+    from export_framing import ExportFramingConfig
+    from models import Collar, Lithology
+    from pipeline import build_cross_section
+
+    calls = []
+    original = renderer_module.CrossSectionRenderer.export_figure_bytes
+
+    def spy(self, figure, export_formats, **kwargs):
+        calls.append(kwargs.get("append_render_notes"))
+        return original(self, figure, export_formats, **kwargs)
+
+    monkeypatch.setattr(renderer_module.CrossSectionRenderer, "export_figure_bytes", spy)
+    collars = [
+        Collar(hole_id="A", easting=0, northing=0, elevation=100, total_depth=10),
+        Collar(hole_id="B", easting=50, northing=0, elevation=100, total_depth=10),
+    ]
+    lithology = [Lithology(hole_id=h, from_depth=0, to_depth=10, lithology_code="Clay") for h in "AB"]
+    build_cross_section(collars, lithology, [(0, 0), (50, 0)], export_formats=frozenset({"png"}))
+    build_cross_section(
+        collars,
+        lithology,
+        [(0, 0), (50, 0)],
+        export_formats=frozenset({"png"}),
+        export_framing=ExportFramingConfig(include_qa_footer=False),
+    )
+    assert calls == [True, False]

@@ -732,10 +732,11 @@ def render_cross_section_from_geometry(
         water_levels=plotted_water,
         lithology_codes=lithology_codes,
     )
-    # Chemistry values the label placement could not fit beside their hole
-    # are dropped (markers stay); say so in the QA lines / app warnings.
-    if not (export_framing is not None and not export_framing.include_qa_footer):
-        qa_lines = tuple(qa_lines) + tuple(getattr(renderer, "chemistry_label_notes", None) or ())
+    # Chemistry values the label placement could not fit beside their hole are
+    # dropped (markers stay) and a set map scale may not fit the page; both are
+    # only final after export framing, so the export appends them to the PDF
+    # QA lines and they are read back below for the app warnings.
+    include_render_notes = not (export_framing is not None and not export_framing.include_qa_footer)
     try:
         svg_bytes, png_bytes, pdf_bytes = renderer.export_figure_bytes(
             figure,
@@ -746,6 +747,7 @@ def render_cross_section_from_geometry(
             water_levels=water_levels,
             lithology_codes=lithology_codes,
             qa_lines=qa_lines,
+            append_render_notes=include_render_notes,
         )
     except Exception:
         from matplotlib import pyplot as plt
@@ -775,6 +777,7 @@ def render_cross_section_from_geometry(
             "water_levels": water_levels,
             "lithology_codes": lithology_codes,
             "qa_lines": qa_lines,
+            "append_render_notes": include_render_notes,
         }
     return CrossSectionResult(
         projected=projected,

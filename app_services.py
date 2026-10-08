@@ -168,6 +168,7 @@ def _try_export_from_retained_figure(
             water_levels=retained.get("water_levels"),  # type: ignore[arg-type]
             lithology_codes=retained.get("lithology_codes"),  # type: ignore[arg-type]
             qa_lines=tuple(retained.get("qa_lines") or ()),  # type: ignore[arg-type]
+            append_render_notes=bool(retained.get("append_render_notes", False)),
         )
         # Reject non-bytes so we never memoize None / str and greenwash a bad retain.
         if not isinstance(png_bytes, (bytes, bytearray)) or not isinstance(

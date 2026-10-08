@@ -1362,7 +1362,10 @@ class CrossSectionRenderer(
         water_levels: Sequence[WaterLevel] | None = None,
         lithology_codes: Sequence[str] | None = None,
         qa_lines: Sequence[str] = (),
+        append_render_notes: bool = False,
     ) -> tuple[bytes, bytes, bytes]:
+        """Export the figure; ``append_render_notes`` adds the final (post page
+        framing) chemistry-drop and map-scale notes to the PDF QA lines."""
         # savefig() draws on demand; an explicit canvas.draw() here doubled render cost.
         # Prefer cheaper formats first so a later failure still leaves cheaper bytes usable.
         ordered = [fmt for fmt in ("svg", "png", "pdf") if fmt in export_formats]
@@ -1370,6 +1373,14 @@ class CrossSectionRenderer(
         png_bytes = b""
         pdf_bytes = b""
         self._prepare_export_figure(figure)
+        if append_render_notes:
+            # Labels are re-placed and the map-scale fit decided for the page
+            # only now, so the notes are read after framing.
+            qa_lines = (
+                tuple(qa_lines)
+                + tuple(getattr(self, "chemistry_label_notes", None) or ())
+                + tuple(self.map_scale_notes(figure))
+            )
         export_dpi = self._export_dpi()
         watermark_applied = False
         for fmt in ordered:

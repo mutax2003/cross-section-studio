@@ -180,7 +180,7 @@ class CrossSectionRenderer(
 
     def __init__(
         self,
-        vertical_exaggeration: float | None = 1.0,
+        vertical_exaggeration: float | None = None,
         scale_bar_length_m: float = 10.0,
         *,
         show_hatches: bool = True,

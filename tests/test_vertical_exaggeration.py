@@ -20,7 +20,11 @@ from PIL import Image
 
 from export_framing import PAGE_FIGSIZE_IN, ExportFramingConfig
 from models import Collar, Lithology
-from pipeline import build_cross_section, compute_section_geometry, render_cross_section_from_geometry
+from pipeline import (
+    build_cross_section,
+    compute_section_geometry,
+    render_cross_section_from_geometry,
+)
 from renderer_common import (
     VECaptionText,
     format_ve_caption,

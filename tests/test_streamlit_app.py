@@ -681,3 +681,19 @@ def test_batch_section_lines_expander_is_not_keyed_and_stays_single(sample_workb
     [btn for btn in at.button if btn.key == "batch_fill_recommended"][0].click().run()
     expanders = _batch_expanders(at)
     assert len(expanders) == 1 and expanders[0].proto.expanded
+
+
+def test_empty_upload_keeps_upload_current_and_offers_recovery() -> None:
+    """A 0-byte .xlsx showed "✓ Upload" and the renamed-CSV text, without
+    the Clear workbook / sample recovery row a renamed CSV gets."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("empty.xlsx", b"").run()
+    assert not at.exception
+    errors = [str(item.value) for item in at.error]
+    assert any("empty (0 bytes)" in text for text in errors), errors
+    assert any(btn.key == "main_clear_workbook" for btn in at.button)
+    stepper = [str(md.value) for md in at.markdown if 'class="workflow"' in str(md.value)]
+    assert stepper and "✓ Upload" not in stepper[0] and "1. Upload" in stepper[0]

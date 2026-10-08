@@ -109,6 +109,13 @@ def render_input_template_download(*, key: str, help: str | None = None) -> None
     )
 
 
+_EMPTY_FILE_MESSAGE = (
+    "This file is empty (0 bytes), so there is nothing to read. It may not have finished "
+    "saving or downloading. Save the workbook again in Excel and upload it, or start from "
+    "**Download template**."
+)
+
+
 def _friendly_workbook_error(exc: Exception) -> str:
     """Plain-language upload/parse failure with a next step (raw text goes in a details expander)."""
     text = str(exc)
@@ -491,7 +498,9 @@ def handle_workbook_upload(
         except Exception as exc:
             st.session_state.detection_result = None
             clear_section_output_state()
-            st.session_state.upload_banner_error = _friendly_workbook_error(exc)
+            st.session_state.upload_banner_error = (
+                _EMPTY_FILE_MESSAGE if not file_bytes else _friendly_workbook_error(exc)
+            )
             st.session_state.upload_banner_error_detail = str(exc)
             st.session_state.pop("upload_banner_success", None)
             st.session_state.pop("upload_banner_problem", None)

@@ -145,13 +145,18 @@ def workflow_stage(
     has_profile: bool,
     has_blocking_errors: bool = False,
     has_transect: bool = False,
+    upload_failed: bool = False,
 ) -> int:
     """Return workflow step index: 0 upload, 1 validate, 2 configure, 3 generate.
 
     Stay on Validate until QA is clear and a transect is selected so the stepper
     matches the main-pane work. Generate (3) requires a live parse — leftover
-    SVG alone must not advance the stepper after a failed re-upload.
+    SVG alone must not advance the stepper after a failed re-upload. An empty
+    or unreadable file (``upload_failed``) keeps Upload as the current step
+    instead of ticking it.
     """
+    if upload_failed and not has_parse_result:
+        return 0
     if has_profile and has_parse_result and not has_blocking_errors:
         return 3
     if has_parse_result and not has_blocking_errors and has_transect:

@@ -127,6 +127,15 @@ def test_pinch_out_uses_elevation_neighbors_when_collars_differ() -> None:
                 "lithology_code": "Gravel",
             },
             {
+                # Logged (not a gap): an open logging gap would be closed for the fence.
+                "hole_id": "BH-02",
+                "x_profile": 50.0,
+                "collar_elevation": 120.0,
+                "top_elevation": 115.0,
+                "bottom_elevation": 100.0,
+                "lithology_code": "Fill",
+            },
+            {
                 "hole_id": "BH-02",
                 "x_profile": 50.0,
                 "collar_elevation": 120.0,
@@ -138,10 +147,11 @@ def test_pinch_out_uses_elevation_neighbors_when_collars_differ() -> None:
     )
     polygons = build_stratigraphy(projected, allow_pinch_outs=True)
     clay = next(item for item in polygons if item.lithology_code == "Clay" and item.is_pinch_out)
-    # Elevation neighbor above = Gravel bottom 115 → apex at mid-x, z=115
-    apex = Point(25.0, 115.0)
+    # Elevation neighbor above = Fill bottom 100 (nothing below 85) → apex at mid-x, z=100
+    apex = Point(25.0, 100.0)
     assert clay.polygon.buffer(0.05).contains(apex)
-    # Depth-based neighbors would average 115 and 100 → 107.5 (must not be used)
+    # Depth-based neighbors (Gravel base 5 m → 115, Silt top 20 m → 100) would
+    # average to 107.5 (must not be used)
     wrong_apex = Point(25.0, 107.5)
     assert not clay.polygon.buffer(0.05).contains(wrong_apex)
 
@@ -767,3 +777,362 @@ def test_pinch_out_tiling_skipped_without_pinch_outs() -> None:
     assert not any(p.is_pinch_out for p in polygons)
     for polygon in polygons:
         assert len(polygon.polygon.exterior.coords) == 5
+
+
+# ---------------------------------------------------------------------------
+# Logging gaps (not-logged / no-recovery intervals) must not leave white wedges
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("gap_on_left", [True, False])
+@pytest.mark.parametrize("allow_pinch_outs", [True, False])
+def test_mid_log_gap_does_not_leave_white_wedge_in_fence(
+    gap_on_left: bool, allow_pinch_outs: bool
+) -> None:
+    """Regression (synthetic site B-B', BH-09): a 0.6 m not-logged interval at the
+    Sand/Clay contact left an unfilled wedge across the whole hole pair."""
+    gapped = [(100.0, 95.0, "Silt"), (95.0, 90.6, "Sand"), (90.0, 80.0, "Clay")]
+    plain = [(100.0, 96.0, "Silt"), (96.0, 91.0, "Sand"), (91.0, 82.0, "Clay")]
+    left, right = (gapped, plain) if gap_on_left else (plain, gapped)
+    rows = [("A", 0.0, *row) for row in left] + [("B", 50.0, *row) for row in right]
+    polygons = build_stratigraphy(_rows_df(rows), allow_pinch_outs=allow_pinch_outs)
+    assert not any(p.is_pinch_out for p in polygons)
+    z_bot = (left[-1][1], right[-1][1])
+    assert _fence_gap_area(polygons, 0.0, 50.0, (100.0, 100.0), z_bot) == pytest.approx(
+        0.0, abs=1e-6
+    )
+    assert _pairwise_overlap_area(polygons) == pytest.approx(0.0, abs=1e-6)
+    # Sand base and Clay top meet at the gap midpoint on the gapped hole.
+    x_gap = 0.0 if gap_on_left else 50.0
+    sand = next(p for p in polygons if p.lithology_code == "Sand").polygon
+    clay = next(p for p in polygons if p.lithology_code == "Clay").polygon
+    assert sand.boundary.distance(Point(x_gap, 90.3)) < 1e-9
+    assert clay.boundary.distance(Point(x_gap, 90.3)) < 1e-9
+
+
+def test_mid_log_gap_under_pinch_out_wedge_tiles() -> None:
+    """Gap under a lens that pinches out toward the neighbour (white sliver beside BH-09)."""
+    rows = [
+        ("A", 0.0, 100.0, 95.0, "Silt"),
+        ("A", 0.0, 95.0, 92.0, "Sand"),
+        ("A", 0.0, 91.4, 80.0, "Clay"),  # 0.6 m not logged at the Sand/Clay contact
+        ("B", 50.0, 100.0, 93.0, "Silt"),
+        ("B", 50.0, 93.0, 82.0, "Clay"),
+    ]
+    polygons = build_stratigraphy(_rows_df(rows), allow_pinch_outs=True)
+    assert [p.lithology_code for p in polygons if p.is_pinch_out] == ["Sand"]
+    gap = _fence_gap_area(polygons, 0.0, 50.0, (100.0, 100.0), (80.0, 82.0))
+    assert gap == pytest.approx(0.0, abs=1e-6)
+    assert _pairwise_overlap_area(polygons) == pytest.approx(0.0, abs=1e-6)
+    _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 50.0})
+
+
+@pytest.mark.parametrize("where", ["top", "base"])
+def test_top_or_base_gap_fence_follows_logged_extent(where: str) -> None:
+    """Gaps above the first / below the last logged interval are not closed: the fence
+    tapers to the logged extent, still without holes or overlaps inside it."""
+    if where == "top":
+        left = [(98.0, 90.0, "Sand"), (90.0, 80.0, "Clay")]  # collar 100, top 2 m unlogged
+    else:
+        left = [(100.0, 90.0, "Sand"), (90.0, 84.0, "Clay")]  # TD below 84 unlogged
+    right = [(100.0, 91.0, "Sand"), (91.0, 80.0, "Clay")]
+    rows = [("A", 0.0, *row) for row in left] + [("B", 50.0, *row) for row in right]
+    polygons = build_stratigraphy(_rows_df(rows), allow_pinch_outs=True)
+    z_top = (left[0][0], right[0][0])
+    z_bot = (left[-1][1], right[-1][1])
+    assert _fence_gap_area(polygons, 0.0, 50.0, z_top, z_bot) == pytest.approx(0.0, abs=1e-6)
+    assert _pairwise_overlap_area(polygons) == pytest.approx(0.0, abs=1e-6)
+    sand = next(p for p in polygons if p.lithology_code == "Sand").polygon
+    assert sand.bounds[3] == pytest.approx(100.0)
+    assert sand.boundary.distance(Point(0.0, left[0][0])) < 1e-9
+
+
+def test_logging_gap_keeps_hole_column_data_untouched() -> None:
+    """Gap closing is fence-only: the projected intervals the column renders from are unchanged."""
+    projected = _rows_df(
+        [
+            ("A", 0.0, 100.0, 95.0, "Sand"),
+            ("A", 0.0, 94.0, 80.0, "Clay"),
+            ("B", 50.0, 100.0, 95.0, "Sand"),
+            ("B", 50.0, 95.0, 80.0, "Clay"),
+        ]
+    )
+    before = projected.copy()
+    build_stratigraphy(projected, allow_pinch_outs=True)
+    pd.testing.assert_frame_equal(projected, before)
+
+
+def test_nested_interval_is_not_mistaken_for_a_logging_gap() -> None:
+    """An interval logged inside a longer one (overlapping rows) does not open a 'gap'."""
+    from stratigraphy import _close_logging_gaps, _intervals_for_hole
+
+    hole = _rows_df(
+        [
+            ("A", 0.0, 100.0, 90.0, "Clay"),
+            ("A", 0.0, 98.0, 97.0, "Sand"),
+            ("A", 0.0, 90.0, 80.0, "Gravel"),
+        ]
+    )
+    intervals = _intervals_for_hole(hole)
+    assert _close_logging_gaps(intervals) is intervals
+
+
+def _crossing_sand_clay(reverse: bool) -> pd.DataFrame:
+    left = [("Clay", 100.0, 99.0, 1), ("Sand", 99.0, 90.0, 2)]
+    right = [("Sand", 100.0, 91.0, 1), ("Clay", 91.0, 90.0, 2)]
+    holes = [("L", 0.0, left), ("R", 50.0, right)]
+    if reverse:
+        holes = [("L", 50.0, left), ("R", 0.0, right)]
+    return pd.DataFrame(
+        [
+            {
+                "hole_id": hole,
+                "x_profile": x,
+                "collar_elevation": 100.0,
+                "top_elevation": top,
+                "bottom_elevation": bottom,
+                "lithology_code": code,
+                "unit_order": order,
+            }
+            for hole, x, units in holes
+            for code, top, bottom, order in units
+        ]
+    )
+
+
+def _mirrored_signature(polygons: list[GeologicalPolygon], mirror: bool) -> list[tuple]:
+    signature = []
+    for polygon in polygons:
+        coords = sorted(
+            (round(50.0 - x if mirror else x, 6), round(z, 6))
+            for x, z in polygon.polygon.exterior.coords[:-1]
+        )
+        signature.append(
+            (polygon.lithology_code, polygon.is_pinch_out, round(polygon.polygon.area, 6), coords)
+        )
+    return sorted(signature)
+
+
+def test_shifted_rematch_is_symmetric_under_transect_reversal() -> None:
+    """Same-code re-matching ranks candidate pairs globally (elevation overlap first),
+    so reversing the transect mirrors the section instead of swapping which unit
+    is filled across and which pinches out."""
+    forward = build_stratigraphy(_crossing_sand_clay(reverse=False), allow_pinch_outs=True)
+    backward = build_stratigraphy(_crossing_sand_clay(reverse=True), allow_pinch_outs=True)
+    assert _mirrored_signature(forward, False) == _mirrored_signature(backward, True)
+    # The thick Sand (9 m in both holes) correlates; the thin Clays pinch out.
+    sand = [p for p in forward if p.lithology_code == "Sand"]
+    assert len(sand) == 1 and not sand[0].is_pinch_out
+    assert sand[0].polygon.area == pytest.approx(450.0)
+    assert all(p.is_pinch_out for p in forward if p.lithology_code == "Clay")
+
+
+def test_crossing_override_does_not_bend_fill_inside_out() -> None:
+    """A crossing override (top unit in H0 → deep unit in H1) must not bend that fill's
+    bottom above its top, which made buffer(0) repair silently drop area."""
+    from stratigraphy import _polygons_for_pair, _sorted_hole_profiles
+
+    rows = [
+        ("H0", 0.0, 97.22, 94.22, "Gravel", 1),
+        ("H0", 0.0, 94.22, 92.22, "Silt", 2),
+        ("H0", 0.0, 92.22, 87.22, "Gravel", 3),
+        ("H0", 0.0, 87.22, 82.22, "Gravel", 4),
+        ("H0", 0.0, 82.22, 80.22, "Silt", 5),
+        ("H0", 0.0, 80.22, 79.22, "Clay", 6),
+        ("H1", 50.0, 97.09, 95.09, "Gravel", 1),
+        ("H1", 50.0, 95.09, 92.09, "Silt", 2),
+        ("H1", 50.0, 91.09, 88.09, "Gravel", 3),
+        ("H1", 50.0, 88.09, 86.09, "Sand", 4),
+        ("H1", 50.0, 86.09, 85.59, "Gravel", 5),
+        ("H1", 50.0, 85.59, 83.59, "Sand", 6),
+    ]
+    projected = pd.DataFrame(
+        [
+            {
+                "hole_id": hole,
+                "x_profile": x,
+                "collar_elevation": 100.0,
+                "top_elevation": top,
+                "bottom_elevation": bottom,
+                "lithology_code": code,
+                "unit_order": order,
+            }
+            for hole, x, top, bottom, code, order in rows
+        ]
+    )
+    override = CorrelationOverride(
+        left_hole_id="H0", right_hole_id="H1", left_unit_order=1, right_unit_order=5
+    )
+    (x0, _l, left_intervals, _ll), (x1, _r, right_intervals, _rl) = _sorted_hole_profiles(
+        projected
+    )
+    polygons = _polygons_for_pair(
+        "H0", "H1", x0, x1, left_intervals, right_intervals, correlation_overrides=(override,)
+    )
+    for polygon in polygons:
+        if polygon.is_pinch_out:
+            continue
+        # Every fill's ring is simple as built (no buffer(0) repair needed).
+        assert polygon.polygon.is_valid
+    overridden = next(
+        p
+        for p in polygons
+        if not p.is_pinch_out
+        and p.polygon.boundary.distance(Point(0.0, 97.22)) < 1e-9
+        and p.polygon.boundary.distance(Point(50.0, 85.59)) < 1e-9
+    )
+    # Vertical edges keep their full logged thickness at both holes (3 m and 0.5 m).
+    assert overridden.polygon.boundary.distance(Point(0.0, 94.22)) < 1e-9
+    assert overridden.polygon.boundary.distance(Point(50.0, 86.09)) < 1e-9
+    assert overridden.polygon.area >= 50.0 * (3.0 + 0.5) / 2.0 - 1e-6
+
+
+def test_inverted_layer_order_unmatches_crossing_correlations() -> None:
+    """Sand over Clay in A, Clay over Sand in B (code-only keys): the crossing fills
+    used to be clipped to a 25% sliver, silently dropping B's Sand from the fence.
+    Both crossing units now pinch out, anchored at their own holes, and the pair
+    summary reports the conflict."""
+    projected = _rows_df(
+        [
+            ("A", 0.0, 100.0, 95.0, "Sand"),
+            ("A", 0.0, 95.0, 90.0, "Clay"),
+            ("B", 50.0, 100.0, 95.0, "Clay"),
+            ("B", 50.0, 95.0, 90.0, "Sand"),
+        ]
+    )
+    summaries: list = []
+    clip_warnings: list[str] = []
+    polygons = build_stratigraphy(
+        projected, allow_pinch_outs=True, pair_summaries=summaries, clip_warnings=clip_warnings
+    )
+    assert len(polygons) == 4 and all(p.is_pinch_out for p in polygons)
+    _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 50.0})
+    for polygon in polygons:
+        assert polygon.polygon.area == pytest.approx(0.5 * 5.0 * 25.0)
+    assert _pairwise_overlap_area(polygons) == pytest.approx(0.0, abs=1e-6)
+    assert summaries[0].crossing_codes == ("Clay", "Sand")
+    assert summaries[0].matched_count == 0
+    assert clip_warnings == []
+    health = preview_correlation_health(projected)
+    assert health[0].crossing_codes == ("Clay", "Sand")
+
+
+def test_crossing_correlation_keeps_best_ranked_match() -> None:
+    """When only one of two crossing matches lines up in elevation, that one stays."""
+    projected = _rows_df(
+        [
+            ("A", 0.0, 100.0, 99.0, "Clay"),
+            ("A", 0.0, 99.0, 90.0, "Sand"),
+            ("B", 50.0, 100.0, 91.0, "Sand"),
+            ("B", 50.0, 91.0, 90.0, "Clay"),
+        ]
+    )
+    summaries: list = []
+    polygons = build_stratigraphy(projected, allow_pinch_outs=True, pair_summaries=summaries)
+    sand = [p for p in polygons if p.lithology_code == "Sand"]
+    assert len(sand) == 1 and not sand[0].is_pinch_out
+    assert all(p.is_pinch_out for p in polygons if p.lithology_code == "Clay")
+    assert summaries[0].crossing_codes == ("Clay",)
+
+
+def test_explicit_crossing_override_is_kept() -> None:
+    projected = pd.DataFrame(
+        [
+            {
+                "hole_id": hole,
+                "x_profile": x,
+                "collar_elevation": 100.0,
+                "top_elevation": top,
+                "bottom_elevation": bottom,
+                "lithology_code": code,
+                "unit_order": order,
+            }
+            for hole, x, top, bottom, code, order in [
+                ("A", 0.0, 100.0, 95.0, "Sand", 1),
+                ("A", 0.0, 95.0, 90.0, "Clay", 2),
+                ("B", 50.0, 100.0, 95.0, "Clay", 1),
+                ("B", 50.0, 95.0, 90.0, "Sand", 2),
+            ]
+        ]
+    )
+    override = CorrelationOverride(
+        left_hole_id="A", right_hole_id="B", left_unit_order=1, right_unit_order=2
+    )
+    polygons = build_stratigraphy(
+        projected, allow_pinch_outs=True, correlation_overrides=(override,)
+    )
+    sand = [p for p in polygons if p.lithology_code == "Sand" and not p.is_pinch_out]
+    assert len(sand) == 1
+
+
+def test_clip_warnings_report_substantial_fence_loss() -> None:
+    first = GeologicalPolygon(
+        "Clay", ShapelyPolygon([(0, 0), (10, 0), (10, 10), (0, 10)]), ("A", "B")
+    )
+    second = GeologicalPolygon(
+        "Sand", ShapelyPolygon([(0, -2), (10, -2), (10, 8), (0, 8)]), ("A", "B")
+    )
+    warnings: list[str] = []
+    _resolve_overlaps_in_pair([first, second], clip_warnings=warnings)
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Fence clipped: Sand between A–B kept 20%")
+
+
+def test_no_false_overlap_from_near_coincident_tip_vertices() -> None:
+    """GEOS precision: a clipped wedge with two tip vertices ~5e-15 apart reported a
+    Silt/Clay overlap in one intersection direction only."""
+    from models import Collar, Lithology
+    from pipeline import compute_section_geometry
+
+    transect = [
+        (50.0, -19.15486194756213),
+        (50.0, 19.52559208826952),
+        (50.0, 0.18536507035369532),
+    ]
+    collars = [
+        Collar(
+            hole_id="H0",
+            easting=50.0,
+            northing=9.047282356731813,
+            elevation=166.187008501202,
+            total_depth=37.8,
+        ),
+        Collar(
+            hole_id="H1",
+            easting=50.0,
+            northing=12.17329004604181,
+            elevation=100.0,
+            total_depth=400,
+        ),
+    ]
+    lithologies = [
+        Lithology(
+            hole_id="H0", from_depth=1.49572, to_depth=6.34054, lithology_code="Silt", unit_order=2
+        ),
+        Lithology(
+            hole_id="H1", from_depth=0, to_depth=244.87773, lithology_code="Clay", unit_order=1
+        ),
+        Lithology(
+            hole_id="H1",
+            from_depth=244.87773,
+            to_depth=330.65682,
+            lithology_code="Silt",
+            unit_order=2,
+        ),
+    ]
+    geometry = compute_section_geometry(collars, lithologies, transect)
+    assert geometry.overlap_warnings == ()
+    for polygon in geometry.polygons:
+        coords = list(polygon.polygon.exterior.coords)[:-1]
+        for (x0, z0), (x1, z1) in zip(coords, coords[1:] + coords[:1]):
+            assert abs(x0 - x1) + abs(z0 - z1) > 1e-9
+
+
+def test_dedupe_vertices_drops_float_noise() -> None:
+    from stratigraphy import _dedupe_vertices
+
+    assert _dedupe_vertices([(0.0, 0.0), (1.0, 1.0), (1.0, 1.0 + 5e-15), (0.0, 1.0)]) == [
+        (0.0, 0.0),
+        (1.0, 1.0),
+        (0.0, 1.0),
+    ]

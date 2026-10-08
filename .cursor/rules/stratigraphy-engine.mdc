@@ -49,7 +49,12 @@ Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) 
 - Wedges are planned first: `_bracketing_matches` finds the nearest matched units above/below in the source hole; tip z (`_bracket_tip_z`) = mean of the two bounding contact lines interpolated hole-to-hole at the tip x (one-sided wedges sit on that single contact); no matched bracket → `_pinch_out_z_mid` fallback (adjacent `unit_order` ±1, then elevation position — RLs, not hole-local depths)
 - No bending when crossing correlations invert the bracketing contacts or the tip falls outside the fill's vertical extent
 - When both bracketing units exist, the upper unit's bottom edge and the lower unit's top edge bend through the tip (`_bend_path`) so upper unit, wedge(s) and lower unit tile the gap with no white triangle; stacked lenses share one tip
-- 3-vertex triangular wedge tapering to `(X_tip, Z_tip)`
+- **Single-bounded wedges (`_tile_open_wedges`):** unmatched units below the lowest match (base units) or above the highest match (top units) have one bracketing contact only, so a tip wedge would leave a white triangle against the fence base line (hole bottom → hole bottom) or ground line (hole top → hole top). They are grouped by `(above, below)` bracket and tiled instead:
+  - **Opposing** (X only in the left hole, Y only in the right, same bracket, each group filling its hole from the contact to the hole end): vertical facies-change boundary at `PINCH_OUT_FRACTION` of the span — X fills the left part, Y the right part, between the bracketing contact (with any bends) and the base/top line. Stacked units in a group keep their thickness proportions across the region.
+  - **Lone** (nothing opposite; the neighbour ends exactly at the contact): the unit runs to the neighbour, thinning to zero at its hole end, so its edge follows the base/top line (the neighbour simply did not penetrate it).
+  - Falls back to tip wedges when a group does not reach its hole end / contact or the region is not ordered. Unbracketed wedges (no match above or below, e.g. crossing un-matches with nothing correlated) keep their `_pinch_out_z_mid` tips.
+  - Tiles are `is_pinch_out=True`; `_resolve_overlaps_in_pair(..., hole_xs=(x_left, x_right))` anchors clip fragments on the hole edge, not the mid-span facies boundary (`_pinch_anchor_edge(polygon, hole_xs)`).
+- 3-vertex triangular wedge tapering to `(X_tip, Z_tip)` (two-sided / unbracketed cases)
 - `is_pinch_out = True` — renderer draws dashed edges and lower alpha
 - `_make_polygon` always stores a single Shapely `Polygon` (largest part after `buffer(0)` repair) so the renderer can use `.exterior`
 

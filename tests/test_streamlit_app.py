@@ -834,3 +834,68 @@ def test_section_notes_after_generate_are_one_warning_for_every_style(style: str
     keys = [note.split(":", 1)[0] for note in notes]
     assert any(all(key in w.value for key in keys) for w in at.warning), [w.value for w in at.warning]
     assert not any("notes about this section" in (e.label or "") for e in at.expander)
+
+
+_HELP_REQUIRED_LABELS = (
+    "Workbook format",
+    "Figure no.",
+    "Project no.",
+    "Date",
+    "Prepared by",
+    "Prepared for",
+    "Drawn by",
+    "Revised",
+    "Source",
+    "Start letter (e.g. B)",
+    "End letter (e.g. B')",
+    "Start direction (e.g. SOUTHWEST)",
+    "End direction (e.g. NORTHEAST)",
+    "Start label (used if no start letter)",
+    "End label (used if no end letter)",
+    "Save exports to folder (optional)",
+    "Font size (pt)",
+    "Shade as uncertain when holes are more than this far apart (m)",
+    "Shade as uncertain when a hole is more than this far off the line (m)",
+    "Don't connect layers to holes more than this far off the line (m)",
+    "Distance from",
+    "Distance to",
+    "Elevation from",
+    "Elevation to",
+    "Hole sequence",
+)
+_HELP_REQUIRED_SECTION_SHEET = (
+    "Show water level labels",
+    "Show groundwater legend",
+    "Show 'not measured' markers for dry wells",
+)
+
+
+def _widgets_by_label(at) -> dict[str, object]:
+    found: dict[str, object] = {}
+    for kind in ("text_input", "selectbox", "number_input", "toggle", "multiselect"):
+        for widget in getattr(at, kind):
+            found.setdefault(widget.label, widget)
+    return found
+
+
+def test_sidebar_and_configure_inputs_all_have_help() -> None:
+    from streamlit.testing.v1 import AppTest
+
+    workbook = _project_workbook_bytes(figure_preset="consulting_report")
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("project.xlsx", workbook).run()
+    at.run()
+    widgets = _widgets_by_label(at)
+    missing = [label for label in _HELP_REQUIRED_LABELS if not getattr(widgets.get(label), "help", None)]
+    assert not missing, missing
+    # File uploaders (logos) expose help through their proto.
+    logos = [u for u in at.get("file_uploader") if "logo" in (u.proto.label or "").lower()]
+    assert len(logos) == 2 and all(u.proto.help for u in logos)
+
+    at.selectbox(key="output_preset").set_value("section_sheet").run()
+    widgets = _widgets_by_label(at)
+    missing = [
+        label for label in _HELP_REQUIRED_SECTION_SHEET if not getattr(widgets.get(label), "help", None)
+    ]
+    assert not missing, missing

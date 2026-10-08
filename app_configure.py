@@ -164,6 +164,10 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
             "Hole sequence",
             options=hole_ids,
             key="hole_sequence_multiselect",
+            help=(
+                "Holes the section line runs through, in order from the start (left) "
+                "to the end (right). Remove a hole with its x; add one from the list."
+            ),
         )
     else:
         default_coords = "\n".join(

@@ -36,6 +36,9 @@ class ParameterLegendEntry(TypedDict):
     # figure in that colour, drawn beside the label as the client legend does.
     sample_text: NotRequired[str]
     sample_color: NotRequired[str]
+    # Threshold colour mode: the band colours (green, orange, red) the legend
+    # shows as a small three-dot sample instead of the series line/marker.
+    threshold_colors: NotRequired[tuple[str, ...]]
 
 
 _PARAMETER_LABEL_MIN_GAP_PTS = 26.0
@@ -550,6 +553,14 @@ class RendererChemistryMixin:
                     marker_labels[0][2],
                 )
                 legend_entry["sample_color"] = legend_sample_color
+            if threshold_active:
+                legend_entry["threshold_colors"] = tuple(
+                    hex_color
+                    for _name, hex_color, _span in chemistry_threshold_bands(
+                        float(self.profile.chemistry_threshold_green_max),
+                        float(self.profile.chemistry_threshold_yellow_max),
+                    )
+                )
             self.parameter_series_legend.append(legend_entry)
         if threshold_units:
             self._draw_chemistry_threshold_key(ax, threshold_units, font_size)

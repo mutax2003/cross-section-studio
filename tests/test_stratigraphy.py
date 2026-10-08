@@ -985,3 +985,154 @@ def test_crossing_override_does_not_bend_fill_inside_out() -> None:
     assert overridden.polygon.boundary.distance(Point(0.0, 94.22)) < 1e-9
     assert overridden.polygon.boundary.distance(Point(50.0, 86.09)) < 1e-9
     assert overridden.polygon.area >= 50.0 * (3.0 + 0.5) / 2.0 - 1e-6
+
+
+def test_inverted_layer_order_unmatches_crossing_correlations() -> None:
+    """Sand over Clay in A, Clay over Sand in B (code-only keys): the crossing fills
+    used to be clipped to a 25% sliver, silently dropping B's Sand from the fence.
+    Both crossing units now pinch out, anchored at their own holes, and the pair
+    summary reports the conflict."""
+    projected = _rows_df(
+        [
+            ("A", 0.0, 100.0, 95.0, "Sand"),
+            ("A", 0.0, 95.0, 90.0, "Clay"),
+            ("B", 50.0, 100.0, 95.0, "Clay"),
+            ("B", 50.0, 95.0, 90.0, "Sand"),
+        ]
+    )
+    summaries: list = []
+    clip_warnings: list[str] = []
+    polygons = build_stratigraphy(
+        projected, allow_pinch_outs=True, pair_summaries=summaries, clip_warnings=clip_warnings
+    )
+    assert len(polygons) == 4 and all(p.is_pinch_out for p in polygons)
+    _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 50.0})
+    for polygon in polygons:
+        assert polygon.polygon.area == pytest.approx(0.5 * 5.0 * 25.0)
+    assert _pairwise_overlap_area(polygons) == pytest.approx(0.0, abs=1e-6)
+    assert summaries[0].crossing_codes == ("Clay", "Sand")
+    assert summaries[0].matched_count == 0
+    assert clip_warnings == []
+    health = preview_correlation_health(projected)
+    assert health[0].crossing_codes == ("Clay", "Sand")
+
+
+def test_crossing_correlation_keeps_best_ranked_match() -> None:
+    """When only one of two crossing matches lines up in elevation, that one stays."""
+    projected = _rows_df(
+        [
+            ("A", 0.0, 100.0, 99.0, "Clay"),
+            ("A", 0.0, 99.0, 90.0, "Sand"),
+            ("B", 50.0, 100.0, 91.0, "Sand"),
+            ("B", 50.0, 91.0, 90.0, "Clay"),
+        ]
+    )
+    summaries: list = []
+    polygons = build_stratigraphy(projected, allow_pinch_outs=True, pair_summaries=summaries)
+    sand = [p for p in polygons if p.lithology_code == "Sand"]
+    assert len(sand) == 1 and not sand[0].is_pinch_out
+    assert all(p.is_pinch_out for p in polygons if p.lithology_code == "Clay")
+    assert summaries[0].crossing_codes == ("Clay",)
+
+
+def test_explicit_crossing_override_is_kept() -> None:
+    projected = pd.DataFrame(
+        [
+            {
+                "hole_id": hole,
+                "x_profile": x,
+                "collar_elevation": 100.0,
+                "top_elevation": top,
+                "bottom_elevation": bottom,
+                "lithology_code": code,
+                "unit_order": order,
+            }
+            for hole, x, top, bottom, code, order in [
+                ("A", 0.0, 100.0, 95.0, "Sand", 1),
+                ("A", 0.0, 95.0, 90.0, "Clay", 2),
+                ("B", 50.0, 100.0, 95.0, "Clay", 1),
+                ("B", 50.0, 95.0, 90.0, "Sand", 2),
+            ]
+        ]
+    )
+    override = CorrelationOverride(
+        left_hole_id="A", right_hole_id="B", left_unit_order=1, right_unit_order=2
+    )
+    polygons = build_stratigraphy(
+        projected, allow_pinch_outs=True, correlation_overrides=(override,)
+    )
+    sand = [p for p in polygons if p.lithology_code == "Sand" and not p.is_pinch_out]
+    assert len(sand) == 1
+
+
+def test_clip_warnings_report_substantial_fence_loss() -> None:
+    first = GeologicalPolygon(
+        "Clay", ShapelyPolygon([(0, 0), (10, 0), (10, 10), (0, 10)]), ("A", "B")
+    )
+    second = GeologicalPolygon(
+        "Sand", ShapelyPolygon([(0, -2), (10, -2), (10, 8), (0, 8)]), ("A", "B")
+    )
+    warnings: list[str] = []
+    _resolve_overlaps_in_pair([first, second], clip_warnings=warnings)
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Fence clipped: Sand between A–B kept 20%")
+
+
+def test_no_false_overlap_from_near_coincident_tip_vertices() -> None:
+    """GEOS precision: a clipped wedge with two tip vertices ~5e-15 apart reported a
+    Silt/Clay overlap in one intersection direction only."""
+    from models import Collar, Lithology
+    from pipeline import compute_section_geometry
+
+    transect = [
+        (50.0, -19.15486194756213),
+        (50.0, 19.52559208826952),
+        (50.0, 0.18536507035369532),
+    ]
+    collars = [
+        Collar(
+            hole_id="H0",
+            easting=50.0,
+            northing=9.047282356731813,
+            elevation=166.187008501202,
+            total_depth=37.8,
+        ),
+        Collar(
+            hole_id="H1",
+            easting=50.0,
+            northing=12.17329004604181,
+            elevation=100.0,
+            total_depth=400,
+        ),
+    ]
+    lithologies = [
+        Lithology(
+            hole_id="H0", from_depth=1.49572, to_depth=6.34054, lithology_code="Silt", unit_order=2
+        ),
+        Lithology(
+            hole_id="H1", from_depth=0, to_depth=244.87773, lithology_code="Clay", unit_order=1
+        ),
+        Lithology(
+            hole_id="H1",
+            from_depth=244.87773,
+            to_depth=330.65682,
+            lithology_code="Silt",
+            unit_order=2,
+        ),
+    ]
+    geometry = compute_section_geometry(collars, lithologies, transect)
+    assert geometry.overlap_warnings == ()
+    for polygon in geometry.polygons:
+        coords = list(polygon.polygon.exterior.coords)[:-1]
+        for (x0, z0), (x1, z1) in zip(coords, coords[1:] + coords[:1]):
+            assert abs(x0 - x1) + abs(z0 - z1) > 1e-9
+
+
+def test_dedupe_vertices_drops_float_noise() -> None:
+    from stratigraphy import _dedupe_vertices
+
+    assert _dedupe_vertices([(0.0, 0.0), (1.0, 1.0), (1.0, 1.0 + 5e-15), (0.0, 1.0)]) == [
+        (0.0, 0.0),
+        (1.0, 1.0),
+        (0.0, 1.0),
+    ]

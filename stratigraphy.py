@@ -206,6 +206,46 @@ def _pinch_out_z_mid(
     return sum(contacts) / len(contacts)
 
 
+def _dedupe_vertices(
+    coords: list[tuple[float, float]], *, rel_tol: float = 1e-9
+) -> list[tuple[float, float]]:
+    """Drop consecutive (and closing) vertices that coincide to within float noise.
+
+    Interpolated tips and bends can land ~1e-15 apart from an existing vertex;
+    GEOS then builds a needle spike whose overlay is precision-sensitive (one
+    intersection direction reports area where the other reports none), which
+    surfaced as false overlap warnings.
+    """
+    if len(coords) < 2:
+        return coords
+
+    def _same(a: tuple[float, float], b: tuple[float, float]) -> bool:
+        scale = max(1.0, abs(a[0]), abs(a[1]), abs(b[0]), abs(b[1]))
+        return abs(a[0] - b[0]) <= rel_tol * scale and abs(a[1] - b[1]) <= rel_tol * scale
+
+    kept: list[tuple[float, float]] = []
+    for point in coords:
+        if kept and _same(kept[-1], point):
+            continue
+        kept.append(point)
+    while len(kept) > 1 and _same(kept[0], kept[-1]):
+        kept.pop()
+    return kept
+
+
+def _clean_polygon(polygon: Polygon) -> Polygon:
+    """Drop near-coincident vertices a clip left behind (keeps the input if repair fails)."""
+    exterior = list(polygon.exterior.coords)[:-1]
+    deduped = _dedupe_vertices(exterior)
+    if len(deduped) == len(exterior) or len(deduped) < 3:
+        return polygon
+    try:
+        cleaned = Polygon(deduped, [list(ring.coords) for ring in polygon.interiors])
+    except (GEOSException, ValueError):
+        return polygon
+    return cleaned if cleaned.is_valid and not cleaned.is_empty else polygon
+
+
 def _make_polygon(
     coords: list[tuple[float, float]],
     lithology_code: str,
@@ -213,6 +253,7 @@ def _make_polygon(
     *,
     is_pinch_out: bool = False,
 ) -> GeologicalPolygon | None:
+    coords = _dedupe_vertices(coords)
     try:
         polygon = Polygon(coords)
     except (GEOSException, ValueError) as exc:
@@ -301,6 +342,7 @@ def _overrides_for_hole_pair(
         for item in reversed_items
     )
 
+
 def _apply_correlation_overrides(
     left_hole_id: str,
     right_hole_id: str,
@@ -363,10 +405,11 @@ def _rematch_shifted_units(
     The same happens when a hole repeats a unit (Clay above and below a Gravel
     lens): duplicate codes get ``('pos', index, code)`` keys that rarely line up.
 
-    Unmatched intervals of the same lithology code are paired top-down (in each
-    hole's stratigraphic order) under shared ``('shifted', code, n)`` keys, skipping
-    any pairing that would cross an already-matched correlation, so hole-local
-    stratigraphic order is preserved. Surplus repeats stay pinch-outs.
+    Unmatched intervals of the same lithology code are paired under shared
+    ``('shifted', code, i, j)`` keys, best ``_pair_rank`` first across all codes,
+    skipping any pairing that would cross an already-matched correlation, so
+    hole-local stratigraphic order is preserved and the result does not depend on
+    transect direction. Surplus repeats stay pinch-outs.
     """
     left_unmatched = [key for key in left_lookup if key not in right_lookup]
     right_unmatched = [key for key in right_lookup if key not in left_lookup]
@@ -394,10 +437,8 @@ def _rematch_shifted_units(
     ]
 
     # Rank every same-code candidate pair globally (not hole-by-hole greedy) so the
-    # result does not depend on transect direction: most shared elevation range
-    # first (thick units that clearly line up win), then nearest mid-elevations,
-    # then shallowest stratigraphic position. All criteria are symmetric in L/R.
-    candidates: list[tuple[tuple[float, float, int, int, int], str, Hashable, Hashable, int, int]] = []
+    # result does not depend on transect direction (see ``_pair_rank``).
+    candidates: list[tuple[tuple, tuple[str, Hashable, Hashable], int, int]] = []
     for code, left_keys in left_by_code.items():
         right_keys = right_by_code.get(code)
         if not right_keys:
@@ -412,48 +453,157 @@ def _rematch_shifted_units(
                 right_pos = right_index.get(id(right_layer))
                 if right_pos is None:
                     continue
-                overlap = min(left_layer.top_elevation, right_layer.top_elevation) - max(
-                    left_layer.bottom_elevation, right_layer.bottom_elevation
+                candidates.append(
+                    (
+                        _pair_rank(left_layer, right_layer, left_pos, right_pos),
+                        (code, left_key, right_key),
+                        left_pos,
+                        right_pos,
+                    )
                 )
-                mid_offset = abs(
-                    (left_layer.top_elevation + left_layer.bottom_elevation)
-                    - (right_layer.top_elevation + right_layer.bottom_elevation)
-                ) / 2.0
-                rank = (
-                    -max(overlap, 0.0),
-                    mid_offset,
-                    left_pos + right_pos,
-                    min(left_pos, right_pos),
-                    abs(left_pos - right_pos),
-                )
-                candidates.append((rank, code, left_key, right_key, left_pos, right_pos))
-    candidates.sort(key=lambda item: item[0])
-
-    merged_left: dict[Hashable, _LayerInterval] | None = None
-    merged_right: dict[Hashable, _LayerInterval] | None = None
-    used_left: set[int] = set()
-    used_right: set[int] = set()
-    for _rank, code, left_key, right_key, left_pos, right_pos in candidates:
-        if left_pos in used_left or right_pos in used_right:
-            continue
-        crosses = any(
-            (left_pos < other_left) != (right_pos < other_right)
-            for other_left, other_right in matched_positions
-        )
-        if crosses:
-            continue
-        if merged_left is None or merged_right is None:
-            merged_left = dict(left_lookup)
-            merged_right = dict(right_lookup)
+    accepted = _accept_non_crossing(candidates, matched_positions)
+    if not accepted:
+        return left_lookup, right_lookup
+    merged_left = dict(left_lookup)
+    merged_right = dict(right_lookup)
+    for (code, left_key, right_key), left_pos, right_pos in accepted:
         new_key: Hashable = ("shifted", code, min(left_pos, right_pos), max(left_pos, right_pos))
         merged_left[new_key] = merged_left.pop(left_key)
         merged_right[new_key] = merged_right.pop(right_key)
-        matched_positions.append((left_pos, right_pos))
-        used_left.add(left_pos)
-        used_right.add(right_pos)
+    return merged_left, merged_right
 
-    if merged_left is None or merged_right is None:
+
+def _pair_rank(
+    left_layer: _LayerInterval,
+    right_layer: _LayerInterval,
+    left_pos: int,
+    right_pos: int,
+) -> tuple:
+    """Symmetric (left/right-invariant) preference for correlating two intervals.
+
+    Most shared elevation range first (thick units that clearly line up win), then
+    nearest mid-elevations, then shallowest stratigraphic position. Floats are
+    rounded so mirror-image transects tie exactly instead of on float noise.
+    """
+    overlap = min(left_layer.top_elevation, right_layer.top_elevation) - max(
+        left_layer.bottom_elevation, right_layer.bottom_elevation
+    )
+    mid_offset = (
+        abs(
+            (left_layer.top_elevation + left_layer.bottom_elevation)
+            - (right_layer.top_elevation + right_layer.bottom_elevation)
+        )
+        / 2.0
+    )
+    return (
+        -round(max(overlap, 0.0), 6),
+        round(mid_offset, 6),
+        left_pos + right_pos,
+        min(left_pos, right_pos),
+        abs(left_pos - right_pos),
+    )
+
+
+def _crosses(left_pos: int, right_pos: int, positions: Sequence[tuple[int, int]]) -> bool:
+    """Whether pairing ``left_pos``↔``right_pos`` crosses (or reuses) any accepted pair."""
+    return any(
+        left_pos == other_left
+        or right_pos == other_right
+        or (left_pos < other_left) != (right_pos < other_right)
+        for other_left, other_right in positions
+    )
+
+
+def _accept_non_crossing(
+    candidates: list[tuple[tuple, object, int, int]],
+    fixed_positions: list[tuple[int, int]],
+) -> list[tuple[object, int, int]]:
+    """Accept candidate pairs best-rank first, keeping hole-local order (no crossings).
+
+    Candidates of exactly equal rank are judged together: when they cross (or share
+    an interval with) each other the choice is ambiguous, so none of them is
+    accepted. That keeps the result symmetric under reversing the transect instead
+    of depending on input order. ``fixed_positions`` is extended in place.
+    """
+    accepted: list[tuple[object, int, int]] = []
+    ordered = sorted(candidates, key=lambda item: item[0])
+    index = 0
+    while index < len(ordered):
+        group_end = index
+        while group_end < len(ordered) and ordered[group_end][0] == ordered[index][0]:
+            group_end += 1
+        survivors = [
+            (payload, left_pos, right_pos)
+            for _rank, payload, left_pos, right_pos in ordered[index:group_end]
+            if not _crosses(left_pos, right_pos, fixed_positions)
+        ]
+        group_accepted = [
+            (payload, left_pos, right_pos)
+            for position, (payload, left_pos, right_pos) in enumerate(survivors)
+            if not _crosses(
+                left_pos,
+                right_pos,
+                [(lp, rp) for i, (_p, lp, rp) in enumerate(survivors) if i != position],
+            )
+        ]
+        accepted.extend(group_accepted)
+        fixed_positions.extend((lp, rp) for _payload, lp, rp in group_accepted)
+        index = group_end
+    return accepted
+
+
+def _drop_crossing_matches(
+    left_intervals: list[_LayerInterval],
+    right_intervals: list[_LayerInterval],
+    left_lookup: dict[Hashable, _LayerInterval],
+    right_lookup: dict[Hashable, _LayerInterval],
+) -> tuple[dict[Hashable, _LayerInterval], dict[Hashable, _LayerInterval]]:
+    """Un-match automatic correlations that cross each other between the two holes.
+
+    Code-only (or order) keys can pair Sand-over-Clay in one hole with
+    Clay-over-Sand in the next. Those fills cross, overlap clipping then keeps only
+    the largest fragment, and a logged interval silently vanishes from the fence.
+    Matches are kept best-rank first (``_pair_rank``) while they preserve both
+    holes' order; the rest are re-keyed as ``('crossed', side, index, code)`` so they
+    are drawn as pinch-outs anchored at their own holes and reported in the pair
+    summary. Explicit ``('override', ...)`` correlations are always kept.
+    """
+    left_index = {id(interval): index for index, interval in enumerate(left_intervals)}
+    right_index = {id(interval): index for index, interval in enumerate(right_intervals)}
+    fixed: list[tuple[int, int]] = []
+    candidates: list[tuple[tuple, Hashable, int, int]] = []
+    for key, left_layer in left_lookup.items():
+        right_layer = right_lookup.get(key)
+        if right_layer is None:
+            continue
+        left_pos = left_index.get(id(left_layer))
+        right_pos = right_index.get(id(right_layer))
+        if left_pos is None or right_pos is None:
+            continue
+        if isinstance(key, tuple) and key and key[0] == "override":
+            fixed.append((left_pos, right_pos))
+            continue
+        candidates.append(
+            (_pair_rank(left_layer, right_layer, left_pos, right_pos), key, left_pos, right_pos)
+        )
+    if len(candidates) + len(fixed) < 2:
         return left_lookup, right_lookup
+    all_positions = fixed + [(lp, rp) for _rank, _key, lp, rp in candidates]
+    if not any(
+        _crosses(lp, rp, all_positions[:i] + all_positions[i + 1 :])
+        for i, (lp, rp) in enumerate(all_positions)
+    ):
+        return left_lookup, right_lookup  # common case: nothing crosses
+    kept = {key for key, _lp, _rp in _accept_non_crossing(candidates, fixed)}
+    merged_left = dict(left_lookup)
+    merged_right = dict(right_lookup)
+    for _rank, key, left_pos, right_pos in candidates:
+        if key in kept:
+            continue
+        left_layer = merged_left.pop(key)
+        right_layer = merged_right.pop(key)
+        merged_left[("crossed", "left", left_pos, left_layer.lithology_code)] = left_layer
+        merged_right[("crossed", "right", right_pos, right_layer.lithology_code)] = right_layer
     return merged_left, merged_right
 
 
@@ -466,7 +616,8 @@ def _correlate_pair(
     right_lookup: dict[Hashable, _LayerInterval],
     overrides: Sequence[CorrelationOverride],
 ) -> tuple[dict[Hashable, _LayerInterval], dict[Hashable, _LayerInterval]]:
-    """Apply explicit overrides, then re-match same-code units shifted by an inserted unit."""
+    """Apply explicit overrides, un-match crossing automatic correlations, then
+    re-match same-code units shifted by an inserted unit."""
     left_lookup, right_lookup = _apply_correlation_overrides(
         left_hole_id,
         right_hole_id,
@@ -475,6 +626,9 @@ def _correlate_pair(
         left_lookup,
         right_lookup,
         overrides,
+    )
+    left_lookup, right_lookup = _drop_crossing_matches(
+        left_intervals, right_intervals, left_lookup, right_lookup
     )
     return _rematch_shifted_units(left_intervals, right_intervals, left_lookup, right_lookup)
 
@@ -533,7 +687,9 @@ def _polygons_for_pair(
         if interval.unit_order is not None
     }
     matched = [
-        (key, left_lookup[key], right_lookup[key]) for key in all_keys if key in left_lookup and key in right_lookup
+        (key, left_lookup[key], right_lookup[key])
+        for key in all_keys
+        if key in left_lookup and key in right_lookup
     ]
     matched_right_first = [(key, right, left) for key, left, right in matched]
 
@@ -778,22 +934,31 @@ def _anchored_fragment(geom, anchor: LineString | None) -> Polygon | None:
         for part in getattr(geom, "geoms", ())
         if part.geom_type == "Polygon" and not part.is_empty
     ]
-    attached = [
-        (part.boundary.intersection(anchor).length, part.area)
-        for part in parts
-    ]
+    attached = [(part.boundary.intersection(anchor).length, part.area) for part in parts]
     candidates = [
-        (contact, area, part)
-        for (contact, area), part in zip(attached, parts)
-        if contact > 0.0
+        (contact, area, part) for (contact, area), part in zip(attached, parts) if contact > 0.0
     ]
     if not candidates:
         return _largest_polygon(geom)
     return max(candidates, key=lambda item: (item[1], item[0]))[2]
 
 
-def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[GeologicalPolygon]:
-    """Clip deeper fence polygons so inter-hole fills do not stack on top of shallower units."""
+# Fraction of a fence polygon's area that overlap clipping may discard before the
+# loss is reported to the user (``clip_warnings``) rather than only logged.
+CLIP_LOSS_WARN_FRACTION = 0.15
+
+
+def _resolve_overlaps_in_pair(
+    polygons: list[GeologicalPolygon],
+    *,
+    clip_warnings: list[str] | None = None,
+) -> list[GeologicalPolygon]:
+    """Clip deeper fence polygons so inter-hole fills do not stack on top of shallower units.
+
+    When ``clip_warnings`` is given, a user-facing message is appended for every
+    polygon that loses more than ``CLIP_LOSS_WARN_FRACTION`` of its area (or is
+    dropped entirely) — a logged interval partly missing from the fence.
+    """
     if len(polygons) <= 1:
         return polygons
 
@@ -835,6 +1000,20 @@ def _resolve_overlaps_in_pair(polygons: list[GeologicalPolygon]) -> list[Geologi
             largest = _anchored_fragment(geom, _pinch_anchor_edge(geo_polygon.polygon))
         else:
             largest = _largest_polygon(geom)
+        if largest is not None and not largest.is_empty and largest is not geo_polygon.polygon:
+            largest = _clean_polygon(largest)
+        kept_area = 0.0 if largest is None or largest.is_empty else float(largest.area)
+        if (
+            clip_warnings is not None
+            and original_area > 0
+            and kept_area < (1.0 - CLIP_LOSS_WARN_FRACTION) * original_area
+        ):
+            clip_warnings.append(
+                f"Fence clipped: {geo_polygon.lithology_code} between "
+                f"{geo_polygon.hole_pair[0]}–{geo_polygon.hole_pair[1]} kept "
+                f"{100.0 * kept_area / original_area:.0f}% of its area "
+                "(conflicting correlation; check unit order or overrides)"
+            )
         if largest is None or largest.is_empty:
             continue
         # Difference + MultiPolygon keep-largest can discard secondary fragments.
@@ -911,6 +1090,11 @@ def detect_polygon_overlaps(polygons: list[GeologicalPolygon]) -> list[PolygonOv
                 # Skip empty/tiny area and pure line touches (area < 1e-9).
                 if intersection.is_empty or intersection.area < 1e-9:
                     continue
+                # GEOS overlay on near-degenerate rings is direction-sensitive; a
+                # real overlap has area both ways round, a precision artefact not.
+                reverse = right.polygon.intersection(left.polygon)
+                if reverse.is_empty or reverse.area < 1e-9:
+                    continue
                 centroid = intersection.centroid
                 overlaps.append(
                     PolygonOverlap(
@@ -942,6 +1126,10 @@ class CorrelationPairSummary:
     left_only_codes: tuple[str, ...]
     right_only_codes: tuple[str, ...]
     pinch_out_candidates: int
+    # Lithology codes whose automatic correlation crossed another one between the
+    # two holes and was un-matched (drawn as pinch-outs instead); see
+    # ``_drop_crossing_matches``.
+    crossing_codes: tuple[str, ...] = ()
 
     @property
     def unmatched_keys_count(self) -> int:
@@ -996,7 +1184,10 @@ def _correlation_pair_summary(
     left_only: set[str] = set()
     right_only: set[str] = set()
     pinch_outs = 0
+    crossing: set[str] = set()
     for key, left_layer in left_lookup.items():
+        if isinstance(key, tuple) and key and key[0] == "crossed":
+            crossing.add(left_layer.lithology_code)
         right_layer = right_lookup.get(key)
         if right_layer is not None:
             matched += 1
@@ -1017,6 +1208,7 @@ def _correlation_pair_summary(
         left_only_codes=tuple(sorted(left_only)),
         right_only_codes=tuple(sorted(right_only)),
         pinch_out_candidates=pinch_outs,
+        crossing_codes=tuple(sorted(crossing)),
     )
 
 
@@ -1065,8 +1257,14 @@ def build_stratigraphy(
     allow_pinch_outs: bool = True,
     correlation_overrides: Sequence[CorrelationOverride] = (),
     pair_summaries: list[CorrelationPairSummary] | None = None,
+    clip_warnings: list[str] | None = None,
 ) -> list[GeologicalPolygon]:
-    """Construct geological polygons between adjacent projected boreholes."""
+    """Construct geological polygons between adjacent projected boreholes.
+
+    ``pair_summaries`` / ``clip_warnings`` are optional out-parameters: per-pair
+    correlation summaries, and user-facing messages for fence polygons that
+    overlap clipping cut down substantially (see ``_resolve_overlaps_in_pair``).
+    """
     hole_profiles = _sorted_hole_profiles(projected_df)
     if len(hole_profiles) < 2:
         return []
@@ -1090,7 +1288,8 @@ def build_stratigraphy(
                 right_lookup=right_lookup,
                 correlation_overrides=_overrides_for_hole_pair(left_id, right_id, override_index),
                 pair_summaries=pair_summaries,
-            )
+            ),
+            clip_warnings=clip_warnings,
         )
         polygons.extend(pair_polygons)
 

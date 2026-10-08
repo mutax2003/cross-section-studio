@@ -87,7 +87,7 @@ class Collar(BaseModel, frozen=True):
         # these; larger values are typos and overflowed the section maths.
         limit = _COLLAR_LIMITS[info.field_name]
         if abs(value) > limit:
-            raise ValueError(f"{info.field_name} {value:g} is out of range (limit ±{limit:g})")
+            raise ValueError(f"{info.field_name} {value:,.0f} is out of range (limit ±{limit:,.0f})")
         return value
 
     @field_validator("total_depth")

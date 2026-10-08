@@ -478,12 +478,12 @@ def test_batch_zip_builds_every_workbook_section(site_ingest, layout: str, tmp_p
     with zipfile.ZipFile(BytesIO(zip_bytes)) as archive:
         names = set(archive.namelist())
         expected = {
-            f"{stem}.{ext}" for stem in ("A-A", "B-B", "C-C") for ext in ("png", "pdf", "svg")
+            f"{stem}.{ext}" for stem in ("A-A'", "B-B'", "C-C'") for ext in ("png", "pdf", "svg")
         }
         assert names == expected | {"report_binder.pdf", "README.txt"}
         assert "3 section line(s)" in archive.read("README.txt").decode("utf-8")
         archive.extractall(tmp_path)  # stems are filesystem-safe
-    assert (tmp_path / "A-A.png").stat().st_size > 10_000
+    assert (tmp_path / "A-A'.png").stat().st_size > 10_000
 
 
 def _section_geometry(parse_result, holes):
@@ -602,10 +602,10 @@ def test_streamlit_upload_seeds_batch_lines_and_builds_zip(site_bytes: bytes) ->
     pngs = sorted(name for name in names if name.endswith(".png"))
     pdfs = sorted(name for name in names if name.endswith(".pdf") and name != "report_binder.pdf")
     assert len(pngs) == 3 and len(pdfs) == 3, names
-    for stem in ("A-A", "B-B", "C-C"):
+    for stem in ("A-A'", "B-B'", "C-C'"):
         assert any(name.endswith(f"{stem}.png") for name in pngs), names
     assert not any("B-B_" in name for name in names), names
     zip_name = at.session_state["_batch_zip_name"]
-    assert all(label in zip_name for label in ("A-A", "B-B", "C-C")), zip_name
+    assert all(label in zip_name for label in ("A-A'", "B-B'", "C-C'")), zip_name
     assert {"README.txt", "report_binder.pdf"} <= names
     assert any("Batch ZIP ready: 3 section line" in s.value for s in at.success)

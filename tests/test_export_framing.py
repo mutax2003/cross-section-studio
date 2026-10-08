@@ -313,3 +313,18 @@ def test_export_filename_keeps_primes_and_names_the_section_once() -> None:
         include_transect_label=True,
     )
     assert stem == "Bay_Area_Site_A_BH-01_BH-06"
+
+
+def test_file_names_keep_the_section_prime_without_stray_fragments() -> None:
+    from export_framing import build_export_filename
+
+    title = "Section A-A'"
+    assert build_export_filename(pattern="section_title", section_title=title) == "Section_A-A'"
+    with_label = build_export_filename(
+        pattern="section_title",
+        section_title=title,
+        transect_label="Section A-A' BH 1",
+        include_transect_label=True,
+    )
+    assert with_label == "Section_A-A'_BH_1"
+    assert "_'_" not in with_label

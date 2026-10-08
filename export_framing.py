@@ -143,7 +143,8 @@ def avoid_windows_reserved_name(stem: str) -> str:
 def sanitize_filename_stem(text: str, *, fallback: str = "cross_section") -> str:
     """Safe file-name stem: ``A - A' WITH CL`` → ``A-A'_WITH_CL``."""
     cleaned = _FILENAME_SAFE_RE.sub("_", text.strip())
-    cleaned = cleaned.replace("_-_", "-")[:80].strip("_'")
+    # Keep a trailing prime ("A-A'"); only a leading one is meaningless.
+    cleaned = cleaned.replace("_-_", "-")[:80].strip("_").lstrip("'").strip("_")
     return avoid_windows_reserved_name(cleaned) if cleaned else fallback
 
 
@@ -208,7 +209,7 @@ def build_export_filename(
     if label.startswith(stem):
         # The app's transect label is "<section title> <first>→<last>": keep
         # only the hole range instead of printing the title twice.
-        label = label[len(stem):].strip("_")
+        label = label[len(stem):].strip("_'")
     if label and label != stem:
         stem = f"{stem}_{label}"
     if rev:

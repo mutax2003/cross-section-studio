@@ -208,7 +208,9 @@ def upload_headline(
         )
     return (
         "success",
-        f"Loaded **{hole_count}** boreholes and **{interval_count}** lithology intervals.",
+        f"Loaded **{hole_count}** {'borehole' if hole_count == 1 else 'boreholes'} and "
+        f"**{interval_count}** "
+        f"{'lithology interval' if interval_count == 1 else 'lithology intervals'}.",
     )
 
 

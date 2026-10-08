@@ -766,6 +766,11 @@ def render_configure_step(
                 )
 
             render_section_qa(subset_preflight, active_ids, preflight_warnings)
+    elif len(all_hole_ids) < 2:
+        st.info(
+            "This workbook has only one hole; a section needs at least two. Add at least "
+            "one more hole to the workbook (Collars and Lithology), then upload it again."
+        )
     else:
         st.info(
             "Choose at least two holes under **Section line** in the sidebar "

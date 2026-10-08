@@ -246,7 +246,8 @@ def profile_chips_html(
         f'<span class="chip">VE {escape_html(ve_short_text(vertical_exaggeration))}</span>',
     ]
     if hole_count is not None:
-        chips.append(f'<span class="chip">{escape_html(hole_count)} holes</span>')
+        noun = "hole" if hole_count == 1 else "holes"
+        chips.append(f'<span class="chip">{escape_html(hole_count)} {noun}</span>')
     extra: list[str] = []
     if preset_label:
         extra.append(mode_label)

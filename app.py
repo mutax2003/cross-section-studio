@@ -311,7 +311,9 @@ else:
                             "'Stop if matched layers overlap' in Configure."
                         )
                     elif configure_state.transect_selection is None:
-                        if (
+                        if len(parse_result.collars) < 2:
+                            st.caption("Add at least one more hole to the workbook to draw a section.")
+                        elif (
                             sidebar.transect_mode == "By hole sequence"
                             and len(configure_state.selected_holes) < 2
                         ):

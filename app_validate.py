@@ -554,6 +554,12 @@ def render_next_step_coach(
                 f"<strong>Next:</strong> section line {holes} is selected — click "
                 "<strong>Generate section</strong> above."
             )
+    elif len(st.session_state.get("hole_ids") or ()) < 2:
+        # Choosing holes cannot help: there is nothing to choose.
+        coach = (
+            "<strong>Next:</strong> a section needs at least two holes — add at least "
+            "one more hole to the workbook (Collars and Lithology), then upload it again."
+        )
     else:
         coach = (
             "<strong>Next:</strong> choose holes under <strong>Section line</strong> "
@@ -618,7 +624,8 @@ def render_validate_step(*, show_coach: bool = True) -> None:
     status_line = (
         f"**{status_label}** — "
         f"**{error_total} {'error' if error_total == 1 else 'errors'}**, "
-        f"**{quality_report.warning_count} warnings**, "
+        f"**{quality_report.warning_count} "
+        f"{'warning' if quality_report.warning_count == 1 else 'warnings'}**, "
         f"**{quality_report.info_count} info**{status_note}"
     )
     compact = not quality_report.has_blocking_errors

@@ -899,3 +899,37 @@ def test_sidebar_and_configure_inputs_all_have_help() -> None:
         label for label in _HELP_REQUIRED_SECTION_SHEET if not getattr(widgets.get(label), "help", None)
     ]
     assert not missing, missing
+
+
+def test_one_hole_workbook_asks_for_another_hole_not_a_section_line() -> None:
+    """A 1-hole workbook said "Loaded 1 boreholes" and "choose holes under
+    Section line", though there was nothing else to choose."""
+    from io import BytesIO
+
+    import openpyxl
+    from streamlit.testing.v1 import AppTest
+
+    from app_upload import upload_headline
+
+    book = openpyxl.load_workbook(BytesIO(_crossing_workbook_bytes("section_sheet")))
+    for cell in book["Collars"][3]:
+        cell.value = None
+    for row in (4, 5):
+        for cell in book["Lithology"][row]:
+            cell.value = None
+    buffer = BytesIO()
+    book.save(buffer)
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("one.xlsx", buffer.getvalue()).run()
+    at.run()
+    assert not at.exception
+    texts = [str(e.value) for kind in ("info", "caption", "markdown", "success") for e in getattr(at, kind)]
+    assert any("add at least one more hole to the workbook" in t.lower() for t in texts)
+    assert not any("choose holes under" in t.lower() for t in texts)
+    assert not any("Choose at least two holes under **Section line**" in t for t in texts)
+    assert not any(" 1 boreholes" in t or "**1** boreholes" in t or " 1 warnings" in t for t in texts)
+    assert upload_headline(hole_count=1, interval_count=1, skipped_count=0, error_count=0)[1] == (
+        "Loaded **1** borehole and **1** lithology interval."
+    )

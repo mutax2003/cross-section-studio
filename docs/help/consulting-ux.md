@@ -36,7 +36,7 @@ Inter-hole fills are a **rule-based fence** (linear contacts, midpoint pinch-out
 
 - Water table polylines and chemistry “fences” are **schematic connectors** between measured sticks — **not** a potentiometric surface or plume envelope. Figure footers append overlay disclaimers when those layers plot.
 - Optional Water column `status`: `measured` (default), `dry`, or `nm` (not measured). Prefer this over omitting rows when a well was visited but dry/NM.
-- Chemistry label colours use Configure green/yellow thresholds (defaults resemble chloride mg/L scales — retune per parameter). Turning on **interpolate chemistry between holes** draws depth-matched segments only; keep it off for P2 stick-style figures.
+- Chemistry label colours: **All black**, **All red (client P2 style)**, or **Green / orange / red thresholds** (defaults green ≤ 100, orange 100–250, red > 250 in the parameter's units, e.g. chloride mg/kg — retune per parameter). The threshold key prints below the distance label. Turning on **interpolate chemistry between holes** draws depth-matched segments only; keep it off for P2 stick-style figures.
 - When water connectors plot, adjacent measured heads may show a schematic **i=Δh/Δx** label. Validate warns if \|i\| is unrealistically large.
 
 ## Keyboard shortcuts

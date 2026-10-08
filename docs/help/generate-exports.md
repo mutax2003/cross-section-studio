@@ -45,6 +45,12 @@ Download SVG for drafting. With **CAD-friendly SVG layers** on, export promotes 
 
 With **Auto (fit page)** (the default) the figure fills the page and the VE caption shows the VE actually printed (e.g. `VERTICAL EXAGGERATION ≈2.2×`); it is re-measured for the export page preset, so the PNG, PDF and SVG captions match the sheet they are on. Pick a number (1×, 2×, 5×, …) to draw exactly that VE on every page: the plot keeps its proportions and shrinks inside its frame instead of stretching.
 
+## Map scale on consulting sheets
+
+When the title block **Map scale** is set (sidebar or workbook, e.g. `1:1 000`), the consulting sheet draws the section at exactly that horizontal scale on the export page: the plot box is sized to it and centred in its frame, the scale bar reads `SCALE 1:1000`, and the title block SCALE row shows your value. With a chosen VE the box height follows; with Auto VE the plot fills the frame height and the caption shows the measured VE. All horizontal distance on the plot, including the room kept for the last hole's labels, is at that scale.
+
+If the section is too long (or, with a fixed VE, too tall) for the page at that scale, or would fill less than 30 % of the frame width, the sheet is fitted to the frame instead: the SCALE row reads **AS SHOWN**, the scale bar shows the approximate printed scale, and the build reports a QA note such as *Map scale 1:1000 doesn't fit a letter landscape page; printed at approx. 1:1538 (AS SHOWN).* Choose a larger page preset (tabloid) or a smaller scale to print at your value. With Map scale left blank the SCALE row always reads AS SHOWN. A fitted sheet's scale bar always says `APPROX. SCALE` with the measured ratio (e.g. `APPROX. SCALE 1:1280`); only a sheet drawn at its title-block map scale prints an unqualified `SCALE 1:…`.
+
 ## QA before export
 
 If **Stop if matched layers overlap** is on in Configure, resolve overlaps (or clear the gate after manual review) before Generate or batch ZIP. Cosmetic changes (title, VE, hatches, fonts, column width) still need Generate for a new SVG; projection/stratigraphy can reuse cached geometry when only cosmetics change.

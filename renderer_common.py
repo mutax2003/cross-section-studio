@@ -226,6 +226,19 @@ def apply_ve_aspect(ax, *, exact: bool, twins: Sequence = (), anchor: str = "C")
     if not exact:
         ax.set_aspect("auto")
         return
+    release_twins(ax, twins)
+    ax.set_adjustable("box")
+    ax.set_aspect(1.0, adjustable="box", anchor=anchor)
+
+
+def release_twins(ax, twins: Sequence = ()) -> None:
+    """Detach ``twins`` from ``ax``'s twin group; they follow ``ax``'s drawn box.
+
+    Matplotlib's twin group copies one shared position to every member, which
+    breaks any layout that sizes the main axes box itself (exact VE's
+    adjustable "box", the consulting exact map scale). Each released twin is
+    located on ``ax``'s axes box instead, so it tracks whatever box ``ax`` gets.
+    """
     from matplotlib.axes._base import _TransformedBoundsLocator
 
     for twin in twins:
@@ -239,8 +252,6 @@ def apply_ve_aspect(ax, *, exact: bool, twins: Sequence = (), anchor: str = "C")
         twin.set_adjustable("box")
         twin.set_aspect("auto")
         twin.set_axes_locator(_TransformedBoundsLocator([0, 0, 1, 1], ax.transAxes))
-    ax.set_adjustable("box")
-    ax.set_aspect(1.0, adjustable="box", anchor=anchor)
 
 
 # Column intervals drawn shorter than this (in inches on the output page) get a

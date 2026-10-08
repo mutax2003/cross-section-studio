@@ -101,6 +101,9 @@ class CrossSectionResult:
     lithology_codes: list[str]
     overlap_warnings: tuple[str, ...]
     retained_export_bundle: dict[str, object] | None = field(default=None, repr=False, compare=False)
+    # Layout QA for the exported page (e.g. a title-block map scale that does
+    # not fit and printed "AS SHOWN"); not part of legacy tuple unpacking.
+    qa_notes: tuple[str, ...] = ()
 
     def __iter__(self) -> Iterator[object]:
         """Allow legacy tuple unpacking: ``proj, polys, svg, png, pdf, codes, warns = result``."""
@@ -720,6 +723,8 @@ def render_cross_section_from_geometry(
 
         plt.close(figure)
         raise
+    # Read after export framing: whether the map scale fits depends on the page.
+    qa_notes = tuple(renderer.map_scale_notes(figure))
     retained: dict[str, object] | None = None
     if close_figure:
         from matplotlib import pyplot as plt
@@ -745,4 +750,5 @@ def render_cross_section_from_geometry(
         lithology_codes=lithology_codes,
         overlap_warnings=overlap_warnings,
         retained_export_bundle=retained,
+        qa_notes=qa_notes,
     )

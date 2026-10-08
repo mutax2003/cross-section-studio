@@ -21,6 +21,26 @@ ChemistryColorMode = Literal["black", "red", "threshold"]
 ChemistryLabelStyle = Literal["strip", "plain", "box", "dot", "stroke"]
 
 
+# Threshold-mode bands when no limits are given (the Configure step's
+# defaults): green <= 100, orange 100-250, red > 250.
+DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX = 100.0
+DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX = 250.0
+
+
+def resolved_chemistry_thresholds(
+    green_max: float | None, yellow_max: float | None
+) -> tuple[float, float]:
+    """Threshold-mode limits with the Configure defaults filling any gap.
+
+    A given limit is kept; a missing orange limit never falls below the green
+    one (green 300 alone gives orange <= 300, i.e. no orange band).
+    """
+    green = float(green_max) if green_max is not None else DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX
+    if yellow_max is not None:
+        return green, float(yellow_max)
+    return green, max(green, DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX)
+
+
 class CrossSectionRenderProfile(BaseModel, frozen=True):
     layout: LayoutMode = "section_sheet"
     track_width_m: float = Field(

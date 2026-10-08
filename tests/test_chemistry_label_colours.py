@@ -435,6 +435,7 @@ def test_black_default_and_threshold_modes_keep_their_colours() -> None:
     from render_theme import (
         CHEMISTRY_LABEL_BLACK,
         CHEMISTRY_LABEL_GREEN,
+        CHEMISTRY_LABEL_ORANGE,
         CHEMISTRY_LABEL_RED,
         chemistry_label_color,
     )
@@ -450,9 +451,14 @@ def test_black_default_and_threshold_modes_keep_their_colours() -> None:
     # entry had an empty gap where the sample sits in red mode).
     assert renderer.parameter_series_legend[0].get("sample_color") == CHEMISTRY_LABEL_BLACK
 
-    threshold, colours = _p2_render("threshold")  # no limits set: black, no key
-    assert colours["120"] == CHEMISTRY_LABEL_BLACK
-    assert threshold.chemistry_threshold_key_text is None
+    # No limits set: the Configure defaults (green <= 100, orange <= 250)
+    # apply, so values, dots and the key agree (it used to print black).
+    threshold, colours = _p2_render("threshold")
+    assert colours["120"] == CHEMISTRY_LABEL_ORANGE
+    assert colours["220"] == CHEMISTRY_LABEL_ORANGE
+    assert threshold.chemistry_threshold_key_text is not None
+    assert "100" in threshold.chemistry_threshold_key_text
+    assert "250" in threshold.chemistry_threshold_key_text
     assert "sample_text" not in threshold.parameter_series_legend[0]
     bands = {"green_max": 150.0, "yellow_max": 200.0}
     assert chemistry_label_color(120.0, "threshold", **bands) == CHEMISTRY_LABEL_GREEN

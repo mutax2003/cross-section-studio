@@ -44,6 +44,7 @@ from render_profiles import (
     LayoutMode,
     profile_for_layout,
     profile_with_elevation_mode,
+    resolved_chemistry_thresholds,
 )
 from render_theme import filter_water_levels_for_plot
 from renderer import CrossSectionRenderer
@@ -624,6 +625,29 @@ def render_cross_section_from_geometry(
         update=profile_updates
     )
 
+    if render_profile.chemistry_color_mode == "threshold" and (
+        render_profile.chemistry_threshold_green_max is None
+        or render_profile.chemistry_threshold_yellow_max is None
+    ):
+        # Threshold mode without limits used to print black values beside
+        # series-red dots; apply the Configure step's default bands instead.
+        green_max, yellow_max = resolved_chemistry_thresholds(
+            render_profile.chemistry_threshold_green_max,
+            render_profile.chemistry_threshold_yellow_max,
+        )
+        logger.warning(
+            "chemistry_color_mode='threshold' without both limits: using green <= %g, "
+            "orange <= %g, red above.",
+            green_max,
+            yellow_max,
+        )
+        render_profile = render_profile.model_copy(
+            update={
+                "chemistry_threshold_green_max": green_max,
+                "chemistry_threshold_yellow_max": yellow_max,
+            }
+        )
+
     effective_show_legend = show_legend
     effective_interpolate_wt = interpolate_water_table
     if render_profile.legend_in_title_block:
@@ -693,6 +717,10 @@ def render_cross_section_from_geometry(
         water_levels=plotted_water,
         lithology_codes=lithology_codes,
     )
+    # Chemistry values the label placement could not fit beside their hole
+    # are dropped (markers stay); say so in the QA lines / app warnings.
+    if not (export_framing is not None and not export_framing.include_qa_footer):
+        qa_lines = tuple(qa_lines) + tuple(getattr(renderer, "chemistry_label_notes", None) or ())
     try:
         svg_bytes, png_bytes, pdf_bytes = renderer.export_figure_bytes(
             figure,
@@ -709,6 +737,10 @@ def render_cross_section_from_geometry(
 
         plt.close(figure)
         raise
+    # Export re-places labels for the page size: report the final drops.
+    overlap_warnings = tuple(overlap_warnings) + tuple(
+        getattr(renderer, "chemistry_label_notes", None) or ()
+    )
     retained: dict[str, object] | None = None
     if close_figure:
         from matplotlib import pyplot as plt

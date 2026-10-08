@@ -14,6 +14,7 @@ from matplotlib.patheffects import withStroke
 from matplotlib.transforms import Bbox, offset_copy
 
 from models import EnvironmentalReading
+from render_profiles import resolved_chemistry_thresholds
 from render_theme import (
     CHEMISTRY_FIXED_COLORS,
     CHEMISTRY_LABEL_BLACK,
@@ -44,6 +45,8 @@ class ParameterLegendEntry(TypedDict):
 _PARAMETER_LABEL_MIN_GAP_PTS = 26.0
 # Clearance between the lowest x-axis text and the threshold key below it.
 _THRESHOLD_KEY_GAP_PTS = 3.0
+# Threshold mode: a fence segment joining readings in different bands.
+_THRESHOLD_MIXED_SEGMENT_COLOR = "#6B7280"
 _PARAMETER_LABEL_DX = 8.0
 _PARAMETER_LABEL_BASE_DY = 0.0
 _PARAMETER_LABEL_LEADER_EPS_PTS = 2.5
@@ -232,6 +235,8 @@ class RendererChemistryMixin:
         profile_lookup: dict[str, tuple[float, float]] | None = None,
         column_half_m: float = 0.0,
     ) -> None:
+        # Values dropped by the label placement (filled by renderer_water).
+        self.chemistry_label_notes = []
         if hole_summary.empty or not self.environmental_readings:
             return
         if not self.profile.show_parameter_markers or not self.environmental_parameters:
@@ -275,11 +280,12 @@ class RendererChemistryMixin:
         # Units of readings whose label colour came from the threshold bands
         # (not a workbook colour); drives the on-figure threshold key.
         threshold_units: set[str] = set()
-        threshold_active = (
-            label_values
-            and self.profile.chemistry_color_mode == "threshold"
-            and self.profile.chemistry_threshold_green_max is not None
-            and self.profile.chemistry_threshold_yellow_max is not None
+        # Missing limits fall back to the Configure defaults (the pipeline
+        # fills them too), so labels, dots and the key always agree.
+        threshold_active = bool(label_values) and self.profile.chemistry_color_mode == "threshold"
+        green_max, yellow_max = resolved_chemistry_thresholds(
+            self.profile.chemistry_threshold_green_max,
+            self.profile.chemistry_threshold_yellow_max,
         )
         self.chemistry_threshold_key_text = None
         self._chemistry_threshold_key = None
@@ -306,7 +312,12 @@ class RendererChemistryMixin:
             marker_ys: list[float] = []
             marker_colors: list[str] = []
             marker_labels: list[tuple[float, float, str, str]] = []
+            label_holes: list[str] = []
             interval_sticks: list[np.ndarray] = []
+            stick_colors: list[str] = []
+            # Threshold mode: each reading's band colour, for its interval
+            # stick and the fence segments that join it to its neighbours.
+            reading_colors: dict[int, str] = {}
             y_cache: dict[tuple[str, float], float] = {}
             for hole_id, hole_readings in readings_by_hole.items():
                 depths: list[float] = [reading.sample_depth for reading in hole_readings]
@@ -338,9 +349,11 @@ class RendererChemistryMixin:
                     ) or chemistry_label_color(
                         reading.value,
                         self.profile.chemistry_color_mode,
-                        green_max=self.profile.chemistry_threshold_green_max,
-                        yellow_max=self.profile.chemistry_threshold_yellow_max,
+                        green_max=green_max,
+                        yellow_max=yellow_max,
                     )
+                    if threshold_active:
+                        reading_colors[id(reading)] = label_color
                     if draw_markers:
                         marker_xs.append(x_profile)
                         marker_ys.append(y)
@@ -370,6 +383,8 @@ class RendererChemistryMixin:
                                     dtype=float,
                                 )
                             )
+                            # The stick behind a dot takes the dot's colour.
+                            stick_colors.append(marker_colors[-1])
                     if label_values:
                         # Prefer compact numeric text; unit belongs in the legend
                         # unless parameter_label_include_units is enabled.
@@ -380,6 +395,7 @@ class RendererChemistryMixin:
                         else:
                             label_text = f"{reading.value:g}"
                         marker_labels.append((x_profile, y, label_text, label_color))
+                        label_holes.append(hole_id)
                         if threshold_active and reading.label_color not in CHEMISTRY_FIXED_COLORS:
                             threshold_units.add((reading.unit or "").strip())
 
@@ -389,7 +405,7 @@ class RendererChemistryMixin:
                 if interval_sticks:
                     stick_collection = LineCollection(
                         interval_sticks,
-                        colors=color,
+                        colors=stick_colors if threshold_active else color,
                         linewidths=2.0,
                         linestyles="-",
                         zorder=7,
@@ -447,8 +463,8 @@ class RendererChemistryMixin:
                     _PARAMETER_LABEL_BBOX_SOLID if label_style == "box" else _PARAMETER_LABEL_BBOX
                 )
             draw_leaders = self.profile.parameter_draw_leaders
-            for (x_profile, y, label_text, label_color), (dx, dy, _draw_leader) in zip(
-                marker_labels, label_offsets, strict=True
+            for (x_profile, y, label_text, label_color), (dx, dy, _draw_leader), hole_id in zip(
+                marker_labels, label_offsets, label_holes, strict=True
             ):
                 anchor = (x_profile + column_half_m, y)
                 if label_style == "dot" and not draw_markers:
@@ -475,6 +491,8 @@ class RendererChemistryMixin:
                     },
                 )
                 annotation.arrow_patch.set_visible(False)
+                # Named in the "values not printed" QA note if it is dropped.
+                annotation._chem_hole_id = hole_id
                 if label_style == "stroke":
                     # The halo is a white twin drawn as outlines beneath the
                     # label; the label itself stays real text so PDF values
@@ -524,6 +542,7 @@ class RendererChemistryMixin:
                     color,
                     use_segments=use_segments,
                     across_gaps=across_gaps,
+                    reading_colors=reading_colors or None,
                 )
             legend_label = parameter.upper()
             units = sorted(
@@ -556,24 +575,21 @@ class RendererChemistryMixin:
             if threshold_active:
                 legend_entry["threshold_colors"] = tuple(
                     hex_color
-                    for _name, hex_color, _span in chemistry_threshold_bands(
-                        float(self.profile.chemistry_threshold_green_max),
-                        float(self.profile.chemistry_threshold_yellow_max),
-                    )
+                    for _name, hex_color, _span in chemistry_threshold_bands(green_max, yellow_max)
                 )
             self.parameter_series_legend.append(legend_entry)
         if threshold_units:
-            self._draw_chemistry_threshold_key(ax, threshold_units, font_size)
+            self._draw_chemistry_threshold_key(ax, threshold_units, font_size, green_max, yellow_max)
 
-    def _draw_chemistry_threshold_key(self, ax, units: set[str], font_size: float) -> None:
+    def _draw_chemistry_threshold_key(
+        self, ax, units: set[str], font_size: float, green_max: float, yellow_max: float
+    ) -> None:
         """State the threshold bands in words on the figure (threshold mode only).
 
         Colour alone must not carry the band (WCAG 1.4.1): each band is named
         and given its range, e.g. ``green ≤ 100 · orange 100–300 · red > 300 mg/L``,
         with the name drawn in the band colour as a secondary cue.
         """
-        green_max = float(self.profile.chemistry_threshold_green_max)
-        yellow_max = float(self.profile.chemistry_threshold_yellow_max)
         named_units = sorted(unit for unit in units if unit)
         unit = named_units[0] if len(named_units) == 1 else ""
         self.chemistry_threshold_key_text = chemistry_threshold_key(green_max, yellow_max, unit)
@@ -619,7 +635,22 @@ class RendererChemistryMixin:
         *,
         use_segments: bool,
         across_gaps: bool,
+        reading_colors: dict[int, str] | None = None,
     ) -> None:
+        """Dashed lines joining a parameter's readings between holes.
+
+        With ``reading_colors`` (threshold mode) each hole-to-hole segment
+        takes the band colour its two readings share, or a neutral grey when
+        they fall in different bands: a red line under a green dot (or half
+        red / half green) would contradict the values it joins.
+        """
+        segment_colors: list[str] = []
+
+        def segment_color(left_reading, right_reading) -> str:
+            left = reading_colors.get(id(left_reading), color)
+            right = reading_colors.get(id(right_reading), color)
+            return left if left == right else _THRESHOLD_MIXED_SEGMENT_COLOR
+
         measured_holes = [hole_id for hole_id in transect_hole_ids if readings_by_hole.get(hole_id)]
         fence_segments: list[np.ndarray] = []
         if use_segments and not across_gaps:
@@ -645,10 +676,12 @@ class RendererChemistryMixin:
                     fence_segments.append(
                         np.asarray([[x0, y0], [x1, y1]], dtype=float)
                     )
+                    if reading_colors:
+                        segment_colors.append(segment_color(left_reading, right_reading))
             if fence_segments:
                 collection = LineCollection(
                     fence_segments,
-                    colors=color,
+                    colors=segment_colors if reading_colors else color,
                     linewidths=1.5,
                     linestyles="--",
                     zorder=7,
@@ -675,7 +708,18 @@ class RendererChemistryMixin:
                 [y_cache[(hole_id, float(reading.sample_depth))] for hole_id, reading in band],
                 dtype=float,
             )
-            if across_gaps and len(xs_arr) >= 2:
+            if reading_colors:
+                # One segment per hole pair, each in its readings' band colour
+                # (the interpolation is linear, so the path is unchanged).
+                for index in range(len(band) - 1):
+                    fence_segments.append(
+                        np.asarray(
+                            [[xs_arr[index], ys_arr[index]], [xs_arr[index + 1], ys_arr[index + 1]]],
+                            dtype=float,
+                        )
+                    )
+                    segment_colors.append(segment_color(band[index][1], band[index + 1][1]))
+            elif across_gaps and len(xs_arr) >= 2:
                 x_dense = np.linspace(float(xs_arr.min()), float(xs_arr.max()), 100)
                 y_dense = np.interp(x_dense, xs_arr, ys_arr)
                 fence_segments.append(np.column_stack([x_dense, y_dense]))
@@ -684,7 +728,7 @@ class RendererChemistryMixin:
         if fence_segments:
             collection = LineCollection(
                 fence_segments,
-                colors=color,
+                colors=segment_colors if reading_colors else color,
                 linewidths=1.5,
                 linestyles="--",
                 zorder=7,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from typing import TypedDict
 
@@ -28,6 +29,8 @@ from render_theme import (
     consulting_gw_series_style,
 )
 from renderer_common import settle_figure_layout
+
+logger = logging.getLogger(__name__)
 
 _GW_MARKER_MAP = {
     "circle": "o",
@@ -148,6 +151,9 @@ _CHEM_STRIP_COLUMN_TOL_PT = 8.0
 # Last resorts before a value is dropped (the stick/marker stays): slightly
 # smaller text. A value is never printed over a column or another label.
 _CHEM_FONT_SCALES = (1.0, 0.88, 0.76)
+_CHEM_MIN_FONT_SCALE = min(
+    min(_CHEM_FONT_SCALES), *(min(scales) for scales in _CHEM_COMPACT_FONT_SCALES.values())
+)
 # A value moved more than one label height (and at least this many points)
 # from its reading always gets a leader, even when leaders are otherwise off.
 _CHEM_MIN_LEADER_SHIFT_PT = 6.0
@@ -200,9 +206,18 @@ class _ObstacleArray:
         if self._arr.shape[0] == 0 or boxes.shape[0] == 0:
             return np.zeros(boxes.shape[0], dtype=bool)
         hit = np.zeros(boxes.shape[0], dtype=bool)
+        # Only obstacles reaching into the candidates' hull can overlap any
+        # of them (the strict tests mirror ``w > 0`` / ``h > 0`` below), so
+        # the far side of a long section is skipped without changing a hit.
+        near = self._arr[
+            (self._arr[:, 2] > boxes[:, 0].min())
+            & (self._arr[:, 0] < boxes[:, 2].max())
+            & (self._arr[:, 3] > boxes[:, 1].min())
+            & (self._arr[:, 1] < boxes[:, 3].max())
+        ]
         # Chunked so K candidates x N obstacles stays small in memory.
-        for start in range(0, self._arr.shape[0], 256):
-            arr = self._arr[start : start + 256]
+        for start in range(0, near.shape[0], 256):
+            arr = near[start : start + 256]
             w = np.minimum(arr[None, :, 2], boxes[:, None, 2]) - np.maximum(arr[None, :, 0], boxes[:, None, 0])
             h = np.minimum(arr[None, :, 3], boxes[:, None, 3]) - np.maximum(arr[None, :, 1], boxes[:, None, 1])
             hit |= np.any((w > 0.0) & (h > 0.0), axis=1)
@@ -279,7 +294,41 @@ def _sync_label_companions(annotation, fig, dx: float, dy: float, ha: str) -> No
 
 
 def _chem_footprint(annotation, renderer):
-    """Display box of a chemistry label: text plus its bbox patch and colour dot."""
+    """Display box of a chemistry label: text plus its bbox patch and colour dot.
+
+    Memoised per label on every input the measurement reads (text, font,
+    alignment, offset, anchor in display space, dpi, visibility): placement
+    re-runs (compact escalation, frame refits) re-measure the same spots many
+    times, and each measurement lays the text out several times. A hit returns
+    a copy of the exact box a fresh measurement would give.
+    """
+    anchor = annotation.axes.transData.transform([annotation.xy])[0]
+    key = (
+        annotation.get_text(),
+        hash(annotation.get_fontproperties()),
+        annotation.get_horizontalalignment(),
+        annotation.get_verticalalignment(),
+        annotation.get_rotation(),
+        tuple(annotation.xyann),
+        annotation.anncoords if isinstance(annotation.anncoords, str) else id(annotation.anncoords),
+        float(anchor[0]),
+        float(anchor[1]),
+        float(annotation.figure.dpi),
+        float(renderer.points_to_pixels(1.0)),
+        annotation.get_visible(),
+    )
+    cache = annotation.__dict__.setdefault("_chem_footprint_cache", {})
+    cached = cache.get(key)
+    if cached is not None:
+        return cached.frozen()
+    box = _measure_chem_footprint(annotation, renderer)
+    if len(cache) > 512:
+        cache.clear()
+    cache[key] = box.frozen()
+    return box
+
+
+def _measure_chem_footprint(annotation, renderer):
     box = _text_box(annotation, renderer)
     patch = annotation.get_bbox_patch()
     if patch is not None:
@@ -305,6 +354,72 @@ def _own_column(annotation, column_boxes):
     return min(column_boxes, key=lambda col: abs(col.x1 - anchor_x))
 
 
+def _chem_right_limit(
+    own,
+    column_boxes,
+    frame,
+    *,
+    consulting: bool,
+    clearance: float,
+    need: float,
+    typical_gap: float = np.inf,
+    memo=None,
+) -> float:
+    """Right-most display x a hole's value may reach.
+
+    Normally the next column's left edge: a value past it reads as the
+    neighbour's. The frame bounds the last hole on consulting sheets (their x
+    range is fixed by the printed scale). Only a twin hole (its gap to the
+    next column under half the section's ``typical_gap``, e.g. a re-drill a
+    few decimetres away) whose value (``need`` pixels wide at the smallest
+    font, plus ``clearance``) cannot fit before the twin may step past that
+    one column into the gap the pair shares, with a leader. Never two
+    columns, and never on an evenly spaced section.
+    """
+    if own is None:
+        return np.inf
+    edge = float(frame.x1) if consulting else np.inf
+    right = memo.get(id(own)) if memo is not None else None
+    if right is None:
+        right = sorted(
+            (
+                col
+                for col in column_boxes
+                if col is not own and col.x1 > own.x1 and col.y1 > own.y0 and col.y0 < own.y1
+            ),
+            key=lambda col: col.x0,
+        )[:2]
+        if memo is not None:
+            memo[id(own)] = right
+    if not right:
+        return edge
+    first = right[0]
+    own_gap = first.x0 - own.x1
+    if own_gap >= need + clearance or own_gap >= 0.5 * typical_gap:
+        return float(first.x0)
+    beyond = float(right[1].x0) if len(right) > 1 else edge
+    if beyond - first.x1 >= need + clearance:
+        return beyond
+    return float(first.x0)
+
+
+def _typical_column_gap(column_boxes) -> float:
+    """Median clear gap between neighbouring columns (display px)."""
+    ordered = sorted(column_boxes, key=lambda col: col.x0)
+    gaps = [b.x0 - a.x1 for a, b in zip(ordered, ordered[1:], strict=False)]
+    return float(np.median(gaps)) if gaps else np.inf
+
+
+def _chem_min_width(annotation, renderer) -> float:
+    """Display width of a value at the smallest font the placement may use."""
+    if not hasattr(annotation, "_chem_base_fontsize"):
+        annotation._chem_base_fontsize = float(annotation.get_fontsize())
+    _set_chem_fontsize(annotation, annotation._chem_base_fontsize)
+    annotation.set_horizontalalignment("left")
+    annotation.xyann = annotation._water_base_xyann
+    return _chem_footprint(annotation, renderer).width * _CHEM_MIN_FONT_SCALE
+
+
 def _set_chem_fontsize(annotation, size: float) -> None:
     annotation.set_fontsize(size)
     halo = getattr(annotation, "_halo", None)
@@ -325,12 +440,15 @@ def _place_chem_label(
     compact=0,
     line_segs=None,
     prev_box=None,
+    right_limit=np.inf,
 ):
     """Right-of-column placement with hard constraints.
 
     The label (box and dot included) must start right of its own column's
     right edge, overlap no borehole column and no placed label, and stay on
-    the page; leaving the axes is only penalised. Its centre must also sit
+    the page and short of ``right_limit`` (the next column / consulting
+    frame: a value never drifts across a neighbouring hole); leaving the axes
+    sideways is otherwise only penalised. Its centre must also sit
     below ``ceiling`` (display y of the hole's previous, shallower label) so a
     hole's values keep their readings' depth order. ``compact`` (1 or 2)
     switches a crowded hole to the zig-zag / full-frame / smaller-text
@@ -376,6 +494,10 @@ def _place_chem_label(
         ):
             offsets = _CHEM_STACK_OFFSETS_ARR
         ddx_min = max(0.0, (min_x0 - box0.x0) / px_per_pt)
+        if box0.x1 + ddx_min * px_per_pt > right_limit:
+            # Narrow gap before the next column: start right at the column's
+            # clearance instead of the usual spot a few points further out.
+            ddx_min = (min_x0 - box0.x0) / px_per_pt
         ddx = offsets[:, 0] + ddx_min
         ddy = offsets[:, 1]
         sx = ddx * px_per_pt
@@ -386,7 +508,7 @@ def _place_chem_label(
         # below the hole's previous value.
         ok = (
             (boxes[:, 0] >= page.x0)
-            & (boxes[:, 2] <= page.x1)
+            & (boxes[:, 2] <= min(page.x1, right_limit))
             & (boxes[:, 1] >= max(page.y0, frame.y0))
             & (boxes[:, 3] <= min(page.y1, frame.y1))
             & (0.5 * (boxes[:, 1] + boxes[:, 3]) < ceiling)
@@ -451,7 +573,7 @@ def _prefer_clear_spots(
         grown = cand + np.array([-line_clear, -line_clear, line_clear, line_clear])
         line_hit = _segment_box_hits(line_segs, grown).any(axis=0)
     leader_hits = [np.zeros(idx.size, dtype=bool) for _arr in label_arrs]
-    shift = np.maximum(np.abs(ddx[idx]), np.abs(ddy[idx]))
+    shift = np.maximum(np.maximum(ddx[idx], 0.0), np.abs(ddy[idx]))
     leadered = shift > max(label_height_pt, _CHEM_MIN_LEADER_SHIFT_PT)
     if check_leaders and leadered.any() and label_arrs[0].shape[0]:
         ax0, ay0 = anchor
@@ -462,13 +584,53 @@ def _prefer_clear_spots(
         trim = np.clip(2.0 * px_per_pt / np.maximum(length, 1e-9), 0.0, 1.0)[:, None]
         starts = np.array([ax0, ay0]) + vec * trim
         segs = np.column_stack((starts, ends))[leadered]
+        # Labels outside the leaders' hull cannot be crossed by any of them.
+        lo_x = np.minimum(segs[:, 0], segs[:, 2]).min()
+        hi_x = np.maximum(segs[:, 0], segs[:, 2]).max()
+        lo_y = np.minimum(segs[:, 1], segs[:, 3]).min()
+        hi_y = np.maximum(segs[:, 1], segs[:, 3]).max()
         for leader_hit, label_arr in zip(leader_hits, label_arrs):
-            leader_hit[np.flatnonzero(leadered)] = _segment_box_hits(segs, label_arr).any(axis=1)
+            near = label_arr[
+                (label_arr[:, 2] >= lo_x)
+                & (label_arr[:, 0] <= hi_x)
+                & (label_arr[:, 3] >= lo_y)
+                & (label_arr[:, 1] <= hi_y)
+            ]
+            leader_hit[np.flatnonzero(leadered)] = _segment_box_hits(segs, near).any(axis=1)
     tiers = [~line_hit & ~leader_hit for leader_hit in leader_hits] + [~line_hit]
     for keep in tiers:
         if keep.any():
             return idx[keep]
     return idx
+
+
+_CHEM_DROP_NOTE_MAX_HOLES = 8
+
+
+def _chem_drop_notes(labels) -> list[str]:
+    """User-facing note listing chemistry values the placement had to drop.
+
+    A value is only dropped when no spot beside its own column (right of it,
+    short of the next column, inside the frame) fits at any allowed font
+    size; its marker stays on the section.
+    """
+    by_hole: dict[str, list[str]] = {}
+    for kind, annotation, _color in labels:
+        if kind == "chem" and getattr(annotation, "_water_dropped", False):
+            hole = str(getattr(annotation, "_chem_hole_id", "") or "?")
+            by_hole.setdefault(hole, []).append(annotation.get_text())
+    if not by_hole:
+        return []
+    count = sum(len(values) for values in by_hole.values())
+    shown = list(by_hole.items())[:_CHEM_DROP_NOTE_MAX_HOLES]
+    detail = "; ".join(f"{hole}: {', '.join(values)}" for hole, values in shown)
+    if len(by_hole) > len(shown):
+        detail += f"; +{len(by_hole) - len(shown)} more hole(s)"
+    return [
+        f"Chemistry labels: {count} value(s) not printed - no room beside their borehole "
+        f"at this scale ({detail}). Markers are still drawn; a wider page or fewer "
+        "boreholes per section shows them."
+    ]
 
 
 def _chem_anchor(annotation) -> tuple[float, float]:
@@ -552,7 +714,10 @@ def _outside_area(box, frame) -> float:
 def _text_box(annotation, renderer):
     # Text-only extent: Annotation.get_window_extent includes a visible leader,
     # which would make a moved label block the whole strip back to its point.
-    annotation.update_positions(renderer)
+    # Only the text transform is refreshed (the first step of
+    # Annotation.update_positions); positioning the leader as well would lay
+    # the text out a second time, and draw() re-positions it anyway.
+    annotation.set_transform(annotation._get_xy_transform(renderer, annotation.anncoords))
     return Text.get_window_extent(annotation, renderer)
 
 
@@ -941,6 +1106,11 @@ class RendererWaterMixin:
             headers = [t for t in getattr(self, "_header_labels", None) or [] if t.figure is fig]
             resolve_header_collisions(fig, headers)
         self._draw_chem_label_strips(fig, labels, renderer)
+        notes = _chem_drop_notes(labels)
+        if notes != getattr(self, "chemistry_label_notes", None):
+            for note in notes:
+                logger.warning(note)
+        self.chemistry_label_notes = notes
 
     def _run_label_passes(self, fig, labels, renderer) -> None:
         # A hole whose values would be dropped is re-placed in compact mode
@@ -1110,6 +1280,10 @@ class RendererWaterMixin:
         chem_ceiling: dict[float, float] = {}
         chem_prev_box: dict[float, tuple[Bbox, float]] = {}
         line_segs = _water_line_segments({annotation.axes for _k, annotation, _c in labels})
+        consulting = str(getattr(self.profile, "layout", "")) == "consulting_section"
+        px_per_pt = renderer.points_to_pixels(1.0)
+        right_columns: dict[int, list] = {}  # own column -> next two columns right
+        typical_gap = _typical_column_gap(column_boxes)
         # Obstacles as an (N, 4) array: with hundreds of labels x dozens of
         # candidates the per-box Python loop dominated render time.
         placed_arr = _ObstacleArray(placed)
@@ -1121,21 +1295,45 @@ class RendererWaterMixin:
             base = annotation._water_base_xyann
             if kind == "chem":
                 hole_key = _chem_hole_key(annotation)
-                spot = _place_chem_label(
-                    annotation,
-                    renderer,
-                    fig,
-                    placed_arr=placed_arr,
-                    column_arr=column_arr,
-                    own=_own_column(annotation, column_boxes),
-                    pad=pad,
-                    ceiling=chem_ceiling.get(hole_key, np.inf),
-                    compact=compact.get(hole_key, 0),
-                    line_segs=line_segs,
-                    prev_box=chem_prev_box.get(hole_key),
+                own = _own_column(annotation, column_boxes)
+                clearance = _CHEM_COLUMN_GAP_PT * px_per_pt
+                need = _chem_min_width(annotation, renderer)
+                right_limit = _chem_right_limit(
+                    own,
+                    column_boxes,
+                    frame,
+                    consulting=consulting,
+                    clearance=clearance,
+                    need=need,
+                    typical_gap=typical_gap,
+                    memo=right_columns,
                 )
+                # Wider than the gap beside its column even at the smallest
+                # font: no compact level can place it, so the hole is not
+                # re-run for it (its other values keep their normal spots).
+                too_wide = own is not None and right_limit - (own.x1 + clearance) < need
+                spot = None
+                if not too_wide:
+                    spot = _place_chem_label(
+                        annotation,
+                        renderer,
+                        fig,
+                        placed_arr=placed_arr,
+                        column_arr=column_arr,
+                        own=own,
+                        right_limit=right_limit,
+                        pad=pad,
+                        ceiling=chem_ceiling.get(hole_key, np.inf),
+                        compact=compact.get(hole_key, 0),
+                        line_segs=line_segs,
+                        prev_box=chem_prev_box.get(hole_key),
+                    )
                 if spot is None:
-                    dropped_holes.add(hole_key)
+                    if too_wide:
+                        _set_chem_fontsize(annotation, annotation._chem_base_fontsize)
+                        annotation.xyann = base
+                    else:
+                        dropped_holes.add(hole_key)
                     # Nowhere right of its column is free: keep the stick/marker,
                     # never print the value over a column or another label.
                     annotation._water_dropped = True
@@ -1155,7 +1353,9 @@ class RendererWaterMixin:
                 # reading (either direction) always gets a thin leader back to
                 # it, even with leaders off, so it is never read against the
                 # wrong hole or depth.
-                shift = max(abs(dy - base[1]), abs(dx - base[0]))
+                # A value pulled in towards its column (narrow gap) is closer
+                # to its reading, not away from it: only rightward moves count.
+                shift = max(abs(dy - base[1]), max(0.0, dx - base[0]))
                 label_height_pt = chem_box.height / renderer.points_to_pixels(1.0)
                 leader = shift > max(label_height_pt, _CHEM_MIN_LEADER_SHIFT_PT)
                 annotation.arrow_patch.set_visible(leader)

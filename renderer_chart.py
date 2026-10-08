@@ -10,8 +10,11 @@ import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
-from matplotlib.transforms import blended_transform_factory, offset_copy
+from matplotlib.layout_engine import LayoutEngine
+from matplotlib.lines import Line2D
+from matplotlib.transforms import Bbox, blended_transform_factory, offset_copy
 
+from hydro_metrics import water_status
 from lithology_codes import collect_lithology_codes
 from models import WaterLevel
 from render_profiles import CHART_PROFILE
@@ -53,6 +56,87 @@ _PARAMETER_PROFILE_FIELDS: tuple[str, ...] = (
 )
 
 
+_TITLE_KWARGS: dict[str, object] = {
+    "fontsize": 13,
+    "fontweight": "bold",
+    "color": LABEL_COLOR,
+}
+COLLAR_LEGEND_LABEL = "Ground surface / collar"
+# Gap (points) between the title and the hole headers, and above the title.
+_TITLE_HEADER_GAP_PT = 8.0
+_TITLE_TOP_MARGIN_PT = 8.0
+# Header boxes sit this far (points) above the plot frame; their rounded
+# frame (pad 0.25 em at 8 pt) adds about this much around the text.
+_HEADER_OFFSET_PT = 4.0
+_HEADER_BOX_PAD_PT = 2.0
+
+
+def _header_box(text, renderer):
+    """Header extent including its framed box, not just the glyphs."""
+    box = text.get_window_extent(renderer)
+    patch = text.get_bbox_patch()
+    if patch is not None:
+        text.update_bbox_position_size(renderer)
+        box = Bbox.union([box, patch.get_window_extent(renderer)])
+    return box
+
+
+class _ChartTitleLayout(LayoutEngine):
+    """Draw-time hook: keep the chart title above the hole headers and on the page.
+
+    Export resizes the page to a letter / tabloid preset and re-runs header
+    collision resolution, which can raise a header a tier (or turn the headers
+    vertical). A fixed title pad and top margin, set at the render size, then
+    put the title off the top edge or under a raised header. Measuring at
+    draw time (after any header pass) keeps both on every page.
+    """
+
+    _adjust_compatible = True
+    _colorbar_gridspec = True
+
+    def __init__(self, ax, title: str, headers: Sequence) -> None:
+        super().__init__()
+        self._ax = ax
+        self._title = title
+        self._headers = headers
+
+    def set(self, **kwargs) -> None:  # pragma: no cover - no tunable params
+        self._params.update(kwargs)
+
+    def execute(self, fig) -> None:
+        ax = self._ax
+        if ax.figure is not fig or not self._title:
+            return
+        renderer = fig._get_renderer()
+        px_per_pt = renderer.points_to_pixels(1.0)
+        ax_top = ax.get_window_extent(renderer).y1
+        headers = [
+            text
+            for text in self._headers
+            if text.figure is fig and text.get_visible() and text.get_text().strip()
+        ]
+        # Reserve two header tiers (a neighbour may raise one; the header pass
+        # steps by text height + 1 pt) and more when a header reaches higher.
+        above_pt = 0.0
+        if headers:
+            tier_pt = max(t.get_window_extent(renderer).height for t in headers) / px_per_pt
+            above_pt = _HEADER_OFFSET_PT + 2.0 * (tier_pt + 1.0) + _HEADER_BOX_PAD_PT
+            reach_pt = (max(_header_box(t, renderer).y1 for t in headers) - ax_top) / px_per_pt
+            above_pt = max(above_pt, reach_pt)
+        pad_pt = max(6.0, above_pt + _TITLE_HEADER_GAP_PT)
+        ax.set_title(self._title, pad=pad_pt, **_TITLE_KWARGS)
+        title_h = ax.title.get_window_extent(renderer).height
+        need_px = pad_pt * px_per_pt + title_h + _TITLE_TOP_MARGIN_PT * px_per_pt
+        fig_h = fig.bbox.height
+        if fig_h <= 0:
+            return
+        bottom = fig.subplotpars.bottom
+        top = min(1.0 - need_px / fig_h, 0.98)
+        top = max(top, bottom + 0.25)
+        if abs(top - fig.subplotpars.top) > 1e-4:
+            fig.subplots_adjust(top=top)
+
+
 class ChartLayoutMixin:
     """Legacy debug chart layout."""
 
@@ -77,6 +161,7 @@ class ChartLayoutMixin:
             CHART_PROFILE.model_copy(update=parameter_updates) if parameter_updates else CHART_PROFILE
         )
         self.profile = chart_profile
+        self._chart_collar_markers_drawn = False
         try:
             fig_width = 13.5 if self.show_legend else 12.0
             fig, ax = plt.subplots(figsize=(fig_width, 6.8))
@@ -178,6 +263,7 @@ class ChartLayoutMixin:
             self._draw_scale_bar(ax)
             if self.show_legend and lithology_codes:
                 self._draw_legend(ax, style_cache, lithology_codes, polygons)
+                self._extend_chart_legend(ax, hole_summary, water_levels, profile_lookup)
 
             ax.set_xlabel("Distance along transect (m)", fontsize=10, labelpad=8)
             depth_mode = self.profile.y_axis_mode == "depth_below_collar"
@@ -189,8 +275,9 @@ class ChartLayoutMixin:
             apply_true_value_y_axis(ax, ve)
             if depth_mode:
                 ax.invert_yaxis()
-            # Room for up to two tiers of 3-line headers between plot and title.
-            ax.set_title(self.title, fontsize=13, fontweight="bold", pad=72, color=LABEL_COLOR)
+            # Room for up to two tiers of 3-line headers between plot and title;
+            # _ChartTitleLayout re-measures at draw time (export page sizes).
+            ax.set_title(self.title, pad=72, **_TITLE_KWARGS)
             ax.set_aspect("auto")
             ax.grid(True, linestyle="--", alpha=0.35, color=GRID_COLOR, zorder=0)
             for spine in ax.spines.values():
@@ -203,6 +290,7 @@ class ChartLayoutMixin:
                 self.fit_right_margin_for_legend(fig)
             else:
                 fig.tight_layout(rect=(0, bottom_margin - 0.02, 1, 1))
+            fig.set_layout_engine(_ChartTitleLayout(ax, self.title, self._header_labels))
             resolve_header_collisions(fig, self._header_labels)
             return fig
         finally:
@@ -229,6 +317,90 @@ class ChartLayoutMixin:
         collection = LineCollection(segments, colors=STICK_COLOR, linewidths=4.0, zorder=5)
         ax.add_collection(collection)
         ax.scatter(x_values, top_y, marker="v", s=49, c=SURFACE_COLOR, zorder=7)
+        self._chart_collar_markers_drawn = len(x_values) > 0
+
+    def _chart_symbol_handles(
+        self,
+        hole_summary: pd.DataFrame,
+        water_levels: Sequence[WaterLevel] | None,
+        profile_lookup: dict[str, tuple[float, float]] | None,
+    ) -> list[tuple[Line2D, str]]:
+        """Legend proxies for the drawn groundwater series and collar markers."""
+        handles: list[tuple[Line2D, str]] = []
+        entries = list(getattr(self, "water_series_legend", None) or []) if water_levels else []
+        if entries:
+            on_section = set(profile_lookup or {}) or set(hole_summary["hole_id"].astype(str))
+            measured: dict[str, int] = {}
+            for level in water_levels or ():
+                if str(level.hole_id) not in on_section:
+                    continue
+                if water_status(level) in {"dry", "nm"}:
+                    continue
+                series_id = level.series_id or "default"
+                measured[series_id] = measured.get(series_id, 0) + 1
+            interpolate = bool(
+                self.interpolate_water_table or self.profile.interpolate_water_table_default
+            )
+            for entry in entries:
+                count = measured.get(entry["series_id"], 0)
+                if count == 0:
+                    continue  # all dry / NM: no marker on the chart
+                linestyle = entry.get("linestyle", "--") if interpolate and count >= 2 else "none"
+                handles.append(
+                    (
+                        Line2D(
+                            [],
+                            [],
+                            color=entry["color"],
+                            marker=entry["marker"],
+                            markersize=7,
+                            linewidth=2.0,
+                            linestyle=linestyle,
+                        ),
+                        entry["level_label"],
+                    )
+                )
+        if getattr(self, "_chart_collar_markers_drawn", False):
+            handles.append(
+                (
+                    Line2D([], [], color=SURFACE_COLOR, marker="v", markersize=7, linestyle="none"),
+                    COLLAR_LEGEND_LABEL,
+                )
+            )
+        return handles
+
+    def _extend_chart_legend(
+        self,
+        ax,
+        hole_summary: pd.DataFrame,
+        water_levels: Sequence[WaterLevel] | None,
+        profile_lookup: dict[str, tuple[float, float]] | None,
+    ) -> None:
+        """Append groundwater / collar symbols to the outside lithology legend."""
+        extras = self._chart_symbol_handles(hole_summary, water_levels, profile_lookup)
+        legend = ax.get_legend()
+        if not extras or legend is None:
+            return
+        handles = list(legend.legend_handles)
+        labels = [text.get_text() for text in legend.get_texts()]
+        handles.extend(handle for handle, _label in extras)
+        labels.extend(label for _handle, label in extras)
+        gid = legend.get_gid()
+        rebuilt = ax.legend(
+            handles=handles,
+            labels=labels,
+            title="Legend",
+            loc="upper left",
+            bbox_to_anchor=(1.01, 1.0),
+            frameon=True,
+            framealpha=0.95,
+            edgecolor="#CBD5E1",
+            fontsize=8,
+            title_fontsize=9,
+            ncol=legend._ncols,
+        )
+        if gid:
+            rebuilt.set_gid(gid)
 
     def _build_borehole_labels(
         self,

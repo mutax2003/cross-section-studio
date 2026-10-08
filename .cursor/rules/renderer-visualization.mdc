@@ -118,7 +118,7 @@ Streamlit: sidebar **Output style** selectbox preset **Consulting report (title 
 ## Y-Axis Modes
 
 - `elevation_rl` — absolute reduced level (default). Water labels use stored `elevation_masl` when present, else `collar RL − depth`. Consulting plot labels are compact `{rl:.3f}`; `masl` stays in the title-block legend/notes.
-- `depth_below_collar` — inverted depth axis; wired from UI `elevation_mode=relative`. Water labels use **mbgs** (depth below collar), not fake masl.
+- `depth_below_collar` — inverted depth axis; wired from UI `elevation_mode=relative`. Water labels use **mbgs** (depth below collar), not fake masl. Fence polygons map to depth with the collar RL interpolated linearly between the pair's holes (`_fence_plot_coords(..., hole_x_lookup)`), never a left/right collar step.
 
 Water is a **rule-based overlay** (markers + linear segments between measured holes). Segment polylines and chemistry sticks/fence bands are batched via `matplotlib.collections.LineCollection` (same geometry/style as prior per-call `ax.plot`). Do not interpolate across unmeasured holes unless `water_interpolate_across_gaps`. Consulting title-block GW legend is gated on `show_water_legend` and only drawn when a series was plotted.
 

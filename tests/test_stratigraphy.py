@@ -777,7 +777,7 @@ def test_single_bounded_pinch_out_tip_on_matched_contact(at_top: bool) -> None:
 
 
 def test_pinch_out_tiling_skipped_without_pinch_outs() -> None:
-    """allow_pinch_outs=False keeps straight hole-to-hole fills (no bends, gap left)."""
+    """allow_pinch_outs=False keeps hole-to-hole quadrilaterals (no mid-span bends)."""
     polygons = build_stratigraphy(_shifted_unit_order_pair(), allow_pinch_outs=False)
     assert not any(p.is_pinch_out for p in polygons)
     for polygon in polygons:
@@ -1326,3 +1326,168 @@ def test_pinch_anchor_edge_prefers_hole_edge_over_facies_boundary() -> None:
     tile = ShapelyPolygon([(0.0, 10.0), (0.0, 8.0), (25.0, 0.0), (25.0, 20.0)])
     assert _pinch_anchor_edge(tile).bounds[0] == pytest.approx(25.0)
     assert _pinch_anchor_edge(tile, (0.0, 50.0)).bounds[0] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Pinch-outs off: bracketing fills close the space of undrawn unmatched units
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mirror", [False, True])
+def test_pinch_outs_off_bracketing_contacts_converge_at_source_hole(mirror: bool) -> None:
+    """Regression (QA c_nopinch / sA_nopinch): with pinch-outs off the unmatched Silt
+    left a white wedge. The upper unit's base and lower unit's top now meet at the
+    Silt's mid-elevation on the hole that logged it, so the fence tiles."""
+    projected = _shifted_unit_order_pair()
+    if mirror:
+        projected = projected.assign(x_profile=32.0 - projected["x_profile"])
+    polygons = build_stratigraphy(projected, allow_pinch_outs=False)
+    assert not any(p.is_pinch_out for p in polygons)
+    assert "Silt" not in {p.lithology_code for p in polygons}
+    z_top = (629.0, 629.5) if not mirror else (629.5, 629.0)
+    z_bot = (602.0, 603.5) if not mirror else (603.5, 602.0)
+    assert _fence_gap_area(polygons, 0.0, 32.0, z_top, z_bot) == pytest.approx(0.0, abs=1e-6)
+    assert _pairwise_overlap_area(polygons) == pytest.approx(0.0, abs=1e-6)
+    assert detect_polygon_overlaps(polygons) == []
+    meet = Point(0.0 if mirror else 32.0, (624.0 + 619.5) / 2.0)
+    for code in ("Sand and Clay", "Clay"):
+        polygon = next(p for p in polygons if p.lithology_code == code).polygon
+        assert polygon.boundary.distance(meet) < 1e-9
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("at_top", [False, True])
+@pytest.mark.parametrize("opposing", [False, True])
+def test_pinch_outs_off_single_bounded_units_leave_no_gap(
+    reverse: bool, at_top: bool, opposing: bool
+) -> None:
+    """Base (or top) units logged in one hole only: the bracketing matched unit takes
+    their space, running to the hole end, so the fence envelope stays fully tiled."""
+    rows = [
+        ("A", 0.0, 100.0, 95.0, "Clay Loam"),
+        ("A", 0.0, 95.0, 85.0, "Sandy Clay Loam"),
+        ("B", 50.0, 100.0, 92.0, "Clay Loam"),
+    ]
+    if opposing:
+        rows.append(("B", 50.0, 92.0, 88.0, "Sandy Clay"))
+    if at_top:
+        rows = [(hole, x, -bottom, -top, code) for hole, x, top, bottom, code in rows]
+    if reverse:
+        rows = _mirror_rows(rows, 50.0)
+    projected = _rows_df(rows)
+    before = projected.copy()
+    polygons = build_stratigraphy(projected, allow_pinch_outs=False)
+    pd.testing.assert_frame_equal(projected, before)  # hole data untouched
+    assert [p.lithology_code for p in polygons] == ["Clay Loam"]
+    gap, overlap = _fence_envelope_gap_and_overlap(polygons, rows)
+    assert gap == pytest.approx(0.0, abs=1e-6)
+    assert overlap == pytest.approx(0.0, abs=1e-6)
+
+
+def test_pinch_outs_off_synthetic_site_fence_has_no_gaps() -> None:
+    """Regression (QA sA_nopinch slivers at BH-02/03 and BH-04/05)."""
+    from io import BytesIO
+
+    from batch_export import transect_points_from_collars
+    from ingestion import ingest_workbook
+    from models import subset_parse_result
+    from pipeline import compute_section_geometry
+    from tests.test_multi_section_workbook import build_site_workbook_bytes
+
+    parse_result, _report = ingest_workbook(BytesIO(build_site_workbook_bytes(site_unit_order=True)))
+    hole_ids = parse_result.section_specs[0].hole_ids
+    subset = subset_parse_result(parse_result, hole_ids)
+    geometry = compute_section_geometry(
+        subset.collars,
+        subset.lithologies,
+        transect_points_from_collars(parse_result.collars, hole_ids),
+        allow_pinch_outs=False,
+    )
+    holes = (
+        geometry.projected.groupby("hole_id")
+        .agg(
+            x=("x_profile", "first"),
+            top=("top_elevation", "max"),
+            bottom=("bottom_elevation", "min"),
+        )
+        .sort_values("x")
+    )
+    rows = list(holes.itertuples())
+    gap = overlap = 0.0
+    for left, right in zip(rows, rows[1:]):
+        in_pair = [p for p in geometry.polygons if p.hole_pair == (left.Index, right.Index)]
+        assert in_pair
+        gap += _fence_gap_area(
+            in_pair, left.x, right.x, (left.top, right.top), (left.bottom, right.bottom)
+        )
+        overlap += _pairwise_overlap_area(in_pair)
+    assert gap == pytest.approx(0.0, abs=1e-3)
+    assert overlap == pytest.approx(0.0, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Depth mode (depth below collar) must tile exactly like elevation mode
+# ---------------------------------------------------------------------------
+
+
+def _depth_mode_polygons(
+    polygons: list[GeologicalPolygon],
+    collars: dict[str, float],
+    hole_xs: dict[str, float],
+) -> list[GeologicalPolygon]:
+    """Fence polygons as the renderer plots them on a depth-below-collar axis."""
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from renderer import CrossSectionRenderer
+
+    fake = SimpleNamespace(profile=SimpleNamespace(y_axis_mode="depth_below_collar"))
+    out = []
+    for polygon in polygons:
+        verts = CrossSectionRenderer._fence_plot_coords(
+            fake,
+            np.asarray(polygon.polygon.exterior.coords, dtype=float),
+            1.0,
+            collars,
+            polygon.hole_pair,
+            hole_xs,
+        )
+        out.append(
+            GeologicalPolygon(
+                polygon.lithology_code,
+                ShapelyPolygon(verts),
+                polygon.hole_pair,
+                polygon.is_pinch_out,
+            )
+        )
+    return out
+
+
+def test_depth_mode_fence_tiles_like_elevation_mode() -> None:
+    """Regression (QA sA_depth_*): with unequal collars the depth transform used a
+    left/right collar step per polygon, tearing pinch-out wedges off the bent fills
+    (white triangle above, overlap below). Interpolating the collar along the pair is
+    affine, so the depth fence is the elevation fence mirrored: same areas, no gaps,
+    no overlaps, hole vertices at exact per-hole depths."""
+    collars = {"BH-01": 632.0, "BH-02": 629.0}
+    projected = _shifted_unit_order_pair()
+    shift = projected["hole_id"].map({"BH-01": 0.0, "BH-02": -2.5})
+    projected = projected.assign(
+        collar_elevation=projected["hole_id"].map(collars),
+        top_elevation=projected["top_elevation"] + shift,
+        bottom_elevation=projected["bottom_elevation"] + shift,
+    )
+    polygons = build_stratigraphy(projected, allow_pinch_outs=True)
+    assert any(p.is_pinch_out for p in polygons)
+    depth = _depth_mode_polygons(polygons, collars, {"BH-01": 0.0, "BH-02": 32.0})
+    for elevation_poly, depth_poly in zip(polygons, depth):
+        assert depth_poly.polygon.is_valid
+        assert depth_poly.polygon.area == pytest.approx(elevation_poly.polygon.area, rel=1e-9)
+    assert _pairwise_overlap_area(depth) == pytest.approx(0.0, abs=1e-6)
+    # Envelope from the top of Sand-and-Clay to the base of Clay, as depths.
+    gap = _fence_gap_area(depth, 0.0, 32.0, (3.0, 2.0), (30.0, 28.0))
+    assert gap == pytest.approx(0.0, abs=1e-6)
+    silt = next(p for p in depth if p.lithology_code == "Silt").polygon
+    assert silt.boundary.distance(Point(32.0, 629.0 - 621.5)) < 1e-9
+    assert silt.boundary.distance(Point(32.0, 629.0 - 617.0)) < 1e-9

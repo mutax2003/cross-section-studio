@@ -130,18 +130,127 @@ def test_portrait_export_recomputes_printed_scale() -> None:
         plt.close(portrait)
 
 
-def test_mismatched_map_scale_is_kept_in_title_block_and_logged(caplog) -> None:
+def test_map_scale_that_does_not_fit_prints_as_shown_and_notes_it(caplog) -> None:
+    """A 480 m section can't be drawn at 1:1000 on letter (needs ~19 in)."""
     data = _section(*_SECTIONS["synth_480m"])
     block = ConsultingTitleBlock(section_label="SCALE TEST", map_scale="1:1000")
     with caplog.at_level(logging.WARNING, logger="renderer_consulting"):
         figure = _render(data, "letter_landscape", block)
     try:
-        assert any("differs from the printed section scale" in r.getMessage() for r in caplog.records)
+        notes = [r.getMessage() for r in caplog.records if "Map scale 1:1000" in r.getMessage()]
+        assert notes and "doesn't fit a letter landscape page" in notes[-1]
+        assert "(AS SHOWN)" in notes[-1]
         texts = [t.get_text() for ax in figure.axes for t in ax.texts]
-        assert "1:1000" in texts  # user's value stays in the title block
-        assert "SCALE 1:1000" not in _measure(figure)[2]
+        assert "AS SHOWN" in texts and "1:1000" not in texts
+        scale_text = _measure(figure)[2]
+        assert scale_text.startswith("APPROX. SCALE 1:") and "1:1000" not in scale_text
     finally:
         plt.close(figure)
+
+
+def _png_metres_per_px(figure, png: bytes, dpi: int) -> float:
+    """Horizontal metres per pixel measured in the PNG: main frame spines vs x limits."""
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    image = np.asarray(Image.open(io.BytesIO(png)).convert("RGB")).astype(int)
+    main = figure._css_main_axes[0]
+    pos = main.get_position()  # only to pick the rows the frame spans
+    height = image.shape[0]
+    rows = slice(int((1.0 - pos.y1) * height) + 3, int((1.0 - pos.y0) * height) - 3)
+    spine = np.array([0x37, 0x41, 0x51])  # consulting frame colour
+    mask = (np.abs(image[rows] - spine).sum(axis=2) <= 30).mean(axis=0) > 0.9
+    columns = np.flatnonzero(mask)
+    assert columns.size >= 2, "frame spines not found in the PNG"
+    left = columns[columns < columns.min() + 6].mean()
+    right = columns[columns > columns.max() - 6].mean()
+    lo, hi = main.get_xlim()
+    return abs(hi - lo) / (right - left)
+
+
+@pytest.mark.parametrize("page_preset", ["letter_landscape", "letter_portrait", "tabloid_landscape"])
+@pytest.mark.parametrize("ve", [None, 5.0])
+def test_fitting_map_scale_is_drawn_exactly(page_preset: str, ve: float | None) -> None:
+    """160 m at 1:1000 (~6.6 in) fits every page: the PNG measures 1:1000 (±2 %)."""
+    projected, polygons, depths = _section(*_SECTIONS["gwm_160m"])
+    renderer = CrossSectionRenderer(
+        show_legend=False,
+        vertical_exaggeration=ve,
+        render_profile=CONSULTING_SECTION_PROFILE,
+        consulting_title_block=ConsultingTitleBlock(section_label="SCALE TEST", map_scale="1:1 000"),
+        export_framing=ExportFramingConfig(page_preset=page_preset),
+    )
+    figure = renderer.render(polygons, projected, collar_depths=depths)
+    try:
+        dpi = 100
+        png = renderer.to_png_bytes(figure, dpi=dpi)
+        ratio = _png_metres_per_px(figure, png, dpi) * dpi * 39.37
+        assert ratio == pytest.approx(1000.0, rel=0.02)
+        texts = [t.get_text() for ax in figure.axes for t in ax.texts]
+        assert "1:1 000" in texts and "AS SHOWN" not in texts
+        assert _measure(figure)[2] == "SCALE 1:1000"
+        assert renderer.map_scale_notes(figure) == ()
+        # The box sits inside its frame region, centred horizontally.
+        main = figure._css_main_axes[0]
+        frame, box = main.get_position(original=True), main.get_position()
+        assert box.x0 >= frame.x0 - 1e-9 and box.x1 <= frame.x1 + 1e-9
+        assert box.x0 - frame.x0 == pytest.approx(frame.x1 - box.x1, abs=1e-6)
+        twin = figure._css_main_axes[1]
+        if twin is not None:
+            figure.canvas.draw()
+            assert twin.get_position().bounds == pytest.approx(main.get_position().bounds)
+    finally:
+        plt.close(figure)
+
+
+def test_map_scale_leaving_a_tiny_plot_falls_back() -> None:
+    """160 m at 1:5000 would be a ~1.3 in strip (< 30 % of the frame)."""
+    projected, polygons, depths = _section(*_SECTIONS["gwm_160m"])
+    renderer = CrossSectionRenderer(
+        show_legend=False,
+        render_profile=CONSULTING_SECTION_PROFILE,
+        consulting_title_block=ConsultingTitleBlock(section_label="SCALE TEST", map_scale="1:5000"),
+        export_framing=ExportFramingConfig(page_preset="letter_landscape"),
+    )
+    figure = renderer.render(polygons, projected, collar_depths=depths)
+    try:
+        renderer.to_png_bytes(figure, dpi=72)
+        (note,) = renderer.map_scale_notes(figure)
+        assert note.startswith("Map scale 1:5000 would leave the section under 30%")
+        texts = [t.get_text() for ax in figure.axes for t in ax.texts]
+        assert "AS SHOWN" in texts
+        main = figure._css_main_axes[0]
+        assert main.get_position().width == pytest.approx(main.get_position(original=True).width)
+    finally:
+        plt.close(figure)
+
+
+def test_map_scale_box_geometry() -> None:
+    from renderer_consulting import format_scale_ratio, map_scale_box, page_description
+
+    frame = (0.1, 0.5, 0.8, 0.4)  # 8.8 x 3.4 in on an 11 x 8.5 page
+    box, status, printed = map_scale_box(frame, (11.0, 8.5), 100.0, 30.0, 1000.0, exact_ve=False)
+    assert status == "exact" and printed == 1000.0
+    assert box[2] * 11.0 == pytest.approx(100.0 * 39.37 / 1000.0)
+    assert box[3] == pytest.approx(0.4)  # auto VE fills the frame height
+    assert box[0] - 0.1 == pytest.approx(0.9 - (box[0] + box[2]))
+    # Exact VE: the height follows the width (aspect 1 in stored units).
+    box, status, _ = map_scale_box(frame, (11.0, 8.5), 100.0, 30.0, 1000.0, exact_ve=True)
+    assert status == "exact"
+    assert box[3] * 8.5 == pytest.approx(box[2] * 11.0 * 0.3)
+    # Too tall at that scale with exact VE: fits the frame at the VE instead.
+    box, status, printed = map_scale_box(frame, (11.0, 8.5), 100.0, 120.0, 1000.0, exact_ve=True)
+    assert status == "no_fit" and box[3] == pytest.approx(0.4)
+    assert printed > 1000.0
+    _box, status, printed = map_scale_box(frame, (11.0, 8.5), 400.0, 30.0, 1000.0, exact_ve=False)
+    assert status == "no_fit" and printed == pytest.approx(400.0 * 39.37 / 8.8)
+    assert map_scale_box(frame, (11.0, 8.5), 20.0, 30.0, 1000.0, exact_ve=False)[1] == "too_small"
+    assert format_scale_ratio(1000.0) == "1:1000"
+    assert format_scale_ratio(2.5) == "1:2.5"
+    assert page_description((8.5, 11.0)) == "letter portrait"
+    assert page_description((8.0, 6.0)) == "8 x 6 in"
 
 
 def test_scale_helpers() -> None:
@@ -154,9 +263,12 @@ def test_scale_helpers() -> None:
     assert scale_bar_tick_step(30.0) == 10.0
     assert nearest_standard_scale(1934.0) == 2000
     assert nearest_standard_scale(1240.0) == 1250
-    assert scale_ratio_text(1010.0) == "SCALE 1:1000"
-    assert scale_ratio_text(1934.0) == "APPROX. SCALE 1:1900"
-    assert scale_ratio_text(671.0) == "APPROX. SCALE 1:670"
+    # A fitted drawing is never claimed to be at a round scale.
+    assert scale_ratio_text(1010.0) == "APPROX. SCALE 1:1010"
+    assert scale_ratio_text(1278.0) == "APPROX. SCALE 1:1280"
+    assert scale_ratio_text(1934.0) == "APPROX. SCALE 1:1930"
+    assert scale_ratio_text(671.0) == "APPROX. SCALE 1:671"
+    assert scale_ratio_text(1010.0, snap=True) == "SCALE 1:1000"
     assert parse_map_scale("1:1 500") == 1500.0
     assert parse_map_scale("1:1,000") == 1000.0
     assert parse_map_scale("NTS") is None
@@ -166,7 +278,22 @@ def test_scale_text_keeps_a_decimal_on_very_short_sections() -> None:
     from renderer_consulting import scale_ratio_text
 
     assert scale_ratio_text(3.3) == "APPROX. SCALE 1:3.3"
-    assert scale_ratio_text(671) == "APPROX. SCALE 1:670"
+    assert scale_ratio_text(671) == "APPROX. SCALE 1:671"
+
+
+@pytest.mark.parametrize("page_preset", ["letter_landscape", "letter_portrait", "tabloid_landscape"])
+def test_fit_to_page_without_map_scale_always_prints_approx(section, page_preset: str) -> None:
+    """No map scale: the fitted ratio (e.g. 1:1278) printed as "SCALE 1:1250"
+    without "APPROX." although the bar drew 1:1278."""
+    name, data = section
+    figure = _render(data, page_preset)
+    try:
+        _drawn, _labels, scale_text, metres_per_px, _panel, _px = _measure(figure)
+        ratio = metres_per_px * figure.dpi * 39.37
+        assert scale_text.startswith("APPROX. SCALE 1:"), (name, scale_text)
+        assert float(scale_text.rsplit(":", 1)[1]) == pytest.approx(ratio, rel=0.006)
+    finally:
+        plt.close(figure)
 
 
 def test_title_block_scale_defers_to_the_bar_when_not_set() -> None:

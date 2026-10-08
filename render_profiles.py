@@ -33,11 +33,16 @@ def resolved_chemistry_thresholds(
     """Threshold-mode limits with the Configure defaults filling any gap.
 
     A given limit is kept; a missing orange limit never falls below the green
-    one (green 300 alone gives orange <= 300, i.e. no orange band).
+    one (green 300 alone gives orange <= 300, i.e. no orange band), and green
+    never exceeds orange (orange 50 alone gives green <= 50).
     """
-    green = float(green_max) if green_max is not None else DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX
     if yellow_max is not None:
-        return green, float(yellow_max)
+        yellow = float(yellow_max)
+        # The bands must not invert: an orange limit alone below the default
+        # green limit pulls green down to it, and green above orange is clamped.
+        green = float(green_max) if green_max is not None else DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX
+        return min(green, yellow), yellow
+    green = float(green_max) if green_max is not None else DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX
     return green, max(green, DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX)
 
 

@@ -102,6 +102,9 @@ class CrossSectionResult:
     lithology_codes: list[str]
     overlap_warnings: tuple[str, ...]
     retained_export_bundle: dict[str, object] | None = field(default=None, repr=False, compare=False)
+    # Layout QA for the exported page (e.g. a title-block map scale that does
+    # not fit and printed "AS SHOWN"); not part of legacy tuple unpacking.
+    qa_notes: tuple[str, ...] = ()
 
     def __iter__(self) -> Iterator[object]:
         """Allow legacy tuple unpacking: ``proj, polys, svg, png, pdf, codes, warns = result``."""
@@ -279,7 +282,8 @@ def compute_section_geometry(
     # drawn as pinch-outs, and heavy overlap clipping is reported.
     fence_notes = [
         f"{CROSSING_CORRELATION_PREFIX} {summary.left_hole_id}–{summary.right_hole_id}: "
-        f"{', '.join(summary.crossing_codes)} logged in opposite order — drawn as pinch-outs"
+        f"{', '.join(summary.crossing_codes)} logged in opposite order — "
+        + ("drawn as pinch-outs" if allow_pinch_outs else "not drawn between these holes")
         for summary in correlation_summaries
         if summary.crossing_codes
     ] + clip_warnings
@@ -752,6 +756,10 @@ def render_cross_section_from_geometry(
     overlap_warnings = tuple(overlap_warnings) + tuple(
         getattr(renderer, "chemistry_label_notes", None) or ()
     )
+    # Read after export framing: whether the map scale fits depends on the page.
+    qa_notes = tuple(renderer.map_scale_notes(figure))
+    # Surface them with the other section notes the app shows after Generate.
+    overlap_warnings = tuple(overlap_warnings) + qa_notes
     retained: dict[str, object] | None = None
     if close_figure:
         from matplotlib import pyplot as plt
@@ -777,4 +785,5 @@ def render_cross_section_from_geometry(
         lithology_codes=lithology_codes,
         overlap_warnings=overlap_warnings,
         retained_export_bundle=retained,
+        qa_notes=qa_notes,
     )

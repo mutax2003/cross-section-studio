@@ -594,3 +594,26 @@ def test_consulting_band_only_moves_for_the_threshold_key() -> None:
         assert after[1] + after[3] < before[1] + before[3]  # band top lowered
         assert after[3] > 0.6 * before[3]  # only slightly
     plt.close("all")
+
+
+def test_threshold_bands_never_invert() -> None:
+    from render_profiles import resolved_chemistry_thresholds
+
+    assert resolved_chemistry_thresholds(None, 50) == (50.0, 50.0)
+    assert resolved_chemistry_thresholds(500, 100) == (100.0, 100.0)
+    assert resolved_chemistry_thresholds(None, None) == (100.0, 250.0)
+    assert resolved_chemistry_thresholds(300, None) == (300.0, 300.0)
+
+
+def test_request_rejects_infinite_vertical_exaggeration() -> None:
+    import math
+
+    import pytest
+    from pydantic import ValidationError
+
+    from section_build_request import SectionBuildRequest
+
+    base = {"transect_points": [(0.0, 0.0), (10.0, 0.0)]}
+    assert SectionBuildRequest.model_validate({**base, "vertical_exaggeration": 5.0})
+    with pytest.raises(ValidationError, match="vertical_exaggeration"):
+        SectionBuildRequest.model_validate({**base, "vertical_exaggeration": math.inf})

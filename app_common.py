@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from collections.abc import Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -382,19 +383,25 @@ def _display_svg(
     )
 
 
+_POLYGON_OVERLAP_RE = re.compile(r"^.+ / .+ between .+[–-].+$")
+
+
+def _section_note_text(message: str) -> str:
+    """Overlap pairs read "Clay / Silt between BH1–BH2"; other notes stand alone."""
+    return f"Polygon overlap: {message}" if _POLYGON_OVERLAP_RE.match(message) else message
+
+
 def _render_overlap_warnings(warnings: Sequence[str]) -> None:
+    """Section notes after Generate: overlaps, crossing layers, dropped labels, map scale."""
     unique = dedupe_messages(warnings)
     if not unique:
         return
     if len(unique) == 1:
-        st.warning(f"Polygon overlap: {unique[0]}")
+        st.warning(_section_note_text(unique[0]))
         return
-    with st.expander(
-        f"{len(unique)} polygon overlaps detected on section",
-        expanded=True,
-    ):
+    with st.expander(f"{len(unique)} notes about this section", expanded=True):
         for message in unique:
-            st.write(message)
+            st.write(_section_note_text(message))
 
 
 def _active_transect_selection(

@@ -59,7 +59,13 @@ class SectionSheetLayoutMixin:
             self._draw_uncertainty_zones(ax, hole_summary, z_min, z_max, collar_lookup)
 
         self._draw_fence_polygons(
-            ax, polygons, style_cache, ve, alpha=self.profile.fence_alpha, collar_lookup=collar_lookup
+            ax,
+            polygons,
+            style_cache,
+            ve,
+            alpha=self.profile.fence_alpha,
+            collar_lookup=collar_lookup,
+            hole_x_lookup=ctx.x_by_hole,
         )
 
         collar_depths = collar_depths or {}

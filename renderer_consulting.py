@@ -23,6 +23,7 @@ from matplotlib.transforms import blended_transform_factory, offset_copy
 from shapely.geometry import LineString
 from shapely.geometry import Polygon as ShapelyPolygon
 
+from export_framing import PAGE_FIGSIZE_IN
 from lithology_codes import collect_lithology_codes
 from models import ConsultingTitleBlock, VerticalGradient, WaterLevel
 from render_theme import (
@@ -50,6 +51,7 @@ from renderer_common import (
     UNLOGGED_LEGEND_LABEL,
     add_ve_caption,
     legend_swatch_hatch,
+    release_twins,
     settle_figure_layout,
 )
 from stratigraphy import GeologicalPolygon
@@ -199,8 +201,6 @@ _INCHES_PER_METRE = 39.37
 _STANDARD_SCALE_MANTISSAS = (1.0, 1.25, 2.0, 2.5, 5.0)
 # A computed ratio within this of a standard scale prints as that scale.
 _STANDARD_SCALE_TOLERANCE = 0.03
-# User map_scale disagreeing with the printed scale by more than this is logged.
-_MAP_SCALE_MISMATCH_TOLERANCE = 0.10
 _SCALE_BAR_MAX_FRACTION = 0.80
 _SCALE_BAR_X = 0.02
 _SCALE_BAR_Y = 0.55
@@ -245,21 +245,25 @@ def nearest_standard_scale(ratio: float) -> int:
     return int(round(min(candidates, key=lambda c: abs(np.log(c / ratio)))))
 
 
-def scale_ratio_text(ratio: float) -> str:
+def scale_ratio_text(ratio: float, *, snap: bool = False) -> str:
     """Honest band text for a printed scale of 1:``ratio``.
 
-    Prints a standard scale only when the drawing really is at it (within
-    3 %); otherwise the ratio to two significant figures, marked approximate.
+    A fitted (not map-scaled) drawing is only ever *approximately* at a round
+    ratio, so it prints "APPROX. SCALE" with three significant figures
+    (1:1278 -> "APPROX. SCALE 1:1280"; snapping it to "SCALE 1:1250" claimed
+    a scale the bar doesn't draw). An exact title-block map scale is printed
+    by the caller instead. ``snap=True`` keeps the legacy behaviour of
+    printing a standard scale within 3 % without "APPROX.".
     """
     ratio = float(ratio)
     standard = nearest_standard_scale(ratio)
-    if abs(standard / ratio - 1.0) <= _STANDARD_SCALE_TOLERANCE:
+    if snap and abs(standard / ratio - 1.0) <= _STANDARD_SCALE_TOLERANCE:
         return f"SCALE 1:{standard}"
-    if ratio < 10:
-        # Very short sections: keep a decimal (1:3.3, not a 10 %-off 1:3).
+    if ratio < 100:
+        # Very short sections: keep a decimal (1:3.3 / 1:53.6, not 1:3 / 1:54).
         return f"APPROX. SCALE 1:{ratio:.1f}"
     digits = int(np.floor(np.log10(ratio)))
-    rounded = int(round(ratio, -max(digits - 1, 0)))
+    rounded = int(round(ratio, -(digits - 2)))
     return f"APPROX. SCALE 1:{rounded}"
 
 
@@ -275,6 +279,129 @@ def parse_map_scale(text: str | None) -> float | None:
     except ValueError:
         return None
     return value if value > 0 else None
+
+
+# --- Exact title-block map scale ---------------------------------------------
+#
+# A user / workbook ``map_scale`` sizes the section box so the printed
+# horizontal scale is exactly that ratio on the final export page: the axes
+# width is (x-limit span in metres) / ratio, in inches. The scale applies to
+# every metre on the x axis, the hole-label room and end padding included, so
+# the scale bar (measured through the same box) stays truthful. Exact VE then
+# sets the box height; auto VE fills the frame height and the band captions the
+# measured VE. The box is centred in its frame region, like exact VE.
+
+# Below this share of the frame width the sheet is mostly empty margin: a
+# reader is better served by the fitted section marked "AS SHOWN" (a 1:5000
+# request on a 300 m section would draw a 2.4 in strip on an 8.5 in frame).
+# 30 % still leaves a usefully readable plot on letter portrait (~2 in).
+MAP_SCALE_MIN_FRAME_FRACTION = 0.30
+# Float slack when the requested box is exactly the frame width.
+_MAP_SCALE_FIT_TOLERANCE = 1e-6
+
+
+def map_scale_box(
+    frame: tuple[float, float, float, float],
+    figure_size_in: tuple[float, float],
+    x_span_m: float,
+    y_span_stored: float,
+    ratio: float,
+    *,
+    exact_ve: bool,
+    min_fraction: float = MAP_SCALE_MIN_FRAME_FRACTION,
+) -> tuple[tuple[float, float, float, float], str, float]:
+    """Axes box (figure fractions) drawing ``x_span_m`` at 1:``ratio`` in ``frame``.
+
+    Returns ``(box, status, printed_ratio)``. ``status`` is ``"exact"`` when
+    the box is drawn at 1:``ratio``; ``"no_fit"`` when the section (or, with
+    exact VE, its height) is too large for the frame at that scale; and
+    ``"too_small"`` when it would fill less than ``min_fraction`` of the frame
+    width. Both fallbacks fit the frame (shrunk to the exact VE, if set) and
+    ``printed_ratio`` is the scale actually drawn. ``y_span_stored`` is the
+    y-limit span in stored (VE-multiplied) units: exact VE is aspect 1 in them.
+    """
+    fx0, fy0, fw, fh = (float(v) for v in frame)
+    fig_w, fig_h = (float(v) for v in figure_size_in)
+    frame_w = fw * fig_w
+    frame_h = fh * fig_h
+    x_span = abs(float(x_span_m))
+    y_span = abs(float(y_span_stored))
+    if min(frame_w, frame_h, x_span, float(ratio)) <= 0.0 or not np.isfinite(x_span):
+        return (fx0, fy0, fw, fh), "no_fit", float("nan")
+    aspect = y_span / x_span if exact_ve and y_span > 0.0 else None
+    need_w = x_span * _INCHES_PER_METRE / float(ratio)
+    need_h = need_w * aspect if aspect is not None else frame_h
+    slack = 1.0 + _MAP_SCALE_FIT_TOLERANCE
+    if need_w > frame_w * slack or need_h > frame_h * slack:
+        status = "no_fit"
+    elif need_w < min_fraction * frame_w:
+        status = "too_small"
+    else:
+        status = "exact"
+    if status == "exact":
+        width, height = min(need_w, frame_w), min(need_h, frame_h)
+    else:
+        width, height = frame_w, frame_h
+        if aspect is not None:
+            if frame_w * aspect <= frame_h:
+                height = frame_w * aspect
+            else:
+                width = frame_h / aspect
+    x0 = fx0 + 0.5 * (frame_w - width) / fig_w
+    y0 = fy0 + 0.5 * (frame_h - height) / fig_h
+    printed = float(ratio) if status == "exact" else x_span * _INCHES_PER_METRE / width
+    return (x0, y0, width / fig_w, height / fig_h), status, printed
+
+
+def format_scale_ratio(ratio: float) -> str:
+    """``1:1000`` for an exact scale (decimals only when the ratio has them)."""
+    ratio = float(ratio)
+    return f"1:{int(round(ratio))}" if abs(ratio - round(ratio)) < 1e-6 else f"1:{ratio:g}"
+
+
+def page_description(figure_size_in: tuple[float, float]) -> str:
+    """``"letter landscape"`` for a named export page, else ``"8.0 x 6.0 in"``."""
+    size = tuple(round(float(v), 2) for v in figure_size_in)
+    for name, page in PAGE_FIGSIZE_IN.items():
+        if size == tuple(round(float(v), 2) for v in page):
+            return name.replace("_", " ")
+    return f"{size[0]:g} x {size[1]:g} in"
+
+
+class _MapScaleAspect:
+    """``Axes.apply_aspect`` replacement sizing the box to the exact map scale.
+
+    Installed on the main consulting axes instance, so every path matplotlib
+    takes to lay the axes out (draw, tight bbox, ``get_position``) and every
+    measurement here (scale bar, VE caption) sees the same box. The frame is
+    the axes' original (grid) position, which export page resizes and margin
+    fits update.
+    """
+
+    def __init__(self, ax, ratio: float, *, exact_ve: bool) -> None:
+        self.ax = ax
+        self.ratio = float(ratio)
+        self.exact_ve = bool(exact_ve)
+
+    def layout(self) -> tuple[tuple[float, float, float, float], str, float]:
+        ax = self.ax
+        x0, x1 = ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+        return map_scale_box(
+            tuple(ax.get_position(original=True).bounds),
+            tuple(ax.figure.get_size_inches()),
+            abs(float(x1) - float(x0)),
+            abs(float(y1) - float(y0)),
+            self.ratio,
+            exact_ve=self.exact_ve,
+        )
+
+    def __call__(self, position=None) -> None:
+        from matplotlib.axes import Axes
+        from matplotlib.transforms import Bbox
+
+        box, _status, _printed = self.layout()
+        Axes.apply_aspect(self.ax, Bbox.from_bounds(*box))
 
 
 def _scale_bar_label(value_m: float) -> str:
@@ -450,6 +577,7 @@ class ConsultingLayoutMixin:
                     ve,
                     alpha=self.profile.fence_alpha,
                     collar_lookup=collar_lookup,
+                    hole_x_lookup=ctx.x_by_hole,
                 )
             else:
                 self._has_pinch_out = False
@@ -558,6 +686,10 @@ class ConsultingLayoutMixin:
                 # The right RL axis follows the (possibly box-locked) main axes.
                 self._apply_ve_aspect(ax, twins=(ax_right,))
 
+            # A user / workbook map scale sizes the box to exactly that scale
+            # on the export page (falls back to the fit above when it can't).
+            self._install_map_scale(ax, ax_right, title_block, hole_summary, track_half)
+
             if self.profile.show_report_grid:
                 x_grid = 20.0 if ctx.x_span > 200.0 else self.profile.x_major_grid_m
                 self._apply_report_grid(ax, ax_right, consulting=True, x_major_step=x_grid)
@@ -621,7 +753,12 @@ class ConsultingLayoutMixin:
         # sections keep the 5 m they always had.
         span = max(x_max - x_min, 1.0)
         x_pad = max(track_half + max(0.25 * track_half, 0.3), min(5.0, 0.06 * span))
-        label_room = self._last_hole_label_room(ax, hole_summary, span)
+        label_room = self._last_hole_label_room(
+            ax,
+            hole_summary,
+            span,
+            map_scale=self._requested_map_scale(self.consulting_title_block),
+        )
         if label_room:
             x_pad = max(x_pad, track_half + label_room)
         # The first hole sits at x = 0; an axis starting at exactly 0 cut its
@@ -1045,6 +1182,84 @@ class ConsultingLayoutMixin:
             )
 
     @staticmethod
+    def _requested_map_scale(title_block: ConsultingTitleBlock | None) -> float | None:
+        """Denominator of a user / workbook-set ``map_scale`` (never the model default)."""
+        if title_block is None or "map_scale" not in title_block.model_fields_set:
+            return None
+        return parse_map_scale(title_block.map_scale)
+
+    def _install_map_scale(
+        self,
+        ax,
+        twin,
+        title_block: ConsultingTitleBlock,
+        hole_summary: pd.DataFrame,
+        track_half: float,
+    ) -> None:
+        """Size the section box to the title block's map scale (when it is set)."""
+        ratio = self._requested_map_scale(title_block)
+        if ratio is None:
+            return
+        if not hole_summary.empty:
+            # Every x path (incl. the autoscaled depth axis) keeps the last
+            # hole's values inside the frame at the exact scale; the room is
+            # section distance, so the scale bar still measures it truly.
+            x_min = float(hole_summary["x_profile"].min())
+            x_max = float(hole_summary["x_profile"].max())
+            room = self._last_hole_label_room(
+                ax, hole_summary, max(x_max - x_min, 1.0), map_scale=ratio
+            )
+            left, right = ax.get_xlim()
+            if room and right > left:
+                ax.set_xlim(left, max(right, x_max + track_half + room))
+        release_twins(ax, (twin,))
+        ax.set_aspect("auto")
+        ax.apply_aspect = _MapScaleAspect(ax, ratio, exact_ve=not self.ve_auto)
+        ax.figure._css_map_scale_text = str(title_block.map_scale)
+
+    @staticmethod
+    def _map_scale_layout(figure: Figure) -> tuple[str, float] | None:
+        """``(status, printed_ratio)`` of the exact map scale at the current page."""
+        axes = getattr(figure, "_css_main_axes", None)
+        aspect = getattr(axes[0], "apply_aspect", None) if axes else None
+        if not isinstance(aspect, _MapScaleAspect):
+            return None
+        _box, status, printed = aspect.layout()
+        return status, printed
+
+    def map_scale_notes(self, figure: Figure) -> tuple[str, ...]:
+        """User-facing QA note when the title block map scale could not be drawn exactly.
+
+        Read after the export page geometry is applied (the pipeline adds it to
+        the build's QA notes); empty when the scale fits or was never set.
+        """
+        layout = self._map_scale_layout(figure)
+        if layout is None or layout[0] == "exact":
+            return ()
+        status, printed = layout
+        requested = getattr(figure, "_css_map_scale_text", "")
+        page = page_description(tuple(figure.get_size_inches()))
+        # Rounded to whole units, not to a standard scale: a near miss
+        # ("1:200 doesn't fit; printed at 1:203") must not read as a match.
+        printed_text = f"approx. 1:{printed:.1f}" if printed < 10 else f"approx. 1:{printed:.0f}"
+        if status == "too_small":
+            reason = (
+                f"would leave the section under {MAP_SCALE_MIN_FRAME_FRACTION:.0%} of the "
+                f"frame width on a {page} page"
+            )
+        else:
+            reason = f"doesn't fit a {page} page"
+        return (f"Map scale {requested} {reason}; printed at {printed_text} (AS SHOWN).",)
+
+    def _title_block_scale_value(self, figure: Figure, title_block: ConsultingTitleBlock) -> str:
+        """SCALE row: the user's map scale when drawn exactly, else "AS SHOWN"."""
+        layout = self._map_scale_layout(figure)
+        if layout is not None and layout[0] == "exact":
+            return str(title_block.map_scale)
+        # Unset (model default) or not drawable here: defer to the scale bar.
+        return "AS SHOWN"
+
+    @staticmethod
     def _main_axes_metres_per_px(figure: Figure) -> float | None:
         axes = getattr(figure, "_css_main_axes", None)
         if not axes:
@@ -1073,7 +1288,10 @@ class ConsultingLayoutMixin:
         Length is a round 1/2/5 x 10^n metres (or the title block's
         ``scale_bar_m`` when explicitly set and it fits) measured through the
         main axes' data->display transform; the SCALE text is the ratio at the
-        current page size, never the title block's nominal ``map_scale``.
+        current page size. A user / workbook ``map_scale`` that fits the page
+        sizes the main box to exactly that scale (``_MapScaleAspect``), so the
+        measured ratio *is* the map scale and prints without "APPROX."; when it
+        does not fit, the measured scale prints and a QA note is logged.
         """
         figure = ax_scale.figure
         metres_per_px = self._main_axes_metres_per_px(figure)
@@ -1161,12 +1379,20 @@ class ConsultingLayoutMixin:
             clip_on=False,
         )
         ratio = metres_per_px * figure.dpi * _INCHES_PER_METRE
+        layout = self._map_scale_layout(figure)
+        if layout is not None and layout[0] == "exact":
+            # The box is sized to the title block's scale: print it exactly.
+            scale_text = f"SCALE {format_scale_ratio(layout[1])}"
+        else:
+            # Fitted to the frame (no map scale, or one that didn't fit): the
+            # measured ratio is only approximately round, so say so.
+            scale_text = scale_ratio_text(ratio)
         ax_scale.text(
             # Left-aligned with the bar so the text can't spill out of the
             # panel's left edge (centred, it overflowed at large fonts).
             bar_x,
             0.12,
-            scale_ratio_text(ratio),
+            scale_text,
             ha="left",
             va="center",
             fontsize=font_pt,
@@ -1174,20 +1400,8 @@ class ConsultingLayoutMixin:
             color=LABEL_COLOR,
             transform=ax_scale.transAxes,
         )
-        nominal = (
-            parse_map_scale(title_block.map_scale)
-            if "map_scale" in title_block.model_fields_set
-            else None
-        )
-        if nominal and abs(nominal / ratio - 1.0) > _MAP_SCALE_MISMATCH_TOLERANCE:
-            logger.warning(
-                "Title block map scale %s differs from the printed section scale "
-                "1:%.0f on this %.1f x %.1f in page; the scale bar shows the "
-                "printed scale.",
-                title_block.map_scale,
-                ratio,
-                *figure.get_size_inches(),
-            )
+        for note in self.map_scale_notes(figure):
+            logger.warning("%s", note)
 
     def _draw_subtitle_band(
         self,
@@ -1456,11 +1670,13 @@ class ConsultingLayoutMixin:
             meta_rows.append(("TITLE", self._consulting_display_title(section_label)))
         if title_block.source:
             meta_rows.append(("SOURCE", title_block.source))
+        scale_row = None
         if title_block.map_scale:
-            # A scale the user never set (the model default "1:1000") would
-            # contradict the true-scale bar; "AS SHOWN" defers to the bar.
-            user_scale = "map_scale" in title_block.model_fields_set
-            meta_rows.append(("SCALE", title_block.map_scale if user_scale else "AS SHOWN"))
+            # The user's scale only when the section is drawn at it on this
+            # page; the model default ("1:1000") or a scale that does not fit
+            # would contradict the true-scale bar, so "AS SHOWN" defers to it.
+            scale_row = len(meta_rows)
+            meta_rows.append(("SCALE", "AS SHOWN"))
         if title_block.date:
             meta_rows.append(("DATE", title_block.date))
         if title_block.drawn_by:
@@ -1469,9 +1685,17 @@ class ConsultingLayoutMixin:
             meta_rows.append(("REVISED", title_block.revised))
         if title_block.figure_number:
             meta_rows.append(("FIGURE NO.", title_block.figure_number))
-        self._draw_refittable(
-            ax, lambda: self._draw_title_block_metadata_table(ax, meta_rows, panel=title_box)
-        )
+        figure = ax.figure
+
+        def draw_meta() -> None:
+            rows = list(meta_rows)
+            if scale_row is not None:
+                rows[scale_row] = ("SCALE", self._title_block_scale_value(figure, title_block))
+            self._draw_title_block_metadata_table(ax, rows, panel=title_box)
+
+        # The SCALE row follows the exact-scale fit, which an export page
+        # resize can change: it is part of the re-fit key.
+        self._draw_refittable(ax, draw_meta, key_extra=lambda: self._map_scale_layout(figure))
 
         if right_box is None:
             return
@@ -2161,7 +2385,14 @@ class ConsultingLayoutMixin:
             unit["artists"] = [child for child in ax.get_children() if id(child) not in before]
             unit["key"] = key
 
-    def _last_hole_label_room(self, ax, hole_summary: pd.DataFrame, span: float) -> float:
+    def _last_hole_label_room(
+        self,
+        ax,
+        hole_summary: pd.DataFrame,
+        span: float,
+        *,
+        map_scale: float | None = None,
+    ) -> float:
         """Data-x room right of the last column for its chemistry values (0 if none).
 
         The last hole's values print to its right: leave room for a ~40 pt
@@ -2199,7 +2430,13 @@ class ConsultingLayoutMixin:
         column_lines = max(0.7 * height_in * 72.0 / 11.0, 1.0)
         columns = min(3, max(1, math.ceil(last_readings / column_lines)))
         label_pt = 44.0 * columns
-        return label_pt * max(span, 1.0) / max(axes_width_pt - label_pt, 1.0)
+        room = label_pt * max(span, 1.0) / max(axes_width_pt - label_pt, 1.0)
+        if map_scale:
+            # At an exact map scale the box is narrower than the frame-filling
+            # estimate: the same points of label room are more metres. The
+            # room is section distance like any other, so the bar stays true.
+            room = max(room, label_pt / 72.0 * float(map_scale) / _INCHES_PER_METRE)
+        return room
 
     def fit_consulting_page_margins(self, figure: Figure) -> None:
         """Pull the side margins in when an RL axis label would leave the page.
@@ -2214,6 +2451,11 @@ class ConsultingLayoutMixin:
             return
         main_ax, twin_ax = axes
         renderer = figure.canvas.get_renderer()
+        if isinstance(getattr(main_ax, "apply_aspect", None), _MapScaleAspect):
+            # Measure the RL labels where the exact-scale box puts them.
+            main_ax.apply_aspect()
+            if twin_ax is not None and twin_ax.get_axes_locator() is not None:
+                twin_ax.apply_aspect(twin_ax.get_axes_locator()(twin_ax, renderer))
         width_px = figure.bbox.width
         pad_px = 2.0 * figure.dpi / 72.0
         params = figure.subplotpars

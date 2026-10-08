@@ -369,3 +369,12 @@ def test_coverage_gaps_do_not_gate_generate():
     assert gating_warning_count(None) == 0
     assert gating_warning_count(SimpleNamespace(issues=[gap, gap])) == 0
     assert gating_warning_count(SimpleNamespace(issues=[gap, other, error])) == 1
+
+
+def test_section_notes_only_prefix_real_overlaps() -> None:
+    from app_common import _section_note_text
+
+    assert _section_note_text("Clay / Silt between BH1–BH2") == "Polygon overlap: Clay / Silt between BH1–BH2"
+    note = "Crossing correlation A–B: Clay, Sand logged in opposite order — drawn as pinch-outs"
+    assert _section_note_text(note) == note
+    assert _section_note_text("Map scale 1:1 000 doesn't fit a letter landscape page").startswith("Map scale")

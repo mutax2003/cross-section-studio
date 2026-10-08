@@ -229,7 +229,16 @@ def assign_missing_unit_orders(
     for lithology in lithologies:
         by_hole[lithology.hole_id].append(lithology)
     sorted_by_hole = {
-        hole_id: sorted(items, key=lambda item: (item.from_depth, item.to_depth))
+        # Code / unit_order break depth ties so shuffled rows number the same.
+        hole_id: sorted(
+            items,
+            key=lambda item: (
+                item.from_depth,
+                item.to_depth,
+                str(item.lithology_code),
+                -1 if item.unit_order is None else item.unit_order,
+            ),
+        )
         for hole_id, items in by_hole.items()
     }
     holes_missing = {
@@ -271,7 +280,10 @@ def assign_missing_unit_orders(
         next_new = max(max(counts) for counts in explicit.values()) + 1
         for token in sequence:
             if token in explicit:
-                order_for_token[token] = explicit[token].most_common(1)[0][0]
+                # Most common given value; ties go to the smallest (not to
+                # whichever hole came first in the sheet).
+                counts = explicit[token]
+                order_for_token[token] = min(counts, key=lambda value: (-counts[value], value))
             else:
                 order_for_token[token] = next_new
                 next_new += 1

@@ -227,3 +227,23 @@ def test_pinched_sand_section_keeps_aquifer_continuous() -> None:
     assert sum(p.lithology_code == "Aquifer" for p in continuous) == 2
     assert not any(p.lithology_code == "Aquifer" and p.is_pinch_out for p in geometry.polygons)
     assert not geometry.overlap_pairs
+
+
+def test_auto_unit_order_ignores_sheet_row_order() -> None:
+    from models import Lithology
+    from parse_ops import assign_missing_unit_orders
+
+    def hole(hole_id, top_order):
+        return [
+            Lithology(hole_id=hole_id, from_depth=0, to_depth=1, lithology_code="Clay", unit_order=top_order),
+            Lithology(hole_id=hole_id, from_depth=1, to_depth=2, lithology_code="Sand"),
+            Lithology(hole_id=hole_id, from_depth=2, to_depth=3, lithology_code="Clay"),
+        ]
+
+    def orders(rows):
+        result, _ = assign_missing_unit_orders(rows)
+        return sorted((r.hole_id, r.from_depth, r.unit_order) for r in result)
+
+    first = orders(hole("A", 1) + hole("B", 5) + hole("C", None))
+    assert first == orders(hole("B", 5) + hole("A", 1) + hole("C", None))
+    assert first == orders(hole("C", None) + hole("B", 5) + hole("A", 1))

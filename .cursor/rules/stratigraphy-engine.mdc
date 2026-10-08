@@ -27,7 +27,11 @@ For each adjacent pair, match intervals using hashable keys (not code-only union
 
 Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) or skipped.
 
-**Shifted-unit re-match (`_rematch_shifted_units`, via `_correlate_pair`):** after overrides, unmatched same-lithology intervals in the two holes are paired top-down, skipping any pairing that would cross an existing match. This keeps e.g. Clay continuous when one hole logs an extra lens (which shifts every deeper per-hole `unit_order` by one). Leftover repeats stay pinch-outs. Used by both `_polygons_for_pair` and `preview_correlation_health`.
+**Logging gaps:** a fence-only copy of each hole closes mid-log not-logged gaps (unit above and below meet at the gap midpoint) so the fence tiles; the projected data the columns draw from is untouched (they still show the grey "Not logged" interval). Top / base gaps stay open.
+
+**Crossing matches:** automatic matches that cross (layers logged in opposite order in the two holes) are un-matched, keeping the best-ranked order-preserving set; the dropped units become anchored pinch-outs and are listed in `CorrelationPairSummary.crossing_codes`. Explicit overrides are always kept. `build_stratigraphy(..., clip_warnings=list)` collects "Fence clipped … kept N%" when clipping removes > 15% of a polygon; `pipeline.compute_section_geometry` surfaces both as `overlap_warnings` ("Crossing correlation …", "Fence clipped …") and Configure preflight shows them.
+
+**Shifted-unit re-match (`_rematch_shifted_units`, via `_correlate_pair`):** after overrides, unmatched same-lithology candidate pairs are ranked across the whole hole pair (shared elevation range, then closest mid-elevation, then position) and accepted in that order when they don't cross an existing match; equal-ranked conflicting candidates are all rejected, so reversing the transect mirrors the result. This keeps e.g. Clay continuous when one hole logs an extra lens (which shifts every deeper per-hole `unit_order` by one). Leftover repeats stay pinch-outs. Used by both `_polygons_for_pair` and `preview_correlation_health`.
 
 `correlation_overrides` from workbook or session remap left/right `unit_order` pairs before matching. Overrides keyed with **reversed** hole order are accepted via `_overrides_for_hole_pair` (unit orders swapped to transect left→right). Prefer exact `(left, right)` when both directions exist.
 
@@ -43,6 +47,7 @@ Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) 
 **Case 2 — Pinch-out** (key in one hole only, `allow_pinch_outs=True`):
 - `_pinch_out_wedge_coords`: vertical edge exactly on the source hole from logged top to bottom; tip at `PINCH_OUT_FRACTION` (0.5) of the way to the neighbour
 - Wedges are planned first: `_bracketing_matches` finds the nearest matched units above/below in the source hole; tip z (`_bracket_tip_z`) = mean of the two bounding contact lines interpolated hole-to-hole at the tip x (one-sided wedges sit on that single contact); no matched bracket → `_pinch_out_z_mid` fallback (adjacent `unit_order` ±1, then elevation position — RLs, not hole-local depths)
+- No bending when crossing correlations invert the bracketing contacts or the tip falls outside the fill's vertical extent
 - When both bracketing units exist, the upper unit's bottom edge and the lower unit's top edge bend through the tip (`_bend_path`) so upper unit, wedge(s) and lower unit tile the gap with no white triangle; stacked lenses share one tip
 - 3-vertex triangular wedge tapering to `(X_tip, Z_tip)`
 - `is_pinch_out = True` — renderer draws dashed edges and lower alpha

@@ -58,6 +58,9 @@ from stratigraphy import (
 
 logger = logging.getLogger(__name__)
 
+CROSSING_CORRELATION_PREFIX = "Crossing correlation"
+FENCE_NOTE_PREFIXES = (CROSSING_CORRELATION_PREFIX, "Fence clipped")
+
 
 def _merge_optional_profile_updates(
     updates: dict[str, object],
@@ -235,6 +238,7 @@ def compute_section_geometry(
     )
 
     correlation_summaries: list[CorrelationPairSummary] = []
+    clip_warnings: list[str] = []
     if interpretation_mode == "borehole_only":
         polygons: list[GeologicalPolygon] = []
         overlap_pairs: tuple[PolygonOverlap, ...] = ()
@@ -244,6 +248,7 @@ def compute_section_geometry(
             allow_pinch_outs=allow_pinch_outs,
             correlation_overrides=correlation_overrides,
             pair_summaries=correlation_summaries,
+            clip_warnings=clip_warnings,
         )
         overlap_pairs = (
             tuple(detect_polygon_overlaps(polygons))
@@ -268,7 +273,18 @@ def compute_section_geometry(
     if correlation_warnings and logger.isEnabledFor(logging.WARNING):
         for message in correlation_warnings:
             logger.warning(message)
-    overlap_warnings = overlap_warnings + tuple(correlation_warnings)
+    # Fence-level notes the user must see (not gated on correlation-gap
+    # warnings): layers logged in opposite order in neighbouring holes are
+    # drawn as pinch-outs, and heavy overlap clipping is reported.
+    fence_notes = [
+        f"{CROSSING_CORRELATION_PREFIX} {summary.left_hole_id}–{summary.right_hole_id}: "
+        f"{', '.join(summary.crossing_codes)} logged in opposite order — drawn as pinch-outs"
+        for summary in correlation_summaries
+        if summary.crossing_codes
+    ] + clip_warnings
+    for message in fence_notes:
+        logger.warning(message)
+    overlap_warnings = overlap_warnings + tuple(correlation_warnings) + tuple(fence_notes)
     if fail_on_overlaps and overlap_pairs:
         raise ValueError(
             f"Polygon overlap detected ({len(overlap_pairs)} pair(s)); "

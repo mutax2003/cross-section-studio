@@ -920,6 +920,12 @@ def cached_configure_preflight(
             ),
         )
 
+    from pipeline import FENCE_NOTE_PREFIXES
+
+    overlap_extra += tuple(
+        message for message in geometry.overlap_warnings if message.startswith(FENCE_NOTE_PREFIXES)
+    )
+
     # Geometry stage already collected pair summaries during build_stratigraphy
     # (cached_compute_section_geometry always enables correlation-gap collection).
     summaries = geometry.correlation_summaries

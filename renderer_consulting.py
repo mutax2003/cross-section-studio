@@ -577,6 +577,7 @@ class ConsultingLayoutMixin:
                     ve,
                     alpha=self.profile.fence_alpha,
                     collar_lookup=collar_lookup,
+                    hole_x_lookup=ctx.x_by_hole,
                 )
             else:
                 self._has_pinch_out = False

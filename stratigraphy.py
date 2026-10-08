@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 # tapering to its apex (0.5 = mid-way toward the neighbouring hole).
 PINCH_OUT_FRACTION = 0.5
 
+# Intervals thinner than this (from_depth == to_depth within float noise) carry no
+# fence geometry: they are left out of correlation / fence building (columns still
+# show them) because a degenerate match collapses the neighbouring fills. Kept in
+# sync with ``ai_quality.ZERO_THICKNESS_M``.
+MIN_FENCE_THICKNESS_M = 1e-3
+
 
 @dataclass(frozen=True)
 class GeologicalPolygon:
@@ -426,8 +432,8 @@ def _rematch_shifted_units(
 
     left_by_code = _by_code(left_unmatched, left_lookup)
     right_by_code = _by_code(right_unmatched, right_lookup)
-    left_index = {id(interval): index for index, interval in enumerate(left_intervals)}
-    right_index = {id(interval): index for index, interval in enumerate(right_intervals)}
+    left_index = _stratigraphic_positions(left_intervals)
+    right_index = _stratigraphic_positions(right_intervals)
     matched_positions = [
         (left_index[id(left_lookup[key])], right_index[id(right_lookup[key])])
         for key in left_lookup
@@ -462,7 +468,8 @@ def _rematch_shifted_units(
                     )
                 )
     accepted = _accept_non_crossing(candidates, matched_positions)
-    if not accepted:
+    crossed = _crossed_candidates(candidates, accepted, matched_positions)
+    if not accepted and not crossed:
         return left_lookup, right_lookup
     merged_left = dict(left_lookup)
     merged_right = dict(right_lookup)
@@ -470,7 +477,47 @@ def _rematch_shifted_units(
         new_key: Hashable = ("shifted", code, min(left_pos, right_pos), max(left_pos, right_pos))
         merged_left[new_key] = merged_left.pop(left_key)
         merged_right[new_key] = merged_right.pop(right_key)
+    # Same-code units logged in opposite order relative to a kept match (e.g. Till
+    # over Sand in one hole, Sand over Till in the next, numbered with unit_order so
+    # their keys never matched) are the same geological conflict as a dropped
+    # crossing match: re-key them so the pair summary reports a crossing.
+    for side, key, pos in crossed:
+        merged = merged_left if side == "left" else merged_right
+        if key in merged:
+            layer = merged.pop(key)
+            merged[("crossed", side, pos, layer.lithology_code)] = layer
     return merged_left, merged_right
+
+
+def _crossed_candidates(
+    candidates: list[tuple[tuple, tuple[str, Hashable, Hashable], int, int]],
+    accepted: list[tuple[object, int, int]],
+    final_positions: Sequence[tuple[int, int]],
+) -> list[tuple[str, Hashable, int]]:
+    """Rejected same-code candidates whose only obstacle is a strict crossing.
+
+    Both intervals must stay unmatched (no accepted pairing reuses either), and the
+    pair must cross a final match without sharing an interval with it. Returned as
+    ``(side, key, position)`` with ``side`` ``"left"`` / ``"right"``.
+    """
+    matched_left = {lp for lp, _rp in final_positions}
+    matched_right = {rp for _lp, rp in final_positions}
+    accepted_payloads = {id(payload) for payload, _lp, _rp in accepted}
+    flagged: dict[tuple[str, int], tuple[str, Hashable, int]] = {}
+    for _rank, payload, left_pos, right_pos in candidates:
+        if id(payload) in accepted_payloads:
+            continue
+        if left_pos in matched_left or right_pos in matched_right:
+            continue
+        if not any(
+            (left_pos < other_left) != (right_pos < other_right)
+            for other_left, other_right in final_positions
+        ):
+            continue
+        _code, left_key, right_key = payload
+        flagged[("left", left_pos)] = ("left", left_key, left_pos)
+        flagged[("right", right_pos)] = ("right", right_key, right_pos)
+    return list(flagged.values())
 
 
 def _pair_rank(
@@ -502,6 +549,22 @@ def _pair_rank(
         min(left_pos, right_pos),
         abs(left_pos - right_pos),
     )
+
+
+def _stratigraphic_positions(intervals: list[_LayerInterval]) -> dict[int, int]:
+    """Map ``id(interval)`` → rank from the top of the hole by elevation.
+
+    ``_intervals_for_hole`` orders a hole by ``unit_order`` when it is set, and that
+    numbering can contradict the logged depths (a typo, or a per-hole sequence that
+    runs against depth). Crossing checks must compare the real stacking order, or
+    two fills logged in opposite order would be accepted as non-crossing and the
+    overlap clip would silently swallow one of them.
+    """
+    ranked = sorted(
+        range(len(intervals)),
+        key=lambda index: (-intervals[index].top_elevation, index),
+    )
+    return {id(intervals[index]): rank for rank, index in enumerate(ranked)}
 
 
 def _crosses(left_pos: int, right_pos: int, positions: Sequence[tuple[int, int]]) -> bool:
@@ -566,10 +629,13 @@ def _drop_crossing_matches(
     Matches are kept best-rank first (``_pair_rank``) while they preserve both
     holes' order; the rest are re-keyed as ``('crossed', side, index, code)`` so they
     are drawn as pinch-outs anchored at their own holes and reported in the pair
-    summary. Explicit ``('override', ...)`` correlations are always kept.
+    summary. Explicit ``('override', ...)`` correlations are always kept; matches
+    keyed by user ``unit_order`` are hints and are un-matched like code-only ones.
+    Positions are elevation ranks (``_stratigraphic_positions``), not the
+    ``unit_order`` sort, so numbering that runs against depth cannot hide a cross.
     """
-    left_index = {id(interval): index for index, interval in enumerate(left_intervals)}
-    right_index = {id(interval): index for index, interval in enumerate(right_intervals)}
+    left_index = _stratigraphic_positions(left_intervals)
+    right_index = _stratigraphic_positions(right_intervals)
     fixed: list[tuple[int, int]] = []
     candidates: list[tuple[tuple, Hashable, int, int]] = []
     for key, left_layer in left_lookup.items():
@@ -1424,6 +1490,12 @@ class CorrelationPairSummary:
         return self.matched_count / total
 
 
+def _is_zero_thickness(interval: _LayerInterval) -> bool:
+    """True for a logged interval with no thickness (``from_depth == to_depth``)."""
+    thickness = interval.top_elevation - interval.bottom_elevation
+    return bool(np.isfinite(thickness)) and abs(thickness) < MIN_FENCE_THICKNESS_M
+
+
 def _sorted_hole_profiles(
     projected_df: pd.DataFrame,
 ) -> list[tuple[float, str, list[_LayerInterval], dict[Hashable, _LayerInterval]]]:
@@ -1440,7 +1512,13 @@ def _sorted_hole_profiles(
         tuple[float, str, list[_LayerInterval], dict[Hashable, _LayerInterval]]
     ] = []
     for hole_id, group in sorted_df.groupby("hole_id", sort=False):
-        intervals = _close_logging_gaps(_intervals_for_hole(group))
+        intervals = _close_logging_gaps(
+            [
+                interval
+                for interval in _intervals_for_hole(group)
+                if not _is_zero_thickness(interval)
+            ]
+        )
         hole_profiles.append(
             (
                 float(group["x_profile"].iloc[0]),

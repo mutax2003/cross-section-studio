@@ -271,7 +271,7 @@ def _batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
     block = base_request.consulting_title_block
     base_label = (block.section_label if block else "").strip()
     if base_label and base_label != label and label_in_title(base_label, title):
-        return re.sub(_label_pattern(base_label), lambda _m: label, title, count=1)
+        return re.sub(_label_pattern(base_label), lambda _m: label, title)
     if label_in_title(label, title):
         return title
     # No title block (section-sheet styles): look for an "A-A'" style label.

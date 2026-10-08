@@ -30,7 +30,7 @@ ElevationMode = Literal["absolute", "relative"]
 class SectionBuildRequest(BaseModel, frozen=True):
     transect_points: tuple[tuple[float, float], ...] = Field(min_length=2)
     # None = auto (fit page; captions print the measured VE); a number = exact VE.
-    vertical_exaggeration: float | None = Field(default=None, gt=0)
+    vertical_exaggeration: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     show_hatches: bool = False
     show_legend: bool = True
     section_title: str = "Borehole Cross-Section"

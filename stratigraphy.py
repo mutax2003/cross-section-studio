@@ -1256,6 +1256,9 @@ def _resolve_overlaps_in_pair(
     occupied_prep = None
     batch: list[Polygon] = []
     batch_limit = 4
+    # With no matched unit in the pair every fill is a wedge; wedges trimming
+    # each other is expected geometry, not a correlation conflict to report.
+    warn_on_clip = clip_warnings is not None and not all(p.is_pinch_out for p in polygons)
     last_index = len(ordered) - 1
     for index, geo_polygon in enumerate(ordered):
         original_area = float(geo_polygon.polygon.area)
@@ -1282,7 +1285,7 @@ def _resolve_overlaps_in_pair(
             largest = _clean_polygon(largest)
         kept_area = 0.0 if largest is None or largest.is_empty else float(largest.area)
         if (
-            clip_warnings is not None
+            warn_on_clip
             and original_area > 0
             and kept_area < (1.0 - CLIP_LOSS_WARN_FRACTION) * original_area
         ):

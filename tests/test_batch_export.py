@@ -342,3 +342,14 @@ def test_word_export_accepts_very_long_titles() -> None:
     from docx_export import build_figure_docx_bytes
 
     assert build_figure_docx_bytes(png_bytes=b"", caption="c", title="A" * 300)
+
+
+def test_batch_title_swaps_every_occurrence_of_a_single_letter_label() -> None:
+    from types import SimpleNamespace
+
+    from batch_export import _batch_section_title
+
+    request = SimpleNamespace(
+        section_title="Cross Section A-A'", consulting_title_block=SimpleNamespace(section_label="A")
+    )
+    assert _batch_section_title(request, "B") == "Cross Section B-B'"

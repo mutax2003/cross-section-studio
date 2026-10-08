@@ -282,7 +282,8 @@ def compute_section_geometry(
     # drawn as pinch-outs, and heavy overlap clipping is reported.
     fence_notes = [
         f"{CROSSING_CORRELATION_PREFIX} {summary.left_hole_id}–{summary.right_hole_id}: "
-        f"{', '.join(summary.crossing_codes)} logged in opposite order — drawn as pinch-outs"
+        f"{', '.join(summary.crossing_codes)} logged in opposite order — "
+        + ("drawn as pinch-outs" if allow_pinch_outs else "not drawn between these holes")
         for summary in correlation_summaries
         if summary.crossing_codes
     ] + clip_warnings

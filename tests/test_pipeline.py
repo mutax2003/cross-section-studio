@@ -467,3 +467,35 @@ def test_layers_logged_in_opposite_order_are_reported() -> None:
     lithology = [Lithology(hole_id=h, from_depth=a, to_depth=b, lithology_code=c) for h, a, b, c in rows]
     geometry = compute_section_geometry(collars, lithology, [(0, 0), (50, 0)])
     assert any(message.startswith("Crossing correlation A–B") for message in geometry.overlap_warnings)
+
+
+def test_crossing_note_wording_follows_pinch_out_setting() -> None:
+    from models import Collar, Lithology
+    from pipeline import compute_section_geometry
+
+    collars = [
+        Collar(hole_id="A", easting=0, northing=0, elevation=100, total_depth=10),
+        Collar(hole_id="B", easting=50, northing=0, elevation=100, total_depth=10),
+    ]
+    rows = [("A", 0, 5, "Sand"), ("A", 5, 10, "Clay"), ("B", 0, 5, "Clay"), ("B", 5, 10, "Sand")]
+    lithology = [Lithology(hole_id=h, from_depth=a, to_depth=b, lithology_code=c) for h, a, b, c in rows]
+    off = compute_section_geometry(collars, lithology, [(0, 0), (50, 0)], allow_pinch_outs=False)
+    notes = [m for m in off.overlap_warnings if m.startswith("Crossing correlation")]
+    assert notes and all("not drawn between these holes" in m for m in notes)
+
+
+def test_wedge_only_pairs_do_not_report_correlation_conflicts() -> None:
+    from models import Collar, Lithology
+    from pipeline import compute_section_geometry
+
+    collars = [
+        Collar(hole_id="A", easting=0, northing=0, elevation=100, total_depth=10),
+        Collar(hole_id="B", easting=30, northing=0, elevation=96, total_depth=12),
+    ]
+    rows = [
+        ("A", 0, 4, "Sand"), ("A", 4, 10, "Clay"),
+        ("B", 0, 3, "Silt"), ("B", 3, 7, "Gravel"), ("B", 7, 12, "Till"),
+    ]
+    lithology = [Lithology(hole_id=h, from_depth=a, to_depth=b, lithology_code=c) for h, a, b, c in rows]
+    geometry = compute_section_geometry(collars, lithology, [(0, 0), (30, 0)])
+    assert not [m for m in geometry.overlap_warnings if m.startswith("Fence clipped")]

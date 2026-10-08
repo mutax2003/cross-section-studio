@@ -48,6 +48,9 @@ def _clean_text(value: object) -> str:
     return text
 
 
+_COLLAR_LIMITS = {"easting": 1e9, "northing": 1e9, "elevation": 1e5, "total_depth": 1e5}
+
+
 class Collar(BaseModel, frozen=True):
     hole_id: str
     easting: float
@@ -80,6 +83,11 @@ class Collar(BaseModel, frozen=True):
     def require_finite(cls, value: float, info) -> float:
         if not math.isfinite(value):
             raise ValueError(f"{info.field_name} must be a finite number")
+        # Real coordinates (UTM / local grids) and elevations are far inside
+        # these; larger values are typos and overflowed the section maths.
+        limit = _COLLAR_LIMITS[info.field_name]
+        if abs(value) > limit:
+            raise ValueError(f"{info.field_name} {value:g} is out of range (limit ±{limit:g})")
         return value
 
     @field_validator("total_depth")

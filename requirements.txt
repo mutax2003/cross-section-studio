@@ -1,6 +1,7 @@
 pydantic>=2.0,<3
 pandas>=2.0,<3
 openpyxl>=3.1
+defusedxml>=0.7.1  # openpyxl uses it to parse workbook XML safely when installed
 numpy>=1.24,<3
 shapely>=2.0
 matplotlib>=3.8

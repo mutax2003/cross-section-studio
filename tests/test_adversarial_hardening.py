@@ -1105,3 +1105,16 @@ def test_generate_prepare_generate_leaves_live_figure_second_prepare_zero_redraw
         assert len(closed) == 2  # each Prepare closes its retained figure
     finally:
         clear_service_memos()
+
+
+def test_collar_rejects_out_of_range_coordinates() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from models import Collar
+
+    for field, value in (("easting", 1e200), ("northing", -1e12), ("elevation", 1e308)):
+        kwargs = {"hole_id": "BH1", "easting": 0.0, "northing": 0.0, "elevation": 100.0, "total_depth": 5.0}
+        kwargs[field] = value
+        with pytest.raises(ValidationError, match="out of range"):
+            Collar(**kwargs)

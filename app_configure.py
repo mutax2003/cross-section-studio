@@ -783,11 +783,13 @@ def render_configure_step(
     elif fail_on_overlaps and has_overlap_warnings:
         st.error(OVERLAP_GATE_MESSAGE)
 
-    _render_batch_section_lines(
-        preflight_selection,
-        known_hole_ids=all_hole_ids,
-        collapsed_for_errors=blocking,
-    )
+    if len(all_hole_ids) >= 2:
+        # A one-hole workbook cannot make any section line, let alone several.
+        _render_batch_section_lines(
+            preflight_selection,
+            known_hole_ids=all_hole_ids,
+            collapsed_for_errors=blocking,
+        )
 
     return ConfigureState(
         selected_holes=selected_holes,
@@ -813,7 +815,7 @@ def render_configure_step(
     )
 
 
-BATCH_EXPANDER_KEY = "batch_section_lines_expander"
+BATCH_OPEN_FLAG = "_batch_section_lines_open"
 _SECTION_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
@@ -850,9 +852,11 @@ def _render_batch_section_lines(
     label = "Several section lines (batch ZIP)"
     if collapsed_for_errors:
         label += " (fix data errors first)"
-    # Keyed so the panel keeps its open/closed state across the reruns its
-    # own buttons trigger.
-    with st.expander(label, expanded=False, key=BATCH_EXPANDER_KEY, on_change="rerun"):
+    # Not keyed: a keyed expander that moves between the Configure step and
+    # the post-Generate "Setup" expander left faded ghost copies (with their
+    # text areas) in the page. Its own buttons and edits ask for it to open
+    # instead, so their reruns do not fold it away.
+    with st.expander(label, expanded=bool(st.session_state.get(BATCH_OPEN_FLAG))):
         st.caption(
             "One section line per row: name, then '|', then hole IDs in order "
             "(e.g. A-A' | MW-01, MW-02, MW-03). Prepare batch ZIP on Generate redraws "
@@ -873,6 +877,7 @@ def _render_batch_section_lines(
         col_a, col_b, col_c = st.columns(3)
         with col_a:
             if st.button("Add current section line", key="batch_add_current"):
+                st.session_state[BATCH_OPEN_FLAG] = True
                 if preflight_selection is None:
                     st.warning("Choose a section line first.")
                 else:
@@ -889,6 +894,7 @@ def _render_batch_section_lines(
                     st.rerun()
         with col_b:
             if st.button("Fill from suggested lines", key="batch_fill_recommended"):
+                st.session_state[BATCH_OPEN_FLAG] = True
                 parse_result = st.session_state.get("parse_result")
                 candidates = load_transect_candidates(parse_result) if parse_result is not None else []
                 if not candidates:
@@ -898,6 +904,7 @@ def _render_batch_section_lines(
                     st.rerun()
         with col_c:
             if st.button("Load from workbook Sections", key="batch_load_sections"):
+                st.session_state[BATCH_OPEN_FLAG] = True
                 if not workbook_specs:
                     st.warning("The workbook has no Sections tab rows.")
                 else:
@@ -911,6 +918,7 @@ def _render_batch_section_lines(
         text = st.text_area(
             "Section lines",
             key="batch_transect_specs",
+            on_change=_keep_batch_lines_open,
             placeholder="A-A' | BH-01, BH-02, BH-03\nB-B' | BH-08, BH-09, BH-10",
             height=120,
             help=(
@@ -919,6 +927,10 @@ def _render_batch_section_lines(
             ),
         )
         _render_batch_line_status(text, known_hole_ids)
+
+
+def _keep_batch_lines_open() -> None:
+    st.session_state[BATCH_OPEN_FLAG] = True
 
 
 def _render_batch_line_status(text: str, known_hole_ids: Sequence[str]) -> None:
@@ -1111,6 +1123,10 @@ def _render_hole_sequence_order(hole_ids: list[str]) -> None:
                 sequence[index + 1], sequence[index] = sequence[index], sequence[index + 1]
                 st.session_state.hole_sequence_multiselect = sequence
                 st.rerun()
+    if len(sequence) < 2:
+        # "BH-01 → BH-01" read as a section line; one hole is not one yet.
+        st.caption("Add at least one more hole to make a section line.")
+        return
     section_label = st.session_state.get("consulting_section_label") or "A-A'"
     st.caption(f"Section {section_label}: **{sequence[0]} → {sequence[-1]}**")
 

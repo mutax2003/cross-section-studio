@@ -1191,3 +1191,19 @@ def test_row_cap_counts_real_rows_when_the_dimension_tag_understates(tmp_path) -
     with pytest.raises(WorkbookTooLargeError, match="more than 50 rows"):
         check_workbook_row_counts(tampered, limit=50)
     check_workbook_row_counts(tampered, limit=100)  # under the limit: accepted
+
+
+def test_template_without_lithology_sheet_is_rejected_not_loaded_empty() -> None:
+    """The template's Data Entry sheet only holds Project metadata. With the
+    Lithology tab deleted it stood in for Collars + Lithology and the workbook
+    loaded as 0 holes / 0 intervals with "Data health OK"."""
+    import openpyxl
+
+    from workbook_template import build_input_template_bytes
+
+    book = openpyxl.load_workbook(BytesIO(build_input_template_bytes()))
+    del book["Lithology"]
+    buffer = BytesIO()
+    book.save(buffer)
+    with pytest.raises(ValueError, match=r"Missing required sheet\(s\): Lithology"):
+        DataParser().parse_file(BytesIO(buffer.getvalue()))

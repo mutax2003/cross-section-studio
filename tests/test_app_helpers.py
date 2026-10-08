@@ -100,6 +100,11 @@ def test_workflow_stage_progression() -> None:
         == 1
     )
     assert workflow_stage(has_upload=True, has_parse_result=True, has_profile=True) == 3
+    # An empty / unreadable upload does not tick Upload.
+    assert (
+        workflow_stage(has_upload=True, has_parse_result=False, has_profile=False, upload_failed=True)
+        == 0
+    )
 
 
 def test_legend_hatch_background_returns_css() -> None:

@@ -528,3 +528,200 @@ def test_chemistry_columns_style_starts_with_red_labels() -> None:
     at.run()
     at.run()
     assert at.radio(key="chemistry_color_mode_radio").value == "All black"
+
+
+def _project_workbook_bytes(**project_values: str) -> bytes:
+    """Committed template with Project-sheet values replaced."""
+    from io import BytesIO
+
+    import openpyxl
+
+    from workbook_template import build_input_template_bytes
+
+    book = openpyxl.load_workbook(BytesIO(build_input_template_bytes()))
+    for row in book["Project"].iter_rows(min_row=2):
+        if row[0].value in project_values:
+            row[2].value = project_values[row[0].value]
+    buffer = BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
+
+
+def _browser_value(widget) -> object:
+    """What the browser shows for a widget that has just re-mounted.
+
+    A value carried over in session state but not flagged ``set_value`` is
+    not sent; the browser then shows the widget's default (and sends that
+    back on the next run), which blanked the title block after a style switch.
+    """
+    proto = widget.proto
+    return proto.value if proto.set_value else proto.default
+
+
+_TITLE_FIELDS = {
+    "consulting_prepared_for": "ACME PIPELINES LTD.",
+    "consulting_project_number": "P-77",
+    "consulting_date": "01/02/26",
+    "consulting_prepared_by": "NORTH CONSULTING",
+    "consulting_drawn_by": "QA",
+    "consulting_source": "QA 2026",
+    "consulting_map_scale": "1:2500",
+}
+
+
+def test_title_block_survives_output_style_switches() -> None:
+    """Switching Output style to Section sheet and back blanked the Section
+    title and every title-block field in the browser (and so the PDF)."""
+    from streamlit.testing.v1 import AppTest
+
+    workbook = _project_workbook_bytes(
+        client_name="ACME PIPELINES LTD.",
+        prepared_by="NORTH CONSULTING",
+        project_number="P-77",
+        section_title="B - B' QA TITLE",
+        report_date="01/02/26",
+        drawn_by="QA",
+        data_source="QA 2026",
+        map_scale="1:2500",
+        figure_preset="consulting_report",
+    )
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("project.xlsx", workbook).run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["output_preset"] == "consulting_report"
+
+    styles = ("section_sheet", "consulting_report", "quick_preview", "p2_chemistry_sticks")
+    for style in styles + ("consulting_report",):
+        at.selectbox(key="output_preset").set_value(style).run()
+        assert not at.exception
+        titles = [w for w in at.text_input if w.key in ("consulting_section_label", "section_title")]
+        assert len(titles) == 1, style
+        assert _browser_value(titles[0]) == "B - B' QA TITLE", style
+        for widget in at.text_input:
+            if widget.key in _TITLE_FIELDS:
+                assert _browser_value(widget) == _TITLE_FIELDS[widget.key], (style, widget.key)
+        if any(w.key == "export_include_title_block" for w in at.toggle):
+            toggle = at.toggle(key="export_include_title_block")
+            assert _browser_value(toggle) == at.session_state["export_include_title_block"], style
+        at.run()  # e.g. a Generate rerun
+        assert at.session_state["section_title"] == "B - B' QA TITLE", style
+    shown = {w.key: w.value for w in at.text_input if w.key in _TITLE_FIELDS}
+    assert shown == _TITLE_FIELDS
+
+
+def test_new_workbook_reseeds_title_block_after_style_switches() -> None:
+    from streamlit.testing.v1 import AppTest
+
+    first = _project_workbook_bytes(
+        client_name="FIRST CLIENT", section_title="A - A' FIRST", figure_preset="consulting_report"
+    )
+    second = _project_workbook_bytes(
+        client_name="SECOND CLIENT", section_title="B - B' SECOND", figure_preset="consulting_report"
+    )
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("first.xlsx", first).run()
+    at.selectbox(key="output_preset").set_value("section_sheet").run()
+    at.selectbox(key="output_preset").set_value("consulting_report").run()
+    assert at.text_input(key="consulting_prepared_for").value == "FIRST CLIENT"
+    at.selectbox(key="output_preset").set_value("section_sheet").run()
+    at.file_uploader[0].upload("second.xlsx", second).run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["section_title"] == "B - B' SECOND"
+    at.selectbox(key="output_preset").set_value("consulting_report").run()
+    assert at.text_input(key="consulting_prepared_for").value == "SECOND CLIENT"
+    assert at.text_input(key="consulting_section_label").value == "B - B' SECOND"
+
+
+def test_template_without_lithology_shows_the_missing_sheet_error() -> None:
+    """Deleting only the Lithology tab (the Data Entry sheet stays) loaded
+    0 holes with "Data health OK" though Collars listed every hole."""
+    from io import BytesIO
+
+    import openpyxl
+    from streamlit.testing.v1 import AppTest
+
+    from workbook_template import build_input_template_bytes
+
+    book = openpyxl.load_workbook(BytesIO(build_input_template_bytes()))
+    del book["Lithology"]
+    buffer = BytesIO()
+    book.save(buffer)
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("no_lith.xlsx", buffer.getvalue()).run()
+    assert not at.exception
+    assert at.session_state["parse_result"] is None
+    errors = [str(item.value) for item in at.error]
+    assert any("No **Lithology** sheet was found" in text for text in errors), errors
+    assert not any("Loaded **" in str(item.value) for item in at.success)
+    # The template is not a field export: no "Field Data sheet" note.
+    assert not any("Field Data sheet" in str(item.value) for item in at.info)
+
+
+def _batch_expanders(at) -> list:
+    return [e for e in at.expander if "Several section lines" in (e.label or "")]
+
+
+def test_batch_section_lines_expander_is_not_keyed_and_stays_single(sample_workbook: Path) -> None:
+    """The keyed (stateful) batch expander moved from Configure into the
+    post-Generate Setup expander and the browser kept faded ghost copies of
+    it (3 in the DOM, duplicate text areas after a workbook switch)."""
+    at = _generated_app(sample_workbook)
+    expanders = _batch_expanders(at)
+    assert len(expanders) == 1
+    # A widget-style id is what made the browser keep the stale copies.
+    assert not expanders[0].proto.id
+    assert len([w for w in at.text_area if w.key == "batch_transect_specs"]) == 1
+    # Its own buttons ask for it to stay open across their rerun.
+    [btn for btn in at.button if btn.key == "batch_fill_recommended"][0].click().run()
+    expanders = _batch_expanders(at)
+    assert len(expanders) == 1 and expanders[0].proto.expanded
+
+
+def test_empty_upload_keeps_upload_current_and_offers_recovery() -> None:
+    """A 0-byte .xlsx showed "✓ Upload" and the renamed-CSV text, without
+    the Clear workbook / sample recovery row a renamed CSV gets."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("empty.xlsx", b"").run()
+    assert not at.exception
+    errors = [str(item.value) for item in at.error]
+    assert any("empty (0 bytes)" in text for text in errors), errors
+    assert any(btn.key == "main_clear_workbook" for btn in at.button)
+    stepper = [str(md.value) for md in at.markdown if 'class="workflow"' in str(md.value)]
+    assert stepper and "✓ Upload" not in stepper[0] and "1. Upload" in stepper[0]
+
+
+def test_one_hole_workbook_has_no_section_label_or_batch_panel() -> None:
+    """One hole read "Section A - A': BH-01 → BH-01" and still offered the
+    several-section-lines batch panel."""
+    from io import BytesIO
+
+    import openpyxl
+    from streamlit.testing.v1 import AppTest
+
+    from workbook_template import build_input_template_bytes
+
+    book = openpyxl.load_workbook(BytesIO(build_input_template_bytes()))
+    collars = book["Collars"]
+    collars.delete_rows(3, collars.max_row)
+    buffer = BytesIO()
+    book.save(buffer)
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("one.xlsx", buffer.getvalue()).run()
+    assert not at.exception
+    assert len(at.session_state["hole_ids"]) == 1
+    hole = at.session_state["hole_ids"][0]
+    captions = [str(c.value) for c in at.caption]
+    assert not any(f"{hole} → {hole}" in text for text in captions)
+    assert any("at least one more hole" in text for text in captions)
+    assert not _batch_expanders(at)

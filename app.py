@@ -164,7 +164,8 @@ else:
         target_crs=sidebar.target_crs,
     )
 
-    if parse_result is None and st.session_state.get("file_bytes"):
+    # ``is not None``: an empty (0-byte) upload must get the recovery row too.
+    if parse_result is None and st.session_state.get("file_bytes") is not None:
         render_workbook_recovery(key_prefix="main")
     elif parse_result is not None:
         hole_ids = list(st.session_state.hole_ids)
@@ -440,6 +441,9 @@ with hero_slot:
                 getattr(st.session_state.get("quality_report"), "has_blocking_errors", False)
             ),
             has_transect=st.session_state.get("transect_selection") is not None,
+            # The workbook was read this run; no parse result means it failed.
+            upload_failed=st.session_state.get("file_bytes") is not None
+            and st.session_state.parse_result is None,
         )
     )
 

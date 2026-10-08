@@ -606,12 +606,20 @@ def render_validate_step(*, show_coach: bool = True) -> None:
     skipped_rows = list(parse_result.errors)
     skipped_holes = lithology_skipped_holes(skipped_rows)
     error_total = quality_report.error_count + len(skipped_rows)
-    status_label = _health_status_label(error_total, quality_report.warning_count)
+    if skipped_rows and not quality_report.has_blocking_errors:
+        # Skipped rows count as errors (same total as the upload banner) but
+        # do not block Generate; "Needs fixes" next to an enabled Generate
+        # and "Next: click Generate" contradicted each other.
+        status_label = "Rows skipped"
+        status_note = " — the skipped rows are left out; you can still generate."
+    else:
+        status_label = _health_status_label(error_total, quality_report.warning_count)
+        status_note = ""
     status_line = (
         f"**{status_label}** — "
         f"**{error_total} {'error' if error_total == 1 else 'errors'}**, "
         f"**{quality_report.warning_count} warnings**, "
-        f"**{quality_report.info_count} info**"
+        f"**{quality_report.info_count} info**{status_note}"
     )
     compact = not quality_report.has_blocking_errors
     if compact:

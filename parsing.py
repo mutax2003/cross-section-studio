@@ -377,7 +377,16 @@ class DataParser:
                     if not data_entry.environmental.empty:
                         environmental_frame = _normalize_columns(data_entry.environmental)
 
-                if data_entry is not None and not has_native:
+                # The compatibility Data Entry sheet stands in for Collars +
+                # Lithology only when it holds geology rows. The template's
+                # copy holds Project metadata only, so a template with its
+                # Lithology tab deleted loaded as 0 holes with "health OK".
+                data_entry_has_geology = (
+                    data_entry is not None
+                    and not data_entry.collars.empty
+                    and not data_entry.lithology.empty
+                )
+                if data_entry_has_geology and not has_native:
                     collars_frame = _normalize_columns(data_entry.collars)
                     lithology_frame = _normalize_columns(data_entry.lithology)
                 else:

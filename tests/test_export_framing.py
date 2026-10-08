@@ -291,3 +291,25 @@ def test_report_zip_readme_lists_the_word_file_when_included() -> None:
     )
     readme = zipfile.ZipFile(BytesIO(payload)).read("README_deliverable.txt").decode()
     assert "Word figure (.docx)" in readme
+
+
+def test_export_filename_keeps_primes_and_names_the_section_once() -> None:
+    """A consulting PDF was named A_-_A_WITH_CHLORIDE_A-A_BH-01_BH-06.pdf:
+    the prime dropped and the section label printed twice."""
+    from export_framing import build_export_filename
+
+    stem = build_export_filename(
+        pattern="section_title",
+        section_title="A - A' WITH CHLORIDE",
+        transect_label="A-A' BH-01→BH-06",
+        include_transect_label=True,
+    )
+    assert stem == "A-A'_WITH_CHLORIDE_BH-01_BH-06"
+    # A label the title does not carry is kept.
+    stem = build_export_filename(
+        pattern="section_title",
+        section_title="Bay Area Site",
+        transect_label="A BH-01→BH-06",
+        include_transect_label=True,
+    )
+    assert stem == "Bay_Area_Site_A_BH-01_BH-06"

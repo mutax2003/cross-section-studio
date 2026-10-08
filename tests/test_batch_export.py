@@ -47,6 +47,32 @@ def test_binder_merges_distinct_pdfs_when_pypdf_available() -> None:
     assert len(binder) > max(len(pdf_a), len(pdf_b))
 
 
+def test_binder_cover_matches_the_section_page_size() -> None:
+    """The cover was saved with a tight bbox: a 488.7 x 624.2 pt portrait
+    page in front of letter-landscape sections."""
+    pypdf = pytest.importorskip("pypdf")
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    def _letter_landscape(label: str) -> bytes:
+        buf = BytesIO()
+        with PdfPages(buf) as pdf:
+            fig, ax = plt.subplots(figsize=(11.0, 8.5))
+            ax.set_title(label)
+            pdf.savefig(fig)
+            plt.close(fig)
+        return buf.getvalue()
+
+    binder = export_binder_pdf(
+        [_letter_landscape("A"), _letter_landscape("B")], cover_title="Site — Cross Sections A-A', B-B'"
+    )
+    sizes = [
+        (round(float(page.mediabox.width)), round(float(page.mediabox.height)))
+        for page in pypdf.PdfReader(BytesIO(binder)).pages
+    ]
+    assert sizes == [(792, 612)] * 3
+
+
 def test_parse_batch_transect_lines() -> None:
     specs = parse_batch_transect_lines(
         "A-A' | BH-01, BH-02, BH-03\n\nB-B' | X1; X2\n"

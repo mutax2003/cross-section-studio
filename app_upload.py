@@ -109,6 +109,13 @@ def render_input_template_download(*, key: str, help: str | None = None) -> None
     )
 
 
+_EMPTY_FILE_MESSAGE = (
+    "This file is empty (0 bytes), so there is nothing to read. It may not have finished "
+    "saving or downloading. Save the workbook again in Excel and upload it, or start from "
+    "**Download template**."
+)
+
+
 def _friendly_workbook_error(exc: Exception) -> str:
     """Plain-language upload/parse failure with a next step (raw text goes in a details expander)."""
     text = str(exc)
@@ -139,6 +146,21 @@ def _friendly_workbook_error(exc: Exception) -> str:
         # Already plain language from the parser: names the sheet and the column.
         return text
     if "Missing required sheet" in text:
+        missing = {
+            name.strip().casefold() for name in text.split(":", 1)[-1].split(",") if name.strip()
+        }
+        if missing == {"lithology"}:
+            return (
+                "No **Lithology** sheet was found. Add a Lithology sheet with hole_id, "
+                "from_depth, to_depth and lithology_code, or start from **Download template**. "
+                "See Help → Workbook and data entry."
+            )
+        if missing == {"collars"}:
+            return (
+                "No **Collars** sheet was found. Add a Collars sheet with hole_id, easting, "
+                "northing, elevation and total_depth, or start from **Download template**. "
+                "See Help → Workbook and data entry."
+            )
         return f"{text}. Add the missing sheet(s), or start from **Download template**."
     if "rows (limit" in text:
         return f"The workbook is too large to read: {text}"
@@ -406,8 +428,13 @@ def queue_session_values(**values: object) -> None:
 def apply_pending_project_seed() -> None:
     """Apply queued Project metadata before sidebar widgets are created."""
     if st.session_state.pop("_reset_project_seed", False):
+        # The sidebar keeps a non-widget copy of these fields (so they survive
+        # output-style switches); the new workbook must not inherit it.
+        store = st.session_state.get("_sidebar_widget_store")
         for key in PROJECT_SEEDED_KEYS:
             st.session_state.pop(key, None)
+            if isinstance(store, dict):
+                store.pop(key, None)
     pending = st.session_state.pop(_PENDING_PROJECT_SEED_KEY, None)
     if not isinstance(pending, dict):
         return
@@ -471,7 +498,9 @@ def handle_workbook_upload(
         except Exception as exc:
             st.session_state.detection_result = None
             clear_section_output_state()
-            st.session_state.upload_banner_error = _friendly_workbook_error(exc)
+            st.session_state.upload_banner_error = (
+                _EMPTY_FILE_MESSAGE if not file_bytes else _friendly_workbook_error(exc)
+            )
             st.session_state.upload_banner_error_detail = str(exc)
             st.session_state.pop("upload_banner_success", None)
             st.session_state.pop("upload_banner_problem", None)
@@ -484,7 +513,9 @@ def handle_workbook_upload(
                 f"Detected format: **{detection.label}** "
                 f"({detection.confidence:.0%} confidence)"
             )
-        if detection.profile_id != NATIVE_PROFILE_ID:
+        # Field exports only: the native and Data Entry templates have no
+        # Field Data sheet, so the note only confused them.
+        if detection.profile_id != NATIVE_PROFILE_ID and not detection.is_native:
             st.info(
                 "Field Data sheet (if present) is not used for stratigraphy. "
                 "OVA/EC columns map to environmental readings — select them on Configure."

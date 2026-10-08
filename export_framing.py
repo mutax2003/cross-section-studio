@@ -14,7 +14,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from app_identity import COPYRIGHT_NOTICE, CREATED_BY
 
-_FILENAME_SAFE_RE = re.compile(r"[^\w\-]+")
+# Primes stay: "A-A'" and "A-A" name different things on a drawing list, and
+# an apostrophe is valid in Windows, macOS and ZIP file names.
+_FILENAME_SAFE_RE = re.compile(r"[^\w\-']+")
 
 ExportPagePreset = Literal[
     "auto",
@@ -138,9 +140,32 @@ def avoid_windows_reserved_name(stem: str) -> str:
     return f"{stem}_" if base.upper() in _WINDOWS_RESERVED_STEMS else stem
 
 
-def _sanitize_stem(text: str, *, fallback: str = "cross_section") -> str:
-    cleaned = _FILENAME_SAFE_RE.sub("_", text.strip())[:80].strip("_")
+def sanitize_filename_stem(text: str, *, fallback: str = "cross_section") -> str:
+    """Safe file-name stem: ``A - A' WITH CL`` → ``A-A'_WITH_CL``."""
+    cleaned = _FILENAME_SAFE_RE.sub("_", text.strip())
+    cleaned = cleaned.replace("_-_", "-")[:80].strip("_'")
     return avoid_windows_reserved_name(cleaned) if cleaned else fallback
+
+
+_sanitize_stem = sanitize_filename_stem
+
+
+def _label_tokens(text: str) -> str:
+    return " ".join(re.findall(r"[0-9a-z]+", text.casefold()))
+
+
+def _transect_label_without_title(transect_label: str, section_title: str) -> str:
+    """Drop the section name from ``"<name> <first>→<last>"`` when the title
+    already carries it ("A - A' WITH CHLORIDE" + "A-A' BH-01→BH-06")."""
+    raw = transect_label.strip()
+    head, _sep, tail = raw.rpartition(" ")
+    if not head or "→" not in tail:
+        return raw
+    head_tokens = _label_tokens(head)
+    title_tokens = _label_tokens(section_title)
+    if head_tokens and re.search(rf"(?<![0-9a-z]){re.escape(head_tokens)}(?![0-9a-z])", title_tokens):
+        return tail
+    return raw
 
 
 def build_export_filename(
@@ -173,6 +198,8 @@ def build_export_filename(
         return stem[:120].strip("_") or "cross_section"
 
     stem = _sanitize_stem(section_title)
+    if include_transect_label:
+        transect_label = _transect_label_without_title(transect_label, section_title)
     label = (
         _sanitize_stem(transect_label, fallback="")
         if (include_transect_label and transect_label.strip())

@@ -122,11 +122,21 @@ def _compact_chem_offsets() -> list[tuple[float, float]]:
 
 
 _CHEM_COMPACT_OFFSETS = _compact_chem_offsets()
+# A value whose reading shares its depth with the hole's previous value (the
+# base spot collides with it) stacks directly below in depth order rather
+# than sliding sideways along the other value's baseline.
+_CHEM_STACK_OFFSETS = sorted(_CHEM_OFFSETS, key=lambda item: (abs(item[1]) + item[0], item[1] > 0))
+_CHEM_STACK_OFFSETS_ARR = np.asarray(_CHEM_STACK_OFFSETS, dtype=float)
+# Clearance (points) between a value and a groundwater line (half the 2 pt
+# line width plus a hair).
+_CHEM_WATER_LINE_CLEAR_PT = 1.5
 _CHEM_OFFSETS_ARR = np.asarray(_CHEM_OFFSETS, dtype=float)
 _CHEM_COMPACT_OFFSETS_ARR = np.asarray(_CHEM_COMPACT_OFFSETS, dtype=float)
 # Clear gap (points) between a chemistry label (box/dot included) and the
 # right edge of its own column.
 _CHEM_COLUMN_GAP_PT = 2.0
+# Re-fits of the x range so the last hole's values stay inside the frame.
+_CHEM_FRAME_FIT_ATTEMPTS = 2
 # "strip" style: background knock-out beside a labelled column. Above the
 # lithology fills (2) and contact lines (3), below track fills, water lines /
 # markers (5-8) and the values (9).
@@ -181,6 +191,10 @@ class _ObstacleArray:
         h = np.minimum(self._arr[:, 3], box.y1) - np.maximum(self._arr[:, 1], box.y0)
         return float(np.sum(np.clip(w, 0.0, None) * np.clip(h, 0.0, None)))
 
+    def raw(self, pad: float) -> np.ndarray:
+        """Stored boxes shrunk by ``pad`` (the label extents without clearance)."""
+        return self._arr + np.array([pad, pad, -pad, -pad])
+
     def overlaps_many(self, boxes: np.ndarray) -> np.ndarray:
         """Boolean per row of ``boxes`` (K, 4): does it overlap any stored box?"""
         if self._arr.shape[0] == 0 or boxes.shape[0] == 0:
@@ -193,6 +207,54 @@ class _ObstacleArray:
             h = np.minimum(arr[None, :, 3], boxes[:, None, 3]) - np.maximum(arr[None, :, 1], boxes[:, None, 1])
             hit |= np.any((w > 0.0) & (h > 0.0), axis=1)
         return hit
+
+
+def _register_water_line(ax, xs, ys) -> None:
+    """Remember a drawn groundwater polyline (data coords) on its axes.
+
+    Chemistry values treat these as obstacles: a water line drawn through a
+    value strikes it out (lines sit above the label strips by design).
+    """
+    points = np.column_stack((np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)))
+    if len(points) >= 2:
+        ax.__dict__.setdefault("_css_water_lines", []).append(points)
+
+
+def _water_line_segments(axes) -> np.ndarray:
+    """(S, 4) display-space segments of every registered water polyline."""
+    rows = []
+    for ax in axes:
+        for points in ax.__dict__.get("_css_water_lines", ()):
+            display = ax.transData.transform(points)
+            rows.append(np.column_stack((display[:-1], display[1:])))
+    if not rows:
+        return np.zeros((0, 4), dtype=float)
+    return np.vstack(rows)
+
+
+def _segment_box_hits(segs: np.ndarray, boxes: np.ndarray) -> np.ndarray:
+    """(S, K) bool: does segment s (x0, y0, x1, y1) cross box k (x0, y0, x1, y1)?
+
+    Liang-Barsky slab clipping, vectorised over every segment / box pair.
+    """
+    if segs.shape[0] == 0 or boxes.shape[0] == 0:
+        return np.zeros((segs.shape[0], boxes.shape[0]), dtype=bool)
+    t_lo = np.zeros((segs.shape[0], boxes.shape[0]))
+    t_hi = np.ones_like(t_lo)
+    miss = np.zeros_like(t_lo, dtype=bool)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        for start, end, lo_col, hi_col in ((0, 2, 0, 2), (1, 3, 1, 3)):
+            p = segs[:, start][:, None]
+            d = (segs[:, end] - segs[:, start])[:, None]
+            lo = boxes[:, lo_col][None, :]
+            hi = boxes[:, hi_col][None, :]
+            flat = np.abs(d) < 1e-12
+            miss |= flat & ((p < lo) | (p > hi))
+            t1 = (lo - p) / np.where(flat, 1.0, d)
+            t2 = (hi - p) / np.where(flat, 1.0, d)
+            t_lo = np.where(flat, t_lo, np.maximum(t_lo, np.minimum(t1, t2)))
+            t_hi = np.where(flat, t_hi, np.minimum(t_hi, np.maximum(t1, t2)))
+    return ~miss & (t_lo <= t_hi)
 
 
 def _set_label_visible(annotation, visible: bool) -> None:
@@ -251,7 +313,18 @@ def _set_chem_fontsize(annotation, size: float) -> None:
 
 
 def _place_chem_label(
-    annotation, renderer, fig, *, placed_arr, column_arr, own, pad, ceiling=np.inf, compact=0
+    annotation,
+    renderer,
+    fig,
+    *,
+    placed_arr,
+    column_arr,
+    own,
+    pad,
+    ceiling=np.inf,
+    compact=0,
+    line_segs=None,
+    prev_box=None,
 ):
     """Right-of-column placement with hard constraints.
 
@@ -263,6 +336,13 @@ def _place_chem_label(
     switches a crowded hole to the zig-zag / full-frame / smaller-text
     fallback. Returns the chosen (dx, dy), or None when nothing fits at any
     font size (the caller drops the label).
+
+    Soft constraints, kept whenever any free spot satisfies them: the value
+    is not crossed by a groundwater line (``line_segs``, display segments),
+    and its leader (when the shift earns one) does not run under another
+    label. ``prev_box`` ((footprint, anchor y) of the hole's previous value)
+    switches a value read at practically the same depth (anchors less than
+    half a label height apart) to stacking directly below it.
     """
     base = annotation._water_base_xyann
     if not hasattr(annotation, "_chem_base_fontsize"):
@@ -278,6 +358,8 @@ def _place_chem_label(
     else:
         scales = _CHEM_FONT_SCALES
         offsets = _CHEM_OFFSETS_ARR
+    line_clear = _CHEM_WATER_LINE_CLEAR_PT * px_per_pt
+    anchor_x, anchor_y = _chem_anchor(annotation)
     for scale in scales:
         _set_chem_fontsize(annotation, annotation._chem_base_fontsize * scale)
         annotation.xyann = base
@@ -285,6 +367,14 @@ def _place_chem_label(
         # is measured once per font size and shifted per candidate (all
         # candidates at once).
         box0 = _chem_footprint(annotation, renderer)
+        if (
+            not compact
+            and prev_box is not None
+            and abs(prev_box[1] - anchor_y) < 0.5 * box0.height
+            and box0.y0 < prev_box[0].y1 + pad
+            and box0.y1 > prev_box[0].y0 - pad
+        ):
+            offsets = _CHEM_STACK_OFFSETS_ARR
         ddx_min = max(0.0, (min_x0 - box0.x0) / px_per_pt)
         ddx = offsets[:, 0] + ddx_min
         ddy = offsets[:, 1]
@@ -312,6 +402,23 @@ def _place_chem_label(
             idx = idx[~placed_arr.overlaps_many(padded)]
         if not idx.size:
             continue
+        idx = _prefer_clear_spots(
+            idx,
+            boxes,
+            ddx,
+            ddy,
+            line_segs=line_segs,
+            line_clear=line_clear,
+            # Clear of the padded boxes (a label's white box reaches past its
+            # glyphs) when possible, else at least of the glyph extents.
+            label_arrs=(placed_arr.raw(0.0), placed_arr.raw(pad)),
+            anchor=(anchor_x, anchor_y),
+            label_height_pt=box0.height / px_per_pt,
+            px_per_pt=px_per_pt,
+            # A crowded hole needs every spot near its readings; there a
+            # leader may cross a neighbour rather than drop values.
+            check_leaders=not compact,
+        )
         cand = boxes[idx]
         inside_w = np.clip(np.minimum(cand[:, 2], frame.x1) - np.maximum(cand[:, 0], frame.x0), 0.0, None)
         inside_h = np.clip(np.minimum(cand[:, 3], frame.y1) - np.maximum(cand[:, 1], frame.y0), 0.0, None)
@@ -330,6 +437,38 @@ def _place_chem_label(
     _set_chem_fontsize(annotation, annotation._chem_base_fontsize)
     annotation.xyann = base
     return None
+
+
+def _prefer_clear_spots(
+    idx, boxes, ddx, ddy, *, line_segs, line_clear, label_arrs, anchor, label_height_pt, px_per_pt,
+    check_leaders=True,
+):
+    """Narrow free candidates to those no water line crosses and whose leader
+    clears other labels (each criterion only while some candidate meets it)."""
+    cand = boxes[idx]
+    line_hit = np.zeros(idx.size, dtype=bool)
+    if line_segs is not None and line_segs.shape[0]:
+        grown = cand + np.array([-line_clear, -line_clear, line_clear, line_clear])
+        line_hit = _segment_box_hits(line_segs, grown).any(axis=0)
+    leader_hits = [np.zeros(idx.size, dtype=bool) for _arr in label_arrs]
+    shift = np.maximum(np.abs(ddx[idx]), np.abs(ddy[idx]))
+    leadered = shift > max(label_height_pt, _CHEM_MIN_LEADER_SHIFT_PT)
+    if check_leaders and leadered.any() and label_arrs[0].shape[0]:
+        ax0, ay0 = anchor
+        ends = np.column_stack((cand[:, 0], 0.5 * (cand[:, 1] + cand[:, 3])))
+        vec = ends - np.array([ax0, ay0])
+        length = np.hypot(vec[:, 0], vec[:, 1])
+        # The drawn leader stops 2 pt short of its reading (shrinkB).
+        trim = np.clip(2.0 * px_per_pt / np.maximum(length, 1e-9), 0.0, 1.0)[:, None]
+        starts = np.array([ax0, ay0]) + vec * trim
+        segs = np.column_stack((starts, ends))[leadered]
+        for leader_hit, label_arr in zip(leader_hits, label_arrs):
+            leader_hit[np.flatnonzero(leadered)] = _segment_box_hits(segs, label_arr).any(axis=1)
+    tiers = [~line_hit & ~leader_hit for leader_hit in leader_hits] + [~line_hit]
+    for keep in tiers:
+        if keep.any():
+            return idx[keep]
+    return idx
 
 
 def _chem_anchor(annotation) -> tuple[float, float]:
@@ -788,6 +927,22 @@ class RendererWaterMixin:
         if not labels:
             return
         renderer = _figure_renderer(fig)
+        for attempt in range(_CHEM_FRAME_FIT_ATTEMPTS + 1):
+            self._run_label_passes(fig, labels, renderer)
+            # Non-consulting sheets: a value that still crosses the right
+            # frame line (the last hole's label room was estimated at the
+            # render size; export re-frames the page) widens the x range so
+            # it fits, then labels are placed again. Consulting sheets print
+            # a scale ratio from the x range, so their range never moves.
+            if attempt == _CHEM_FRAME_FIT_ATTEMPTS or not self._widen_frame_for_chem_labels(
+                fig, labels, renderer
+            ):
+                break
+            headers = [t for t in getattr(self, "_header_labels", None) or [] if t.figure is fig]
+            resolve_header_collisions(fig, headers)
+        self._draw_chem_label_strips(fig, labels, renderer)
+
+    def _run_label_passes(self, fig, labels, renderer) -> None:
         # A hole whose values would be dropped is re-placed in compact mode
         # (zig-zag columns, full-frame stack, then smaller text); the whole
         # pass restarts so its earlier values make room for the later ones.
@@ -801,7 +956,40 @@ class RendererWaterMixin:
                 break
             for hole in escalate:
                 compact[hole] = compact.get(hole, 0) + 1
-        self._draw_chem_label_strips(fig, labels, renderer)
+
+    def _widen_frame_for_chem_labels(self, fig, labels, renderer) -> bool:
+        """Extend the right x limit so no visible chemistry value crosses the frame.
+
+        Returns True when a limit moved (the caller re-places the labels).
+        """
+        if str(getattr(self.profile, "layout", "")) == "consulting_section":
+            return False
+        gap = renderer.points_to_pixels(_CHEM_COLUMN_GAP_PT)
+        needed: dict[int, tuple[object, float]] = {}
+        for kind, annotation, _color in labels:
+            if kind != "chem" or not annotation.get_visible():
+                continue
+            ax = annotation.axes
+            frame = ax.get_window_extent(renderer)
+            box = _chem_footprint(annotation, renderer)
+            if box.x1 <= frame.x1 - gap:
+                continue
+            left, right = ax.get_xlim()
+            if right <= left or frame.width <= 0:
+                continue
+            anchor_px = _chem_anchor(annotation)[0]
+            reach = box.x1 - anchor_px + gap  # label extent right of its anchor
+            usable = frame.width - reach
+            anchor_x = float(annotation.xy[0])
+            if usable <= 0.1 * frame.width or anchor_x <= left:
+                continue
+            target = left + (anchor_x - left) * frame.width / usable
+            if target > right and target > needed.get(id(ax), (ax, right))[1]:
+                needed[id(ax)] = (ax, target)
+        for ax, target in needed.values():
+            left, _right = ax.get_xlim()
+            ax.set_xlim(left, target)
+        return bool(needed)
 
     def _draw_chem_label_strips(self, fig, labels, renderer) -> None:
         """Knock a background strip out of the fills beside each labelled column.
@@ -812,9 +1000,12 @@ class RendererWaterMixin:
         fills and contacts but below columns, water lines and markers, and is
         clipped so it never reaches another column or leaves the frame.
         """
-        for strip in getattr(self, "_chem_strips", ()):
+        # Strips belong to their figure: a second render() on this renderer
+        # must not strip the knock-outs off an earlier, still-open figure.
+        for strip in getattr(fig, "_chem_strips", ()):
             strip.remove()
-        self._chem_strips = []
+        fig._chem_strips = []
+        self._chem_strips = fig._chem_strips
         if str(getattr(self.profile, "chemistry_label_style", "") or "") != "strip":
             return
         column_boxes = self._column_obstacle_boxes(fig)
@@ -917,6 +1108,8 @@ class RendererWaterMixin:
         # Display y of each hole's lowest placed chemistry label: the next
         # (deeper) value of that hole must land below it.
         chem_ceiling: dict[float, float] = {}
+        chem_prev_box: dict[float, tuple[Bbox, float]] = {}
+        line_segs = _water_line_segments({annotation.axes for _k, annotation, _c in labels})
         # Obstacles as an (N, 4) array: with hundreds of labels x dozens of
         # candidates the per-box Python loop dominated render time.
         placed_arr = _ObstacleArray(placed)
@@ -938,6 +1131,8 @@ class RendererWaterMixin:
                     pad=pad,
                     ceiling=chem_ceiling.get(hole_key, np.inf),
                     compact=compact.get(hole_key, 0),
+                    line_segs=line_segs,
+                    prev_box=chem_prev_box.get(hole_key),
                 )
                 if spot is None:
                     dropped_holes.add(hole_key)
@@ -952,6 +1147,7 @@ class RendererWaterMixin:
                 _sync_label_companions(annotation, fig, dx, dy, "left")
                 chem_box = _chem_footprint(annotation, renderer)
                 chem_ceiling[hole_key] = 0.5 * (chem_box.y0 + chem_box.y1)
+                chem_prev_box[hole_key] = (chem_box, _chem_anchor(annotation)[1])
                 final_box = chem_box.padded(pad)
                 placed.append(final_box)
                 placed_arr.add(final_box)
@@ -1006,8 +1202,11 @@ class RendererWaterMixin:
         for ax, x0, x1 in spans:
             y0, y1 = ax.get_ylim()
             lo, hi = min(y0, y1), max(y0, y1)
-            corners = ax.transData.transform([[x0, lo], [x1, hi]])
-            boxes.append(Bbox(corners))
+            (ax0, ay0), (ax1, ay1) = ax.transData.transform([[x0, lo], [x1, hi]])
+            # Normalised: an inverted (depth) y axis maps lo above hi, and an
+            # un-normalised Bbox has y0 > y1 — every overlap test and the
+            # strip's top clamp would silently fail.
+            boxes.append(Bbox.from_extents(min(ax0, ax1), min(ay0, ay1), max(ax0, ax1), max(ay0, ay1)))
         return boxes
 
     def _draw_water_table(
@@ -1178,6 +1377,7 @@ class RendererWaterMixin:
                             linestyle=gw_linestyle,
                             zorder=6,
                         )
+                        _register_water_line(ax, x_dense, y_dense)
                     elif use_segments:
                         y_by_hole = {
                             level.hole_id: float(y)
@@ -1209,6 +1409,8 @@ class RendererWaterMixin:
                             ax.add_collection(collection)
                             if self._cad_svg_layers_enabled():
                                 self._set_cad_gid(collection, "water")
+                            for segment in segments:
+                                _register_water_line(ax, segment[:, 0], segment[:, 1])
                     else:
                         plotted = ax.plot(
                             xs_arr,
@@ -1220,6 +1422,7 @@ class RendererWaterMixin:
                         )
                         if self._cad_svg_layers_enabled() and plotted:
                             self._set_cad_gid(plotted[0], "water")
+                        _register_water_line(ax, xs_arr, ys)
                     # Schematic horizontal i = Δh/Δx between adjacent measured heads.
                     gradient_segments = horizontal_gradients_along_profile(
                         measured_levels,

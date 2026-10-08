@@ -157,8 +157,10 @@ def test_app_shows_problem_headline_and_counts_skipped_rows_as_errors() -> None:
     # The skipped-row list appears once (on Validate), not per screen.
     listed = [str(md.value) for md in at.markdown if "BH-09 is in Lithology" in str(md.value)]
     assert len(listed) == 1
-    status = [str(md.value) for md in at.markdown if str(md.value).startswith("**Needs fixes**")]
-    assert status and "**3 errors**" in status[0]
+    # Skipped rows do not block Generate, so the status does not say "Needs fixes".
+    status = [str(md.value) for md in at.markdown if str(md.value).startswith("**Rows skipped**")]
+    assert status and "**3 errors**" in status[0] and "you can still generate" in status[0]
+    assert not any(str(md.value).startswith("**Needs fixes**") for md in at.markdown)
     assert not [btn for btn in at.button if btn.label == "Load data health details"]
 
 

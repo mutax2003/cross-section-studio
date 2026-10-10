@@ -117,6 +117,20 @@ def test_label_colours_meet_wcag_aa_contrast_on_white() -> None:
         assert ratio >= 4.5, f"{name} {hex_color} is {ratio:.2f}:1 on white"
 
 
+def test_threshold_orange_reads_apart_from_red() -> None:
+    """#C2410C (hue 17 deg) looked red beside #B91C1C at figure scale."""
+    import colorsys
+
+    from render_theme import CHEMISTRY_LABEL_ORANGE, CHEMISTRY_LABEL_RED
+
+    def hue(hex_color: str) -> float:
+        rgb = [int(hex_color.lstrip("#")[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+        return colorsys.rgb_to_hsv(*rgb)[0] * 360.0
+
+    assert hue(CHEMISTRY_LABEL_RED) < 5.0
+    assert 28.0 <= hue(CHEMISTRY_LABEL_ORANGE) <= 40.0
+
+
 def test_threshold_key_states_bands_in_words() -> None:
     from render_theme import chemistry_threshold_key
 

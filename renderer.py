@@ -18,6 +18,7 @@ import pandas as pd
 from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
+from matplotlib.text import Text
 
 from app_identity import APP_NAME, AUTHOR, COPYRIGHT_NOTICE, ORGANIZATION
 from constants import HATCH_LINE_COLOR, POLYGON_EDGE_COLOR
@@ -359,22 +360,159 @@ class CrossSectionRenderer(
             lithology_codes=lithology_codes,
         )
         # Positions in points are only final once limits and margins are set.
-        # Headers first: the water pass treats every axes text as an obstacle.
-        self._layout_headers(fig)
-        self._resolve_water_label_collisions(fig)
-        # The water pass may re-run the first header pass (frame widening).
-        stack_hole_headers(fig, self._header_labels)
+        self._settle_labels(fig)
         return fig
 
+    @staticmethod
+    def _plot_layout_key(figure: Figure) -> tuple:
+        """Drawn axes boxes and limits (what header and label positions follow)."""
+        key = []
+        for axis_ax in figure.axes:
+            if not axis_ax.get_visible():
+                continue
+            bounds = tuple(round(float(v) * 2.0) / 2.0 for v in axis_ax.bbox.bounds)
+            limits = tuple(round(float(v), 9) for v in (*axis_ax.get_xlim(), *axis_ax.get_ylim()))
+            key.append((bounds, limits))
+        return tuple(key)
+
     def _layout_headers(self, figure: Figure) -> None:
-        """Header passes: nudge / one tier (shared pass), then stack what still overlaps."""
+        """Header passes: nudge / one tier (shared pass), then stack what still overlaps.
+
+        Repeated until the plot box stops moving: the stacked header height
+        feeds the title layout (and the section sheet's bottom fit), which on
+        an aspect-locked (exact VE / map scale) box changes the box width and
+        so every hole's position on the page.
+        """
+        from renderer_common import draw_without_rendering_fast
+
         headers = [t for t in getattr(self, "_header_labels", None) or [] if t.figure is figure]
-        restore_stacked_headers(headers)
-        resolve_header_collisions(figure, headers)
-        stack_hole_headers(figure, headers)
-        if str(getattr(self.profile, "layout", "")) == "section_sheet":
-            # Room under the (possibly taller) header row for the distance label.
-            self._fit_section_sheet_bottom(figure)
+        for _attempt in range(4):
+            draw_without_rendering_fast(figure)
+            before = self._plot_layout_key(figure)
+            restore_stacked_headers(headers)
+            resolve_header_collisions(figure, headers)
+            stack_hole_headers(figure, headers)
+            if str(getattr(self.profile, "layout", "")) == "section_sheet":
+                # Room under the (possibly taller) header row for the distance label.
+                self._fit_section_sheet_bottom(figure)
+            draw_without_rendering_fast(figure)
+            self._move_water_key_outside(figure)
+            self._clear_outside_legend(figure)
+            if self._plot_layout_key(figure) == before:
+                break
+
+    def _move_water_key_outside(self, figure: Figure) -> None:
+        """A water series key that does not fit a short plot box joins the outside legend.
+
+        On a long, thin exact-VE box the in-plot key (lower left) stood taller
+        than the box and printed over the title. Its entries are appended to
+        the outside lithology legend instead (once).
+        """
+        if str(getattr(self.profile, "layout", "")) == "consulting_section" or not figure.axes:
+            return
+        ax = getattr(self, "_ve_main_ax", None) or figure.axes[0]
+        if ax.figure is not figure:
+            return
+        key = next((a for a in ax.artists if a.get_gid() == "water_series_key"), None)
+        legend = ax.get_legend()
+        if key is None or legend is None:
+            return
+        renderer = figure.canvas.get_renderer()
+        box = key.get_window_extent(renderer)
+        frame = ax.get_window_extent(renderer)
+        if box.height <= 0.45 * frame.height and box.y1 <= frame.y1 + 0.5 and box.x1 <= frame.x1 + 0.5:
+            return
+        extras = [
+            (handle, text.get_text())
+            for handle, text in zip(key.legend_handles, key.get_texts(), strict=False)
+            if handle is not None
+        ]
+        key.remove()
+        self._rebuild_outside_legend(ax, extras)
+
+    def _clear_outside_legend(self, figure: Figure) -> None:
+        """Slide the outside legend right of any text it would print over.
+
+        The legend hangs from the plot's top-right corner; beside a short
+        plot box (long section at exact VE) it reaches down past the box,
+        over a distance label, threshold key or VE note wider than the box.
+        """
+        if str(getattr(self.profile, "layout", "")) == "consulting_section" or not figure.axes:
+            return
+        ax = getattr(self, "_ve_main_ax", None) or figure.axes[0]
+        legend = ax.get_legend() if ax.figure is figure else None
+        if legend is None:
+            return
+        legend.set_bbox_to_anchor((1.01, 1.0), transform=ax.transAxes)
+        renderer = figure.canvas.get_renderer()
+        box = legend.get_window_extent(renderer)
+        frame = ax.get_window_extent(renderer)
+        if box.y0 >= frame.y0 - 0.5:
+            return  # beside the plot box only
+        candidates = [ax.xaxis.label, ax.title, getattr(figure, "_supxlabel", None)]
+        candidates += [t for t in ax.texts if not t.get_gid() or "chem" not in str(t.get_gid())]
+        candidates += [a for a in ax.artists if a is not legend]
+        candidates += list(ax.xaxis.get_ticklabels())
+        candidates += [t for t in getattr(self, "_header_labels", None) or [] if t.figure is figure]
+        candidates += [t for t in figure.texts if t.get_position()[1] >= 0.2]
+        reach = None
+        pad = 6.0 * figure.dpi / 72.0
+        for artist in candidates:
+            if artist is None or not artist.get_visible():
+                continue
+            if isinstance(artist, Text) and not artist.get_text().strip():
+                continue
+            try:
+                other = artist.get_window_extent(renderer)
+            except Exception:  # pragma: no cover - artist without an extent
+                continue
+            if other.width <= 0 or other.height <= 0:
+                continue
+            # Only text outside the plot frame (in-plot labels stop at the frame).
+            if other.y0 >= frame.y0 - 0.5 and other.x1 <= frame.x1 + 0.5:
+                continue
+            if other.x0 < box.x1 and box.x0 < other.x1 + pad and other.y0 < box.y1 and box.y0 < other.y1:
+                reach = max(reach or other.x1, other.x1)
+        if reach is None or reach + pad <= box.x0:
+            return
+        margins = getattr(figure, "_css_page_margins_in", None) or (MIN_PRINT_MARGIN_IN,) * 4
+        page_right = figure.bbox.width - float(margins[1]) * figure.dpi
+        if reach + pad + box.width <= page_right or not self._fixed_page_export():
+            x_axes = (reach + pad - frame.x0) / max(frame.width, 1.0)
+            legend.set_bbox_to_anchor((x_axes, 1.0), transform=ax.transAxes)
+            return
+        # No room to the right on a fixed page: hang it under the texts instead.
+        lowest = min(
+            artist.get_window_extent(renderer).y0
+            for artist in candidates
+            if artist is not None and artist.get_visible()
+            and not (isinstance(artist, Text) and not artist.get_text().strip())
+            and artist.get_window_extent(renderer).x1 > box.x0
+            and artist.get_window_extent(renderer).y0 < frame.y0
+        )
+        y_axes = (lowest - pad - frame.y0) / max(frame.height, 1.0)
+        legend.set_bbox_to_anchor((1.01, y_axes), transform=ax.transAxes)
+
+    def _settle_labels(self, figure: Figure, *, fit_page: bool = False) -> None:
+        """Headers, page fit, then in-plot labels, against the final plot box.
+
+        The chemistry / water pass runs last so its hard constraints (each
+        value beside its own column, clear of the neighbours) hold in the
+        drawn file; if it widens the x range (non-consulting sheets) the
+        headers and page fit follow and the labels are placed again.
+        """
+        water = getattr(self, "_water_labels", None) or []
+        water_here = bool(water) and all(annotation.figure is figure for _kind, annotation, _c in water)
+        for _attempt in range(3):
+            self._layout_headers(figure)
+            if fit_page:
+                self.fit_page_content(figure)
+            if not water_here:
+                return
+            before = self._plot_layout_key(figure)
+            self._resolve_water_label_collisions(figure)
+            if self._plot_layout_key(figure) == before:
+                return
 
     def _hole_context(self, projected_df: pd.DataFrame) -> _HoleContext:
         summary = (
@@ -775,7 +913,15 @@ class CrossSectionRenderer(
     ) -> None:
         header_transform = ax.get_xaxis_transform()
         header_shift_axes = 0.05
-        if not self.ve_auto:
+        if self.profile.y_axis_mode != "elevation_rl":
+            # Headers above the plot (depth mode): no tick labels between
+            # them and the frame, so a small fixed gap (an axes fraction left
+            # ~0.4 in of white space on a tall page).
+            from matplotlib.transforms import offset_copy
+
+            header_transform = offset_copy(header_transform, fig=ax.figure, x=0.0, y=6.0, units="points")
+            header_shift_axes = 0.0
+        elif not self.ve_auto:
             # Exact VE may shrink the plot box: a fixed axes fraction would put
             # the headers on the tick labels of a short box. Keep the offset
             # the frame-filling layout gives, in points.
@@ -1406,19 +1552,9 @@ class CrossSectionRenderer(
             self.refit_consulting_fitted_text(figure)
             return figure  # already prepared at this size: label passes are current
         figure._css_prepared_size = tuple(figure.get_size_inches())
-        # Page sizing moves every artist; redo label placement for the new page.
-        self._layout_headers(figure)
-        # Keep everything inside the printable margins (headers re-placed as
-        # the frame moves), then place the in-plot labels for the final frame.
-        self.fit_page_content(figure)
-        water = getattr(self, "_water_labels", None) or []
-        if water and all(annotation.figure is figure for _kind, annotation, _c in water):
-            self._resolve_water_label_collisions(figure)
-            stack_hole_headers(figure, self._header_labels)
-            # Values printed right of the last hole may reach past the margin.
-            if self.fit_page_content(figure, max_passes=2):
-                self._resolve_water_label_collisions(figure)
-                stack_hole_headers(figure, self._header_labels)
+        # Page sizing moves every artist; redo label placement for the new
+        # page: headers, printable margins, then the in-plot labels last.
+        self._settle_labels(figure, fit_page=True)
         # Fitted title-block / band / notes text was measured at the render size.
         self.refit_consulting_fitted_text(figure)
         return figure

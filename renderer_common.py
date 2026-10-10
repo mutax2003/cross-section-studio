@@ -588,17 +588,25 @@ def _outward(text) -> float:
     return 1.0 if text.get_verticalalignment() == "bottom" else -1.0
 
 
-def _off_page(box, page, outward: float, *, horizontal: bool = False) -> bool:
+def _off_page(box, page, outward: float, *, horizontal: bool = False, flexible_top: bool = False) -> bool:
     """Header box past the page edge it grows toward.
 
     Rows below the plot (section sheet) are exempt vertically: the sheet's
-    bottom fit makes room under whatever the header pass draws.
+    bottom fit makes room under whatever the header pass draws. So are rows
+    above the plot when a title layout engine lowers the plot to fit them
+    (``flexible_top``: section sheet depth mode, chart).
     """
     if horizontal and (box.x0 < page.x0 or box.x1 > page.x1):
         return True
-    if outward > 0:
+    if outward > 0 and not flexible_top:
         return box.y1 > page.y1
     return False
+
+
+def _title_fits_headers(fig) -> bool:
+    """True when the figure's layout engine places the title over the header row."""
+    engine = fig.get_layout_engine()
+    return engine is not None and hasattr(engine, "_headers") and hasattr(engine, "_title")
 
 
 def _header_reads_as_own(text, renderer, page) -> bool:
@@ -655,6 +663,7 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS) -> N
 
     px_per_pt = fig.dpi / 72.0
     pad = _HEADER_PAD_PT * px_per_pt
+    flexible_top = _title_fits_headers(fig)
     ordered = sorted(headers, key=lambda t: t.get_unitless_position()[0])
     # The nudge pass's layout, kept when nothing here does better.
     first_pass = [
@@ -675,7 +684,7 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS) -> N
         )
         text._header_base = base
         base_states.append(base)
-    obstacles = _header_stack_obstacles(fig, renderer, headers)
+    obstacles = _header_stack_obstacles(fig, renderer, headers, skip_title=flexible_top)
 
     def reset(text, base, *, label: str, size: float, rotation: float) -> None:
         text.set_text(label)
@@ -698,14 +707,18 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS) -> N
             outward = 1.0 if text.get_verticalalignment() == "bottom" else -1.0
             step = box0.height + 1.0 * px_per_pt
             x = anchor_px(text)
-            edge = box0.y0 if outward > 0 else box0.y1
+            # Leader span: from the frame (above the plot) or the home row
+            # level under the tick labels (below it) out to the header.
+            edge = text.axes.bbox.y1 if outward > 0 and text.axes is not None else (
+                box0.y0 if outward > 0 else box0.y1
+            )
             chosen = None
             for tier in range(max_tiers):
                 box = box0.translated(0.0, outward * tier * step)
                 if box.x0 < page.x0 or box.x1 > page.x1:
                     shift = (page.x0 - box.x0 + pad) if box.x0 < page.x0 else (page.x1 - box.x1 - pad)
                     box = box.translated(shift, 0.0)
-                if _off_page(box, page, outward):
+                if _off_page(box, page, outward, flexible_top=flexible_top):
                     break
                 if any(_boxes_overlap(box, other, pad) for other in placed):
                     continue
@@ -755,7 +768,11 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS) -> N
             for i in range(len(boxes))
             for j in range(i + 1, len(boxes))
             if _boxes_overlap(boxes[i], boxes[j], 0.5 * pad)
-        ) + sum(1 for t, box in zip(ordered, boxes, strict=True) if _off_page(box, page, _outward(t)))
+        ) + sum(
+            1
+            for t, box in zip(ordered, boxes, strict=True)
+            if _off_page(box, page, _outward(t), flexible_top=flexible_top)
+        )
         if rotated_cost is None or cost < rotated_cost[0]:
             rotated_cost = (cost, size)
         if cost == 0:
@@ -767,7 +784,18 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS) -> N
     margins = getattr(fig, "_css_page_margins_in", None) or (0.05,) * 4
     for labels, factor in attempts:
         size = max(_HEADER_MIN_PT, base_size * factor)
-        if _apply_fan(fig, ordered, base_states, labels, size, renderer, reset, obstacles, margins):
+        if _apply_fan(
+            fig, ordered, base_states, labels, size, renderer, reset, obstacles, margins,
+            flexible_top=flexible_top,
+        ):
+            return
+    # Last resort: vertical headers fanned out (a text height wide each).
+    for factor in _HEADER_SHRINK:
+        size = max(_HEADER_MIN_PT, base_size * factor)
+        if _apply_fan(
+            fig, ordered, base_states, plain, size, renderer, reset, obstacles, margins,
+            flexible_top=flexible_top, rotation=90.0,
+        ):
             return
     _cost, size = rotated_cost
     if first_cost <= _cost:
@@ -783,9 +811,17 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS) -> N
         text._header_stacked = True
 
 
-def _apply_fan(fig, ordered, base_states, labels, size, renderer, reset, obstacles, margins) -> bool:
-    """One row of headers spread in hole order with straight leaders; False if it can't fit."""
-    from matplotlib.transforms import blended_transform_factory, offset_copy
+def _apply_fan(
+    fig, ordered, base_states, labels, size, renderer, reset, obstacles, margins,
+    *, flexible_top: bool = False, rotation: float = 0.0,
+) -> bool:
+    """One row of headers spread in hole order with straight leaders; False if it can't fit.
+
+    Each leader runs from the header row's home level (the frame edge above
+    the plot; under the x tick labels below it) to its header, so it never
+    crosses the tick labels.
+    """
+    from matplotlib.transforms import offset_copy
 
     px_per_pt = fig.dpi / 72.0
     gap = 4.0 * px_per_pt
@@ -794,7 +830,7 @@ def _apply_fan(fig, ordered, base_states, labels, size, renderer, reset, obstacl
     hi = page.x1 - margins[1] * fig.dpi
     boxes0, anchors = [], []
     for text, base, label in zip(ordered, base_states, labels, strict=True):
-        reset(text, base, label=label, size=size, rotation=0.0)
+        reset(text, base, label=label, size=size, rotation=rotation)
         boxes0.append(_header_extent(text, renderer))
         anchors.append(float(text.get_transform().transform(text.get_unitless_position())[0]))
     widths = [box.width + gap for box in boxes0]
@@ -816,7 +852,7 @@ def _apply_fan(fig, ordered, base_states, labels, size, renderer, reset, obstacl
     placed = []
     for box, centre, anchor in zip(boxes0, centres, anchors, strict=True):
         moved = box.translated(centre - anchor, outward * lift_pt * px_per_pt)
-        if _off_page(moved, page, outward):
+        if _off_page(moved, page, outward, flexible_top=flexible_top):
             return False
         if any(_boxes_overlap(moved, other, 0.0) for other in obstacles):
             return False
@@ -833,11 +869,15 @@ def _apply_fan(fig, ordered, base_states, labels, size, renderer, reset, obstacl
             continue
         edge_px = ax.bbox.y1 if outward > 0 else ax.bbox.y0
         near_px = moved.y0 if outward > 0 else moved.y1
+        home_px = box0.y0 if outward > 0 else box0.y1
+        # Above the plot nothing sits between the frame and the header row;
+        # below it the x tick labels do, so start under them.
+        start_pt = 0.0 if outward > 0 else (home_px - edge_px) / px_per_pt
         leader = ax.annotate(
             "",
-            xy=(float(text.get_unitless_position()[0]), 1.0 if outward > 0 else 0.0),
-            xycoords=blended_transform_factory(ax.transData, ax.transAxes),
-            xytext=(dx_pt, (near_px - edge_px) / px_per_pt - outward * 0.5),
+            xy=(float(text.get_unitless_position()[0]), start_pt),
+            xycoords=_header_leader_transform(ax, outward),
+            xytext=(dx_pt, (near_px - edge_px) / px_per_pt - start_pt - outward * 0.5),
             textcoords="offset points",
             arrowprops={
                 "arrowstyle": "-",
@@ -881,8 +921,11 @@ def _apply_tiers(fig, ordered, base_states, labels, size, tiers, renderer, reset
         if ax is None:
             continue
         edge_px = ax.bbox.y1 if outward > 0 else ax.bbox.y0
-        start_px = box0.y0 if outward > 0 else box0.y1
-        end_px = start_px + outward * tier * step_pt * px_per_pt
+        home_px = box0.y0 if outward > 0 else box0.y1
+        end_px = home_px + outward * tier * step_pt * px_per_pt
+        # Above the plot the leader starts at the frame (nothing between);
+        # below it, under the x tick labels at the header row's home level.
+        start_px = edge_px if outward > 0 else home_px
         start_pt = (start_px - edge_px) / px_per_pt
         end_pt = (end_px - edge_px) / px_per_pt
         x_data = float(text.get_unitless_position()[0])
@@ -903,15 +946,19 @@ def _apply_tiers(fig, ordered, base_states, labels, size, tiers, renderer, reset
     fig._css_header_leaders = leaders
 
 
-def _header_stack_obstacles(fig, renderer, headers) -> list:
-    """Non-header axes text outside the plot frame (transect end labels, titles)."""
+def _header_stack_obstacles(fig, renderer, headers, *, skip_title: bool = False) -> list:
+    """Non-header axes text outside the plot frame (transect end labels, titles).
+
+    ``skip_title``: the layout engine lifts the title over whatever the
+    header rows reach, so it is not an obstacle.
+    """
     skip = {id(t) for t in headers}
     boxes = []
     for ax in fig.axes:
         if not ax.get_visible():
             continue
         frame = ax.bbox
-        for artist in [*ax.texts, ax.title]:
+        for artist in [*ax.texts, *([] if skip_title else [ax.title])]:
             if id(artist) in skip or not artist.get_visible() or not artist.get_text().strip():
                 continue
             if isinstance(artist, Annotation):
@@ -1512,7 +1559,7 @@ def _settle_arrow_draw(arrow):
     return draw
 
 
-def _draw_without_rendering_fast(fig) -> None:
+def draw_without_rendering_fast(fig) -> None:
     """``fig.draw_without_rendering()`` minus annotation leader path geometry."""
     arrows = _annotation_arrows(fig)
     for arrow in arrows:
@@ -1539,7 +1586,7 @@ def settle_figure_layout(fig) -> None:
         and _same_settled_layout(previous[1], key)
     ):
         return
-    _draw_without_rendering_fast(fig)
+    draw_without_rendering_fast(fig)
     fig._css_settled_layout = (_figure_draw_count(fig), _layout_fingerprint(fig))
 
 

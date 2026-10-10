@@ -48,6 +48,7 @@ from render_theme import (
     water_has_multiple_series,
 )
 from renderer_common import (
+    MIN_PRINT_MARGIN_IN,
     UNLOGGED_FILL_COLOR,
     UNLOGGED_LEGEND_LABEL,
     add_ve_caption,
@@ -1555,8 +1556,9 @@ class ConsultingLayoutMixin:
         note_top = 0.68 - 0.18 * (font_scale - 1.0)
         pad_px = 1.5 * ax_notes.figure.dpi / 72.0
         # The notes panel is the rightmost: notes may use the page's right
-        # margin (stock sheets do) but must stay clear of the page edge.
-        right_px = ax_notes.figure.bbox.width - 0.12 * ax_notes.figure.dpi
+        # margin (stock sheets do) but keep the printable margin.
+        margins = getattr(ax_notes.figure, "_css_page_margins_in", None) or (MIN_PRINT_MARGIN_IN,) * 4
+        right_px = ax_notes.figure.bbox.width - float(margins[1]) * ax_notes.figure.dpi
         bottom_px = ax_notes.transAxes.transform((0.0, 0.0))[1] + pad_px
 
         scales: list[float] = []

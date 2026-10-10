@@ -275,6 +275,9 @@ class SectionSheetLayoutMixin:
                         lowest = min(lowest, box.y0)
             if supx is not None and supx.get_text():
                 supx.set_y((lowest - _SUPX_GAP_PT * dpi / 72.0) / height)
+                # Centred on the drawn plot box (an exact-VE box is narrower
+                # than the page; centred on the page the label ran past it).
+                supx.set_x(0.5 * (frame.x0 + frame.x1) / fig.bbox.width)
             stack_bottom = lowest
             if supx is not None and supx.get_text():
                 stack_bottom = min(stack_bottom, supx.get_window_extent(renderer).y0)

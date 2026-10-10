@@ -28,7 +28,9 @@ matplotlib.use("Agg")
 # ordinary thin beds no longer need densifying.
 THIN_CODE = "Clay Loam"
 THIN_TOP = 5.0
-THIN_BOTTOM = 5.3
+# 0.25 m: ~0.085 in on the section sheet (the sheet's bottom fit gives the
+# plot more height than it had, so a 0.3 m bed now draws just over 0.1 in).
+THIN_BOTTOM = 5.25
 THICK_TOP = 8.0
 THICK_BOTTOM = 13.0
 

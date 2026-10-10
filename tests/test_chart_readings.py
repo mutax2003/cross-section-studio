@@ -108,10 +108,12 @@ def test_chart_layout_honours_depth_below_collar_mode() -> None:
         # Both collars plot at depth 0 regardless of their RL difference.
         y_lo, y_hi = sorted(ax.get_ylim())
         assert y_lo <= 0.0 < y_hi
-        # Scale bar text stays at the visual bottom (numerically deep end).
-        bar = next(t for t in ax.texts if t.get_text().endswith(" m") and "TD" not in t.get_text())
-        # The label is offset in points from the bar (anchored at ``xy``).
-        assert bar.xy[1] > 0.5 * y_hi
+        # The scale bar hangs below the plot (visual bottom, clear of the
+        # geology), also on the inverted depth axis.
+        bar = next(a for a in ax.artists if a.get_gid() == "scale-bar")
+        figure.canvas.draw()
+        renderer = figure.canvas.get_renderer()
+        assert bar.get_window_extent(renderer).y1 <= ax.get_window_extent(renderer).y0
     finally:
         import matplotlib.pyplot as plt
 

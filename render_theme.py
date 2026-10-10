@@ -32,12 +32,14 @@ PARAMETER_READING_COLOR = "#EA580C"
 PARAMETER_TEXT_COLOR = "#DC2626"
 CHEMISTRY_LABEL_BLACK = "#111827"
 # Label hues agreed with the client (meeting 1 Oct 2026), darkened so value
-# text clears WCAG 1.4.3 (>= 4.5:1 on white): green 5.48, orange 5.18, red 6.47.
+# text clears WCAG 1.4.3 (>= 4.5:1 on white): green 5.48, orange 4.64, red 6.47.
 CHEMISTRY_LABEL_GREEN = "#047857"
 # The client P2 figures print chloride in pure #FF0000 (4.0:1 on white, below
 # AA); the agreed red is kept instead so one name maps to one hex everywhere.
 CHEMISTRY_LABEL_RED = "#B91C1C"
-CHEMISTRY_LABEL_ORANGE = "#C2410C"
+# Orange sits at hue 32 deg (not the old #C2410C, hue 17 deg, which read as red
+# at figure size): CIEDE2000 21.7 from the red above (was 10.2), still AA.
+CHEMISTRY_LABEL_ORANGE = "#B25F00"
 # Fixed label colours a logger can pick in the workbook (meeting 1 Oct 2026):
 # one hex per name, no shades; blue is reserved for groundwater elevations.
 CHEMISTRY_FIXED_COLORS: dict[str, str] = {

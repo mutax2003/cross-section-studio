@@ -164,6 +164,10 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
             "Hole sequence",
             options=hole_ids,
             key="hole_sequence_multiselect",
+            help=(
+                "Holes the section line runs through, in order from the start (left) "
+                "to the end (right). Remove a hole with its x; add one from the list."
+            ),
         )
     else:
         default_coords = "\n".join(
@@ -762,6 +766,11 @@ def render_configure_step(
                 )
 
             render_section_qa(subset_preflight, active_ids, preflight_warnings)
+    elif len(all_hole_ids) < 2:
+        st.info(
+            "This workbook has only one hole; a section needs at least two. Add at least "
+            "one more hole to the workbook (Collars and Lithology), then upload it again."
+        )
     else:
         st.info(
             "Choose at least two holes under **Section line** in the sidebar "

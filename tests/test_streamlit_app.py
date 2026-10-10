@@ -542,6 +542,11 @@ def _project_workbook_bytes(**project_values: str) -> bytes:
     for row in book["Project"].iter_rows(min_row=2):
         if row[0].value in project_values:
             row[2].value = project_values[row[0].value]
+    # Data Entry keeps a fallback copy of the same fields (blank Project cells
+    # fall back to it), so keep the two in step.
+    for row in book["Data Entry"].iter_rows(min_row=2, max_col=2):
+        if row[0].value in project_values:
+            row[1].value = project_values[row[0].value]
     buffer = BytesIO()
     book.save(buffer)
     return buffer.getvalue()
@@ -725,3 +730,206 @@ def test_one_hole_workbook_has_no_section_label_or_batch_panel() -> None:
     assert not any(f"{hole} → {hole}" in text for text in captions)
     assert any("at least one more hole" in text for text in captions)
     assert not _batch_expanders(at)
+
+
+def test_workbook_ve_wins_over_the_style_default_and_does_not_leak() -> None:
+    """The template's Project tab (VE 5, Groundwater fence) drew at Auto
+    (≈3×): the fence style's Auto default overrode the workbook. The next
+    workbook without a VE (and Clear workbook) then kept 5× and the style."""
+    from streamlit.testing.v1 import AppTest
+
+    from workbook_template import build_input_template_bytes
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("template.xlsx", build_input_template_bytes()).run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["output_preset"] == "gwm_fence"
+    assert at.session_state["vertical_exaggeration"] == 5.0
+    assert at.selectbox(key="vertical_exaggeration").value == 5.0
+
+    no_ve = _project_workbook_bytes(vertical_exaggeration=None, figure_preset=None)
+    at.file_uploader[0].upload("no_ve.xlsx", no_ve).run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["output_preset"] == "section_sheet"
+    assert at.session_state["vertical_exaggeration"] == "auto"
+
+    at.file_uploader[0].upload("template2.xlsx", _project_workbook_bytes(
+        vertical_exaggeration="10", figure_preset="consulting_report"
+    )).run()
+    at.run()
+    assert at.session_state["vertical_exaggeration"] == 10.0
+    at.button(key="sidebar_clear_workbook").click().run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["output_preset"] == "section_sheet"
+    assert at.session_state["vertical_exaggeration"] == "auto"
+
+    # A style that fixes VE still locks it (Chemistry columns: exactly 1x).
+    locked = _project_workbook_bytes(vertical_exaggeration="5", figure_preset="p2_chemistry_sticks")
+    at.file_uploader[0].upload("p2.xlsx", locked).run()
+    at.run()
+    assert at.session_state["output_preset"] == "p2_chemistry_sticks"
+    assert at.session_state["vertical_exaggeration"] == 1.0
+
+
+def _crossing_workbook_bytes(figure_preset: str) -> bytes:
+    """Two holes with Sand/Clay logged in opposite order (a crossing correlation)."""
+    from io import BytesIO
+
+    import openpyxl
+
+    from workbook_template import build_input_template_bytes
+
+    book = openpyxl.load_workbook(BytesIO(build_input_template_bytes()))
+    for name in ("Collars", "Lithology", "Water", "Environmental", "Screens", "Gradients", "Sections"):
+        for row in book[name].iter_rows(min_row=2):
+            for cell in row:
+                cell.value = None
+    collars = [("BH-01", 512000, 5934198, 748.6, 13.0), ("BH-02", 512062, 5934203, 748.0, 14.0)]
+    for r, values in enumerate(collars, start=2):
+        for c, value in enumerate(values, start=1):
+            book["Collars"].cell(row=r, column=c, value=value)
+    intervals = [("BH-01", 0, 5, "Sand"), ("BH-01", 5, 13, "Clay"),
+                 ("BH-02", 0, 5, "Clay"), ("BH-02", 5, 14, "Sand")]
+    for r, values in enumerate(intervals, start=2):
+        for c, value in enumerate(values, start=1):
+            book["Lithology"].cell(row=r, column=c, value=value)
+    for sheet in ("Project",):
+        for row in book[sheet].iter_rows(min_row=2):
+            if row[0].value == "figure_preset":
+                row[2].value = figure_preset
+    for row in book["Data Entry"].iter_rows(min_row=2, max_col=2):
+        if row[0].value == "figure_preset":
+            row[1].value = figure_preset
+    buffer = BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("style", ["section_sheet", "gwm_fence", "consulting_report"])
+def test_section_notes_after_generate_are_one_warning_for_every_style(style: str) -> None:
+    """The crossing-correlation note showed as a warning in Section sheet but
+    as plain expander text (easy to miss) when a style added a second note."""
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=180)
+    at.run()
+    at.file_uploader[0].upload("crossing.xlsx", _crossing_workbook_bytes(style)).run()
+    at.run()
+    assert at.session_state["output_preset"] == style
+    for box in at.checkbox:
+        if "Generate even if data checks found warnings" in (box.label or ""):
+            box.set_value(True)
+    at.run()
+    [btn for btn in at.button if btn.label == "Generate section"][0].click().run()
+    assert not at.exception
+    assert at.session_state["svg_bytes"]
+    notes = list(at.session_state["polygon_overlap_warnings"])
+    assert any(note.startswith("Crossing correlation") for note in notes)
+    # One amber box after Generate holds every note (the Configure preflight
+    # box in the collapsed Setup expander is separate).
+    keys = [note.split(":", 1)[0] for note in notes]
+    assert any(all(key in w.value for key in keys) for w in at.warning), [w.value for w in at.warning]
+    assert not any("notes about this section" in (e.label or "") for e in at.expander)
+
+
+_HELP_REQUIRED_LABELS = (
+    "Workbook format",
+    "Figure no.",
+    "Project no.",
+    "Date",
+    "Prepared by",
+    "Prepared for",
+    "Drawn by",
+    "Revised",
+    "Source",
+    "Start letter (e.g. B)",
+    "End letter (e.g. B')",
+    "Start direction (e.g. SOUTHWEST)",
+    "End direction (e.g. NORTHEAST)",
+    "Start label (used if no start letter)",
+    "End label (used if no end letter)",
+    "Save exports to folder (optional)",
+    "Font size (pt)",
+    "Shade as uncertain when holes are more than this far apart (m)",
+    "Shade as uncertain when a hole is more than this far off the line (m)",
+    "Don't connect layers to holes more than this far off the line (m)",
+    "Distance from",
+    "Distance to",
+    "Elevation from",
+    "Elevation to",
+    "Hole sequence",
+)
+_HELP_REQUIRED_SECTION_SHEET = (
+    "Show water level labels",
+    "Show groundwater legend",
+    "Show 'not measured' markers for dry wells",
+)
+
+
+def _widgets_by_label(at) -> dict[str, object]:
+    found: dict[str, object] = {}
+    for kind in ("text_input", "selectbox", "number_input", "toggle", "multiselect"):
+        for widget in getattr(at, kind):
+            found.setdefault(widget.label, widget)
+    return found
+
+
+def test_sidebar_and_configure_inputs_all_have_help() -> None:
+    from streamlit.testing.v1 import AppTest
+
+    workbook = _project_workbook_bytes(figure_preset="consulting_report")
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("project.xlsx", workbook).run()
+    at.run()
+    widgets = _widgets_by_label(at)
+    missing = [label for label in _HELP_REQUIRED_LABELS if not getattr(widgets.get(label), "help", None)]
+    assert not missing, missing
+    # File uploaders (logos) expose help through their proto.
+    logos = [u for u in at.get("file_uploader") if "logo" in (u.proto.label or "").lower()]
+    assert len(logos) == 2 and all(u.proto.help for u in logos)
+
+    at.selectbox(key="output_preset").set_value("section_sheet").run()
+    widgets = _widgets_by_label(at)
+    missing = [
+        label for label in _HELP_REQUIRED_SECTION_SHEET if not getattr(widgets.get(label), "help", None)
+    ]
+    assert not missing, missing
+
+
+def test_one_hole_workbook_asks_for_another_hole_not_a_section_line() -> None:
+    """A 1-hole workbook said "Loaded 1 boreholes" and "choose holes under
+    Section line", though there was nothing else to choose."""
+    from io import BytesIO
+
+    import openpyxl
+    from streamlit.testing.v1 import AppTest
+
+    from app_upload import upload_headline
+
+    book = openpyxl.load_workbook(BytesIO(_crossing_workbook_bytes("section_sheet")))
+    for cell in book["Collars"][3]:
+        cell.value = None
+    for row in (4, 5):
+        for cell in book["Lithology"][row]:
+            cell.value = None
+    buffer = BytesIO()
+    book.save(buffer)
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("one.xlsx", buffer.getvalue()).run()
+    at.run()
+    assert not at.exception
+    texts = [str(e.value) for kind in ("info", "caption", "markdown", "success") for e in getattr(at, kind)]
+    assert any("add at least one more hole to the workbook" in t.lower() for t in texts)
+    assert not any("choose holes under" in t.lower() for t in texts)
+    assert not any("Choose at least two holes under **Section line**" in t for t in texts)
+    assert not any(" 1 boreholes" in t or "**1** boreholes" in t or " 1 warnings" in t for t in texts)
+    assert upload_headline(hole_count=1, interval_count=1, skipped_count=0, error_count=0)[1] == (
+        "Loaded **1** borehole and **1** lithology interval."
+    )

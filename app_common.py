@@ -246,7 +246,8 @@ def profile_chips_html(
         f'<span class="chip">VE {escape_html(ve_short_text(vertical_exaggeration))}</span>',
     ]
     if hole_count is not None:
-        chips.append(f'<span class="chip">{escape_html(hole_count)} holes</span>')
+        noun = "hole" if hole_count == 1 else "holes"
+        chips.append(f'<span class="chip">{escape_html(hole_count)} {noun}</span>')
     extra: list[str] = []
     if preset_label:
         extra.append(mode_label)
@@ -391,17 +392,32 @@ def _section_note_text(message: str) -> str:
     return f"Polygon overlap: {message}" if _POLYGON_OVERLAP_RE.match(message) else message
 
 
-def _render_overlap_warnings(warnings: Sequence[str]) -> None:
-    """Section notes after Generate: overlaps, crossing layers, dropped labels, map scale."""
-    unique = dedupe_messages(warnings)
+_MARKDOWN_SPECIALS = re.compile(r"([\\`*_\[\]$<>#|~])")
+
+
+def _plain_markdown(text: str) -> str:
+    """Show note text literally (layer codes such as SM* or $ must not format)."""
+    return _MARKDOWN_SPECIALS.sub(r"\\\1", text)
+
+
+def section_notes_markdown(warnings: Sequence[str]) -> str:
+    """One amber box for every section note, so one note and several look alike."""
+    unique = [_plain_markdown(_section_note_text(message)) for message in dedupe_messages(warnings)]
     if not unique:
-        return
+        return ""
     if len(unique) == 1:
-        st.warning(_section_note_text(unique[0]))
-        return
-    with st.expander(f"{len(unique)} notes about this section", expanded=True):
-        for message in unique:
-            st.write(_section_note_text(message))
+        return unique[0]
+    bullets = "\n".join(f"- {message}" for message in unique)
+    return f"**{len(unique)} notes about this section**\n\n{bullets}"
+
+
+def _render_overlap_warnings(warnings: Sequence[str]) -> None:
+    """Section notes after Generate: overlaps, crossing layers, fence clipping,
+    dropped chemistry labels, map scale. Always one warning box (a plain
+    expander for 2+ notes read as body text and was easy to miss)."""
+    text = section_notes_markdown(warnings)
+    if text:
+        st.warning(text, icon=":material/info:")
 
 
 def _active_transect_selection(

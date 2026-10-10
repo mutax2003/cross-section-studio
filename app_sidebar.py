@@ -25,6 +25,7 @@ from app_common import (
 from app_identity import COPYRIGHT_SHORT, CREATED_BY
 from app_upload import (
     DESTRUCTIVE_PROMPTS,
+    WORKBOOK_VE_KEY,
     apply_pending_project_seed,
     render_input_template_download,
     request_destructive,
@@ -365,7 +366,22 @@ def _render_export_framing_panel() -> None:
         "Save exports to folder (optional)",
         key="export_output_dir",
         placeholder=r"P:\Projects\Job\Figures",
+        help=(
+            "Full path to a folder on the computer running the app. After Prepare "
+            "deliverables, Save to project folder writes the SVG, PNG, PDF and figure "
+            "details there. Leave blank to use the download buttons only."
+        ),
     )
+
+
+_CROP_DISTANCE_HELP = (
+    "Distance along the section (m, as on the bottom axis) where the exported "
+    "drawing starts or ends. Leave blank for the full section."
+)
+_CROP_ELEVATION_HELP = (
+    "Bottom (from) or top (to) of the exported drawing, in the units of the side "
+    "axis (elevation, or depth on relative sections). Leave blank to fit."
+)
 
 
 def _render_export_layout_advanced() -> None:
@@ -381,11 +397,11 @@ def _render_export_layout_advanced() -> None:
     with st.expander("Crop to an area (section distance / elevation)", expanded=False):
         crop_cols = st.columns(2)
         with crop_cols[0]:
-            st.text_input("Distance from", key="export_viewport_xmin", placeholder="optional")
-            st.text_input("Elevation from", key="export_viewport_ymin", placeholder="optional")
+            st.text_input("Distance from", key="export_viewport_xmin", placeholder="optional", help=_CROP_DISTANCE_HELP)
+            st.text_input("Elevation from", key="export_viewport_ymin", placeholder="optional", help=_CROP_ELEVATION_HELP)
         with crop_cols[1]:
-            st.text_input("Distance to", key="export_viewport_xmax", placeholder="optional")
-            st.text_input("Elevation to", key="export_viewport_ymax", placeholder="optional")
+            st.text_input("Distance to", key="export_viewport_xmax", placeholder="optional", help=_CROP_DISTANCE_HELP)
+            st.text_input("Elevation to", key="export_viewport_ymax", placeholder="optional", help=_CROP_ELEVATION_HELP)
     st.toggle(
         "Layered SVG for CAD",
         key="export_cad_svg_layers",
@@ -530,8 +546,13 @@ def render_sidebar() -> SidebarState:
             if preset_config.elevation_mode is not None:
                 st.session_state.elevation_mode = preset_config.elevation_mode
             if preset_config.vertical_exaggeration is not None:
+                workbook_ve = st.session_state.get(WORKBOOK_VE_KEY)
+                # The workbook's Project VE beats a style's default (Auto);
+                # a style that fixes VE (Chemistry columns, 1x) still wins.
                 st.session_state.vertical_exaggeration = normalize_ve_choice(
-                    preset_config.vertical_exaggeration
+                    workbook_ve
+                    if workbook_ve is not None and visibility.vertical_exaggeration_editable
+                    else preset_config.vertical_exaggeration
                 )
             st.session_state._synced_output_preset = output_preset
 
@@ -670,14 +691,20 @@ def render_sidebar() -> SidebarState:
                 show_water_elevation_labels = st.toggle(
                     "Show water level labels",
                     value=show_water_elevation_labels,
+                    help="Prints each measured water level's elevation beside its hole.",
                 )
                 show_water_legend = st.toggle(
                     "Show groundwater legend",
                     value=show_water_legend,
+                    help="A key naming each water-level series (e.g. by date) and its line style.",
                 )
                 show_dry_well_nm = st.toggle(
                     "Show 'not measured' markers for dry wells",
                     value=show_dry_well_nm,
+                    help=(
+                        "Prints NM beside holes with no water reading (when the workbook has "
+                        "water data), so a missing level is not read as no water."
+                    ),
                 )
                 water_interpolate_across_gaps = st.toggle(
                     "Join water levels across holes with no reading",
@@ -845,6 +872,10 @@ def render_sidebar() -> SidebarState:
             max_value=14.0,
             step=0.5,
             key="export_font_size",
+            help=(
+                "Base size of the text on the figure. Title-block styles never go below "
+                "their 9 pt design size; larger values scale all their text up."
+            ),
         )
 
         st.markdown("**Uncertainty shading**")
@@ -855,6 +886,10 @@ def render_sidebar() -> SidebarState:
             value=float(DEFAULT_UNCERTAINTY_SPACING_M),
             step=10.0,
             disabled=borehole_only,
+            help=(
+                "Grey shading between neighbouring holes farther apart than this, where "
+                "the layers drawn between them are less certain."
+            ),
         )
         uncertainty_offset_m = st.number_input(
             "Shade as uncertain when a hole is more than this far off the line (m)",
@@ -862,12 +897,20 @@ def render_sidebar() -> SidebarState:
             step=5.0,
             key="uncertainty_offset_m",
             disabled=borehole_only,
+            help=(
+                "Grey shading between a hole and its neighbours when the hole is projected "
+                "onto the line from farther away than this."
+            ),
         )
         max_offset_for_interpolation_m = st.number_input(
             "Don't connect layers to holes more than this far off the line (m)",
             min_value=1.0,
             step=5.0,
             value=float(st.session_state.offset_warning_m),
+            help=(
+                "Holes projected from farther off the section line than this are left "
+                "out of the layers drawn between holes."
+            ),
         )
         warn_on_correlation_gaps = st.toggle(
             "Warn when layers don't match between holes",
@@ -1084,6 +1127,10 @@ def _render_import_settings(*, expanded: bool = False) -> tuple[str, str | None,
             options=profile_ids,
             format_func=lambda key: "Auto-detect" if key == "auto" else profile_options[key],
             index=min(default_profile_index, len(profile_ids) - 1),
+            help=(
+                "How to read the workbook. Auto-detect recognises the template, a Collars + "
+                "Lithology workbook or a known field export; pick one only if it guessed wrong."
+            ),
         )
         default_elevation_m = st.number_input(
             "Default collar elevation (m)",
@@ -1166,10 +1213,26 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
     Figure style (one field); ``section_title`` follows it."""
     _seed_title_block_defaults()
     consulting_section_label = str(st.session_state.get("consulting_section_label") or "")
-    figure_number = _bound_text_input("Figure no.", key="consulting_figure_number")
-    project_number = _bound_text_input("Project no.", key="consulting_project_number")
-    report_date = _bound_text_input("Date", key="consulting_date")
-    prepared_by = _bound_text_input("Prepared by", key="consulting_prepared_by")
+    figure_number = _bound_text_input(
+        "Figure no.",
+        key="consulting_figure_number",
+        help="Figure number printed in the title block (e.g. 3).",
+    )
+    project_number = _bound_text_input(
+        "Project no.",
+        key="consulting_project_number",
+        help="Your project or file number, printed in the title block.",
+    )
+    report_date = _bound_text_input(
+        "Date",
+        key="consulting_date",
+        help="Issue date printed in the title block exactly as typed (e.g. 24/06/26).",
+    )
+    prepared_by = _bound_text_input(
+        "Prepared by",
+        key="consulting_prepared_by",
+        help="Consultant or firm that prepared the figure.",
+    )
     with st.expander(
         f"More title block fields ({_filled_count(_TITLE_BLOCK_MORE_KEYS)})",
         expanded=False,
@@ -1178,21 +1241,37 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
         st.caption("Section line ends (printed at each end of the cross-section)")
         transect_cols = st.columns(2)
         with transect_cols[0]:
-            transect_start_primary = _bound_text_input("Start letter (e.g. B)", key="consulting_start_primary")
+            transect_start_primary = _bound_text_input(
+                "Start letter (e.g. B)",
+                key="consulting_start_primary",
+                help="Letter printed above the first (left) end of the section.",
+            )
             transect_start_secondary = _bound_text_input(
                 "Start direction (e.g. SOUTHWEST)",
                 key="consulting_start_secondary",
+                help="Compass direction printed under the start letter.",
             )
         with transect_cols[1]:
-            transect_end_primary = _bound_text_input("End letter (e.g. B')", key="consulting_end_primary")
+            transect_end_primary = _bound_text_input(
+                "End letter (e.g. B')",
+                key="consulting_end_primary",
+                help="Letter printed above the last (right) end of the section.",
+            )
             transect_end_secondary = _bound_text_input(
                 "End direction (e.g. NORTHEAST)",
                 key="consulting_end_secondary",
+                help="Compass direction printed under the end letter.",
             )
         transect_start_label = _bound_text_input(
-            "Start label (used if no start letter)", key="consulting_start_label"
+            "Start label (used if no start letter)",
+            key="consulting_start_label",
+            help="The whole start label on one line (e.g. A / NORTHWEST); used only when Start letter is blank.",
         )
-        transect_end_label = _bound_text_input("End label (used if no end letter)", key="consulting_end_label")
+        transect_end_label = _bound_text_input(
+            "End label (used if no end letter)",
+            key="consulting_end_label",
+            help="The whole end label on one line (e.g. A' / SOUTHEAST); used only when End letter is blank.",
+        )
         map_scale = _bound_text_input(
             "Map scale",
             key="consulting_map_scale",
@@ -1200,10 +1279,24 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
             help="Leave blank to print AS SHOWN; the scale bar is drawn true to scale. "
             "A value you enter (e.g. 1:1000) is printed as written.",
         )
-        source = _bound_text_input("Source", key="consulting_source")
-        drawn_by = _bound_text_input("Drawn by", key="consulting_drawn_by")
-        revised = _bound_text_input("Revised", key="consulting_revised")
-        prepared_for = _bound_text_input("Prepared for", key="consulting_prepared_for")
+        source = _bound_text_input(
+            "Source",
+            key="consulting_source",
+            help="Data source citation printed in the title block (e.g. ECOVENTURE 2026).",
+        )
+        drawn_by = _bound_text_input(
+            "Drawn by", key="consulting_drawn_by", help="Drafter's initials for the title block."
+        )
+        revised = _bound_text_input(
+            "Revised",
+            key="consulting_revised",
+            help="Revision date or number; the REVISED row prints only when this is filled in.",
+        )
+        prepared_for = _bound_text_input(
+            "Prepared for",
+            key="consulting_prepared_for",
+            help="Client the figure is prepared for, printed in the title block.",
+        )
         _bind_widget_value("consulting_notes", "\n".join(_default_consulting_notes()))
         notes_text = st.text_area("Notes", key="consulting_notes", help="One note per line.")
         _widget_store()["consulting_notes"] = notes_text
@@ -1211,11 +1304,13 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
             "Client logo (PNG)",
             type=["png"],
             key="consulting_logo_for",
+            help="Optional client logo printed in the title block.",
         )
         logo_by = st.file_uploader(
             "Your company logo (PNG)",
             type=["png"],
             key="consulting_logo_by",
+            help="Optional logo of your firm printed in the title block.",
         )
         st.caption(
             "Optional workbook sheets: **Screens** (hole_id, from_depth, to_depth) and "

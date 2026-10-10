@@ -128,9 +128,20 @@ _LAYOUT_PAGES = [
 ]
 
 
-@pytest.mark.parametrize(("layout", "page", "ve"), _LAYOUT_PAGES)
-def test_exact_ve_short_section_headers_and_ticks_never_overprint(layout, page, ve) -> None:
-    _result, figure, renderer = _export(layout, page, ve)
+_DEPTH_MODE_PAGES = [
+    ("section_sheet", page, ve, "relative")
+    for page, ve in (("tabloid_landscape", 20.0), ("letter_portrait", 20.0), (None, 20.0), ("letter_landscape", 5.0))
+]
+
+
+@pytest.mark.parametrize(
+    ("layout", "page", "ve", "elevation_mode"),
+    [(*row, "absolute") for row in _LAYOUT_PAGES] + _DEPTH_MODE_PAGES,
+)
+def test_exact_ve_short_section_headers_and_ticks_never_overprint(layout, page, ve, elevation_mode) -> None:
+    # Depth mode puts the headers above the plot, under a title whose layout
+    # reacts to their height (and so re-sizes the aspect-locked box).
+    _result, figure, renderer = _export(layout, page, ve, elevation_mode=elevation_mode)
     try:
         r = figure.canvas.get_renderer()
         headers = _headers(renderer, figure)

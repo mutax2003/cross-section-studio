@@ -391,7 +391,7 @@ class CrossSectionRenderer(
             before = self._plot_layout_key(figure)
             restore_stacked_headers(headers)
             resolve_header_collisions(figure, headers)
-            stack_hole_headers(figure, headers)
+            stack_hole_headers(figure, headers, robust=_attempt >= 2)
             if str(getattr(self.profile, "layout", "")) == "section_sheet":
                 # Room under the (possibly taller) header row for the distance label.
                 self._fit_section_sheet_bottom(figure)

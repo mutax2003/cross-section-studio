@@ -638,7 +638,7 @@ def restore_stacked_headers(headers) -> None:
             text._header_stacked = False
 
 
-def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS) -> None:
+def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robust: bool = False) -> None:
     """Make overlapping hole headers readable: tiers + leaders, wrap, shrink, rotate.
 
     Runs after the first (nudging) header pass; a no-op when no two headers
@@ -749,7 +749,11 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS) -> N
     if wrapped != plain:
         attempts.append((wrapped, 1.0))
     attempts += [(wrapped, f) for f in _HEADER_SHRINK[1:]]
-    for labels, factor in attempts:
+    # ``robust``: the plot box kept moving between passes (the header height
+    # feeds the title layout of an aspect-locked box); tiers and in-place
+    # vertical text depend on the exact hole spacing, so go to the fan,
+    # whose spacing comes from the header widths alone.
+    for labels, factor in [] if robust else attempts:
         size = max(_HEADER_MIN_PT, base_size * factor)
         result = try_tiers(labels, size)
         if result is None:
@@ -767,7 +771,10 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS) -> N
             1
             for i in range(len(boxes))
             for j in range(i + 1, len(boxes))
-            if _boxes_overlap(boxes[i], boxes[j], 0.5 * pad)
+            # A clear gap, not just no overlap: a slightly narrower box
+            # (the title layout reacting to the header height) must not
+            # make neighbours touch.
+            if _boxes_overlap(boxes[i], boxes[j], 2.0 * pad)
         ) + sum(
             1
             for t, box in zip(ordered, boxes, strict=True)
@@ -775,7 +782,7 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS) -> N
         )
         if rotated_cost is None or cost < rotated_cost[0]:
             rotated_cost = (cost, size)
-        if cost == 0:
+        if cost == 0 and not robust:
             for text in ordered:
                 text._header_stacked = True
             return

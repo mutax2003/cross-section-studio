@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import textwrap
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -64,15 +65,26 @@ from renderer_chemistry import (
     _resolve_parameter_label_offsets,  # noqa: F401
 )
 from renderer_common import (
+    LEGEND_KEY_HANDLER_MAP,
+    MIN_PRINT_MARGIN_IN,
     UNLOGGED_FILL_COLOR,
     UNLOGGED_LEGEND_LABEL,
     HatchBatchedPolyCollection,
     RendererGeometryMixin,
+    SampleTextKey,
+    VECaptionAnnotation,
     add_ve_caption,
     apply_ve_aspect,
+    below_axes_anchor,
     format_ve_caption,
     measured_vertical_exaggeration,
+    page_margins_in,
+    parameter_legend_keys,
+    restore_stacked_headers,
     settle_figure_layout,
+    stack_hole_headers,
+    water_status_legend_label,
+    water_status_texts,
 )
 from renderer_consulting import ConsultingLayoutMixin
 from renderer_section_sheet import SectionSheetLayoutMixin
@@ -348,9 +360,21 @@ class CrossSectionRenderer(
         )
         # Positions in points are only final once limits and margins are set.
         # Headers first: the water pass treats every axes text as an obstacle.
-        resolve_header_collisions(fig, self._header_labels)
+        self._layout_headers(fig)
         self._resolve_water_label_collisions(fig)
+        # The water pass may re-run the first header pass (frame widening).
+        stack_hole_headers(fig, self._header_labels)
         return fig
+
+    def _layout_headers(self, figure: Figure) -> None:
+        """Header passes: nudge / one tier (shared pass), then stack what still overlaps."""
+        headers = [t for t in getattr(self, "_header_labels", None) or [] if t.figure is figure]
+        restore_stacked_headers(headers)
+        resolve_header_collisions(figure, headers)
+        stack_hole_headers(figure, headers)
+        if str(getattr(self.profile, "layout", "")) == "section_sheet":
+            # Room under the (possibly taller) header row for the distance label.
+            self._fit_section_sheet_bottom(figure)
 
     def _hole_context(self, projected_df: pd.DataFrame) -> _HoleContext:
         summary = (
@@ -567,11 +591,15 @@ class CrossSectionRenderer(
         ax,
         hole_summary: pd.DataFrame,
         collar_lookup: dict[str, float],
+        *,
+        draw_sky: bool | None = None,
     ) -> None:
         if len(hole_summary) < 2:
             return
         surface_x = hole_summary["x_profile"].to_numpy(dtype=float)
         ve = self.vertical_exaggeration
+        if draw_sky is None:
+            draw_sky = self.profile.show_sky_fill
         if self.profile.y_axis_mode == "depth_below_collar":
             surface_y = np.zeros(len(hole_summary), dtype=float)
         else:
@@ -580,7 +608,7 @@ class CrossSectionRenderer(
         x_dense = np.linspace(surface_x.min(), surface_x.max(), sample_count)
         y_dense = np.interp(x_dense, surface_x, surface_y)
         # Depth mode inverts later: positive Y is into geology, so skip sky fill there.
-        if self.profile.show_sky_fill and self.profile.y_axis_mode != "depth_below_collar":
+        if draw_sky and self.profile.y_axis_mode != "depth_below_collar":
             y_top = y_dense.max() + 0.12 * max(y_dense.max() - y_dense.min(), 1.0)
             ax.fill_between(x_dense, y_dense, y_top, facecolor=SKY_FILL_COLOR, edgecolor="none", alpha=0.85, zorder=1)
         if self.profile.show_ground_surface:
@@ -1124,6 +1152,81 @@ class CrossSectionRenderer(
         if self._cad_svg_layers_enabled():
             self._set_cad_gid(legend, "legend")
 
+    def _water_series_measured(
+        self,
+        water_levels: Sequence[WaterLevel] | None,
+        on_section: set[str],
+    ) -> dict[str, int]:
+        """Measured (not dry / NM) readings per water series on this section."""
+        from hydro_metrics import water_status
+
+        measured: dict[str, int] = {}
+        for level in water_levels or ():
+            if str(level.hole_id) not in on_section or water_status(level) in {"dry", "nm"}:
+                continue
+            series_id = level.series_id or "default"
+            measured[series_id] = measured.get(series_id, 0) + 1
+        return measured
+
+    def _water_line_drawn(self, measured_count: int) -> bool:
+        """True when the water pass joins a series' markers with a line."""
+        interpolate = bool(self.interpolate_water_table or self.profile.interpolate_water_table_default)
+        return interpolate and measured_count >= 2
+
+    def _legend_extra_keys(self, ax, *, ground_surface: bool = False) -> list[tuple[object, str]]:
+        """Chemistry, ground-surface and NM / DRY keys for a matplotlib legend.
+
+        Only what the figure draws: a chemistry key per labelled parameter
+        (three G / O / R dots in threshold mode, else the drawn marker or a
+        sample value), the ground-surface line when drawn, and the grey
+        NM / DRY note text when any hole carries one.
+        """
+        from matplotlib.lines import Line2D
+
+        from render_theme import CONSULTING_NM_COLOR
+
+        keys: list[tuple[object, str]] = []
+        if self.profile.show_parameter_markers or self.profile.show_parameter_labels:
+            keys += parameter_legend_keys(
+                self.parameter_series_legend, draw_markers=self.profile.parameter_draw_markers
+            )
+        if ground_surface:
+            keys.append((Line2D([], [], color=SURFACE_COLOR, linewidth=3.0), "Ground surface"))
+        status = water_status_texts(self, ax.figure)
+        if status:
+            keys.append(
+                (
+                    SampleTextKey(" / ".join(status), CONSULTING_NM_COLOR, fontweight="bold"),
+                    water_status_legend_label(status),
+                )
+            )
+        return keys
+
+    def _rebuild_outside_legend(self, ax, extras: list[tuple[object, str]], *, title: str | None = None) -> None:
+        """Append ``extras`` to the outside lithology legend (rebuilt once)."""
+        legend = ax.get_legend()
+        if not extras or legend is None:
+            return
+        handles = list(legend.legend_handles) + [handle for handle, _label in extras]
+        labels = [text.get_text() for text in legend.get_texts()] + [label for _handle, label in extras]
+        gid = legend.get_gid()
+        rebuilt = ax.legend(
+            handles=handles,
+            labels=labels,
+            title=title or legend.get_title().get_text(),
+            loc="upper left",
+            bbox_to_anchor=(1.01, 1.0),
+            frameon=True,
+            framealpha=0.95,
+            edgecolor="#CBD5E1",
+            fontsize=8,
+            title_fontsize=9,
+            ncol=legend._ncols,
+            handler_map=LEGEND_KEY_HANDLER_MAP,
+        )
+        if gid:
+            rebuilt.set_gid(gid)
+
     def fit_right_margin_for_legend(self, figure: Figure) -> None:
         """Widen the right margin so an outside lithology legend fits the page.
 
@@ -1175,23 +1278,30 @@ class CrossSectionRenderer(
         }
 
     def _draw_ve_annotation(self, ax) -> None:
-        # Axes-fraction position: a box-adjusted (exact VE) axes keeps the
-        # note in its lower-right corner. Measured VE is filled in at draw time.
+        """VE note under the plot (opposite the scale bar), not over the data.
+
+        Inside the plot it sat on the geology and a water marker on a long
+        thin 1x section. Measured VE is filled in at draw time.
+        """
         if self._ve_main_ax is None:
             self._ve_main_ax = ax
-        add_ve_caption(
-            ax,
-            0.98,
-            0.04,
-            transform=ax.transAxes,
-            ha="right",
-            va="bottom",
+        right = not self._scale_bar_on_right()
+        note = VECaptionAnnotation(
+            (1.0 if right else 0.0, 0.0),
+            xycoords=below_axes_anchor(ax),
+            xytext=(0.0, -self._BELOW_AXES_ROW_GAP_PT),
+            textcoords="offset points",
+            ha="right" if right else "left",
+            va="top",
             fontsize=9,
             fontweight="bold",
             color=LABEL_COLOR,
             zorder=10,
+            annotation_clip=False,
             **self._ve_caption_kwargs("short"),
         )
+        note.set_gid("ve-note")
+        ax._add_text(note)
 
     def _draw_footers(self, fig: Figure) -> None:
         if self.disclaimer:
@@ -1267,10 +1377,14 @@ class CrossSectionRenderer(
 
     def _savefig_kwargs(self) -> dict[str, object]:
         """Export framing controls page crop; consulting default is fixed letter page."""
-        return savefig_kwargs(
+        kwargs = savefig_kwargs(
             self.export_framing,
             layout=str(getattr(self.profile, "layout", "")),
         )
+        if kwargs.get("bbox_inches") == "tight":
+            # A tight crop keeps the same least printable margin as a page.
+            kwargs["pad_inches"] = max(float(kwargs.get("pad_inches") or 0.0), MIN_PRINT_MARGIN_IN)
+        return kwargs
 
     def _prepare_export_figure(self, figure: Figure) -> Figure:
         prepare_export_figure(
@@ -1293,14 +1407,168 @@ class CrossSectionRenderer(
             return figure  # already prepared at this size: label passes are current
         figure._css_prepared_size = tuple(figure.get_size_inches())
         # Page sizing moves every artist; redo label placement for the new page.
-        headers = [t for t in getattr(self, "_header_labels", None) or [] if t.figure is figure]
-        resolve_header_collisions(figure, headers)
+        self._layout_headers(figure)
+        # Keep everything inside the printable margins (headers re-placed as
+        # the frame moves), then place the in-plot labels for the final frame.
+        self.fit_page_content(figure)
         water = getattr(self, "_water_labels", None) or []
         if water and all(annotation.figure is figure for _kind, annotation, _c in water):
             self._resolve_water_label_collisions(figure)
+            stack_hole_headers(figure, self._header_labels)
+            # Values printed right of the last hole may reach past the margin.
+            if self.fit_page_content(figure, max_passes=2):
+                self._resolve_water_label_collisions(figure)
+                stack_hole_headers(figure, self._header_labels)
         # Fitted title-block / band / notes text was measured at the render size.
         self.refit_consulting_fitted_text(figure)
         return figure
+
+    def _fixed_page_export(self) -> bool:
+        """True when the export prints on a fixed page (not a tight crop)."""
+        layout = str(getattr(self.profile, "layout", ""))
+        if layout == "consulting_section":
+            return True
+        if self.export_framing is None:
+            return False
+        return self.export_framing.effective_page_preset(layout) != "tight_fence"
+
+    def _place_page_footers(self, figure: Figure, margins: tuple[float, float, float, float]) -> float:
+        """Stack the figure-level footer lines up from the bottom margin.
+
+        Returns the display y (px) the footers reach (the bottom margin when
+        there are none). Lines wider than the printable width wrap (plain
+        text) or shrink (measured VE captions).
+        """
+        renderer = figure.canvas.get_renderer()
+        dpi = figure.dpi
+        left_px, right_px = margins[0] * dpi, figure.bbox.width - margins[1] * dpi
+        bottom_px = margins[3] * dpi
+        supx = getattr(figure, "_supxlabel", None)
+        order = figure.__dict__.get("_css_footer_order")
+        if order is None:
+            footers = [
+                t for t in figure.texts
+                if t is not supx and t.get_visible() and t.get_text().strip()
+                and t.get_position()[1] < 0.2
+            ]
+            order = figure._css_footer_order = sorted(footers, key=lambda t: t.get_position()[1])
+            for text in order:
+                text._css_footer_orig = (text.get_text(), float(text.get_fontsize()))
+        cursor = bottom_px
+        gap = 2.0 * dpi / 72.0
+        for text in order:
+            if text.figure is not figure or not text.get_visible():
+                continue
+            label, size = text._css_footer_orig
+            avail = right_px - left_px
+            if type(text).__name__ == "Text":
+                text.set_text(label)
+                text.set_fontsize(size)
+                box = text.get_window_extent(renderer)
+                if box.width > avail and len(label) > 20:
+                    chars = max(20, int(len(label) * avail / box.width) - 2)
+                    text.set_text("\n".join(textwrap.wrap(label, chars)))
+            else:
+                text.set_fontsize(size)
+                for _ in range(6):
+                    box = text.get_window_extent(renderer)
+                    if box.width <= avail or text.get_fontsize() <= 5.0:
+                        break
+                    text.set_fontsize(max(5.0, text.get_fontsize() * avail / box.width))
+            text.set_verticalalignment("bottom")
+            box = text.get_window_extent(renderer)
+            text.set_y(text.get_position()[1] + (cursor - box.y0) / figure.bbox.height)
+            cursor = text.get_window_extent(renderer).y1 + gap
+        return cursor - gap if cursor > bottom_px else bottom_px
+
+    def fit_page_content(self, figure: Figure, *, max_passes: int = 4) -> bool:
+        """Pull the plot frame in until all content keeps the printable margins.
+
+        Fixed export pages only (consulting sheets and letter / tabloid
+        presets): the hole headers, axis labels, legend, title and footers
+        stay at least ``MIN_PRINT_MARGIN_IN`` (or the export framing margin)
+        from every page edge. Returns True when a margin was moved.
+        """
+        if not self._fixed_page_export():
+            return False
+        margins = page_margins_in(self.export_framing)
+        figure._css_page_margins_in = margins
+        moved = False
+        size = tuple(figure.get_size_inches())
+        stored = figure.__dict__.get("_css_fit_base")
+        if stored is None or stored[0] != size:
+            params = figure.subplotpars
+            stored = figure._css_fit_base = (size, (params.left, params.right, params.top, params.bottom))
+        base = stored[1]
+        sheet = str(getattr(self.profile, "layout", "")) == "section_sheet"
+        for _pass in range(max_passes):
+            footer_top = self._place_page_footers(figure, margins)
+            if sheet:
+                self._fit_section_sheet_bottom(figure)
+            engine = figure.get_layout_engine()
+            if engine is not None and hasattr(engine, "execute"):
+                engine.execute(figure)
+            settle_figure_layout(figure)
+            renderer = figure.canvas.get_renderer()
+            boxes = []
+            supx = getattr(figure, "_supxlabel", None)
+            for axis_ax in figure.axes:
+                if axis_ax.get_visible():
+                    box = axis_ax.get_tightbbox(renderer)
+                    if box is not None and box.width > 0:
+                        boxes.append(box)
+            for text in [supx, getattr(figure, "_suptitle", None)]:
+                if text is not None and text.get_visible() and text.get_text().strip():
+                    boxes.append(text.get_window_extent(renderer))
+            if not boxes:
+                return moved
+            from matplotlib.transforms import Bbox
+
+            content = Bbox.union(boxes)
+            dpi = figure.dpi
+            width, height = figure.bbox.width, figure.bbox.height
+            floor = max(margins[3] * dpi, footer_top + 3.0 * dpi / 72.0)
+            over_l = margins[0] * dpi - content.x0
+            over_r = content.x1 - (width - margins[1] * dpi)
+            over_t = content.y1 - (height - margins[2] * dpi)
+            over_b = floor - content.y0
+            if os.environ.get("CSS_DEBUG_FIT"):
+                print("fit pass", _pass, [round(v / dpi, 3) for v in (over_l, over_r, over_t, over_b)])
+            params = figure.subplotpars
+            b_left, b_right, b_top, b_bottom = base
+            # Move in by any overflow; give back room (never past the
+            # stock frame) where an earlier pass over-tightened, e.g. after
+            # vertical headers turned into a lower tier layout.
+            left = max(params.left + over_l / width, b_left)
+            right = min(params.right - over_r / width, b_right)
+            top = min(params.top - over_t / height, b_top)
+            if sheet:
+                bottom = params.bottom + max(over_b, 0.0) / height
+            else:
+                bottom = max(params.bottom + over_b / height, b_bottom)
+            right = max(right, left + 0.2)
+            top = max(top, bottom + 0.2)
+            change = max(
+                abs(left - params.left) * width,
+                abs(right - params.right) * width,
+                abs(top - params.top) * height,
+                abs(bottom - params.bottom) * height,
+            )
+            if change <= 0.5:
+                break
+            figure.subplots_adjust(left=left, right=right, top=top, bottom=bottom)
+            moved = True
+            self._after_margin_change(figure)
+            self._layout_headers(figure)
+        return moved
+
+    def _after_margin_change(self, figure: Figure) -> None:
+        """Layout-specific refits after ``subplots_adjust`` (no-op by default)."""
+        layout = str(getattr(self.profile, "layout", ""))
+        if layout == "consulting_section":
+            self._refresh_last_hole_label_room(figure)
+            self._reserve_threshold_key_band(figure)
+            self._suppress_header_tick_collisions(figure)
 
     def _export_dpi(self, default: int = 300) -> int:
         if self.export_framing is not None:
@@ -1401,42 +1669,56 @@ class CrossSectionRenderer(
                     )
         return svg_bytes, png_bytes, pdf_bytes
 
+    # Gap (points) between the under-axis row (VE note / scale bar) and the
+    # distance label or threshold key above it.
+    _BELOW_AXES_ROW_GAP_PT = 5.0
+
+    def _scale_bar_on_right(self) -> bool:
+        return self.profile.scale_bar_position == "bottom_right"
+
     def _draw_scale_bar(self, ax) -> None:
+        """Scale bar below the plot, clear of the geology and markers.
+
+        Drawn inside the plot it sat on the fence polygons (and its label on
+        a water marker) on long thin sections. It now hangs in the row under
+        the distance label / threshold key, at the plot's left edge (right
+        edge with ``scale_bar_position="bottom_right"``); its length is in
+        data metres, so it stays true on every page and VE box.
+        """
         if not self.profile.show_scale_bar:
             return
-        x_min, x_max = ax.get_xlim()
-        y_min, y_max = ax.get_ylim()
         bar_length = self.scale_bar_length_m
         if bar_length <= 0:
             return
-        if self.profile.scale_bar_position == "bottom_right":
-            x_start = x_max - 0.04 * (x_max - x_min) - bar_length
-        else:
-            x_start = x_min + 0.04 * (x_max - x_min)
-        y_span = y_max - y_min
-        # Depth mode inverts the axis after drawing, so the visual bottom of
-        # the plot is the numeric maximum; keep the bar at the visual bottom.
-        depth_mode = self.profile.y_axis_mode == "depth_below_collar"
-        if depth_mode:
-            y_pos = y_max - 0.06 * y_span
-        else:
-            y_pos = y_min + 0.06 * y_span
-        tick = 0.01 * y_span
-        ax.plot([x_start, x_start + bar_length], [y_pos, y_pos], color=STICK_COLOR, linewidth=4, solid_capstyle="butt", zorder=9)
-        ax.plot([x_start, x_start], [y_pos - tick, y_pos + tick], color=STICK_COLOR, linewidth=1.5, zorder=9)
-        ax.plot([x_start + bar_length, x_start + bar_length], [y_pos - tick, y_pos + tick], color=STICK_COLOR, linewidth=1.5, zorder=9)
-        # Label offset in points (visually above the bar, also on an inverted
-        # depth axis): a fraction of the y span overprinted the bar on the
-        # short plot box of a low exact VE.
-        ax.annotate(
-            f"{bar_length:g} m",
-            xy=(x_start + bar_length / 2.0, y_pos),
-            xytext=(0.0, 4.0),
-            textcoords="offset points",
-            ha="center",
-            va="bottom",
-            fontsize=8,
-            fontweight="bold",
-            color=LABEL_COLOR,
-            zorder=9,
+        from matplotlib.lines import Line2D
+        from matplotlib.offsetbox import AnnotationBbox, AuxTransformBox, TextArea, VPacker
+        from matplotlib.transforms import Affine2D, blended_transform_factory
+
+        points = Affine2D().scale(1.0 / 72.0) + ax.figure.dpi_scale_trans
+        bar_box = AuxTransformBox(blended_transform_factory(ax.transData, points))
+        x0 = float(ax.get_xlim()[0])
+        bar_box.add_artist(
+            Line2D([x0, x0 + bar_length], [0.0, 0.0], color=STICK_COLOR, linewidth=4, solid_capstyle="butt")
         )
+        for x in (x0, x0 + bar_length):
+            bar_box.add_artist(Line2D([x, x], [-3.5, 3.5], color=STICK_COLOR, linewidth=1.5))
+        label = TextArea(
+            f"{bar_length:g} m",
+            textprops={"fontsize": 8, "fontweight": "bold", "color": LABEL_COLOR},
+        )
+        right = self._scale_bar_on_right()
+        pack = VPacker(children=[label, bar_box], align="center", pad=0, sep=2)
+        bar = AnnotationBbox(
+            pack,
+            (1.0 if right else 0.0, 0.0),
+            xycoords=below_axes_anchor(ax),
+            xybox=(0.0, -self._BELOW_AXES_ROW_GAP_PT),
+            boxcoords="offset points",
+            box_alignment=(1.0 if right else 0.0, 1.0),
+            frameon=False,
+            pad=0.0,
+            annotation_clip=False,
+        )
+        bar.set_gid("scale-bar")
+        bar.set_zorder(9)
+        ax.add_artist(bar)

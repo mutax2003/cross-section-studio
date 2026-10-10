@@ -14,13 +14,11 @@ from matplotlib.layout_engine import LayoutEngine
 from matplotlib.lines import Line2D
 from matplotlib.transforms import Bbox, blended_transform_factory, offset_copy
 
-from hydro_metrics import water_status
 from lithology_codes import collect_lithology_codes
 from models import WaterLevel
 from render_profiles import CHART_PROFILE
 from render_theme import AXES_BG, FIGURE_BG, GRID_COLOR, LABEL_COLOR, STICK_COLOR, SURFACE_COLOR
 from renderer_common import apply_true_value_y_axis
-from renderer_water import resolve_header_collisions
 from stratigraphy import GeologicalPolygon
 
 
@@ -94,11 +92,12 @@ class _ChartTitleLayout(LayoutEngine):
     _adjust_compatible = True
     _colorbar_gridspec = True
 
-    def __init__(self, ax, title: str, headers: Sequence) -> None:
+    def __init__(self, ax, title: str, headers: Sequence, *, title_kwargs: dict | None = None) -> None:
         super().__init__()
         self._ax = ax
         self._title = title
         self._headers = headers
+        self._title_kwargs = dict(title_kwargs or _TITLE_KWARGS)
 
     def set(self, **kwargs) -> None:  # pragma: no cover - no tunable params
         self._params.update(kwargs)
@@ -124,9 +123,12 @@ class _ChartTitleLayout(LayoutEngine):
             reach_pt = (max(_header_box(t, renderer).y1 for t in headers) - ax_top) / px_per_pt
             above_pt = max(above_pt, reach_pt)
         pad_pt = max(6.0, above_pt + _TITLE_HEADER_GAP_PT)
-        ax.set_title(self._title, pad=pad_pt, **_TITLE_KWARGS)
+        ax.set_title(self._title, pad=pad_pt, **self._title_kwargs)
         title_h = ax.title.get_window_extent(renderer).height
-        need_px = pad_pt * px_per_pt + title_h + _TITLE_TOP_MARGIN_PT * px_per_pt
+        # Export pages keep the printable margin above the title.
+        margins = getattr(fig, "_css_page_margins_in", None)
+        top_margin_pt = max(_TITLE_TOP_MARGIN_PT, margins[2] * 72.0) if margins else _TITLE_TOP_MARGIN_PT
+        need_px = pad_pt * px_per_pt + title_h + top_margin_pt * px_per_pt
         fig_h = fig.bbox.height
         if fig_h <= 0:
             return
@@ -300,7 +302,7 @@ class ChartLayoutMixin:
             else:
                 fig.tight_layout(rect=(0, bottom_margin - 0.02, 1, 1))
             fig.set_layout_engine(_ChartTitleLayout(ax, self.title, self._header_labels))
-            resolve_header_collisions(fig, self._header_labels)
+            self._layout_headers(fig)
             return fig
         finally:
             self.profile = original
@@ -339,22 +341,12 @@ class ChartLayoutMixin:
         entries = list(getattr(self, "water_series_legend", None) or []) if water_levels else []
         if entries:
             on_section = set(profile_lookup or {}) or set(hole_summary["hole_id"].astype(str))
-            measured: dict[str, int] = {}
-            for level in water_levels or ():
-                if str(level.hole_id) not in on_section:
-                    continue
-                if water_status(level) in {"dry", "nm"}:
-                    continue
-                series_id = level.series_id or "default"
-                measured[series_id] = measured.get(series_id, 0) + 1
-            interpolate = bool(
-                self.interpolate_water_table or self.profile.interpolate_water_table_default
-            )
+            measured = self._water_series_measured(water_levels, on_section)
             for entry in entries:
                 count = measured.get(entry["series_id"], 0)
                 if count == 0:
                     continue  # all dry / NM: no marker on the chart
-                linestyle = entry.get("linestyle", "--") if interpolate and count >= 2 else "none"
+                linestyle = entry.get("linestyle", "--") if self._water_line_drawn(count) else "none"
                 handles.append(
                     (
                         Line2D(
@@ -385,31 +377,10 @@ class ChartLayoutMixin:
         water_levels: Sequence[WaterLevel] | None,
         profile_lookup: dict[str, tuple[float, float]] | None,
     ) -> None:
-        """Append groundwater / collar symbols to the outside lithology legend."""
-        extras = self._chart_symbol_handles(hole_summary, water_levels, profile_lookup)
-        legend = ax.get_legend()
-        if not extras or legend is None:
-            return
-        handles = list(legend.legend_handles)
-        labels = [text.get_text() for text in legend.get_texts()]
-        handles.extend(handle for handle, _label in extras)
-        labels.extend(label for _handle, label in extras)
-        gid = legend.get_gid()
-        rebuilt = ax.legend(
-            handles=handles,
-            labels=labels,
-            title="Legend",
-            loc="upper left",
-            bbox_to_anchor=(1.01, 1.0),
-            frameon=True,
-            framealpha=0.95,
-            edgecolor="#CBD5E1",
-            fontsize=8,
-            title_fontsize=9,
-            ncol=legend._ncols,
-        )
-        if gid:
-            rebuilt.set_gid(gid)
+        """Append chemistry, NM / DRY, groundwater and collar keys to the outside legend."""
+        extras = self._legend_extra_keys(ax)
+        extras += self._chart_symbol_handles(hole_summary, water_levels, profile_lookup)
+        self._rebuild_outside_legend(ax, extras, title="Legend")
 
     def _build_borehole_labels(
         self,

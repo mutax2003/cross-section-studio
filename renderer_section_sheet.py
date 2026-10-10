@@ -11,11 +11,13 @@ from matplotlib.figure import Figure
 from lithology_codes import collect_lithology_codes
 from models import WaterLevel
 from render_theme import AXES_BG, FIGURE_BG, GRID_COLOR, LABEL_COLOR
-from renderer_common import apply_true_value_y_axis
+from renderer_common import apply_true_value_y_axis, settle_figure_layout
 from stratigraphy import GeologicalPolygon
 
 # Clearance between the threshold key and the footer lines below it.
 _KEY_FOOTER_PAD_PT = 3.0
+# Gap between the hole-name row and the distance label hung under it.
+_SUPX_GAP_PT = 6.0
 
 
 class SectionSheetLayoutMixin:
@@ -69,8 +71,9 @@ class SectionSheetLayoutMixin:
         )
 
         collar_depths = collar_depths or {}
-        if self.profile.show_sky_fill or self.profile.show_ground_surface:
-            self._draw_sky_and_surface(ax, hole_summary, collar_lookup)
+        if self.profile.show_ground_surface:
+            # The sky band was decoration (no legend meaning): ground line only.
+            self._draw_sky_and_surface(ax, hole_summary, collar_lookup, draw_sky=False)
 
         interval_collars = self._collar_values(
             projected_df["hole_id"],
@@ -127,6 +130,7 @@ class SectionSheetLayoutMixin:
             )
             if self.profile.show_water_legend and self.water_series_legend:
                 self._draw_compact_water_legend(ax)
+            self._match_water_key_to_drawn(ax, hole_summary, water_levels)
         self._draw_faults(ax, collar_lookup, hole_summary=hole_summary)
         self._draw_unconformities(ax, collar_lookup, hole_summary=hole_summary)
         if not hole_summary.empty:
@@ -157,6 +161,8 @@ class SectionSheetLayoutMixin:
 
         if self.show_legend and lithology_codes:
             self._draw_legend(ax, style_cache, lithology_codes, polygons)
+            ground = self.profile.show_ground_surface and len(hole_summary) >= 2
+            self._rebuild_outside_legend(ax, self._legend_extra_keys(ax, ground_surface=ground))
 
         y_label = (
             "Depth below collar (m)"
@@ -196,14 +202,90 @@ class SectionSheetLayoutMixin:
                 "Distance along transect (m)",
                 fontsize=10,
                 y=0.058,
+                va="top",
                 color=LABEL_COLOR,
             )
         else:
             ax.set_xlabel("Distance along transect (m)", fontsize=10, labelpad=8)
 
+        if self.profile.show_column_headers and self.profile.y_axis_mode != "elevation_rl":
+            # Depth mode: headers above the plot; keep the title over them
+            # (measured at draw time, after any tier / vertical header pass).
+            from renderer_chart import _ChartTitleLayout
+
+            fig.set_layout_engine(
+                _ChartTitleLayout(
+                    ax,
+                    self.title,
+                    self._header_labels,
+                    title_kwargs={"fontsize": 14, "fontweight": "bold", "color": LABEL_COLOR},
+                )
+            )
         self._draw_footers(fig)
+        self._fit_section_sheet_bottom(fig)
         self._lift_threshold_key_over_footers(fig)
         return fig
+
+    def _match_water_key_to_drawn(self, ax, hole_summary: pd.DataFrame, water_levels) -> None:
+        """The in-plot series key shows a joining line only for series drawn with one."""
+        key = next((a for a in ax.artists if a.get_gid() == "water_series_key"), None)
+        if key is None:
+            return
+        on_section = set(hole_summary["hole_id"].astype(str))
+        measured = self._water_series_measured(water_levels, on_section)
+        for entry, handle in zip(self.water_series_legend, key.legend_handles, strict=False):
+            if handle is not None and not self._water_line_drawn(measured.get(entry["series_id"], 0)):
+                handle.set_linestyle("none")
+
+    def _fit_section_sheet_bottom(self, fig: Figure) -> None:
+        """Hang the distance label just under the hole-name row and close the gap below.
+
+        The label sat at a fixed page height, leaving ~1.5 in of white space
+        under the hole names on tabloid. It now sits a few points under the
+        lowest of the hole names and x tick labels, the threshold key follows
+        it, and the bottom margin is set so that stack ends just above the
+        footer lines (or the printable margin). Re-run after page resizes.
+        """
+        supx = getattr(fig, "_supxlabel", None)
+        axes = getattr(self, "_ve_main_ax", None)
+        if axes is None or axes.figure is not fig:
+            return
+        renderer = fig.canvas.get_renderer()
+        dpi = fig.dpi
+        height = fig.bbox.height
+        margins = getattr(fig, "_css_page_margins_in", None)
+        floor_px = (margins[3] if margins else 0.06) * dpi
+        supx_id = id(supx)
+        for text in fig.texts:
+            if id(text) == supx_id or not text.get_visible() or not text.get_text().strip():
+                continue
+            if text.get_position()[1] < 0.2:
+                floor_px = max(floor_px, text.get_window_extent(renderer).y1 + _KEY_FOOTER_PAD_PT * dpi / 72.0)
+        for _attempt in range(3):
+            settle_figure_layout(fig)
+            frame = axes.get_window_extent(renderer)
+            lowest = frame.y0
+            tight = axes.xaxis.get_tightbbox(renderer)
+            if tight is not None and tight.height > 0:
+                lowest = min(lowest, tight.y0)
+            for header in getattr(self, "_header_labels", None) or []:
+                if header.figure is fig and header.get_visible() and header.get_text().strip():
+                    box = header.get_window_extent(renderer)
+                    if box.y1 <= frame.y0 + 1.0:
+                        lowest = min(lowest, box.y0)
+            if supx is not None and supx.get_text():
+                supx.set_y((lowest - _SUPX_GAP_PT * dpi / 72.0) / height)
+            stack_bottom = lowest
+            if supx is not None and supx.get_text():
+                stack_bottom = min(stack_bottom, supx.get_window_extent(renderer).y0)
+            key = getattr(self, "_chemistry_threshold_key", None)
+            if key is not None and key.figure is fig:
+                stack_bottom = min(stack_bottom, key.get_window_extent(renderer).y0)
+            delta = (stack_bottom - floor_px) / height
+            if abs(delta) * height < 1.0:
+                break
+            bottom = min(max(fig.subplotpars.bottom - delta, 0.04), fig.subplotpars.top - 0.2)
+            fig.subplots_adjust(bottom=bottom)
 
     def _lift_threshold_key_over_footers(self, fig: Figure) -> None:
         """Raise the distance label (and the threshold key under it) clear of the footers.

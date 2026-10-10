@@ -862,7 +862,12 @@ def test_header_and_water_passes_are_idempotent_and_rerun_for_export_pages() -> 
 
     first = positions()
     for _ in range(3):
+        # The full header pass: shared nudge pass, then tier / vertical stacking.
+        renderer._layout_headers(figure)
+    np.testing.assert_allclose(positions(), first, atol=0.5)
+    for _ in range(2):
         resolve_header_collisions(figure, renderer._header_labels)
+        renderer._layout_headers(figure)
     np.testing.assert_allclose(positions(), first, atol=0.5)
 
     renderer.export_framing = ExportFramingConfig(page_preset="letter_portrait", export_dpi=72)

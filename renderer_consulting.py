@@ -19,7 +19,7 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.patches import FancyArrow, Rectangle
 from matplotlib.ticker import Formatter, FuncFormatter, Locator, MultipleLocator
-from matplotlib.transforms import blended_transform_factory, offset_copy
+from matplotlib.transforms import offset_copy
 from shapely.geometry import LineString
 from shapely.geometry import Polygon as ShapelyPolygon
 
@@ -29,6 +29,7 @@ from models import ConsultingTitleBlock, VerticalGradient, WaterLevel
 from render_theme import (
     CONSULTING_COLUMN_FILL,
     CONSULTING_FIGURE_BG,
+    CONSULTING_NM_COLOR,
     CONSULTING_SURFACE_COLOR,
     CONSULTING_WATER_COLOR,
     DEFAULT_CONSULTING_NOTES,
@@ -50,9 +51,12 @@ from renderer_common import (
     UNLOGGED_FILL_COLOR,
     UNLOGGED_LEGEND_LABEL,
     add_ve_caption,
+    fitted_x_locators,
     legend_swatch_hatch,
     release_twins,
     settle_figure_layout,
+    water_status_legend_label,
+    water_status_texts,
 )
 from stratigraphy import GeologicalPolygon
 
@@ -331,8 +335,13 @@ def map_scale_box(
     aspect = y_span / x_span if exact_ve and y_span > 0.0 else None
     need_w = x_span * _INCHES_PER_METRE / float(ratio)
     need_h = need_w * aspect if aspect is not None else frame_h
+    # Auto VE fills the frame height but never compresses the vertical:
+    # below 1x the scale doesn't fit and the fallback is held at 1x.
+    unit_aspect = y_span / x_span if not exact_ve and y_span > 0.0 else None
     slack = 1.0 + _MAP_SCALE_FIT_TOLERANCE
-    if need_w > frame_w * slack or need_h > frame_h * slack:
+    if unit_aspect is not None and need_w * unit_aspect > frame_h * slack:
+        status = "no_fit"
+    elif need_w > frame_w * slack or need_h > frame_h * slack:
         status = "no_fit"
     elif need_w < min_fraction * frame_w:
         status = "too_small"
@@ -347,6 +356,8 @@ def map_scale_box(
                 height = frame_w * aspect
             else:
                 width = frame_h / aspect
+        elif unit_aspect is not None and frame_w * unit_aspect > frame_h:
+            width = frame_h / unit_aspect
     x0 = fx0 + 0.5 * (frame_w - width) / fig_w
     y0 = fy0 + 0.5 * (frame_h - height) / fig_h
     printed = float(ratio) if status == "exact" else x_span * _INCHES_PER_METRE / width
@@ -801,6 +812,44 @@ class ConsultingLayoutMixin:
                     y_min = min(y_min, sample_y)
                     y_max = max(y_max, sample_y)
         ax.set_ylim(y_min - y_pad, y_max + y_pad)
+        ax.figure._css_last_hole_room = {
+            "hole_summary": hole_summary,
+            "x_max": x_max,
+            "track_half": track_half,
+            "span": span,
+            "right": x_max + x_pad,
+        }
+
+    def _refresh_last_hole_label_room(self, figure: Figure) -> None:
+        """Re-size the last hole's label room for the frame on this page.
+
+        The x range is set at the render size before the y range; once both
+        are known (and after an export page resize) the room is recomputed
+        from the real frame, including the height-limited exact-VE box. The
+        room is section distance, so the scale bar, exact VE and map scale
+        stay true. Only ever widens the stock range.
+        """
+        info = getattr(figure, "_css_last_hole_room", None)
+        axes = getattr(figure, "_css_main_axes", None)
+        if not info or not axes:
+            return
+        ax = axes[0]
+        if isinstance(getattr(ax, "apply_aspect", None), _MapScaleAspect):
+            return  # sized from the map scale in _install_map_scale
+        frame = ax.get_position(original=True)
+        width_in, height_in = (float(v) for v in figure.get_size_inches())
+        y0, y1 = ax.get_ylim()
+        room = self._last_hole_label_room(
+            ax,
+            info["hole_summary"],
+            info["span"],
+            frame_pt=(frame.width * width_in * 72.0, frame.height * height_in * 72.0),
+            y_span_stored=abs(float(y1) - float(y0)),
+        )
+        right = max(info["right"], info["x_max"] + info["track_half"] + room) if room else info["right"]
+        left, current = ax.get_xlim()
+        if abs(right - current) > 1e-9:
+            ax.set_xlim(left, right)
 
     def _draw_consulting_footers(self, fig: Figure) -> None:
         footer_y = 0.01
@@ -822,8 +871,10 @@ class ConsultingLayoutMixin:
 
     def _apply_report_grid(self, ax, ax_right=None, *, consulting: bool = False, x_major_step: float | None = None) -> None:
         ve = self.vertical_exaggeration
-        ax.xaxis.set_major_locator(MultipleLocator(x_major_step if x_major_step is not None else self.profile.x_major_grid_m))
         if not consulting:
+            ax.xaxis.set_major_locator(
+                MultipleLocator(x_major_step if x_major_step is not None else self.profile.x_major_grid_m)
+            )
             y_locator = MultipleLocator(max(ve, 0.5))
             ax.yaxis.set_major_locator(y_locator)
             if ax_right is not None:
@@ -842,7 +893,11 @@ class ConsultingLayoutMixin:
             axis_ax.yaxis.set_major_formatter(_TrueMetreFormatter(ve))
             axis_ax.tick_params(axis="y", which="major", labelsize=label_pt)
         ax.grid(True, which="major", color=REPORT_GRID_COLOR, alpha=REPORT_GRID_ALPHA, linewidth=0.6, zorder=0)
-        ax.xaxis.set_minor_locator(MultipleLocator(5.0))
+        # The client 10 / 20 m step (5 m minor) while its labels fit the drawn
+        # box; a coarser 1/2/5 step on a narrow exact-VE or map-scale box.
+        fitted_x_locators(
+            ax.xaxis, x_major_step if x_major_step is not None else self.profile.x_major_grid_m
+        )
         ax.grid(True, which="minor", color=REPORT_GRID_COLOR, alpha=0.45, linewidth=0.35, zorder=0)
         ax.tick_params(axis="both", which="major", labelsize=label_pt)
 
@@ -1135,17 +1190,14 @@ class ConsultingLayoutMixin:
         # Inside the plot width at the two corners; the hole-ID header pass
         # treats these as obstacles and steps the end headers aside. (In the
         # page margins a long "NORTHWEST" ran off the sheet.)
-        header_transform = blended_transform_factory(ax.transAxes, ax.figure.transFigure)
-        label_y = 0.992
-        if not getattr(self, "ve_auto", True):
-            # Exact VE: the plot box may sit lower than the page top; keep the
-            # labels the same distance above the box top as on a filled page.
-            top = ax.get_position(original=True).y1
-            gap_pt = (label_y - top) * ax.figure.get_size_inches()[1] * 72.0
-            header_transform = offset_copy(
-                ax.transAxes, fig=ax.figure, x=0.0, y=gap_pt, units="points"
-            )
-            label_y = 1.0
+        # A fixed distance (points) above the drawn box top, as the stock
+        # layout gives (0.992 of the page): pinned to the page top they ran
+        # into the printable margin, and stayed there when the margin fit or
+        # an exact-VE / map-scale box moved the plot down.
+        top = ax.get_position(original=True).y1
+        gap_pt = max((0.992 - top) * ax.figure.get_size_inches()[1] * 72.0, 8.0)
+        header_transform = offset_copy(ax.transAxes, fig=ax.figure, x=0.0, y=gap_pt, units="points")
+        label_y = 1.0
         start_transform = offset_copy(header_transform, fig=ax.figure, x=2.0, y=0.0, units="points")
         end_transform = offset_copy(header_transform, fig=ax.figure, x=-2.0, y=0.0, units="points")
         if start_primary or start_secondary:
@@ -1468,6 +1520,7 @@ class ConsultingLayoutMixin:
                 fontsize=self._fs(8),
                 color=LABEL_COLOR,
                 transform=ax_center.transAxes,
+                fit_axes=ax_center,
             )
 
         notes = title_block.notes or DEFAULT_CONSULTING_NOTES
@@ -1925,10 +1978,22 @@ class ConsultingLayoutMixin:
                     },
                 )
             )
-        if getattr(self, "_has_pinch_out", False) and self.profile.show_pinch_out_legend:
+        status = water_status_texts(self, ax.figure)
+        if status:
+            # The grey NM / DRY water notes, keyed by a sample of their text.
             entries.append(
                 (
-                    "line",
+                    "status_text",
+                    water_status_legend_label(status, upper=True),
+                    {"color": CONSULTING_NM_COLOR, "sample": " / ".join(status)},
+                )
+            )
+        if getattr(self, "_has_pinch_out", False):
+            # Dashed-outline faded wedges are drawn: always key them (the
+            # profile flag only hid a symbol the sheet showed unexplained).
+            entries.append(
+                (
+                    "pinch_out",
                     "INFERRED PINCH-OUT",
                     {"color": LABEL_COLOR, "linestyle": "--"},
                 )
@@ -2085,6 +2150,36 @@ class ConsultingLayoutMixin:
                         clip_on=True,
                     )
                     marker_line.set_clip_path(clip_rect)
+                elif kind == "pinch_out":
+                    wedge = Rectangle(
+                        (col_left, y - swatch_h * 0.55),
+                        swatch_w,
+                        swatch_h,
+                        facecolor="#D1D5DB",
+                        alpha=0.6,
+                        edgecolor=LABEL_COLOR,
+                        linestyle="--",
+                        linewidth=0.8,
+                        transform=ax.transAxes,
+                        clip_on=True,
+                    )
+                    ax.add_patch(wedge)
+                    wedge.set_clip_path(clip_rect)
+                elif kind == "status_text":
+                    status_sample = ax.text(
+                        col_left,
+                        y,
+                        style["sample"],
+                        fontsize=font_size * 0.9,
+                        fontweight="bold",
+                        va="center",
+                        ha="left",
+                        color=style["color"],
+                        transform=ax.transAxes,
+                        clip_on=True,
+                        gid="water-status-legend-sample",
+                    )
+                    status_sample.set_clip_path(clip_rect)
                 elif kind == "line":
                     (line,) = ax.plot(
                         [col_left, col_left + 0.03],
@@ -2392,8 +2487,17 @@ class ConsultingLayoutMixin:
         span: float,
         *,
         map_scale: float | None = None,
+        frame_pt: tuple[float, float] | None = None,
+        y_span_stored: float | None = None,
     ) -> float:
         """Data-x room right of the last column for its chemistry values (0 if none).
+
+        ``frame_pt`` / ``y_span_stored`` (the plot frame in points and the
+        y-limit span in stored units) give the height-limited case: an exact
+        VE box (or auto VE held at 1x) narrower than its frame draws x at
+        ``y_span_stored / frame_h`` metres per point, so the label room in
+        metres is that times the label width (the frame-width estimate
+        alone left a 12 %-wide box no room and its values were dropped).
 
         The last hole's values print to its right: leave room for a ~40 pt
         label inside the frame (they were shrunk against the right frame line
@@ -2430,7 +2534,11 @@ class ConsultingLayoutMixin:
         column_lines = max(0.7 * height_in * 72.0 / 11.0, 1.0)
         columns = min(3, max(1, math.ceil(last_readings / column_lines)))
         label_pt = 44.0 * columns
+        if frame_pt is not None and frame_pt[0] > label_pt:
+            axes_width_pt = float(frame_pt[0])
         room = label_pt * max(span, 1.0) / max(axes_width_pt - label_pt, 1.0)
+        if not map_scale and frame_pt is not None and y_span_stored and frame_pt[1] > 0.0:
+            room = max(room, label_pt * abs(float(y_span_stored)) / float(frame_pt[1]))
         if map_scale:
             # At an exact map scale the box is narrower than the frame-filling
             # estimate: the same points of label room are more metres. The
@@ -2456,6 +2564,7 @@ class ConsultingLayoutMixin:
             main_ax.apply_aspect()
             if twin_ax is not None and twin_ax.get_axes_locator() is not None:
                 twin_ax.apply_aspect(twin_ax.get_axes_locator()(twin_ax, renderer))
+        self._refresh_last_hole_label_room(figure)
         width_px = figure.bbox.width
         pad_px = 2.0 * figure.dpi / 72.0
         params = figure.subplotpars

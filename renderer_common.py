@@ -69,16 +69,18 @@ def measured_vertical_exaggeration(ax, storage_ve: float = 1.0) -> float | None:
 
     ``storage_ve`` is the factor the y data were multiplied by before plotting.
     Uses the axes' active (aspect-applied) box, so it is exact at draw time.
+    Measured in display pixels: during a ``bbox_inches="tight"`` save
+    matplotlib temporarily changes the figure size while the axes fractions
+    stay relative to the original page, so fractions x page inches were wrong.
     """
     figure = ax.figure
     if figure is None:
         return None
     if ax.get_axes_locator() is None:
         ax.apply_aspect()
-    pos = ax.get_position(original=False)
-    width_in, height_in = (float(v) for v in figure.get_size_inches())
-    box_w = pos.width * width_in
-    box_h = pos.height * height_in
+    box = ax.get_window_extent()
+    box_w = float(box.width)
+    box_h = float(box.height)
     x0, x1 = ax.get_xlim()
     y0, y1 = ax.get_ylim()
     dx = abs(float(x1) - float(x0))
@@ -162,6 +164,7 @@ class VECaptionText(Text):
         chosen_ve: float | None,
         style: str = "consulting",
         template: str = "{ve}",
+        fit_axes=None,
         **kwargs,
     ) -> None:
         self._ve_main_ax = main_ax
@@ -170,8 +173,21 @@ class VECaptionText(Text):
         self._ve_chosen = chosen_ve
         self._ve_style = style
         self._ve_template = template
+        # Shrink (never grow) to stay inside this panel's width.
+        self._ve_fit_axes = fit_axes
         super().__init__(x, y, "", **kwargs)
+        self._ve_base_size = float(self.get_fontsize())
         self.refresh_ve_text()
+
+    def _fit_to_panel(self, renderer=None) -> None:
+        panel = getattr(self, "_ve_fit_axes", None)
+        if panel is None:
+            return
+        self.set_fontsize(self._ve_base_size)
+        limit = 0.98 * float(panel.bbox.width)
+        width = float(Text.get_window_extent(self, renderer).width)
+        if limit > 0.0 and width > limit:
+            self.set_fontsize(max(5.0, self._ve_base_size * limit / width))
 
     def current_ve(self) -> float | None:
         if not self._ve_auto:
@@ -187,12 +203,84 @@ class VECaptionText(Text):
     def get_window_extent(self, renderer=None, dpi=None):
         if self._ve_auto:
             self.refresh_ve_text()
+        self._fit_to_panel(renderer)
         return super().get_window_extent(renderer=renderer, dpi=dpi)
 
     def draw(self, renderer) -> None:
         if self._ve_auto:
             self.refresh_ve_text()
+        self._fit_to_panel(renderer)
         super().draw(renderer)
+
+
+class VECaptionAnnotation(Annotation, VECaptionText):
+    """:class:`VECaptionText` placed like an annotation (e.g. under the axes)."""
+
+    def __init__(
+        self,
+        xy,
+        *,
+        main_ax,
+        storage_ve: float,
+        auto: bool,
+        chosen_ve: float | None,
+        style: str = "consulting",
+        template: str = "{ve}",
+        **kwargs,
+    ) -> None:
+        self._ve_main_ax = main_ax
+        self._ve_storage = float(storage_ve)
+        self._ve_auto = bool(auto)
+        self._ve_chosen = chosen_ve
+        self._ve_style = style
+        self._ve_template = template
+        Annotation.__init__(self, "", xy, **kwargs)
+        self.refresh_ve_text()
+
+    def get_window_extent(self, renderer=None):
+        if self._ve_auto:
+            self.refresh_ve_text()
+        return Annotation.get_window_extent(self, renderer)
+
+    def draw(self, renderer) -> None:
+        if self._ve_auto:
+            self.refresh_ve_text()
+        Annotation.draw(self, renderer)
+
+
+# gid of the chemistry threshold key hung under the distance label.
+THRESHOLD_KEY_GID = "chemistry-threshold-key"
+
+
+def below_axes_anchor(ax):
+    """Callable anchor: the axes' x range, bottomed under every x-axis text.
+
+    The bottom is the lowest of the axes frame, its tick labels, the x label,
+    a figure ``supxlabel`` and the chemistry threshold key, so an annotation
+    placed at ``(x, 0)`` of it sits in the clear row below all of them and
+    follows the axes through page resizes (evaluated at draw time).
+    """
+    from matplotlib.transforms import Bbox
+
+    def _bbox(renderer):
+        frame = ax.get_window_extent(renderer)
+        bottom = frame.y0
+        tight = ax.xaxis.get_tightbbox(renderer)
+        if tight is not None and tight.height > 0:
+            bottom = min(bottom, tight.y0)
+        extras = [ax.xaxis.label, getattr(ax.figure, "_supxlabel", None)]
+        extras += [a for a in ax.artists if a.get_gid() == THRESHOLD_KEY_GID]
+        for artist in extras:
+            if artist is None or not artist.get_visible():
+                continue
+            if isinstance(artist, Text) and not artist.get_text():
+                continue
+            box = artist.get_window_extent(renderer)
+            if box.height > 0:
+                bottom = min(bottom, box.y0)
+        return Bbox.from_extents(frame.x0, bottom, frame.x1, frame.y1)
+
+    return _bbox
 
 
 def add_ve_caption(container, x: float, y: float, **kwargs) -> VECaptionText:
@@ -221,11 +309,17 @@ def apply_ve_aspect(ax, *, exact: bool, twins: Sequence = (), anchor: str = "C")
     shrinks inside its frame region, anchored at ``anchor``. Twinned axes (the
     consulting right-hand RL axis) are released from matplotlib's twin group
     (which forbids adjustable "box") and follow the main axes box instead.
-    Auto mode keeps ``aspect="auto"`` (the axes fill their frame).
+    Auto mode keeps ``aspect="auto"`` (the axes fill their frame) unless that
+    would compress the vertical (VE < 1): the box is then narrowed (centred)
+    to exactly 1x — see :class:`AutoVEAspect`.
     """
     if not exact:
         ax.set_aspect("auto")
+        release_twins(ax, twins)
+        ax.apply_aspect = AutoVEAspect(ax)
         return
+    if isinstance(ax.__dict__.get("apply_aspect"), AutoVEAspect):
+        del ax.apply_aspect
     release_twins(ax, twins)
     ax.set_adjustable("box")
     ax.set_aspect(1.0, adjustable="box", anchor=anchor)
@@ -252,6 +346,580 @@ def release_twins(ax, twins: Sequence = ()) -> None:
         twin.set_adjustable("box")
         twin.set_aspect("auto")
         twin.set_axes_locator(_TransformedBoundsLocator([0, 0, 1, 1], ax.transAxes))
+
+
+class AutoVEAspect:
+    """``Axes.apply_aspect`` for auto VE: fill the frame, but never below 1x.
+
+    Fit-to-page on a short, wide page (a short section on tabloid) gave a
+    measured VE under 1 — the vertical *compressed*. A geological section is
+    never drawn compressed, so the box is narrowed (centred in its frame) to
+    exactly 1x instead, and the measured caption then reads "no vertical
+    exaggeration". Data are stored at true scale in auto mode (factor 1).
+    A position handed in by an axes locator (tight-bbox saves freeze the
+    drawn box) is used as is.
+    """
+
+    def __init__(self, ax) -> None:
+        self.ax = ax
+
+    def __call__(self, position=None) -> None:
+        from matplotlib.axes import Axes
+        from matplotlib.transforms import Bbox
+
+        ax = self.ax
+        if position is not None:
+            Axes.apply_aspect(ax, position)
+            return
+        frame = ax.get_position(original=True)
+        Axes.apply_aspect(ax, frame)
+        figure = ax.figure
+        if figure is None:
+            return
+        width_in, height_in = (float(v) for v in figure.get_size_inches())
+        box_w = frame.width * width_in
+        box_h = frame.height * height_in
+        x0, x1 = ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+        dx = abs(float(x1) - float(x0))
+        dy = abs(float(y1) - float(y0))
+        if min(box_w, box_h, dx, dy) <= 0.0 or not np.isfinite(dx + dy):
+            return
+        ve = (box_h / dy) / (box_w / dx)
+        if ve >= 1.0 - 1e-9:
+            return
+        width = frame.width * ve
+        ax._set_position(
+            Bbox.from_bounds(frame.x0 + 0.5 * (frame.width - width), frame.y0, width, frame.height),
+            which="active",
+        )
+
+
+# --- Page margins ------------------------------------------------------------
+
+# Least printable margin (inches) every exported page keeps clear on all four
+# sides; the export framing margins raise it per side.
+MIN_PRINT_MARGIN_IN = 0.25
+
+
+def page_margins_in(framing) -> tuple[float, float, float, float]:
+    """``(left, right, top, bottom)`` printable margins for an export page."""
+    if framing is None:
+        return (MIN_PRINT_MARGIN_IN,) * 4
+    return tuple(
+        max(MIN_PRINT_MARGIN_IN, float(getattr(framing, f"margin_{side}_in", 0.0) or 0.0))
+        for side in ("left", "right", "top", "bottom")
+    )
+
+
+def figure_content_bbox_in(fig, renderer=None):
+    """Union of every drawn artist's extent, in inches (like ``bbox_inches="tight"``)."""
+    if renderer is None:
+        renderer = fig.canvas.get_renderer()
+    return fig.get_tightbbox(renderer)
+
+
+# --- X ticks that fit their box ------------------------------------------------
+
+
+class FittedStepLocator(Locator):
+    """Major x ticks at ``base`` m, or a coarser 1/2/5 step when labels would touch.
+
+    A fixed 10 m step printed "0 102030" on a narrow exact-VE / map-scale box.
+    The step is chosen at draw time from the drawn axes width and the measured
+    width of the widest label, so every page size and box lock is covered.
+    ``minor=True`` gives the matching unlabelled step (5 m up to a 20 m major).
+    """
+
+    def __init__(self, base: float | None = None, *, minor: bool = False, pad_pt: float = 6.0) -> None:
+        self._base = float(base) if base and base > 0 else None
+        self._minor = minor
+        self._pad_pt = float(pad_pt)
+        self._major_ref: FittedStepLocator | None = None
+
+    @staticmethod
+    def _steps_from(start: float):
+        exponent = 10.0 ** np.floor(np.log10(max(start, 1e-9)))
+        while True:
+            for mantissa in (1.0, 2.0, 2.5, 5.0):
+                step = mantissa * exponent
+                if step >= start * (1.0 - 1e-9):
+                    yield step
+            exponent *= 10.0
+
+    def _label_font(self):
+        ticks = getattr(self.axis, "majorTicks", None) or []
+        if ticks:
+            return ticks[0].label1.get_fontproperties()
+        from matplotlib.font_manager import FontProperties
+
+        return FontProperties()
+
+    def major_step(self, vmin: float, vmax: float) -> float:
+        axes = self.axis.axes
+        figure = axes.figure
+        span = abs(float(vmax) - float(vmin))
+        width_px = float(axes.bbox.width)
+        if span <= 0.0 or width_px <= 0.0 or figure is None:
+            return self._base or 1.0
+        try:
+            renderer = figure.canvas.get_renderer()
+        except Exception:  # pragma: no cover - canvas without a renderer
+            return self._base or 1.0
+        prop = self._label_font()
+        formatter = self.axis.get_major_formatter()
+        px_per_unit = width_px / span
+        pad_px = self._pad_pt * figure.dpi / 72.0
+        start = self._base or _round_step_up(span / 12.0)
+        low, high = sorted((float(vmin), float(vmax)))
+        step = start
+        for count, step in enumerate(self._steps_from(start)):
+            values = np.arange(np.ceil(low / step - 1e-9) * step, high + step * 1e-6, step)
+            widest = 0.0
+            for value in values[:200]:
+                text = formatter(value) if callable(formatter) else f"{value:g}"
+                if text:
+                    widest = max(widest, renderer.get_text_width_height_descent(str(text), prop, ismath=False)[0])
+            if step * px_per_unit >= widest + pad_px or step >= span or count > 30:
+                break
+        return float(step)
+
+    def __call__(self):
+        vmin, vmax = self.axis.get_view_interval()
+        return self.tick_values(vmin, vmax)
+
+    def tick_values(self, vmin, vmax):
+        low, high = sorted((float(vmin), float(vmax)))
+        major = self._major_ref or self
+        step = major.major_step(low, high)
+        if self._minor:
+            if major._base is None:
+                step = step / 2.0
+            else:
+                step = 5.0 if step <= 20.0 + 1e-9 else step / 5.0
+        first = np.ceil(low / step - 1e-9) * step
+        values = np.arange(first, high + step * 1e-6, step)
+        return self.raise_if_exceeds(np.round(values, 9) + 0.0)
+
+
+def fitted_x_locators(axis, base: float | None) -> tuple[FittedStepLocator, FittedStepLocator]:
+    """Install a fitted major / minor x locator pair on ``axis``; returns them."""
+    major = FittedStepLocator(base)
+    minor = FittedStepLocator(base, minor=True)
+    minor._major_ref = major
+    major.set_axis(axis)
+    minor.set_axis(axis)
+    axis.set_major_locator(major)
+    axis.set_minor_locator(minor)
+    return major, minor
+
+
+def _round_step_up(value: float) -> float:
+    exponent = 10.0 ** np.floor(np.log10(max(value, 1e-9)))
+    for mantissa in (1.0, 2.0, 2.5, 5.0, 10.0):
+        if mantissa * exponent >= value * (1.0 - 1e-9):
+            return mantissa * exponent
+    return 10.0 * exponent  # pragma: no cover
+
+
+# --- Hole-ID header stacking ------------------------------------------------------
+#
+# The first header pass (``renderer_water.resolve_header_collisions``) nudges
+# each header sideways or one tier out. On a short section at exact VE (holes a
+# few millimetres apart on the page) that is not enough and long IDs overprint.
+# ``stack_hole_headers`` is the fallback: tiers outward with a leader tick down
+# to the hole, wrapping "A / B" IDs, smaller text, and finally vertical text.
+
+_HEADER_MAX_TIERS = 3
+_HEADER_SHRINK = (1.0, 0.85, 0.75)
+_HEADER_MIN_PT = 6.0
+_HEADER_PAD_PT = 1.5
+
+
+def _header_extent(text, renderer):
+    box = text.get_window_extent(renderer)
+    patch = text.get_bbox_patch()
+    if patch is not None:
+        text.update_bbox_position_size(renderer)
+        from matplotlib.transforms import Bbox
+
+        box = Bbox.union([box, patch.get_window_extent(renderer)])
+    return box
+
+
+def _boxes_overlap(a, b, pad: float = 0.0) -> bool:
+    return a.x0 < b.x1 + pad and b.x0 < a.x1 + pad and a.y0 < b.y1 + pad and b.y0 < a.y1 + pad
+
+
+def header_overlaps(fig, headers, renderer=None, *, pad_pt: float = 0.5) -> list[tuple[int, int]]:
+    """Index pairs of visible headers whose (framed) boxes touch."""
+    if renderer is None:
+        renderer = fig.canvas.get_renderer()
+    pad = pad_pt * fig.dpi / 72.0
+    shown = [t for t in headers if t.get_visible() and t.get_text().strip()]
+    boxes = [_header_extent(t, renderer) for t in shown]
+    return [
+        (i, j)
+        for i in range(len(boxes))
+        for j in range(i + 1, len(boxes))
+        if _boxes_overlap(boxes[i], boxes[j], pad)
+    ]
+
+
+def _header_leader_transform(ax, outward: float):
+    """x: data; y: points from the axes' top (or bottom) edge."""
+    from matplotlib.transforms import Affine2D, ScaledTranslation, blended_transform_factory
+
+    edge = (0.0, 1.0) if outward > 0 else (0.0, 0.0)
+    y_trans = Affine2D().scale(1.0 / 72.0) + ax.figure.dpi_scale_trans + ScaledTranslation(*edge, ax.transAxes)
+    return blended_transform_factory(ax.transData, y_trans)
+
+
+def _remove_header_leaders(fig) -> None:
+    for line in fig.__dict__.pop("_css_header_leaders", []) or []:
+        try:
+            line.remove()
+        except (ValueError, NotImplementedError):  # pragma: no cover - already gone
+            pass
+
+
+def _outward(text) -> float:
+    """+1 for a header row above the plot (va bottom), -1 below it."""
+    return 1.0 if text.get_verticalalignment() == "bottom" else -1.0
+
+
+def _off_page(box, page, outward: float, *, horizontal: bool = False) -> bool:
+    """Header box past the page edge it grows toward.
+
+    Rows below the plot (section sheet) are exempt vertically: the sheet's
+    bottom fit makes room under whatever the header pass draws.
+    """
+    if horizontal and (box.x0 < page.x0 or box.x1 > page.x1):
+        return True
+    if outward > 0:
+        return box.y1 > page.y1
+    return False
+
+
+def _header_reads_as_own(text, renderer, page) -> bool:
+    """On the page and still over its own hole (the nudge pass may slide a
+    header 28 pt aside, onto a neighbour's column, with no leader)."""
+    box = _header_extent(text, renderer)
+    if box.x0 < page.x0 or box.x1 > page.x1:
+        return False
+    base = getattr(text, "_header_base", None)
+    transform = base[0] if base is not None else text.get_transform()
+    position = text.get_unitless_position()
+    anchor_x, base_y = (float(v) for v in transform.transform(position))
+    # Stepped a tier out with no leader: which column it names is a guess.
+    if abs(float(text.get_transform().transform(position)[1]) - base_y) > 0.5:
+        return False
+    return box.x0 - 1.0 <= anchor_x <= box.x1 + 1.0
+
+
+def restore_stacked_headers(headers) -> None:
+    """Undo ``stack_hole_headers`` text / size changes (before a fresh header pass)."""
+    for text in headers:
+        if not hasattr(text, "_header_stack_orig"):
+            text._header_stack_orig = (text.get_text(), float(text.get_fontsize()))
+        if getattr(text, "_header_stacked", False):
+            original_text, original_size = text._header_stack_orig
+            text.set_text(original_text)
+            text.set_fontsize(original_size)
+            text.set_rotation(getattr(text, "_header_base", (None, None, 0.0))[2])
+            text._header_stacked = False
+
+
+def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS) -> None:
+    """Make overlapping hole headers readable: tiers + leaders, wrap, shrink, rotate.
+
+    Runs after the first (nudging) header pass; a no-op when no two headers
+    touch and none leaves the page. Re-runnable (export page resizes): every
+    run starts from the drawn text, size and position.
+    """
+    from matplotlib.lines import Line2D
+    from matplotlib.transforms import offset_copy
+
+    headers = [t for t in headers if t.figure is fig and t.get_visible() and t.get_text().strip()]
+    _remove_header_leaders(fig)
+    restore_stacked_headers(headers)
+    if len(headers) < 2:
+        return
+    renderer = fig.canvas.get_renderer()
+    settle_figure_layout(fig)
+    page = fig.bbox
+    if not header_overlaps(fig, headers, renderer) and all(
+        _header_reads_as_own(t, renderer, page) for t in headers
+    ):
+        return
+
+    px_per_pt = fig.dpi / 72.0
+    pad = _HEADER_PAD_PT * px_per_pt
+    ordered = sorted(headers, key=lambda t: t.get_unitless_position()[0])
+    # The nudge pass's layout, kept when nothing here does better.
+    first_pass = [
+        (t.get_transform(), t.get_horizontalalignment(), t.get_rotation(), t.get_text(), t.get_fontsize())
+        for t in ordered
+    ]
+    first_cost = len(header_overlaps(fig, ordered, renderer)) + sum(
+        1
+        for t in ordered
+        if _off_page(_header_extent(t, renderer), page, _outward(t), horizontal=True)
+    )
+    base_states = []
+    for text in ordered:
+        base = getattr(text, "_header_base", None) or (
+            text.get_transform(),
+            text.get_horizontalalignment(),
+            text.get_rotation(),
+        )
+        text._header_base = base
+        base_states.append(base)
+    obstacles = _header_stack_obstacles(fig, renderer, headers)
+
+    def reset(text, base, *, label: str, size: float, rotation: float) -> None:
+        text.set_text(label)
+        text.set_fontsize(size)
+        text.set_transform(base[0])
+        text.set_horizontalalignment("center")
+        text.set_rotation(rotation)
+        text.set_rotation_mode("default")
+
+    def anchor_px(text) -> float:
+        return float(text.get_transform().transform(text.get_unitless_position())[0])
+
+    def try_tiers(labels, size) -> tuple[float, list[int]] | None:
+        placed: list = list(obstacles)
+        leaders: list[tuple[float, float, float]] = []
+        tiers: list[int] = []
+        for text, base, label in zip(ordered, base_states, labels, strict=True):
+            reset(text, base, label=label, size=size, rotation=0.0)
+            box0 = _header_extent(text, renderer)
+            outward = 1.0 if text.get_verticalalignment() == "bottom" else -1.0
+            step = box0.height + 1.0 * px_per_pt
+            x = anchor_px(text)
+            edge = box0.y0 if outward > 0 else box0.y1
+            chosen = None
+            for tier in range(max_tiers):
+                box = box0.translated(0.0, outward * tier * step)
+                if box.x0 < page.x0 or box.x1 > page.x1:
+                    shift = (page.x0 - box.x0 + pad) if box.x0 < page.x0 else (page.x1 - box.x1 - pad)
+                    box = box.translated(shift, 0.0)
+                if _off_page(box, page, outward):
+                    break
+                if any(_boxes_overlap(box, other, pad) for other in placed):
+                    continue
+                if tier:
+                    near = box.y0 if outward > 0 else box.y1
+                    lo, hi = sorted((edge, near))
+                    if any(o.x0 - pad < x < o.x1 + pad and o.y0 < hi and o.y1 > lo for o in placed):
+                        continue
+                if any(box.x0 - pad < lx < box.x1 + pad and box.y0 < ly1 and box.y1 > ly0 for lx, ly0, ly1 in leaders):
+                    continue
+                chosen = (tier, box)
+                break
+            if chosen is None:
+                return None
+            tier, box = chosen
+            placed.append(box)
+            if tier:
+                near = box.y0 if outward > 0 else box.y1
+                leaders.append((x, *sorted((edge, near))))
+            tiers.append(tier)
+        return 0.0, tiers
+
+    originals = [t._header_stack_orig for t in ordered]
+    base_size = max(size for _label, size in originals)
+    wrapped = [label.replace(" / ", " /\n") for label, _size in originals]
+    plain = [label for label, _size in originals]
+    attempts = [(plain, 1.0)]
+    if wrapped != plain:
+        attempts.append((wrapped, 1.0))
+    attempts += [(wrapped, f) for f in _HEADER_SHRINK[1:]]
+    for labels, factor in attempts:
+        size = max(_HEADER_MIN_PT, base_size * factor)
+        result = try_tiers(labels, size)
+        if result is None:
+            continue
+        _apply_tiers(fig, ordered, base_states, labels, size, result[1], renderer, reset, Line2D, offset_copy)
+        return
+    # Vertical text (CAD convention) when every header clears its neighbours.
+    rotated_cost = None
+    for factor in _HEADER_SHRINK:
+        size = max(_HEADER_MIN_PT, base_size * factor)
+        for text, base, (label, _s) in zip(ordered, base_states, originals, strict=True):
+            reset(text, base, label=label, size=size, rotation=90.0)
+        boxes = [_header_extent(t, renderer) for t in ordered]
+        cost = sum(
+            1
+            for i in range(len(boxes))
+            for j in range(i + 1, len(boxes))
+            if _boxes_overlap(boxes[i], boxes[j], 0.5 * pad)
+        ) + sum(1 for t, box in zip(ordered, boxes, strict=True) if _off_page(box, page, _outward(t)))
+        if rotated_cost is None or cost < rotated_cost[0]:
+            rotated_cost = (cost, size)
+        if cost == 0:
+            for text in ordered:
+                text._header_stacked = True
+            return
+    # Holes closer than a text height: one row of headers fanned out above
+    # the frame in hole order, each joined to its hole by a leader.
+    margins = getattr(fig, "_css_page_margins_in", None) or (0.05,) * 4
+    for labels, factor in attempts:
+        size = max(_HEADER_MIN_PT, base_size * factor)
+        if _apply_fan(fig, ordered, base_states, labels, size, renderer, reset, obstacles, margins):
+            return
+    _cost, size = rotated_cost
+    if first_cost <= _cost:
+        for text, (transform, ha, rotation, label, fontsize) in zip(ordered, first_pass, strict=True):
+            text.set_transform(transform)
+            text.set_horizontalalignment(ha)
+            text.set_rotation(rotation)
+            text.set_text(label)
+            text.set_fontsize(fontsize)
+        return
+    for text, base, (label, _s) in zip(ordered, base_states, originals, strict=True):
+        reset(text, base, label=label, size=size, rotation=90.0)
+        text._header_stacked = True
+
+
+def _apply_fan(fig, ordered, base_states, labels, size, renderer, reset, obstacles, margins) -> bool:
+    """One row of headers spread in hole order with straight leaders; False if it can't fit."""
+    from matplotlib.transforms import blended_transform_factory, offset_copy
+
+    px_per_pt = fig.dpi / 72.0
+    gap = 4.0 * px_per_pt
+    page = fig.bbox
+    lo = page.x0 + margins[0] * fig.dpi
+    hi = page.x1 - margins[1] * fig.dpi
+    boxes0, anchors = [], []
+    for text, base, label in zip(ordered, base_states, labels, strict=True):
+        reset(text, base, label=label, size=size, rotation=0.0)
+        boxes0.append(_header_extent(text, renderer))
+        anchors.append(float(text.get_transform().transform(text.get_unitless_position())[0]))
+    widths = [box.width + gap for box in boxes0]
+    if sum(widths) > hi - lo:
+        return False
+    centres = list(anchors)
+    for index in range(1, len(centres)):
+        centres[index] = max(centres[index], centres[index - 1] + 0.5 * (widths[index - 1] + widths[index]))
+    left_edge = centres[0] - 0.5 * widths[0]
+    right_edge = centres[-1] + 0.5 * widths[-1]
+    shift = 0.5 * (min(anchors) + max(anchors)) - 0.5 * (left_edge + right_edge)
+    shift = max(shift, lo - (left_edge))
+    shift = min(shift, hi - right_edge)
+    centres = [c + shift for c in centres]
+    outward = 1.0 if ordered[0].get_verticalalignment() == "bottom" else -1.0
+    # Steeper leaders for a wider fan (flat ones read as underlines).
+    spread_pt = max(abs(c - a) for c, a in zip(centres, anchors, strict=True)) / px_per_pt
+    lift_pt = max(box.height for box in boxes0) / px_per_pt + min(max(8.0, 0.12 * spread_pt), 30.0)
+    placed = []
+    for box, centre, anchor in zip(boxes0, centres, anchors, strict=True):
+        moved = box.translated(centre - anchor, outward * lift_pt * px_per_pt)
+        if _off_page(moved, page, outward):
+            return False
+        if any(_boxes_overlap(moved, other, 0.0) for other in obstacles):
+            return False
+        placed.append(moved)
+    leaders = []
+    for text, base, box0, centre, anchor, moved in zip(
+        ordered, base_states, boxes0, centres, anchors, placed, strict=True
+    ):
+        dx_pt = (centre - anchor) / px_per_pt
+        text.set_transform(offset_copy(base[0], fig=fig, x=dx_pt, y=outward * lift_pt, units="points"))
+        text._header_stacked = True
+        ax = text.axes
+        if ax is None:
+            continue
+        edge_px = ax.bbox.y1 if outward > 0 else ax.bbox.y0
+        near_px = moved.y0 if outward > 0 else moved.y1
+        leader = ax.annotate(
+            "",
+            xy=(float(text.get_unitless_position()[0]), 1.0 if outward > 0 else 0.0),
+            xycoords=blended_transform_factory(ax.transData, ax.transAxes),
+            xytext=(dx_pt, (near_px - edge_px) / px_per_pt - outward * 0.5),
+            textcoords="offset points",
+            arrowprops={
+                "arrowstyle": "-",
+                "color": text.get_color(),
+                "lw": 0.5,
+                "shrinkA": 0.0,
+                "shrinkB": 0.0,
+            },
+            annotation_clip=False,
+            zorder=text.get_zorder(),
+        )
+        leader.set_gid("hole-header-leader")
+        leaders.append(leader)
+    fig._css_header_leaders = leaders
+    return True
+
+
+def _apply_tiers(fig, ordered, base_states, labels, size, tiers, renderer, reset, line_cls, offset_copy) -> None:
+    px_per_pt = fig.dpi / 72.0
+    leaders = []
+    page = fig.bbox
+    for text, base, label, tier in zip(ordered, base_states, labels, tiers, strict=True):
+        reset(text, base, label=label, size=size, rotation=0.0)
+        text._header_stacked = True
+        box0 = _header_extent(text, renderer)
+        outward = 1.0 if text.get_verticalalignment() == "bottom" else -1.0
+        step_pt = (box0.height + px_per_pt) / px_per_pt
+        dx_pt = 0.0
+        box = box0.translated(0.0, outward * tier * step_pt * px_per_pt)
+        if box.x0 < page.x0:
+            dx_pt = (page.x0 - box.x0) / px_per_pt + _HEADER_PAD_PT
+        elif box.x1 > page.x1:
+            dx_pt = (page.x1 - box.x1) / px_per_pt - _HEADER_PAD_PT
+        if tier or dx_pt:
+            text.set_transform(
+                offset_copy(base[0], fig=fig, x=dx_pt, y=outward * tier * step_pt, units="points")
+            )
+        if not tier:
+            continue
+        ax = text.axes
+        if ax is None:
+            continue
+        edge_px = ax.bbox.y1 if outward > 0 else ax.bbox.y0
+        start_px = box0.y0 if outward > 0 else box0.y1
+        end_px = start_px + outward * tier * step_pt * px_per_pt
+        start_pt = (start_px - edge_px) / px_per_pt
+        end_pt = (end_px - edge_px) / px_per_pt
+        x_data = float(text.get_unitless_position()[0])
+        # A thin tick from the header row's home level (clear of the tick
+        # labels) over the hole out to the stepped header.
+        leader = line_cls(
+            [x_data, x_data],
+            [start_pt, end_pt - outward * 0.5],
+            transform=_header_leader_transform(ax, outward),
+            color=text.get_color(),
+            linewidth=0.5,
+            clip_on=False,
+            zorder=text.get_zorder(),
+        )
+        leader.set_gid("hole-header-leader")
+        ax.add_artist(leader)
+        leaders.append(leader)
+    fig._css_header_leaders = leaders
+
+
+def _header_stack_obstacles(fig, renderer, headers) -> list:
+    """Non-header axes text outside the plot frame (transect end labels, titles)."""
+    skip = {id(t) for t in headers}
+    boxes = []
+    for ax in fig.axes:
+        if not ax.get_visible():
+            continue
+        frame = ax.bbox
+        for artist in [*ax.texts, ax.title]:
+            if id(artist) in skip or not artist.get_visible() or not artist.get_text().strip():
+                continue
+            if isinstance(artist, Annotation):
+                continue
+            box = artist.get_window_extent(renderer)
+            if box.y0 >= frame.y1 - 1.0 or box.y1 <= frame.y0 + 1.0:
+                boxes.append(box)
+    return boxes
 
 
 # Column intervals drawn shorter than this (in inches on the output page) get a
@@ -873,6 +1541,120 @@ def settle_figure_layout(fig) -> None:
         return
     _draw_without_rendering_fast(fig)
     fig._css_settled_layout = (_figure_draw_count(fig), _layout_fingerprint(fig))
+
+
+# --- Chemistry / status legend keys for matplotlib legends ---------------------
+#
+# The consulting title-block legend draws its own keys; section sheets and the
+# chart use a matplotlib ``Legend``. These proxies give them the same keys: the
+# three G / O / R dots in threshold mode, the drawn marker in black / red mode,
+# or a sample value in its colour when values print without markers.
+
+
+class ThresholdDotsKey:
+    """Legend proxy: one dot per threshold band colour."""
+
+    def __init__(self, colors: Sequence[str], marker: str = "o") -> None:
+        self.colors = tuple(colors)
+        self.marker = marker
+
+
+class SampleTextKey:
+    """Legend proxy: a short sample text (``"120"``, ``"NM"``) in its colour."""
+
+    def __init__(self, text: str, color: str, *, fontweight: str = "normal") -> None:
+        self.text = str(text)
+        self.color = color
+        self.fontweight = fontweight
+
+
+class _ThresholdDotsHandler:
+    def legend_artist(self, legend, orig_handle, fontsize, handlebox):
+        from matplotlib.lines import Line2D
+
+        x0, y0 = handlebox.xdescent, handlebox.ydescent
+        width, height = handlebox.width, handlebox.height
+        count = max(len(orig_handle.colors), 1)
+        artists = []
+        for index, color in enumerate(orig_handle.colors):
+            dot = Line2D(
+                [x0 + width * (index + 0.5) / count],
+                [y0 + height / 2.0],
+                marker=orig_handle.marker,
+                markersize=5.0,
+                markerfacecolor=color,
+                markeredgecolor=color,
+                linestyle="none",
+                transform=handlebox.get_transform(),
+            )
+            dot.set_gid("parameter-legend-threshold-dots")
+            handlebox.add_artist(dot)
+            artists.append(dot)
+        return artists[0] if artists else None
+
+
+class _SampleTextHandler:
+    def legend_artist(self, legend, orig_handle, fontsize, handlebox):
+        sample = Text(
+            handlebox.xdescent + handlebox.width / 2.0,
+            handlebox.ydescent + handlebox.height / 2.0,
+            orig_handle.text,
+            ha="center",
+            va="center",
+            color=orig_handle.color,
+            fontsize=fontsize * 0.95,
+            fontweight=orig_handle.fontweight,
+            transform=handlebox.get_transform(),
+        )
+        handlebox.add_artist(sample)
+        return sample
+
+
+LEGEND_KEY_HANDLER_MAP = {ThresholdDotsKey: _ThresholdDotsHandler(), SampleTextKey: _SampleTextHandler()}
+
+
+def parameter_legend_keys(entries, *, draw_markers: bool, upper: bool = False) -> list[tuple[object, str]]:
+    """``(handle, label)`` per chemistry legend entry (``parameter_series_legend``)."""
+    from matplotlib.lines import Line2D
+
+    keys: list[tuple[object, str]] = []
+    for entry in entries or ():
+        label = str(entry.get("label") or entry.get("parameter") or "Parameter")
+        label = label.upper() if upper else label
+        marker = entry.get("marker") or "o"
+        if entry.get("threshold_colors"):
+            keys.append((ThresholdDotsKey(entry["threshold_colors"]), label))
+        elif entry.get("sample_text"):
+            color = entry.get("sample_color") or entry.get("color") or "#111827"
+            keys.append((SampleTextKey(entry["sample_text"], color), label))
+        else:
+            color = entry.get("sample_color") or entry.get("color") or "#111827"
+            handle = Line2D(
+                [], [], color=color, marker=marker if draw_markers else "o", markersize=6, linestyle="none"
+            )
+            keys.append((handle, label))
+    return keys
+
+
+def water_status_texts(renderer_obj, fig) -> list[str]:
+    """Distinct NM / DRY water-status notes drawn on ``fig`` (e.g. ``["NM", "DRY"]``)."""
+    notes = getattr(renderer_obj, "__dict__", {}).get("_water_status_notes") or {}
+    found: set[str] = set()
+    for annotation in notes.values():
+        if annotation is None or annotation.figure is not fig or not annotation.get_visible():
+            continue
+        for part in annotation.get_text().split(" / "):
+            if part.strip():
+                found.add(part.strip().upper())
+    order = {"NM": 0, "DRY": 1}
+    return sorted(found, key=lambda part: order.get(part, 2))
+
+
+def water_status_legend_label(parts: Sequence[str], *, upper: bool = False) -> str:
+    """``"NM / DRY — not measured / dry"`` for the status notes actually drawn."""
+    words = {"NM": "not measured", "DRY": "dry"}
+    label = " / ".join(parts) + " — " + " / ".join(words.get(p, p.lower()) for p in parts)
+    return label.upper() if upper else label
 
 
 class RendererGeometryMixin:

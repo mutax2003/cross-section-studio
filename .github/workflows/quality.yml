@@ -37,10 +37,22 @@ jobs:
             ingestion.py parsing.py parse_ops.py models.py constants.py \
             renderer.py renderer_common.py renderer_consulting.py renderer_chart.py \
             renderer_section_sheet.py render_profiles.py render_theme.py \
+            renderer_water.py renderer_chemistry.py hatch_patterns.py lithology_legend_sheet.py \
+            batch_export.py docx_export.py export_framing.py hydro_metrics.py \
+            app_menubar.py app_version.py app_identity.py app_styles.py \
             ai_quality.py ui_output_presets.py workbook_template.py \
             gwm_reference advantage_p2_reference \
             tests/test_streamlit_app.py tests/test_pipeline.py tests/test_ingestion.py \
-            tests/test_advantage_conversion.py
+            tests/test_advantage_conversion.py tests/test_vertical_exaggeration.py \
+            tests/test_lithology_legend_sheet.py tests/test_hatch_patterns.py \
+            tests/test_hatch_batch_parity.py tests/test_batch_export.py tests/test_export_framing.py \
+            tests/test_multi_section_workbook.py tests/test_unlogged_and_orphan_units.py \
+            tests/test_chart_layout_page.py tests/test_consulting_axis_ticks.py \
+            tests/test_consulting_scale_bar.py tests/test_water_series_collisions.py \
+            tests/test_chem_label_qa_round2.py tests/test_chem_label_qa_round3.py \
+            tests/test_chem_labels_right_of_column.py \
+            tests/test_chem_threshold_consistency_and_dense.py \
+            tests/test_chem_threshold_dots_and_last_hole.py
 
       - name: Engine coverage gate
         run: |

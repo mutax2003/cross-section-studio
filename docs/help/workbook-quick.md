@@ -23,7 +23,15 @@ Optional: `elevation_datum`, `inclination_deg`, `azimuth_deg`, `stick_up_m`.
 
 Depth intervals below collar: `hole_id`, `from_depth`, `to_depth`, `lithology_code`.
 
-Optional: `hatch_pattern`, `unit_order` (needed when the same code repeats in one hole).
+Optional: `hatch_pattern`, `unit_order` (1 = shallowest). You can usually leave `unit_order` blank: layers correlate by code, and when a hole repeats a code the app numbers the layers for you, lining all holes up into one site-wide sequence so the same layer gets the same number in every hole (sidebar **Number layers down each hole automatically**, on by default). Enter it only to force a correlation.
+
+Validate also checks the log:
+
+- **unit_order runs against depth** (a layer numbered higher than the one below it) — those layers are treated as crossing and drawn as pinch-outs; check the numbering.
+- **Zero-thickness interval** (`from_depth` = `to_depth`) — ignored in the fence; fix `to_depth` or delete the row.
+- **Logging gap** (no row over a depth range) — drawn grey and keyed **Not logged** in the legend.
+
+The first two count as warnings (fix them, or tick **Generate even if data checks found warnings**); logging gaps are listed but never block Generate.
 
 ## Optional sheets
 
@@ -39,6 +47,6 @@ Optional: `hatch_pattern`, `unit_order` (needed when the same code repeats in on
 | **Correlations** | Manual unit pairing between holes |
 | **Faults** / **Unconformities** | Profile-plane overlays |
 
-The multi-tab input template also includes **Project** (title-block metadata), **Instructions**, and an **Example** tab (reference only — not parsed).
+The multi-tab input template also includes **Project** (title-block metadata), **Instructions**, and an **Example** tab (reference only — not parsed). On the Project tab, `map_scale` (e.g. `1:1000`) sets the title-block map scale and `vertical_exaggeration` takes a number (e.g. `5`) or `auto` (fit page).
 
 Full column lists, field-export profiles, and advanced sheets: [workbook format](../workbook-format.md).

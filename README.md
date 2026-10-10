@@ -60,9 +60,15 @@ Validate / Configure guidance only (never changes geometry). Set `GROQ_API_KEY` 
 
 Full schemas: [`docs/workbook-format.md`](docs/workbook-format.md). Short in-app guide: Help → **Workbook & data entry**.
 
+Blank `unit_order` is filled from one site-wide unit sequence; Validate flags `unit_order` that runs against depth, zero-thickness rows and logging gaps (gaps draw grey as **Not logged** and never block Generate). Lithology colours follow legend template 261002 (`data/bh_log_lithology_legend.json`); the old Excel hex sheet only fills in codes 261002 doesn't list.
+
+### After Generate
+
+One amber **section notes** box lists what to check before issuing: polygon overlaps, crossing correlations (layers logged in opposite order), fence clipping, chemistry values with no room to print, and a title-block map scale that didn't fit the page (sheet marked **AS SHOWN**). The same notes go on the PDF's QA page. Details: Help → **Generate and exports**.
+
 ### Vertical exaggeration
 
-Sidebar **Vertical exaggeration** defaults to **Auto (fit page)**: the section fills its frame and every caption (consulting band, `V.E.` note, footer `VE:`) prints the true VE the printed figure ends up with, measured after final layout and re-measured for each export page (letter / tabloid, portrait / landscape), e.g. `VERTICAL EXAGGERATION ≈2.2×`. Choosing a number (1× true scale, 2×, 5×, 10×, 20×) draws exactly that VE on every page — the plot box shrinks inside its frame (centred) and the caption prints the chosen value. Workbook `Project.vertical_exaggeration` (`5`, or `auto`) seeds the choice. API: `build_cross_section(vertical_exaggeration=None)` = auto, a number = exact.
+Sidebar **Vertical exaggeration** defaults to **Auto (fit page)**: the section fills its frame and every caption (consulting band, `V.E.` note, footer `VE:`) prints the true VE the printed figure ends up with, measured after final layout and re-measured for each export page (letter / tabloid, portrait / landscape), e.g. `VERTICAL EXAGGERATION ≈2.2×`. Choosing a number (1× true scale, 2×, 5×, 10×, 20×) draws exactly that VE on every page — the plot box shrinks inside its frame (centred) and the caption prints the chosen value. Workbook `Project.vertical_exaggeration` (`5`, or `auto`) seeds the choice on upload; the **Chemistry columns** (P2) style is locked at exactly 1×. API: `build_cross_section(vertical_exaggeration=None)` = auto, a number = exact.
 
 ## Windows desktop
 

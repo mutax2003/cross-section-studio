@@ -1147,7 +1147,7 @@ def _render_import_settings(*, expanded: bool = False) -> tuple[str, str | None,
         st.session_state.auto_assign_unit_order = st.checkbox(
             "Number layers down each hole automatically",
             value=bool(st.session_state.get("auto_assign_unit_order", True)),
-            help="Orders layers 1, 2, 3… from the top of each hole when the workbook gives no layer order.",
+            help="When a hole repeats a code and the workbook gives no layer order, numbers layers across the whole site so matching layers line up between holes (your own unit_order values are kept).",
         )
         # Rarely needed; kept out of the way so a client-specific value is never
         # applied by default (blank = the detected format's own settings).

@@ -30,13 +30,16 @@ Inter-hole fills are a **rule-based fence** (linear contacts, midpoint pinch-out
 
 - **Section sheet (Strater-style)** — hatch legend on chart, ground surface.
 - **Consulting report (title block)** — footer title block, groundwater legend; consulting QA often **blocks export on polygon overlaps** by default — disable only after manual review.
+- **Chemistry columns (depth + lab values)** — P2-style sticks at exactly 1× VE (locked), red labels by default.
 - **Quick preview (chart)** — minimal chart for internal review.
+- With a title-block **Map scale** (e.g. `1:1000`) consulting sheets print at exactly that scale when it fits the page; otherwise the sheet is fitted, the SCALE row reads **AS SHOWN** and a section note gives the approximate printed scale (see **Help → Generate and exports**).
 
 ## Groundwater and chemistry overlays
 
 - Water table polylines and chemistry “fences” are **schematic connectors** between measured sticks — **not** a potentiometric surface or plume envelope. Figure footers append overlay disclaimers when those layers plot.
 - Optional Water column `status`: `measured` (default), `dry`, or `nm` (not measured). Prefer this over omitting rows when a well was visited but dry/NM.
-- Chemistry label colours: **All black**, **All red (client P2 style)**, or **Green / orange / red thresholds** (defaults green ≤ 100, orange 100–250, red > 250 in the parameter's units, e.g. chloride mg/kg — retune per parameter). The threshold key prints below the distance label. Turning on **interpolate chemistry between holes** draws depth-matched segments only; keep it off for P2 stick-style figures.
+- Chemistry label colours: **All black**, **All red (client P2 style)** (the default for **Chemistry columns**), or **Green / orange / red thresholds** (defaults green ≤ 100, orange 100–250, red > 250 in the parameter's units, e.g. chloride mg/kg — retune per site). Reading dots take the same colour as their values, and the threshold key prints below the distance label. If the orange limit is not above the green one there is no orange band: the key reads `green ≤ 50 · red > 50`. A workbook `label_color` always wins. Turning on **interpolate chemistry between holes** draws depth-matched segments only; keep it off for P2 stick-style figures.
+- Chemistry label style (**Label readability over hatched fills**): **Clear strip beside borehole** (default — values sit on a clean white strip right of the column), **Plain coloured text**, **White box**, **Coloured dot, black text**, or **Outlined (white halo) text**. Values stay beside their own borehole in depth order; a value moved off its reading gets a thin leader. Values with no room at the page scale are left off and listed in the section notes (markers stay).
 - When water connectors plot, adjacent measured heads may show a schematic **i=Δh/Δx** label. Validate warns if \|i\| is unrealistically large.
 
 ## Keyboard shortcuts

@@ -20,6 +20,8 @@ guards it.
 
 from __future__ import annotations
 
+import functools
+
 import matplotlib.hatch as mhatch
 import numpy as np
 from matplotlib.path import Path
@@ -280,3 +282,179 @@ def install() -> None:
         types.extend(_REPLACEMENTS.get(cls, (cls,)))
     types.append(TemplatePlus)
     mhatch._hatch_types[:] = types
+
+
+# --- Legend swatch marks ------------------------------------------------------
+#
+# A matplotlib hatch is anchored to the page, so a small legend swatch shows
+# whatever part of the 1 in cell happens to fall inside it: marks cut by the
+# border, a "+" reduced to a stub, or none at all on a short swatch. Legend
+# keys therefore draw the same hatch path explicitly: the identical marks at
+# the identical marks-per-inch (``get_path(hatch, 6)`` on a 1 in cell, exactly
+# what the backends tile in the section), with isolated marks kept only when
+# whole and the pattern centred in the swatch. Continuous line hatches
+# (``-``, ``|``, ``x``, gravel outlines) are clipped to the swatch instead.
+
+_ISOLATED_MARK_MAX_IN = 0.25  # a subpath group wider than this is a line hatch
+_MARK_PHASE_STEP_IN = 0.5 / 72.0
+
+
+def _subpaths(path: Path) -> list[tuple[np.ndarray, np.ndarray]]:
+    verts, codes = path.vertices, path.codes
+    if codes is None:
+        return [(verts, np.full(len(verts), Path.LINETO, dtype=Path.code_type))]
+    starts = list(np.flatnonzero(codes == Path.MOVETO)) + [len(codes)]
+    return [(verts[a:b], codes[a:b]) for a, b in zip(starts[:-1], starts[1:], strict=False) if b > a]
+
+
+def _mark_groups(path: Path) -> tuple[list[tuple[np.ndarray, np.ndarray]], list[tuple[np.ndarray, np.ndarray]]]:
+    """Split a hatch cell path into isolated marks (grouped by centre) and line pieces."""
+    marks: dict[tuple[float, float], list[tuple[np.ndarray, np.ndarray]]] = {}
+    lines: list[tuple[np.ndarray, np.ndarray]] = []
+    for verts, codes in _subpaths(path):
+        drawn = verts[codes != Path.CLOSEPOLY] if len(verts) > 1 else verts
+        lo, hi = drawn.min(axis=0), drawn.max(axis=0)
+        if float(np.max(hi - lo)) > _ISOLATED_MARK_MAX_IN:
+            lines.append((verts, codes))
+            continue
+        centre = tuple(np.round((lo + hi) / 2.0, 5))
+        marks.setdefault(centre, []).append((verts, codes))
+    groups = []
+    for parts in marks.values():
+        verts = np.concatenate([v for v, _c in parts])
+        codes = np.concatenate([c for _v, c in parts])
+        groups.append((verts, codes))
+    return groups, lines
+
+
+@functools.lru_cache(maxsize=256)
+def swatch_marks_path(
+    hatch: str | None,
+    width_in: float,
+    height_in: float,
+    *,
+    inset_in: float = 0.9 / 72.0,
+    density: int = _DEFAULT_DENSITY,
+) -> tuple[Path | None, Path | None]:
+    """Hatch marks for a ``width_in`` x ``height_in`` legend swatch, in inches.
+
+    Returns ``(marks, lines)``, both in swatch coordinates (origin at the
+    swatch's lower-left corner, inches) or ``None``: ``marks`` holds only whole
+    isolated marks (dots, dashes, ``+``) at the section's marks per inch,
+    phased for the most whole marks and centred; ``lines`` holds continuous
+    hatch pieces to clip to the swatch. Both draw like a hatch: filled and
+    stroked in the hatch colour.
+    """
+    import matplotlib.hatch as mh
+
+    if not hatch or width_in <= 0 or height_in <= 0:
+        return None, None
+    cell = mh.get_path(hatch, density)
+    if cell is None or len(cell.vertices) == 0:
+        return None, None
+    groups, lines = _mark_groups(cell)
+    if "O" in hatch:
+        # Gravel outlines are short segments of stones that cross the cell
+        # edge: clip them like the section does, never drop pieces.
+        lines = lines + groups
+        groups = []
+    nx = int(np.ceil(width_in)) + 2
+    ny = int(np.ceil(height_in)) + 2
+
+    def tiled(parts):
+        """Line pieces, tiled over the swatch, that reach inside it."""
+        if parts and all(len(v) == 2 for v, _c in parts):
+            # Straight segments (gravel outlines, stock lines): vectorised.
+            segs = np.stack([v for v, _c in parts])  # (n, 2, 2)
+            shifts = np.array([(ix, iy) for ix in range(-1, nx) for iy in range(-1, ny)], dtype=float)
+            moved = (segs[None, :, :, :] + shifts[:, None, None, :]).reshape(-1, 2, 2)
+            lo, hi = moved.min(axis=1), moved.max(axis=1)
+            keep = (hi[:, 0] >= 0) & (hi[:, 1] >= 0) & (lo[:, 0] <= width_in) & (lo[:, 1] <= height_in)
+            moved = np.unique(np.round(moved[keep], 6), axis=0)
+            codes = np.array([Path.MOVETO, Path.LINETO], dtype=Path.code_type)
+            return [(seg, codes) for seg in moved]
+        out = []
+        seen = set()
+        for ix in range(-1, nx):
+            for iy in range(-1, ny):
+                for verts, codes in parts:
+                    moved = verts + (ix, iy)
+                    lo, hi = moved.min(axis=0), moved.max(axis=0)
+                    if hi[0] < 0 or hi[1] < 0 or lo[0] > width_in or lo[1] > height_in:
+                        continue
+                    key = tuple(np.round(moved, 5).ravel())
+                    if key in seen:  # padded cells repeat their neighbours' pieces
+                        continue
+                    seen.add(key)
+                    out.append((moved, codes))
+        return out
+
+    marks_path = None
+    if groups:
+        centres = []
+        halves = []
+        for verts, codes in groups:
+            drawn = verts[codes != Path.CLOSEPOLY]
+            lo, hi = drawn.min(axis=0), drawn.max(axis=0)
+            centres.append((lo + hi) / 2.0)
+            halves.append((hi - lo) / 2.0)
+        centres = np.asarray(centres)
+        halves = np.asarray(halves)
+        offsets = np.array([(ix, iy) for ix in range(-1, nx) for iy in range(-1, ny)], dtype=float)
+        all_c = (centres[None, :, :] + offsets[:, None, :]).reshape(-1, 2)
+        all_h = np.broadcast_to(halves[None, :, :], (len(offsets), len(halves), 2)).reshape(-1, 2)
+        all_i = np.arange(len(all_c))
+        pitch = 1.0 / max(rows_per_inch(hatch), 1)
+        steps = np.arange(0.0, 2.0 * pitch, _MARK_PHASE_STEP_IN)
+        # Only marks that some phase shift can bring into the swatch.
+        reach = 2.0 * pitch
+        near = np.all(
+            (all_c >= (-reach, -reach)) & (all_c <= (width_in + reach, height_in + reach)), axis=1
+        )
+        all_c, all_h, all_i = all_c[near], all_h[near], all_i[near]
+        lo_lim = np.array([inset_in, inset_in])
+        hi_lim = np.array([width_in - inset_in, height_in - inset_in])
+        best = None
+        for dx in steps:
+            for dy in steps:
+                c = all_c + (dx, dy)
+                inside = np.all((c - all_h >= lo_lim) & (c + all_h <= hi_lim), axis=1)
+                count = int(inside.sum())
+                if not count:
+                    continue
+                lo = (c[inside] - all_h[inside]).min(axis=0)
+                hi = (c[inside] + all_h[inside]).max(axis=0)
+                off_centre = float(np.abs((lo + hi) / 2.0 - (width_in / 2.0, height_in / 2.0)).sum())
+                key = (count, -off_centre)
+                if best is None or key > best[0]:
+                    best = (key, dx, dy, inside, lo, hi)
+        if best is not None:
+            _key, dx, dy, inside, lo, hi = best
+            shift = np.array([width_in / 2.0, height_in / 2.0]) - (lo + hi) / 2.0
+            verts_list, codes_list = [], []
+            flat = [(verts, codes) for _o in offsets for verts, codes in groups]
+            for index in all_i[inside]:
+                verts, codes = flat[index]
+                ox, oy = offsets[index // len(groups)]
+                verts_list.append(verts + (ox + dx + shift[0], oy + dy + shift[1]))
+                codes_list.append(codes)
+            marks_path = Path(np.concatenate(verts_list), np.concatenate(codes_list))
+    lines_path = None
+    pieces = tiled(lines) if lines else []
+    if pieces:
+        lines_path = Path(
+            np.concatenate([v for v, _c in pieces]), np.concatenate([c for _v, c in pieces])
+        )
+    return marks_path, lines_path
+
+
+def isolated_mark_centres(path: Path | None) -> np.ndarray:
+    """Centres (inches) of the isolated marks in a ``swatch_marks_path`` result."""
+    if path is None:
+        return np.empty((0, 2))
+    groups, _lines = _mark_groups(path)
+    centres = []
+    for verts, codes in groups:
+        drawn = verts[codes != Path.CLOSEPOLY]
+        centres.append((drawn.min(axis=0) + drawn.max(axis=0)) / 2.0)
+    return np.asarray(centres).reshape(-1, 2)

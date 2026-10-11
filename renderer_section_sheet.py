@@ -11,7 +11,7 @@ from matplotlib.figure import Figure
 from lithology_codes import collect_lithology_codes
 from models import WaterLevel
 from render_theme import AXES_BG, FIGURE_BG, GRID_COLOR, LABEL_COLOR
-from renderer_common import apply_true_value_y_axis, settle_figure_layout
+from renderer_common import apply_true_value_y_axis, legend_source_keys, settle_figure_layout
 from stratigraphy import GeologicalPolygon
 
 # Clearance between the threshold key and the footer lines below it.
@@ -233,9 +233,14 @@ class SectionSheetLayoutMixin:
             return
         on_section = set(hole_summary["hole_id"].astype(str))
         measured = self._water_series_measured(water_levels, on_section)
-        for entry, handle in zip(self.water_series_legend, key.legend_handles, strict=False):
-            if handle is not None and not self._water_line_drawn(measured.get(entry["series_id"], 0)):
-                handle.set_linestyle("none")
+        sources = [handle for handle, _label in legend_source_keys(key)]
+        for index, entry in enumerate(self.water_series_legend):
+            if self._water_line_drawn(measured.get(entry["series_id"], 0)):
+                continue
+            # Drawn key artist now; the source proxy for a later rebuild.
+            for handles in (key.legend_handles, sources):
+                if index < len(handles) and handles[index] is not None:
+                    handles[index].set_linestyle("none")
 
     def _fit_section_sheet_bottom(self, fig: Figure) -> None:
         """Hang the distance label just under the hole-name row and close the gap below.

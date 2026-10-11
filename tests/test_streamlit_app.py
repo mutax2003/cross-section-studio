@@ -1013,11 +1013,10 @@ def test_user_ve_choice_survives_output_style_switches() -> None:
 def test_chemistry_correlation_and_question_inputs_have_help() -> None:
     """QA: no tooltip on the parameter toggles, the Green/Orange limits, the
     "Match layers by hand" layer pickers and "Your question"."""
-    from streamlit.testing.v1 import AppTest
-
     from io import BytesIO
 
     import openpyxl
+    from streamlit.testing.v1 import AppTest
 
     book = openpyxl.load_workbook(BytesIO(_project_workbook_bytes(figure_preset="section_sheet")))
     counts: dict[str, int] = {}

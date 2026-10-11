@@ -989,7 +989,7 @@ class ConsultingLayoutMixin:
         ax = axes[0]
         aspect = getattr(ax, "apply_aspect", None)
         if isinstance(aspect, _MapScaleAspect):
-            if self._apply_map_scale_room(ax, aspect, info):
+            if self._apply_map_scale_room(ax, aspect, info) or info.get("standalone"):
                 return
             # The scale is not drawn exactly on this page: the box falls back
             # to fit the frame, so size the room for that box (the map-scale

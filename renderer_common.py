@@ -468,20 +468,51 @@ class FittedStepLocator(Locator):
             return self._base or 1.0
         prop = self._label_font()
         formatter = self.axis.get_major_formatter()
+        low, high = sorted((float(vmin), float(vmax)))
+        dpi = float(getattr(renderer, "dpi", figure.dpi))
+        # Every draw, tick query and minor locator asks again for the same
+        # box: answer from the last result while nothing it reads changed.
+        # A stateful formatter (ScalarFormatter offset / magnitude) shows in
+        # the labels it gives the range ends.
+        probes = tuple(
+            str(formatter(value)) if callable(formatter) else f"{value:g}"
+            for value in (low, 0.5 * (low + high), high)
+        )
+        key = (low, high, width_px, float(figure.dpi), dpi, hash(prop), id(formatter), probes)
+        cached = self.__dict__.get("_step_cache")
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        widths = self.__dict__.setdefault("_width_cache", {})
+        width_key = (hash(prop), dpi)
+        if widths.get("_key") != width_key:
+            widths.clear()
+            widths["_key"] = width_key
+
+        def text_width(text: str) -> float:
+            width = widths.get(text)
+            if width is None:
+                width = widths[text] = renderer.get_text_width_height_descent(text, prop, ismath=False)[0]
+            return width
+
         px_per_unit = width_px / span
         pad_px = self._pad_pt * figure.dpi / 72.0
         start = self._base or _round_step_up(span / 12.0)
-        low, high = sorted((float(vmin), float(vmax)))
         step = start
         for count, step in enumerate(self._steps_from(start)):
+            if step >= span or count > 30:
+                break
+            # A step narrower than the pad fails whatever its labels measure.
+            if step * px_per_unit < pad_px:
+                continue
             values = np.arange(np.ceil(low / step - 1e-9) * step, high + step * 1e-6, step)
             widest = 0.0
             for value in values[:200]:
                 text = formatter(value) if callable(formatter) else f"{value:g}"
                 if text:
-                    widest = max(widest, renderer.get_text_width_height_descent(str(text), prop, ismath=False)[0])
-            if step * px_per_unit >= widest + pad_px or step >= span or count > 30:
+                    widest = max(widest, text_width(str(text)))
+            if step * px_per_unit >= widest + pad_px:
                 break
+        self._step_cache = (key, float(step))
         return float(step)
 
     def __call__(self):
@@ -534,9 +565,32 @@ _HEADER_MAX_TIERS = 3
 _HEADER_SHRINK = (1.0, 0.85, 0.75)
 _HEADER_MIN_PT = 6.0
 _HEADER_PAD_PT = 1.5
+# Clear space kept between side-by-side horizontal headers: at ~0.06 in
+# "BH23-04 2017-BH11 / BH24-11" read as one string.
+HEADER_MIN_GAP_IN = 0.15
+# Vertical (rotated) headers in a fan: a narrower gap reads apart.
+_HEADER_FAN_GAP_PT = 4.0
 
 
 def _header_extent(text, renderer):
+    """Header text extent including its framed box.
+
+    During ``stack_hole_headers`` (no draw happens inside it) extents are
+    cached by the text's layout signature: the fallbacks try the same
+    labels / sizes / offsets many times over.
+    """
+    figure = text.figure
+    cache = figure.__dict__.get("_css_extent_cache") if figure is not None else None
+    if cache is None:
+        return _measure_header_extent(text, renderer)
+    key = (text_layout_signature(text), id(renderer))
+    box = cache.get(key)
+    if box is None:
+        box = cache[key] = _measure_header_extent(text, renderer)
+    return box
+
+
+def _measure_header_extent(text, renderer):
     box = text.get_window_extent(renderer)
     patch = text.get_bbox_patch()
     if patch is not None:
@@ -551,18 +605,35 @@ def _boxes_overlap(a, b, pad: float = 0.0) -> bool:
     return a.x0 < b.x1 + pad and b.x0 < a.x1 + pad and a.y0 < b.y1 + pad and b.y0 < a.y1 + pad
 
 
-def header_overlaps(fig, headers, renderer=None, *, pad_pt: float = 0.5) -> list[tuple[int, int]]:
-    """Index pairs of visible headers whose (framed) boxes touch."""
+def _is_horizontal(text) -> bool:
+    return abs(float(text.get_rotation())) % 180.0 < 1.0
+
+
+def _too_close(a, b, gap_x: float, pad: float) -> bool:
+    """Boxes overlap within ``pad``, or sit side by side less than ``gap_x`` apart."""
+    return a.x0 < b.x1 + gap_x and b.x0 < a.x1 + gap_x and a.y0 < b.y1 + pad and b.y0 < a.y1 + pad
+
+
+def header_overlaps(
+    fig, headers, renderer=None, *, pad_pt: float = 0.5, min_gap_in: float = 0.0
+) -> list[tuple[int, int]]:
+    """Index pairs of visible headers whose (framed) boxes touch.
+
+    ``min_gap_in``: two horizontal headers on one row also count when the
+    clear space between them is less than this (they read as one string).
+    """
     if renderer is None:
         renderer = fig.canvas.get_renderer()
     pad = pad_pt * fig.dpi / 72.0
+    gap = max(pad, min_gap_in * fig.dpi)
     shown = [t for t in headers if t.get_visible() and t.get_text().strip()]
     boxes = [_header_extent(t, renderer) for t in shown]
+    flat = [_is_horizontal(t) for t in shown]
     return [
         (i, j)
         for i in range(len(boxes))
         for j in range(i + 1, len(boxes))
-        if _boxes_overlap(boxes[i], boxes[j], pad)
+        if _too_close(boxes[i], boxes[j], gap if flat[i] and flat[j] else pad, pad)
     ]
 
 
@@ -639,6 +710,15 @@ def restore_stacked_headers(headers) -> None:
 
 
 def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robust: bool = False) -> None:
+    """Make overlapping hole headers readable (see ``_stack_hole_headers``)."""
+    try:
+        fig._css_extent_cache = {}
+        _stack_hole_headers(fig, headers, max_tiers=max_tiers, robust=robust)
+    finally:
+        fig.__dict__.pop("_css_extent_cache", None)
+
+
+def _stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robust: bool = False) -> None:
     """Make overlapping hole headers readable: tiers + leaders, wrap, shrink, rotate.
 
     Runs after the first (nudging) header pass; a no-op when no two headers
@@ -656,7 +736,7 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robu
     renderer = fig.canvas.get_renderer()
     settle_figure_layout(fig)
     page = fig.bbox
-    if not header_overlaps(fig, headers, renderer) and all(
+    if not header_overlaps(fig, headers, renderer, min_gap_in=HEADER_MIN_GAP_IN) and all(
         _header_reads_as_own(t, renderer, page) for t in headers
     ):
         return
@@ -670,7 +750,7 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robu
         (t.get_transform(), t.get_horizontalalignment(), t.get_rotation(), t.get_text(), t.get_fontsize())
         for t in ordered
     ]
-    first_cost = len(header_overlaps(fig, ordered, renderer)) + sum(
+    first_cost = len(header_overlaps(fig, ordered, renderer, min_gap_in=HEADER_MIN_GAP_IN)) + sum(
         1
         for t in ordered
         if _off_page(_header_extent(t, renderer), page, _outward(t), horizontal=True)
@@ -685,6 +765,10 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robu
         text._header_base = base
         base_states.append(base)
     obstacles = _header_stack_obstacles(fig, renderer, headers, skip_title=flexible_top)
+    # RL / elevation axis labels beside the frame: a fan reaching past the
+    # frame edge printed over the rotated left axis label.
+    side_boxes = _axis_label_boxes(fig, renderer)
+    obstacles += side_boxes
 
     def reset(text, base, *, label: str, size: float, rotation: float) -> None:
         text.set_text(label)
@@ -697,8 +781,11 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robu
     def anchor_px(text) -> float:
         return float(text.get_transform().transform(text.get_unitless_position())[0])
 
+    gap_x = max(pad, HEADER_MIN_GAP_IN * fig.dpi)
+
     def try_tiers(labels, size) -> tuple[float, list[int]] | None:
         placed: list = list(obstacles)
+        placed_headers: list = []
         leaders: list[tuple[float, float, float]] = []
         tiers: list[int] = []
         for text, base, label in zip(ordered, base_states, labels, strict=True):
@@ -722,6 +809,8 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robu
                     break
                 if any(_boxes_overlap(box, other, pad) for other in placed):
                     continue
+                if any(_too_close(box, other, gap_x, pad) for other in placed_headers):
+                    continue
                 if tier:
                     near = box.y0 if outward > 0 else box.y1
                     lo, hi = sorted((edge, near))
@@ -735,6 +824,7 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robu
                 return None
             tier, box = chosen
             placed.append(box)
+            placed_headers.append(box)
             if tier:
                 near = box.y0 if outward > 0 else box.y1
                 leaders.append((x, *sorted((edge, near))))
@@ -789,21 +879,45 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robu
     # Holes closer than a text height: one row of headers fanned out above
     # the frame in hole order, each joined to its hole by a leader.
     margins = getattr(fig, "_css_page_margins_in", None) or (0.05,) * 4
-    for labels, factor in attempts:
-        size = max(_HEADER_MIN_PT, base_size * factor)
-        if _apply_fan(
-            fig, ordered, base_states, labels, size, renderer, reset, obstacles, margins,
-            flexible_top=flexible_top,
-        ):
-            return
-    # Last resort: vertical headers fanned out (a text height wide each).
-    for factor in _HEADER_SHRINK:
-        size = max(_HEADER_MIN_PT, base_size * factor)
-        if _apply_fan(
-            fig, ordered, base_states, plain, size, renderer, reset, obstacles, margins,
-            flexible_top=flexible_top, rotation=90.0,
-        ):
-            return
+    label_sets = [(plain, attempts)]
+    # Multi-line headers (chart: ID / TD / RL): the hole ID alone, when the
+    # full headers cannot be spread over the page width.
+    first_lines = [label.split("\n")[0] for label in plain]
+    if first_lines != plain:
+        first_wrapped = [label.replace(" / ", " /\n") for label in first_lines]
+        first_attempts = [(first_lines, 1.0)]
+        if first_wrapped != first_lines:
+            first_attempts.append((first_wrapped, 1.0))
+        first_attempts += [(first_wrapped, f) for f in _HEADER_SHRINK[1:]]
+        label_sets.append((first_lines, first_attempts))
+    tops = [flexible_top]
+    if not flexible_top and getattr(fig, "_css_headers_lift_top", False):
+        # A fixed page whose margin fit lowers the plot top for content past
+        # the top margin: a fan taller than the room above the frame gets it.
+        tops.append(True)
+    for top_flexible in tops:
+        for vertical_labels, horizontal_attempts in label_sets:
+            for labels, factor in horizontal_attempts:
+                size = max(_HEADER_MIN_PT, base_size * factor)
+                if _apply_fan(
+                    fig, ordered, base_states, labels, size, renderer, reset, obstacles, margins,
+                    flexible_top=top_flexible, side_boxes=side_boxes,
+                ):
+                    if top_flexible and not flexible_top:
+                        # Sticky: the page fit keeps the lowered top from now on.
+                        fig._css_header_fan_lifted = True
+                    return
+            # Vertical headers fanned out (a text height wide each).
+            for factor in _HEADER_SHRINK:
+                size = max(_HEADER_MIN_PT, base_size * factor)
+                if _apply_fan(
+                    fig, ordered, base_states, vertical_labels, size, renderer, reset, obstacles, margins,
+                    flexible_top=top_flexible, rotation=90.0, side_boxes=side_boxes,
+                ):
+                    if top_flexible and not flexible_top:
+                        # Sticky: the page fit keeps the lowered top from now on.
+                        fig._css_header_fan_lifted = True
+                    return
     _cost, size = rotated_cost
     if first_cost <= _cost:
         for text, (transform, ha, rotation, label, fontsize) in zip(ordered, first_pass, strict=True):
@@ -820,7 +934,7 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robu
 
 def _apply_fan(
     fig, ordered, base_states, labels, size, renderer, reset, obstacles, margins,
-    *, flexible_top: bool = False, rotation: float = 0.0,
+    *, flexible_top: bool = False, rotation: float = 0.0, side_boxes=(),
 ) -> bool:
     """One row of headers spread in hole order with straight leaders; False if it can't fit.
 
@@ -831,7 +945,7 @@ def _apply_fan(
     from matplotlib.transforms import offset_copy
 
     px_per_pt = fig.dpi / 72.0
-    gap = 4.0 * px_per_pt
+    gap = _HEADER_FAN_GAP_PT * px_per_pt if rotation else max(_HEADER_FAN_GAP_PT * px_per_pt, HEADER_MIN_GAP_IN * fig.dpi)
     page = fig.bbox
     lo = page.x0 + margins[0] * fig.dpi
     hi = page.x1 - margins[1] * fig.dpi
@@ -840,6 +954,21 @@ def _apply_fan(
         reset(text, base, label=label, size=size, rotation=rotation)
         boxes0.append(_header_extent(text, renderer))
         anchors.append(float(text.get_transform().transform(text.get_unitless_position())[0]))
+    outward0 = _outward(ordered[0])
+    frame = ordered[0].axes.bbox if ordered[0].axes is not None else None
+    # The fan row starts at least a header height + 8 pt out from its home row.
+    reach = max(box.height for box in boxes0) + 8.0 * px_per_pt
+    for box in side_boxes:
+        # Axis labels reaching into the fan row's band bound the fan.
+        if frame is not None and not (
+            box.y1 > frame.y1 + reach if outward0 > 0 else box.y0 < frame.y0 - reach
+        ):
+            continue
+        centre = 0.5 * (box.x0 + box.x1)
+        if centre <= min(anchors):
+            lo = max(lo, box.x1 + gap)
+        elif centre >= max(anchors):
+            hi = min(hi, box.x0 - gap)
     widths = [box.width + gap for box in boxes0]
     if sum(widths) > hi - lo:
         return False
@@ -951,6 +1080,20 @@ def _apply_tiers(fig, ordered, base_states, labels, size, tiers, renderer, reset
         ax.add_artist(leader)
         leaders.append(leader)
     fig._css_header_leaders = leaders
+
+
+def _axis_label_boxes(fig, renderer) -> list:
+    """Extents of the visible y-axis labels (RL / elevation) of every axes."""
+    boxes = []
+    for ax in fig.axes:
+        if not ax.get_visible() or not ax.axison:
+            continue
+        label = ax.yaxis.label
+        if label.get_visible() and label.get_text().strip():
+            box = label.get_window_extent(renderer)
+            if box.width > 0 and box.height > 0:
+                boxes.append(box)
+    return boxes
 
 
 def _header_stack_obstacles(fig, renderer, headers, *, skip_title: bool = False) -> list:
@@ -1506,12 +1649,72 @@ def _axis_layout_key(axis) -> tuple:
     )
 
 
+def _transform_signature(transform) -> tuple:
+    """Structure and offsets of a text transform (``offset_copy`` chains are new
+    objects each header pass; the axes / figure transforms they wrap are shared)."""
+    from matplotlib.transforms import BlendedGenericTransform, ScaledTranslation
+
+    if isinstance(transform, ScaledTranslation):
+        return ("st", tuple(float(v) for v in transform._t), id(transform._scale_trans))
+    a = getattr(transform, "_a", None)
+    b = getattr(transform, "_b", None)
+    if a is not None and b is not None:
+        return ("c", _transform_signature(a), _transform_signature(b))
+    if isinstance(transform, BlendedGenericTransform):
+        return ("b", _transform_signature(transform._x), _transform_signature(transform._y))
+    return ("id", id(transform))
+
+
+def text_layout_signature(text) -> tuple:
+    """What a text's drawn extent depends on, besides the axes it hangs from."""
+    patch = text.get_bbox_patch()
+    return (
+        id(text),
+        text.get_visible(),
+        text.get_text(),
+        float(text.get_fontsize()),
+        float(text.get_rotation()),
+        text.get_rotation_mode(),
+        text.get_horizontalalignment(),
+        text.get_verticalalignment(),
+        tuple(float(v) for v in text.get_unitless_position()),
+        _transform_signature(text.get_transform()),
+        None if patch is None else id(patch),
+    )
+
+
+def _engine_fingerprint(engine, fig) -> tuple | None:
+    """Inputs of a header / title layout engine (``renderer_chart._ChartTitleLayout``).
+
+    Its ``execute`` reads only the title and the header extents relative to
+    the plot top, so a figure whose headers and title are unchanged since its
+    last settle lays out the same again. Other engines: unknown (None).
+    """
+    headers = getattr(engine, "_headers", None)
+    if headers is None or not hasattr(engine, "_title"):
+        return None
+    return (
+        id(engine),
+        engine._title,
+        repr(sorted(getattr(engine, "_title_kwargs", {}).items())),
+        tuple(getattr(fig, "_css_page_margins_in", None) or ()),
+        tuple(text_layout_signature(t) for t in headers if t.figure is fig),
+    )
+
+
 def _layout_fingerprint(fig) -> tuple | None:
     """Everything a no-render draw commits for tick, axis-label and title layout."""
-    if fig.get_layout_engine() is not None:
-        return None  # layout engines reposition axes from every artist's extent
+    engine = fig.get_layout_engine()
+    engine_key = None
+    if engine is not None:
+        # Layout engines reposition axes from artists' extents; only a known
+        # header / title engine's inputs can be fingerprinted.
+        engine_key = _engine_fingerprint(engine, fig)
+        if engine_key is None:
+            return None
     params = fig.subplotpars
     parts: list = [
+        engine_key,
         tuple(fig.get_size_inches()),
         float(fig.dpi),
         (params.left, params.right, params.bottom, params.top, params.wspace, params.hspace),

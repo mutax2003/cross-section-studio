@@ -303,6 +303,9 @@ def parse_map_scale(text: str | None) -> float | None:
 MAP_SCALE_MIN_FRAME_FRACTION = 0.30
 # Float slack when the requested box is exactly the frame width.
 _MAP_SCALE_FIT_TOLERANCE = 1e-6
+# Section / band / title-block rows of the consulting sheet grid.
+_GRID_HEIGHT_RATIOS = (58, 12, 22)
+_GRID_HSPACE = 0.12
 
 
 def map_scale_box(
@@ -395,9 +398,10 @@ class _MapScaleAspect:
         self.ratio = float(ratio)
         self.exact_ve = bool(exact_ve)
 
-    def layout(self) -> tuple[tuple[float, float, float, float], str, float]:
+    def layout(self, xlim: tuple[float, float] | None = None) -> tuple[tuple[float, float, float, float], str, float]:
+        """Box, status and printed ratio at the current page (``xlim``: a candidate x range)."""
         ax = self.ax
-        x0, x1 = ax.get_xlim()
+        x0, x1 = xlim if xlim is not None else ax.get_xlim()
         y0, y1 = ax.get_ylim()
         return map_scale_box(
             tuple(ax.get_position(original=True).bounds),
@@ -544,7 +548,8 @@ class ConsultingLayoutMixin:
             self._transect_endpoint_lines(title_block), font_pt=self._fs(8), page_height_in=8.5
         )
         fig.subplots_adjust(left=0.06, right=0.95, top=top, bottom=0.04)
-        grid = GridSpec(3, 1, figure=fig, height_ratios=[58, 12, 22], hspace=0.12)
+        grid = GridSpec(3, 1, figure=fig, height_ratios=list(_GRID_HEIGHT_RATIOS), hspace=_GRID_HSPACE)
+        fig._css_consulting_grid = (grid, fig.subplotpars.top - fig.subplotpars.bottom)
         ax = fig.add_subplot(grid[0, 0])
         sub_gs = grid[1, 0].subgridspec(1, 3, width_ratios=[32, 36, 32], wspace=0.14)
         ax_scale = fig.add_subplot(sub_gs[0, 0])
@@ -717,6 +722,41 @@ class ConsultingLayoutMixin:
             self._draw_consulting_footers(fig)
         return fig
 
+    @staticmethod
+    def _keep_band_heights(fig: Figure) -> None:
+        """Hold the band and title-block rows at their stock height when the page
+        fit lowers the plot top for a header fan lifted above the room it had
+        (``stack_hole_headers``): only the section shrinks.
+
+        Shrinking the whole grid squeezed the scale bar into its label and
+        dropped notes lines. Idempotent: computed from the stock grid height.
+        """
+        stored = getattr(fig, "_css_consulting_grid", None)
+        if not stored:
+            return
+        grid, base_height = stored
+        params = fig.subplotpars
+        height = params.top - params.bottom
+        ratios = list(_GRID_HEIGHT_RATIOS)
+        if height >= base_height - 1e-9 or height <= 0.0 or not getattr(fig, "_css_header_fan_lifted", False):
+            if fig.__dict__.pop("_css_band_heights_held", False):
+                grid.set_height_ratios(ratios)
+                grid.update(hspace=_GRID_HSPACE)
+            return
+        fig._css_band_heights_held = True
+        rows = len(ratios)
+        # Stock row heights and gap (GridSpec: cell = H / (n + hspace (n-1)),
+        # gap = hspace x mean cell).
+        cell = base_height / (rows + _GRID_HSPACE * (rows - 1))
+        gap = _GRID_HSPACE * cell
+        total = float(sum(ratios))
+        band = [cell * rows * r / total for r in ratios[1:]]
+        main = max(height - sum(band) - gap * (rows - 1), 0.25 * cell * rows * ratios[0] / total)
+        # Same absolute rows and gaps for the band and title block; the
+        # section row takes what is left.
+        grid.set_height_ratios([main, *band])
+        grid.update(hspace=gap / ((main + sum(band)) / rows))
+
     def _reserve_threshold_key_band(self, fig: Figure) -> None:
         """Lower the subtitle band so the threshold key under DISTANCE (m) clears it.
 
@@ -765,12 +805,9 @@ class ConsultingLayoutMixin:
         # sections keep the 5 m they always had.
         span = max(x_max - x_min, 1.0)
         x_pad = max(track_half + max(0.25 * track_half, 0.3), min(5.0, 0.06 * span))
-        label_room = self._last_hole_label_room(
-            ax,
-            hole_summary,
-            span,
-            map_scale=self._requested_map_scale(self.consulting_title_block),
-        )
+        # Map-scale room (more metres per point on a narrower exact box) is
+        # added by _install_map_scale only when that scale is drawn exactly.
+        label_room = self._last_hole_label_room(ax, hole_summary, span)
         if label_room:
             x_pad = max(x_pad, track_half + label_room)
         # The first hole sits at x = 0; an axis starting at exactly 0 cut its
@@ -835,8 +872,14 @@ class ConsultingLayoutMixin:
         if not info or not axes:
             return
         ax = axes[0]
-        if isinstance(getattr(ax, "apply_aspect", None), _MapScaleAspect):
-            return  # sized from the map scale in _install_map_scale
+        aspect = getattr(ax, "apply_aspect", None)
+        if isinstance(aspect, _MapScaleAspect):
+            if self._apply_map_scale_room(ax, aspect, info):
+                return
+            # The scale is not drawn exactly on this page: the box falls back
+            # to fit the frame, so size the room for that box (the map-scale
+            # room is metres at the requested ratio and widened a 30 m
+            # section to over a kilometre at 1:100000).
         frame = ax.get_position(original=True)
         width_in, height_in = (float(v) for v in figure.get_size_inches())
         y0, y1 = ax.get_ylim()
@@ -1253,6 +1296,11 @@ class ConsultingLayoutMixin:
         ratio = self._requested_map_scale(title_block)
         if ratio is None:
             return
+        release_twins(ax, (twin,))
+        ax.set_aspect("auto")
+        aspect = _MapScaleAspect(ax, ratio, exact_ve=not self.ve_auto)
+        ax.apply_aspect = aspect
+        ax.figure._css_map_scale_text = str(title_block.map_scale)
         if not hole_summary.empty:
             # Every x path (incl. the autoscaled depth axis) keeps the last
             # hole's values inside the frame at the exact scale; the room is
@@ -1263,12 +1311,30 @@ class ConsultingLayoutMixin:
                 ax, hole_summary, max(x_max - x_min, 1.0), map_scale=ratio
             )
             left, right = ax.get_xlim()
-            if room and right > left:
-                ax.set_xlim(left, max(right, x_max + track_half + room))
-        release_twins(ax, (twin,))
-        ax.set_aspect("auto")
-        ax.apply_aspect = _MapScaleAspect(ax, ratio, exact_ve=not self.ve_auto)
-        ax.figure._css_map_scale_text = str(title_block.map_scale)
+            info = getattr(ax.figure, "_css_last_hole_room", None)
+            if info is None:
+                info = {"x_max": x_max, "track_half": track_half, "right": right, "standalone": True}
+            info["map_room"] = room
+            ax.figure._css_last_hole_room = info
+            if right > left:
+                self._apply_map_scale_room(ax, aspect, info)
+
+    @staticmethod
+    def _apply_map_scale_room(ax, aspect: _MapScaleAspect, info: dict) -> bool:
+        """Widen x by the last hole's label room at the map scale, if drawn exactly there.
+
+        True when the scale is drawn exactly (with that room) on this page;
+        False leaves the x range at its stock right edge for the fallback box.
+        """
+        room = float(info.get("map_room") or 0.0)
+        left, current = ax.get_xlim()
+        right = float(info["right"])
+        wide = max(right, float(info["x_max"]) + float(info["track_half"]) + room) if room else right
+        exact = aspect.layout((left, wide))[1] == "exact"
+        target = wide if exact else right
+        if abs(target - current) > 1e-9:
+            ax.set_xlim(left, target)
+        return exact
 
     @staticmethod
     def _map_scale_layout(figure: Figure) -> tuple[str, float] | None:

@@ -971,3 +971,33 @@ def test_every_title_block_text_field_is_reset_with_the_workbook() -> None:
     at.run()
     assert at.text_input(key="consulting_figure_number").value == ""
     assert at.text_input(key="consulting_revised").value == ""
+
+
+def test_user_ve_choice_survives_output_style_switches() -> None:
+    """Project VE 5 -> user picks 10x under Consulting -> Groundwater fence
+    put it back to 5x. A locked style shows its 1x without losing the pick."""
+    from streamlit.testing.v1 import AppTest
+
+    workbook = _project_workbook_bytes(vertical_exaggeration="5", figure_preset="consulting_report")
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("ve.xlsx", workbook).run()
+    at.run()
+    assert at.session_state["vertical_exaggeration"] == 5.0
+    at.selectbox(key="vertical_exaggeration").set_value(10.0).run()
+    for style, expected in (
+        ("gwm_fence", 10.0),
+        ("p2_chemistry_sticks", 1.0),
+        ("section_sheet", 10.0),
+        ("chemistry_gw", 10.0),
+        ("consulting_report", 10.0),
+    ):
+        at.selectbox(key="output_preset").set_value(style).run()
+        assert not at.exception
+        assert at.session_state["vertical_exaggeration"] == expected, style
+    # A new workbook seeds its own VE again.
+    at.file_uploader[0].upload("ve2.xlsx", _project_workbook_bytes(
+        vertical_exaggeration="2", figure_preset="gwm_fence"
+    )).run()
+    at.run()
+    assert at.session_state["vertical_exaggeration"] == 2.0

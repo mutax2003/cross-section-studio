@@ -335,6 +335,9 @@ def render_welcome_card() -> None:
 _PENDING_PROJECT_SEED_KEY = "_pending_project_seed"
 # Vertical exaggeration from the workbook's Project tab (a VE choice), if any.
 WORKBOOK_VE_KEY = "_workbook_vertical_exaggeration"
+# The VE the user picked in the sidebar for this workbook, if any; it wins over
+# the workbook VE and the style default when the Output style changes.
+USER_VE_KEY = "_user_vertical_exaggeration"
 
 
 def _seed_consulting_fields_from_project_metadata(project: dict[str, str]) -> None:
@@ -454,6 +457,7 @@ def apply_pending_project_seed() -> None:
         st.session_state.pop("_synced_output_preset", None)
         st.session_state["vertical_exaggeration"] = DEFAULT_VE_CHOICE
         st.session_state.pop(WORKBOOK_VE_KEY, None)
+        st.session_state.pop(USER_VE_KEY, None)
     pending = st.session_state.pop(_PENDING_PROJECT_SEED_KEY, None)
     if not isinstance(pending, dict):
         return
@@ -471,6 +475,7 @@ def apply_pending_project_seed() -> None:
         # Remembered so a style's default VE (Groundwater fence = Auto) does
         # not override it when the style syncs; locked styles still lock.
         st.session_state[WORKBOOK_VE_KEY] = choice
+        st.session_state.pop(USER_VE_KEY, None)
 
 
 def handle_workbook_upload(

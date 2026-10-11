@@ -42,7 +42,7 @@ Sidebar **Export → File names**:
 
 Configure → **Several section lines (batch ZIP)**: one section line per row as `Label | hole1, hole2, …`. Each row is checked as you type (for example `C-C': MW-99 not in Collars`).
 
-On Generate, **Prepare batch ZIP** draws each valid line as its own figure and packages them with a README; lines that can't be drawn are listed and left out instead of failing the batch. Tick **Include SVG in batch ZIP** only when needed (SVG is slower). **report_binder.pdf** collects the section PDFs behind a cover page the same size as the section pages.
+On Generate, **Prepare batch ZIP** draws each valid line as its own figure and packages them with a README; lines that can't be drawn are listed and left out instead of failing the batch. Tick **Include SVG in batch ZIP** only when needed (SVG is slower). **report_binder.pdf** collects the section PDFs behind a cover page; every page is fitted (scaled, not cropped) onto one letter landscape sheet size so the binder prints evenly.
 
 Each section is named after **its own** line, not the section on screen: the title's section label is swapped for the line's (title `Site X A-A'` → `Site_X_B-B'.pdf` for line `B-B'`), with the prime kept. The ZIP and binder cover are named for the whole batch, e.g. cover *Site X — Cross Sections A-A', B-B'* and `Site_X_Cross_Sections_A-A'_B-B'.zip`. Two lines that would give the same name get `_2`, `_3`.
 
@@ -56,7 +56,7 @@ Download SVG for drafting. With **CAD-friendly SVG layers** on, export promotes 
 
 With **Auto (fit page)** (the default) the figure fills the page and the VE caption shows the VE actually printed (e.g. `VERTICAL EXAGGERATION ≈2.2×`); it is re-measured for the export page preset, so the PNG, PDF and SVG captions match the sheet they are on. Pick a number (1×, 2×, 5×, …) to draw exactly that VE on every page: the plot keeps its proportions and shrinks inside its frame instead of stretching.
 
-A workbook **Project** tab `vertical_exaggeration` (a number such as `5`, or `auto`) sets the starting choice when the workbook is uploaded; a new workbook without one, or **Clear workbook**, returns to Auto. **Chemistry columns** (P2 style) is always drawn at exactly 1× and its VE control is locked.
+A workbook **Project** tab `vertical_exaggeration` (a number such as `5`, or `auto`) sets the starting choice when the workbook is uploaded; a new workbook without one, or **Clear workbook**, returns to Auto. A VE you pick yourself stays when you switch **Output style** (it is not reset to the workbook or style default). **Chemistry columns** (P2 style) is always drawn at exactly 1× and its VE control is locked.
 
 ## Map scale on consulting sheets
 
@@ -66,7 +66,7 @@ If the section is too long (or, with a fixed VE, too tall) for the page at that 
 
 ## Section notes after Generate
 
-Anything you should check before issuing the figure is listed in one amber box under the figure (and on the PDF's QA notes page):
+Anything you should check before issuing the figure is listed in one amber box under the figure. With **Include QA notes (PDF)** on, the PDF lists them too: on the summary page (letter landscape) for Section sheet and Quick preview, and on an extra letter-landscape **QA notes** page after the sheet for the one-sheet consulting styles (Consulting, Groundwater fence, Chemistry columns, Chemistry + groundwater). That toggle is on by default for Section sheet and off for the consulting styles, whose PDF usually goes to the client; once you set it yourself, your choice is kept across styles.
 
 - **Polygon overlap** — matched layers overlap between two holes.
 - **Crossing correlation** — the same layers are logged in opposite order in neighbouring holes (e.g. `Crossing correlation MW-01–MW-02: Sand, Clay logged in opposite order — drawn as pinch-outs`). They are not joined across; with pinch-outs off they are not drawn between those holes. Check `unit_order` or add a Correlations row.

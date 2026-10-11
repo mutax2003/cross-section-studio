@@ -1796,24 +1796,17 @@ class CrossSectionRenderer(
             elif fmt == "png":
                 png_bytes = self._savefig_format(figure, fmt="png", dpi=export_dpi)
             elif fmt == "pdf":
-                if self.profile.layout == "consulting_section":
-                    pdf_bytes = self._savefig_format(figure, fmt="pdf")
-                else:
-                    # Lazy import: PDF backend/font tools are heavy and slow startup for SVG/PNG-only runs.
-                    from report_export import export_section_pdf
+                # Lazy import: PDF backend/font tools are heavy and slow startup for SVG/PNG-only runs.
+                from report_export import assemble_section_pdf
 
-                    # Encode page 1 once with framing/DPI; summary page merges via pypdf.
-                    page1_pdf = self._savefig_format(figure, fmt="pdf")
-                    pdf_bytes = export_section_pdf(
-                        self,
-                        polygons,
-                        projected_df,
-                        collar_depths=collar_depths,
-                        water_levels=water_levels,
-                        lithology_codes=lithology_codes,
-                        qa_lines=qa_lines,
-                        section_page_pdf=page1_pdf,
-                    )
+                # Encode page 1 once with framing/DPI; report_export adds the
+                # summary page (or, for consulting sheets, a QA notes page).
+                pdf_bytes = assemble_section_pdf(
+                    self,
+                    self._savefig_format(figure, fmt="pdf"),
+                    lithology_codes=lithology_codes,
+                    qa_lines=qa_lines,
+                )
         return svg_bytes, png_bytes, pdf_bytes
 
     # Gap (points) between the under-axis row (VE note / scale bar) and the

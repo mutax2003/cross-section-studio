@@ -165,6 +165,15 @@ def _remember_user_ve() -> None:
     st.session_state[USER_VE_KEY] = st.session_state.get("vertical_exaggeration")
 
 
+# The user's own "Include QA notes (PDF)" choice; without one each output
+# style applies its default (off for the one-sheet consulting styles).
+USER_QA_NOTES_KEY = "_user_include_qa_notes"
+
+
+def _remember_user_qa_notes() -> None:
+    st.session_state[USER_QA_NOTES_KEY] = bool(st.session_state.get("export_include_qa_footer"))
+
+
 def _keep_widget_state(*keys: str) -> None:
     """Keep values of keyed widgets that are hidden this run.
 
@@ -366,7 +375,13 @@ def _render_export_framing_panel() -> None:
         st.toggle(
             "Include QA notes (PDF)",
             key="export_include_qa_footer",
-            help="Adds the data-check notes (overlaps, gaps, crossing layers) to the PDF.",
+            on_change=_remember_user_qa_notes,
+            help=(
+                "Adds the section notes (overlaps, gaps, crossing layers, map scale, "
+                "dropped chemistry values) to the PDF: on the summary page for Section "
+                "sheet, as an extra QA notes page for the one-sheet consulting styles "
+                "(off by default there, as those PDFs go to the client)."
+            ),
         )
     st.text_input(
         "Save exports to folder (optional)",
@@ -569,6 +584,14 @@ def render_sidebar() -> SidebarState:
                     if candidate is not None:
                         st.session_state.vertical_exaggeration = normalize_ve_choice(candidate)
                         break
+            user_qa_notes = st.session_state.get(USER_QA_NOTES_KEY)
+            # Consulting styles are one client sheet: no QA notes page unless
+            # the user turned it on; Section sheet / Quick preview list them.
+            st.session_state.export_include_qa_footer = (
+                bool(user_qa_notes)
+                if user_qa_notes is not None
+                else preset_config.render_layout != "consulting_section"
+            )
             st.session_state._synced_output_preset = output_preset
 
         if visibility.interpretation_editable:

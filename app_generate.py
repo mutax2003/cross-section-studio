@@ -34,6 +34,7 @@ from export_framing import (
 )
 from models import ConsultingTitleBlock
 from pipeline import ALL_EXPORT_FORMATS
+from report_export import normalize_pdf_pages
 from ui_helpers import export_metadata_payload, sanitize_filename, unique_download_bytes
 from ui_output_presets import ve_short_text
 
@@ -300,7 +301,12 @@ def _render_batch_export(
             cover_title = batch_cover_title(base_request, [entry[0] for entry in raw_entries])
             st.session_state["batch_package_bytes"] = build_batch_zip(
                 entries,
-                binder_pdf=export_binder_pdf(pdfs, cover_title=cover_title) or None,
+                # One sheet size throughout: tight section pages and letter
+                # text pages are fitted onto letter landscape.
+                binder_pdf=export_binder_pdf(
+                    [normalize_pdf_pages(pdf) for pdf in pdfs], cover_title=cover_title
+                )
+                or None,
             )
             st.session_state["_batch_zip_name"] = f"{sanitize_filename(cover_title)}.zip"
             st.session_state["_batch_package_token"] = batch_token

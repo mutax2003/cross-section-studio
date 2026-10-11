@@ -395,9 +395,14 @@ def _seed_consulting_fields_from_project_metadata(project: dict[str, str]) -> No
         st.session_state[_PENDING_PROJECT_SEED_KEY] = pending
 
 
-# Widget keys the Project tab (or the Section picker) seeds; cleared together
-# when the workbook goes away so nothing leaks onto the next one.
+# Every typed title block field (whether or not the Project tab seeds it, e.g.
+# Figure no. and Revised) plus the section title belongs to one workbook;
+# cleared together when the workbook goes away so nothing leaks onto the next.
+# The two logo uploaders are not here: an uploaded file cannot be reset from
+# session state.
 PROJECT_SEEDED_KEYS: tuple[str, ...] = (
+    "consulting_figure_number",
+    "consulting_revised",
     "consulting_prepared_for",
     "consulting_prepared_by",
     "consulting_project_number",

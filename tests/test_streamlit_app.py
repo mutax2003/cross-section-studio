@@ -933,3 +933,41 @@ def test_one_hole_workbook_asks_for_another_hole_not_a_section_line() -> None:
     assert upload_headline(hole_count=1, interval_count=1, skipped_count=0, error_count=0)[1] == (
         "Loaded **1** borehole and **1** lithology interval."
     )
+
+
+def test_every_title_block_text_field_is_reset_with_the_workbook() -> None:
+    """Figure no. and Revised leaked onto the next workbook and survived
+    Clear workbook: they were missing from PROJECT_SEEDED_KEYS."""
+    from streamlit.testing.v1 import AppTest
+
+    from app_sidebar import _TITLE_BLOCK_MAIN_KEYS, _TITLE_BLOCK_MORE_KEYS
+    from app_upload import PROJECT_SEEDED_KEYS
+
+    text_keys = {
+        key for key in _TITLE_BLOCK_MAIN_KEYS + _TITLE_BLOCK_MORE_KEYS if "logo" not in key
+    }
+    assert text_keys <= set(PROJECT_SEEDED_KEYS)
+
+    first = _project_workbook_bytes(client_name="FIRST CLIENT", figure_preset="consulting_report")
+    second = _project_workbook_bytes(client_name="SECOND CLIENT", figure_preset="consulting_report")
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("first.xlsx", first).run()
+    at.run()
+    at.text_input(key="consulting_figure_number").input("7").run()
+    at.text_input(key="consulting_revised").input("REV B").run()
+    at.file_uploader[0].upload("second.xlsx", second).run()
+    at.run()
+    assert not at.exception
+    assert at.text_input(key="consulting_figure_number").value == ""
+    assert at.text_input(key="consulting_revised").value == ""
+
+    at.text_input(key="consulting_figure_number").input("9").run()
+    at.text_input(key="consulting_revised").input("REV C").run()
+    at.button(key="sidebar_clear_workbook").click().run()
+    at.run()
+    assert not at.exception
+    at.file_uploader[0].upload("first.xlsx", first).run()
+    at.run()
+    assert at.text_input(key="consulting_figure_number").value == ""
+    assert at.text_input(key="consulting_revised").value == ""

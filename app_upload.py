@@ -21,6 +21,7 @@ from models import ParseResult, lithologies_by_hole
 from ops_audit import audit_event
 from paths import sample_boreholes_workbook
 from projection import suggest_offset_threshold_m
+from ui_helpers import unique_download_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ def render_input_template_download(*, key: str, help: str | None = None) -> None
     data, file_name = payload
     st.download_button(
         "Download template (data entry)",
-        data=data,
+        data=unique_download_bytes(data),
         file_name=file_name,
         mime=_TEMPLATE_MIME,
         key=key,

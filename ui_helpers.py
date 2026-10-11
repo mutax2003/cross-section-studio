@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import math
 import re
+import struct
+import zlib
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -275,6 +278,65 @@ def holes_missing_lithology(
 def sanitize_filename(text: str, *, fallback: str = "cross_section") -> str:
     """Return a safe filename stem for downloads."""
     return sanitize_filename_stem(text, fallback=fallback)
+
+
+# Streamlit (1.64) fingerprints media files above 1 MiB by length plus three
+# 64 KiB samples (head, middle, tail) when it picks the download file id. Two
+# figures of the same size that differ elsewhere (black vs red chemistry
+# labels) got the same id, and the button served the previous file.
+DOWNLOAD_FULL_HASH_LIMIT = 1024 * 1024
+_PNG_IEND = b"\x00\x00\x00\x00IEND\xaeB`\x82"
+_ZIP_EOCD = b"PK\x05\x06"
+
+
+def _png_with_digest(data: bytes, digest: str) -> bytes | None:
+    if not data.endswith(_PNG_IEND):
+        return None
+    body = b"Digest\x00" + f"sha256:{digest}".encode()
+    chunk = (
+        struct.pack(">I", len(body))
+        + b"tEXt"
+        + body
+        + struct.pack(">I", zlib.crc32(b"tEXt" + body) & 0xFFFFFFFF)
+    )
+    return data[: -len(_PNG_IEND)] + chunk + _PNG_IEND
+
+
+def _zip_with_digest(data: bytes, digest: str) -> bytes | None:
+    eocd = data.rfind(_ZIP_EOCD, max(0, len(data) - 65557))
+    if eocd < 0 or eocd + 22 > len(data):
+        return None
+    comment_len = struct.unpack("<H", data[eocd + 20 : eocd + 22])[0]
+    if eocd + 22 + comment_len != len(data):
+        return None
+    comment = data[eocd + 22 :] + f"sha256:{digest}".encode()
+    if len(comment) > 0xFFFF:
+        return None
+    return data[: eocd + 20] + struct.pack("<H", len(comment)) + comment
+
+
+def unique_download_bytes(data: bytes) -> bytes:
+    """Make a large download's bytes unique to its content, harmlessly.
+
+    Files up to 1 MiB are hashed in full by Streamlit and returned as is.
+    Larger ones get a content digest in their last bytes, which Streamlit
+    does hash: an XML comment after ``</svg>``, a ``tEXt`` chunk before a
+    PNG's ``IEND``, the ZIP comment (ZIP, Word, Excel), or a PDF comment line
+    after ``%%EOF``. Anything else is returned unchanged.
+    """
+    if not data or len(data) <= DOWNLOAD_FULL_HASH_LIMIT:
+        return data
+    digest = hashlib.sha256(data).hexdigest()
+    if data.startswith(b"\x89PNG"):
+        return _png_with_digest(data, digest) or data
+    if data.startswith(b"PK"):
+        return _zip_with_digest(data, digest) or data
+    tail = data[-1024:].rstrip()
+    if data.startswith(b"%PDF") and tail.endswith(b"%%EOF"):
+        return data + f"\n%sha256:{digest}\n".encode()
+    if tail.endswith(b"</svg>"):
+        return data + f"\n<!-- sha256:{digest} -->\n".encode()
+    return data
 
 
 def screen_interval_warnings(

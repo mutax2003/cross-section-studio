@@ -34,7 +34,7 @@ from export_framing import (
 )
 from models import ConsultingTitleBlock
 from pipeline import ALL_EXPORT_FORMATS
-from ui_helpers import export_metadata_payload, sanitize_filename
+from ui_helpers import export_metadata_payload, sanitize_filename, unique_download_bytes
 from ui_output_presets import ve_short_text
 
 try:
@@ -168,7 +168,7 @@ def _format_download(
 ) -> None:
     kwargs: dict[str, object] = {
         "label": label,
-        "data": data if ready else b"",
+        "data": unique_download_bytes(data) if ready else b"",
         "file_name": file_name,
         "mime": mime,
         "width": "stretch",
@@ -322,7 +322,7 @@ def _render_batch_export(
     if batch_payload:
         st.download_button(
             "Download batch ZIP",
-            data=batch_payload,
+            data=unique_download_bytes(batch_payload),
             file_name=st.session_state.get("_batch_zip_name")
             or f"{sanitize_filename(section_title)}_batch.zip",
             mime="application/zip",
@@ -523,7 +523,7 @@ def render_profile_and_downloads(
             if zip_payload:
                 st.download_button(
                     "Download report ZIP",
-                    data=zip_payload,
+                    data=unique_download_bytes(zip_payload),
                     file_name=f"{base}_package.zip",
                     mime="application/zip",
                     key="download_report_package",

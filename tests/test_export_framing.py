@@ -337,3 +337,12 @@ def test_title_that_prefixes_a_hole_id_does_not_clip_it() -> None:
         pattern="section_title", section_title="B", transect_label="BH-01→BH-06", include_transect_label=True
     )
     assert name == "B_BH-01_BH-06"
+
+
+def test_reserved_and_typographic_names_are_safe_and_distinct() -> None:
+    from export_framing import build_export_filename
+
+    for reserved in ("CON", "nul", "LPT1"):
+        assert build_export_filename(pattern="section_title", section_title=reserved) == f"{reserved}_"
+    for typographic in ("B-B′", "B–B’"):
+        assert build_export_filename(pattern="section_title", section_title=typographic) == "B-B'"

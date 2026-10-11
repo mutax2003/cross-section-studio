@@ -356,7 +356,11 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
             )
         )
 
-    sorted_intervals = sorted(intervals, key=lambda item: item.from_depth)
+    # Full key so equal tops (e.g. a zero-thickness row) sort the same way
+    # whatever the sheet's row order.
+    sorted_intervals = sorted(
+        intervals, key=lambda item: (item.from_depth, item.to_depth, str(item.lithology_code))
+    )
     if sorted_intervals[0].from_depth > 0.01:
         issues.append(
             QualityIssue(
@@ -482,7 +486,13 @@ def _unit_order_against_depth_issue(
     The fence judges correlation crossings on depth, so contradictory numbering
     makes numbered matches drop out as crossing pinch-outs.
     """
-    numbered = [interval for interval in intervals if interval.unit_order is not None]
+    # Zero-thickness rows are left out of the fence (and warned about on
+    # their own), so they cannot make the numbering run against depth.
+    numbered = [
+        interval
+        for interval in intervals
+        if interval.unit_order is not None and interval.to_depth - interval.from_depth >= ZERO_THICKNESS_M
+    ]
     for upper, lower in zip(numbered, numbered[1:]):
         if lower.from_depth < upper.to_depth - 0.01 or lower.from_depth <= upper.from_depth:
             continue  # overlapping / same-top rows are reported elsewhere

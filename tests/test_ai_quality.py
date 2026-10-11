@@ -239,3 +239,21 @@ def test_thin_but_nonzero_interval_has_no_zero_thickness_warning() -> None:
     ]
     report = analyze_parsed_data(collars, lithologies)
     assert _issues(report, "zero_thickness_interval") == []
+
+
+def test_zero_thickness_row_checks_ignore_row_order() -> None:
+    from ai_quality import analyze_parsed_data
+    from models import Collar, Lithology
+
+    collar = Collar(hole_id="A", easting=0, northing=0, elevation=100, total_depth=10)
+
+    def codes(rows):
+        lith = [Lithology(hole_id="A", from_depth=a, to_depth=b, lithology_code=c, unit_order=u) for a, b, c, u in rows]
+        report = analyze_parsed_data([collar], lith)
+        return sorted(issue.code for issue in report.issues)
+
+    rows = [(0, 5, "Clay", None), (5, 10, "Till", None), (5, 5, "Silt", None)]
+    assert codes(rows) == codes([rows[0], rows[2], rows[1]])
+    assert "depth_overlap" not in codes(rows)
+    numbered = [(0, 1, "Clay", 1), (1, 2, "Sand", 5), (2, 2, "Silt", 3), (2, 10, "Till", 6)]
+    assert "unit_order_against_depth" not in codes(numbered)

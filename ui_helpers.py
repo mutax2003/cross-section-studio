@@ -339,6 +339,41 @@ def unique_download_bytes(data: bytes) -> bytes:
     return data
 
 
+# Below this a fixed-VE plot is a strip too thin to read on the page.
+THIN_PLOT_HEIGHT_IN = 1.0
+# Typical plot width on a letter landscape consulting sheet.
+_SHEET_PLOT_WIDTH_IN = 9.0
+
+
+def fixed_ve_plot_height_in(
+    transect_points: Sequence[tuple[float, float]],
+    collars: Sequence[Collar],
+    *,
+    vertical_exaggeration: float,
+    relative: bool = False,
+    plot_width_in: float = _SHEET_PLOT_WIDTH_IN,
+) -> float | None:
+    """Rough printed plot height at an exact VE: width x depth span x VE / length.
+
+    Chemistry columns is locked at 1x; on a 320 m line with shallow holes
+    that is a ~0.4 in strip. None when the span cannot be measured.
+    """
+    length = sum(
+        math.dist(a, b) for a, b in zip(transect_points, transect_points[1:])
+    )
+    if length <= 0 or not collars or vertical_exaggeration <= 0:
+        return None
+    if relative:
+        z_span = max(collar.total_depth for collar in collars)
+    else:
+        top = max(collar.elevation for collar in collars)
+        bottom = min(collar.elevation - collar.total_depth for collar in collars)
+        z_span = top - bottom
+    if z_span <= 0:
+        return None
+    return plot_width_in * z_span * vertical_exaggeration / length
+
+
 def screen_interval_warnings(
     hole_ids: Sequence[str],
     screen_intervals: Sequence[ScreenInterval],

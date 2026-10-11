@@ -1068,3 +1068,42 @@ def test_qa_notes_pdf_toggle_defaults_by_style_and_keeps_the_user_choice() -> No
         at.selectbox(key="output_preset").set_value(style).run()
         assert not at.exception
         assert at.session_state["export_include_qa_footer"] is True, style
+
+
+def _generate(at) -> None:
+    for box in at.checkbox:
+        if "Generate even if data checks found warnings" in (box.label or ""):
+            box.set_value(True)
+    at.run()
+    [btn for btn in at.button if btn.label == "Generate section"][0].click().run()
+    assert not at.exception
+
+
+def test_chemistry_columns_on_a_long_line_suggests_a_readable_alternative() -> None:
+    """Chemistry columns (locked 1x) on a 320 m line drew a ~15 px strip with
+    no hint why or what to do."""
+    from io import BytesIO
+
+    import openpyxl
+    from streamlit.testing.v1 import AppTest
+
+    book = openpyxl.load_workbook(BytesIO(_crossing_workbook_bytes("p2_chemistry_sticks")))
+    book["Collars"].cell(row=3, column=2, value=512000 + 320)
+    book["Collars"].cell(row=3, column=3, value=5934198)
+    buffer = BytesIO()
+    book.save(buffer)
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=180)
+    at.run()
+    at.file_uploader[0].upload("long.xlsx", buffer.getvalue()).run()
+    at.run()
+    assert at.session_state["output_preset"] == "p2_chemistry_sticks"
+    _generate(at)
+    captions = [str(c.value) for c in at.caption]
+    hint = [c for c in captions if "too thin to read" in c]
+    assert hint and "Chemistry + groundwater" in hint[0], captions
+
+    # A short line at the same style needs no hint.
+    at.file_uploader[0].upload("short.xlsx", _crossing_workbook_bytes("p2_chemistry_sticks")).run()
+    at.run()
+    _generate(at)
+    assert not [c for c in at.caption if "too thin to read" in str(c.value)]

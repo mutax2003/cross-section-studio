@@ -529,3 +529,71 @@ def test_render_notes_are_appended_after_export_framing(monkeypatch) -> None:
         export_framing=ExportFramingConfig(include_qa_footer=False),
     )
     assert calls == [True, False]
+
+
+def _crossing_holes():
+    collars = [
+        Collar(hole_id="A", easting=0, northing=0, elevation=100, total_depth=10),
+        Collar(hole_id="B", easting=50, northing=0, elevation=100, total_depth=10),
+    ]
+    rows = [("A", 0, 5, "Sand"), ("A", 5, 10, "Clay"), ("B", 0, 5, "Clay"), ("B", 5, 10, "Sand")]
+    lithology = [Lithology(hole_id=h, from_depth=a, to_depth=b, lithology_code=c) for h, a, b, c in rows]
+    return collars, lithology
+
+
+def _pdf_pages(pdf: bytes) -> list[tuple[float, float, str]]:
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    return [
+        (round(float(p.mediabox.width) / 72, 2), round(float(p.mediabox.height) / 72, 2), p.extract_text())
+        for p in PdfReader(BytesIO(pdf)).pages
+    ]
+
+
+def test_section_sheet_summary_page_is_letter_with_wrapped_text() -> None:
+    """The summary page claimed letter but was cropped to its text (19.9 x
+    8.9 in with a long disclaimer)."""
+    collars, lithology = _crossing_holes()
+    result = build_cross_section(
+        collars, lithology, [(0, 0), (50, 0)], title="X" * 40, export_formats=frozenset({"pdf"})
+    )
+    pages = _pdf_pages(result.pdf_bytes)
+    assert len(pages) >= 2
+    assert all(page[:2] == (11.0, 8.5) for page in pages[1:])
+    assert "QA notes" in pages[1][2] and "Crossing correlation" in pages[1][2]
+
+
+def test_consulting_pdf_gets_a_qa_notes_page_only_when_notes_are_on() -> None:
+    """Consulting styles were one page, so section notes never reached the PDF."""
+    from export_framing import ExportFramingConfig
+
+    collars, lithology = _crossing_holes()
+    common = dict(render_layout="consulting_section", export_formats=frozenset({"pdf"}))
+    with_notes = build_cross_section(collars, lithology, [(0, 0), (50, 0)], **common)
+    pages = _pdf_pages(with_notes.pdf_bytes)
+    assert len(pages) == 2
+    assert pages[1][:2] == (11.0, 8.5)
+    assert "QA notes" in pages[1][2] and "Crossing correlation" in pages[1][2]
+    without = build_cross_section(
+        collars,
+        lithology,
+        [(0, 0), (50, 0)],
+        export_framing=ExportFramingConfig(include_qa_footer=False),
+        **common,
+    )
+    assert len(_pdf_pages(without.pdf_bytes)) == 1
+
+
+def test_normalize_pdf_pages_fits_every_page_on_letter_landscape() -> None:
+    from report_export import normalize_pdf_pages
+
+    collars, lithology = _crossing_holes()
+    pdf = build_cross_section(
+        collars, lithology, [(0, 0), (50, 0)], export_formats=frozenset({"pdf"})
+    ).pdf_bytes
+    assert _pdf_pages(pdf)[0][:2] != (11.0, 8.5)
+    normalized = _pdf_pages(normalize_pdf_pages(pdf))
+    assert {page[:2] for page in normalized} == {(11.0, 8.5)}
+    assert "QA notes" in normalized[1][2]

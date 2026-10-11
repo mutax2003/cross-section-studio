@@ -448,7 +448,10 @@ class ConsultingTitleBlock(BaseModel, frozen=True):
     transect_start_secondary: str = ""
     transect_end_primary: str = ""
     transect_end_secondary: str = ""
-    map_scale: str = "1:1000"
+    # Blank = not set: the sheet fits the page and the title block prints
+    # "AS SHOWN". (A non-blank default was mistaken for a user value once the
+    # request round-tripped through JSON, which marks every field as set.)
+    map_scale: str = ""
     figure_number: str = ""
     project_number: str = ""
     source: str = ""
@@ -462,7 +465,8 @@ class ConsultingTitleBlock(BaseModel, frozen=True):
     logo_prepared_by_bytes: bytes | None = None
     screen_legend_label: str = "SCREENED INTERVAL"
     y_axis_label: str = "ELEVATION ABOVE SEA LEVEL (MASL)"
-    scale_bar_m: float = 30.0
+    # None = choose a nice length for the page (see map_scale above).
+    scale_bar_m: float | None = None
     show_gradient_legend: bool = False
 
 

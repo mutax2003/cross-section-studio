@@ -21,6 +21,7 @@ from models import ParseResult, lithologies_by_hole
 from ops_audit import audit_event
 from paths import sample_boreholes_workbook
 from projection import suggest_offset_threshold_m
+from ui_helpers import unique_download_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ def render_input_template_download(*, key: str, help: str | None = None) -> None
     data, file_name = payload
     st.download_button(
         "Download template (data entry)",
-        data=data,
+        data=unique_download_bytes(data),
         file_name=file_name,
         mime=_TEMPLATE_MIME,
         key=key,
@@ -334,6 +335,9 @@ def render_welcome_card() -> None:
 _PENDING_PROJECT_SEED_KEY = "_pending_project_seed"
 # Vertical exaggeration from the workbook's Project tab (a VE choice), if any.
 WORKBOOK_VE_KEY = "_workbook_vertical_exaggeration"
+# The VE the user picked in the sidebar for this workbook, if any; it wins over
+# the workbook VE and the style default when the Output style changes.
+USER_VE_KEY = "_user_vertical_exaggeration"
 
 
 def _seed_consulting_fields_from_project_metadata(project: dict[str, str]) -> None:
@@ -394,9 +398,14 @@ def _seed_consulting_fields_from_project_metadata(project: dict[str, str]) -> No
         st.session_state[_PENDING_PROJECT_SEED_KEY] = pending
 
 
-# Widget keys the Project tab (or the Section picker) seeds; cleared together
-# when the workbook goes away so nothing leaks onto the next one.
+# Every typed title block field (whether or not the Project tab seeds it, e.g.
+# Figure no. and Revised) plus the section title belongs to one workbook;
+# cleared together when the workbook goes away so nothing leaks onto the next.
+# The two logo uploaders are not here: an uploaded file cannot be reset from
+# session state.
 PROJECT_SEEDED_KEYS: tuple[str, ...] = (
+    "consulting_figure_number",
+    "consulting_revised",
     "consulting_prepared_for",
     "consulting_prepared_by",
     "consulting_project_number",
@@ -448,6 +457,7 @@ def apply_pending_project_seed() -> None:
         st.session_state.pop("_synced_output_preset", None)
         st.session_state["vertical_exaggeration"] = DEFAULT_VE_CHOICE
         st.session_state.pop(WORKBOOK_VE_KEY, None)
+        st.session_state.pop(USER_VE_KEY, None)
     pending = st.session_state.pop(_PENDING_PROJECT_SEED_KEY, None)
     if not isinstance(pending, dict):
         return
@@ -465,6 +475,7 @@ def apply_pending_project_seed() -> None:
         # Remembered so a style's default VE (Groundwater fence = Auto) does
         # not override it when the style syncs; locked styles still lock.
         st.session_state[WORKBOOK_VE_KEY] = choice
+        st.session_state.pop(USER_VE_KEY, None)
 
 
 def handle_workbook_upload(
@@ -637,7 +648,12 @@ def handle_workbook_upload(
             )
             st.rerun()
         except Exception as exc:
-            logger.exception("Workbook parse failed")
+            if isinstance(exc, (ValueError, KeyError, zipfile.BadZipFile)):
+                # Expected workbook problems (missing sheet / column, bad
+                # values): the UI explains them; no traceback in the log.
+                logger.warning("Workbook parse failed: %s", exc)
+            else:
+                logger.exception("Workbook parse failed")
             st.session_state.parse_result = None
             st.session_state.import_report = None
             st.session_state.quality_report = None

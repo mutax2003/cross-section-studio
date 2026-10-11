@@ -641,7 +641,7 @@ def test_new_workbook_reseeds_title_block_after_style_switches() -> None:
     assert at.text_input(key="consulting_section_label").value == "B - B' SECOND"
 
 
-def test_template_without_lithology_shows_the_missing_sheet_error() -> None:
+def test_template_without_lithology_shows_the_missing_sheet_error(caplog) -> None:
     """Deleting only the Lithology tab (the Data Entry sheet stays) loaded
     0 holes with "Data health OK" though Collars listed every hole."""
     from io import BytesIO
@@ -658,8 +658,12 @@ def test_template_without_lithology_shows_the_missing_sheet_error() -> None:
 
     at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
     at.run()
-    at.file_uploader[0].upload("no_lith.xlsx", buffer.getvalue()).run()
+    with caplog.at_level("INFO", logger="app_upload"):
+        at.file_uploader[0].upload("no_lith.xlsx", buffer.getvalue()).run()
     assert not at.exception
+    # An expected workbook problem: one warning line, no ERROR traceback.
+    upload_logs = [r for r in caplog.records if r.name == "app_upload"]
+    assert upload_logs and all(r.levelname == "WARNING" and not r.exc_info for r in upload_logs)
     assert at.session_state["parse_result"] is None
     errors = [str(item.value) for item in at.error]
     assert any("No **Lithology** sheet was found" in text for text in errors), errors
@@ -930,6 +934,175 @@ def test_one_hole_workbook_asks_for_another_hole_not_a_section_line() -> None:
     assert not any("choose holes under" in t.lower() for t in texts)
     assert not any("Choose at least two holes under **Section line**" in t for t in texts)
     assert not any(" 1 boreholes" in t or "**1** boreholes" in t or " 1 warnings" in t for t in texts)
+    # Nothing can be generated: no Generate gates to tick.
+    assert not [box for box in at.checkbox if (box.label or "").startswith("Generate even if")]
+    assert not [box for box in at.checkbox if box.key == "fail_on_overlaps_checkbox"]
     assert upload_headline(hole_count=1, interval_count=1, skipped_count=0, error_count=0)[1] == (
         "Loaded **1** borehole and **1** lithology interval."
     )
+
+
+def test_every_title_block_text_field_is_reset_with_the_workbook() -> None:
+    """Figure no. and Revised leaked onto the next workbook and survived
+    Clear workbook: they were missing from PROJECT_SEEDED_KEYS."""
+    from streamlit.testing.v1 import AppTest
+
+    from app_sidebar import _TITLE_BLOCK_MAIN_KEYS, _TITLE_BLOCK_MORE_KEYS
+    from app_upload import PROJECT_SEEDED_KEYS
+
+    text_keys = {
+        key for key in _TITLE_BLOCK_MAIN_KEYS + _TITLE_BLOCK_MORE_KEYS if "logo" not in key
+    }
+    assert text_keys <= set(PROJECT_SEEDED_KEYS)
+
+    first = _project_workbook_bytes(client_name="FIRST CLIENT", figure_preset="consulting_report")
+    second = _project_workbook_bytes(client_name="SECOND CLIENT", figure_preset="consulting_report")
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("first.xlsx", first).run()
+    at.run()
+    at.text_input(key="consulting_figure_number").input("7").run()
+    at.text_input(key="consulting_revised").input("REV B").run()
+    at.file_uploader[0].upload("second.xlsx", second).run()
+    at.run()
+    assert not at.exception
+    assert at.text_input(key="consulting_figure_number").value == ""
+    assert at.text_input(key="consulting_revised").value == ""
+
+    at.text_input(key="consulting_figure_number").input("9").run()
+    at.text_input(key="consulting_revised").input("REV C").run()
+    at.button(key="sidebar_clear_workbook").click().run()
+    at.run()
+    assert not at.exception
+    at.file_uploader[0].upload("first.xlsx", first).run()
+    at.run()
+    assert at.text_input(key="consulting_figure_number").value == ""
+    assert at.text_input(key="consulting_revised").value == ""
+
+
+def test_user_ve_choice_survives_output_style_switches() -> None:
+    """Project VE 5 -> user picks 10x under Consulting -> Groundwater fence
+    put it back to 5x. A locked style shows its 1x without losing the pick."""
+    from streamlit.testing.v1 import AppTest
+
+    workbook = _project_workbook_bytes(vertical_exaggeration="5", figure_preset="consulting_report")
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("ve.xlsx", workbook).run()
+    at.run()
+    assert at.session_state["vertical_exaggeration"] == 5.0
+    at.selectbox(key="vertical_exaggeration").set_value(10.0).run()
+    for style, expected in (
+        ("gwm_fence", 10.0),
+        ("p2_chemistry_sticks", 1.0),
+        ("section_sheet", 10.0),
+        ("chemistry_gw", 10.0),
+        ("consulting_report", 10.0),
+    ):
+        at.selectbox(key="output_preset").set_value(style).run()
+        assert not at.exception
+        assert at.session_state["vertical_exaggeration"] == expected, style
+    # A new workbook seeds its own VE again.
+    at.file_uploader[0].upload("ve2.xlsx", _project_workbook_bytes(
+        vertical_exaggeration="2", figure_preset="gwm_fence"
+    )).run()
+    at.run()
+    assert at.session_state["vertical_exaggeration"] == 2.0
+
+
+def test_chemistry_correlation_and_question_inputs_have_help() -> None:
+    """QA: no tooltip on the parameter toggles, the Green/Orange limits, the
+    "Match layers by hand" layer pickers and "Your question"."""
+    from io import BytesIO
+
+    import openpyxl
+    from streamlit.testing.v1 import AppTest
+
+    book = openpyxl.load_workbook(BytesIO(_project_workbook_bytes(figure_preset="section_sheet")))
+    counts: dict[str, int] = {}
+    for row in book["Lithology"].iter_rows(min_row=2):
+        if row[0].value:
+            counts[row[0].value] = counts.get(row[0].value, 0) + 1
+            row[4].value = counts[row[0].value]  # unit_order: enables the layer pickers
+    buffer = BytesIO()
+    book.save(buffer)
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("project.xlsx", buffer.getvalue()).run()
+    at.run()
+    radio = [r for r in at.radio if r.key == "chemistry_color_mode_radio"]
+    assert radio
+    radio[0].set_value("Green / orange / red thresholds").run()
+    assert not at.exception
+    widgets = _widgets_by_label(at)
+    for label in (
+        "Show parameter value labels",
+        "Interpolate parameter between adjacent holes",
+        "Green ≤",
+        "Orange ≤",
+        "Your question",
+    ):
+        assert getattr(widgets.get(label), "help", None), label
+    layer_pickers = [sb for sb in at.selectbox if (sb.key or "").startswith("corr_")]
+    assert layer_pickers and all(sb.help for sb in layer_pickers)
+
+
+def test_qa_notes_pdf_toggle_defaults_by_style_and_keeps_the_user_choice() -> None:
+    """Consulting PDFs go to the client: QA notes page off by default there,
+    on for Section sheet; once the user sets it, the choice is kept."""
+    from streamlit.testing.v1 import AppTest
+
+    workbook = _project_workbook_bytes(figure_preset="consulting_report")
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("project.xlsx", workbook).run()
+    at.run()
+    assert at.session_state["export_include_qa_footer"] is False
+    at.selectbox(key="output_preset").set_value("section_sheet").run()
+    assert at.session_state["export_include_qa_footer"] is True
+    at.selectbox(key="output_preset").set_value("gwm_fence").run()
+    assert at.session_state["export_include_qa_footer"] is False
+    at.toggle(key="export_include_qa_footer").set_value(True).run()
+    for style in ("consulting_report", "section_sheet", "p2_chemistry_sticks"):
+        at.selectbox(key="output_preset").set_value(style).run()
+        assert not at.exception
+        assert at.session_state["export_include_qa_footer"] is True, style
+
+
+def _generate(at) -> None:
+    for box in at.checkbox:
+        if "Generate even if data checks found warnings" in (box.label or ""):
+            box.set_value(True)
+    at.run()
+    [btn for btn in at.button if btn.label == "Generate section"][0].click().run()
+    assert not at.exception
+
+
+def test_chemistry_columns_on_a_long_line_suggests_a_readable_alternative() -> None:
+    """Chemistry columns (locked 1x) on a 320 m line drew a ~15 px strip with
+    no hint why or what to do."""
+    from io import BytesIO
+
+    import openpyxl
+    from streamlit.testing.v1 import AppTest
+
+    book = openpyxl.load_workbook(BytesIO(_crossing_workbook_bytes("p2_chemistry_sticks")))
+    book["Collars"].cell(row=3, column=2, value=512000 + 320)
+    book["Collars"].cell(row=3, column=3, value=5934198)
+    buffer = BytesIO()
+    book.save(buffer)
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=180)
+    at.run()
+    at.file_uploader[0].upload("long.xlsx", buffer.getvalue()).run()
+    at.run()
+    assert at.session_state["output_preset"] == "p2_chemistry_sticks"
+    _generate(at)
+    captions = [str(c.value) for c in at.caption]
+    hint = [c for c in captions if "too thin to read" in c]
+    assert hint and "Chemistry + groundwater" in hint[0], captions
+
+    # A short line at the same style needs no hint.
+    at.file_uploader[0].upload("short.xlsx", _crossing_workbook_bytes("p2_chemistry_sticks")).run()
+    at.run()
+    _generate(at)
+    assert not [c for c in at.caption if "too thin to read" in str(c.value)]

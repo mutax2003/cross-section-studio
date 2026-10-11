@@ -34,8 +34,15 @@ from export_framing import (
 )
 from models import ConsultingTitleBlock
 from pipeline import ALL_EXPORT_FORMATS
-from ui_helpers import export_metadata_payload, sanitize_filename
-from ui_output_presets import ve_short_text
+from report_export import normalize_pdf_pages
+from ui_helpers import (
+    THIN_PLOT_HEIGHT_IN,
+    export_metadata_payload,
+    fixed_ve_plot_height_in,
+    sanitize_filename,
+    unique_download_bytes,
+)
+from ui_output_presets import sidebar_visibility, ve_short_text
 
 try:
     from ops_audit import audit_event as _audit_event
@@ -168,7 +175,7 @@ def _format_download(
 ) -> None:
     kwargs: dict[str, object] = {
         "label": label,
-        "data": data if ready else b"",
+        "data": unique_download_bytes(data) if ready else b"",
         "file_name": file_name,
         "mime": mime,
         "width": "stretch",
@@ -300,7 +307,12 @@ def _render_batch_export(
             cover_title = batch_cover_title(base_request, [entry[0] for entry in raw_entries])
             st.session_state["batch_package_bytes"] = build_batch_zip(
                 entries,
-                binder_pdf=export_binder_pdf(pdfs, cover_title=cover_title) or None,
+                # One sheet size throughout: tight section pages and letter
+                # text pages are fitted onto letter landscape.
+                binder_pdf=export_binder_pdf(
+                    [normalize_pdf_pages(pdf) for pdf in pdfs], cover_title=cover_title
+                )
+                or None,
             )
             st.session_state["_batch_zip_name"] = f"{sanitize_filename(cover_title)}.zip"
             st.session_state["_batch_package_token"] = batch_token
@@ -322,12 +334,46 @@ def _render_batch_export(
     if batch_payload:
         st.download_button(
             "Download batch ZIP",
-            data=batch_payload,
+            data=unique_download_bytes(batch_payload),
             file_name=st.session_state.get("_batch_zip_name")
             or f"{sanitize_filename(section_title)}_batch.zip",
             mime="application/zip",
             key="download_batch_zip",
         )
+
+
+def _thin_plot_caption(vertical_exaggeration: float | None, *, ve_locked: bool) -> None:
+    """Caption when an exact VE leaves the plot a strip (< ~1 in) on the page."""
+    if vertical_exaggeration is None:
+        return
+    selection = st.session_state.get("transect_selection")
+    parse_result = st.session_state.get("parse_result")
+    request_json = st.session_state.get("section_build_request_json")
+    if parse_result is None or not request_json or not selection:
+        return
+    try:
+        request = cached_parse_request(request_json)
+        hole_ids = set(selection[0])
+    except Exception:  # noqa: BLE001 — a hint only; never block the preview
+        return
+    collars = [collar for collar in parse_result.collars if collar.hole_id in hole_ids]
+    height = fixed_ve_plot_height_in(
+        request.transect_points,
+        collars,
+        vertical_exaggeration=vertical_exaggeration,
+        relative=request.elevation_mode == "relative",
+    )
+    if height is None or height >= THIN_PLOT_HEIGHT_IN:
+        return
+    remedy = (
+        "draw a shorter section line, or use Chemistry + groundwater (Auto VE) for this one"
+        if ve_locked
+        else "draw a shorter section line or choose a larger exaggeration (or Auto)"
+    )
+    st.caption(
+        f"At exactly {ve_short_text(vertical_exaggeration)} this section prints only about "
+        f"{height:.1f} in tall, too thin to read. For a readable figure, {remedy}."
+    )
 
 
 def render_profile_and_downloads(
@@ -407,6 +453,12 @@ def render_profile_and_downloads(
                 transect_label=transect_label,
                 png_ready=png_ready,
                 pdf_ready=pdf_ready,
+            )
+        if not is_stale:
+            preset = str(st.session_state.get("output_preset", ""))
+            _thin_plot_caption(
+                vertical_exaggeration,
+                ve_locked=not sidebar_visibility(preset).vertical_exaggeration_editable,
             )
 
         # One toolbar row: Prepare deliverables (until rasters exist) and the
@@ -523,7 +575,7 @@ def render_profile_and_downloads(
             if zip_payload:
                 st.download_button(
                     "Download report ZIP",
-                    data=zip_payload,
+                    data=unique_download_bytes(zip_payload),
                     file_name=f"{base}_package.zip",
                     mime="application/zip",
                     key="download_report_package",

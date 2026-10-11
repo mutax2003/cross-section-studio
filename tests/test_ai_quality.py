@@ -216,6 +216,20 @@ def test_zero_thickness_interval_warning() -> None:
     assert "ignored in the fence" in issues[0].message
 
 
+def test_zero_thickness_row_is_not_reported_as_an_overlap() -> None:
+    """QA: "BH-01: 1.2–3.29 m overlaps 1.2–1.2 m" for a zero-thickness row."""
+    collars = [Collar(hole_id="BH-01", easting=0, northing=0, elevation=0.0, total_depth=3.29)]
+    lithologies = [
+        Lithology(hole_id="BH-01", from_depth=0.0, to_depth=1.2, lithology_code="Sand"),
+        Lithology(hole_id="BH-01", from_depth=1.2, to_depth=3.29, lithology_code="Clay"),
+        Lithology(hole_id="BH-01", from_depth=1.2, to_depth=1.2, lithology_code="Gravel"),
+    ]
+    report = analyze_parsed_data(collars, lithologies)
+    assert _issues(report, "depth_overlap") == []
+    assert _issues(report, "depth_gap") == []
+    assert len(_issues(report, "zero_thickness_interval")) == 1
+
+
 def test_thin_but_nonzero_interval_has_no_zero_thickness_warning() -> None:
     collars = [Collar(hole_id="B", easting=0, northing=0, elevation=0.0, total_depth=10.0)]
     lithologies = [

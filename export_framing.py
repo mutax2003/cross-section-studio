@@ -206,7 +206,7 @@ def build_export_filename(
         if (include_transect_label and transect_label.strip())
         else ""
     )
-    if label.startswith(stem):
+    if label.startswith(stem) and label[len(stem):len(stem) + 1] in ("", "_", "'"):
         # The app's transect label is "<section title> <first>→<last>": keep
         # only the hole range instead of printing the title twice.
         label = label[len(stem):].strip("_'")

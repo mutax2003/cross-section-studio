@@ -67,10 +67,12 @@ from renderer_chemistry import (
 )
 from renderer_common import (
     LEGEND_KEY_HANDLER_MAP,
+    LEGEND_SWATCH_HANDLEHEIGHT,
     MIN_PRINT_MARGIN_IN,
     UNLOGGED_FILL_COLOR,
     UNLOGGED_LEGEND_LABEL,
     HatchBatchedPolyCollection,
+    PinchOutKey,
     RendererGeometryMixin,
     SampleTextKey,
     VECaptionAnnotation,
@@ -79,9 +81,11 @@ from renderer_common import (
     below_axes_anchor,
     format_ve_caption,
     header_overlaps,
+    legend_source_keys,
     measured_vertical_exaggeration,
     page_margins_in,
     parameter_legend_keys,
+    remember_legend_keys,
     restore_stacked_headers,
     settle_figure_layout,
     stack_hole_headers,
@@ -496,11 +500,7 @@ class CrossSectionRenderer(
         frame = ax.get_window_extent(renderer)
         if box.height <= 0.45 * frame.height and box.y1 <= frame.y1 + 0.5 and box.x1 <= frame.x1 + 0.5:
             return
-        extras = [
-            (handle, text.get_text())
-            for handle, text in zip(key.legend_handles, key.get_texts(), strict=False)
-            if handle is not None
-        ]
+        extras = legend_source_keys(key)
         key.remove()
         self._rebuild_outside_legend(ax, extras)
 
@@ -803,6 +803,24 @@ class CrossSectionRenderer(
             )
             style_key = (style.color, style.hatch or "", style.edge_color, linestyle, patch_alpha)
             polygon_groups.setdefault(style_key, []).append(verts)
+        pinch_verts = [
+            verts
+            for (_c, _h, _e, linestyle, _a), verts_list in polygon_groups.items()
+            if linestyle == "--"
+            for verts in verts_list
+        ]
+        if pinch_verts:
+            # The faded wedges sit on an opaque page-colour underlay: the grid
+            # no longer shows through them (the legend wedge has none either).
+            underlay = PolyCollection(
+                pinch_verts,
+                facecolors=ax.get_facecolor(),
+                edgecolors="none",
+                linewidths=0.0,
+                zorder=1.95,
+            )
+            underlay.set_gid("pinch-out-underlay")
+            ax.add_collection(underlay)
         for style_key, verts_list in polygon_groups.items():
             color, hatch, edge_color, linestyle, patch_alpha = style_key
             batch_kwargs = {"merge_shared_edges": True} if hatch else {}
@@ -1370,18 +1388,14 @@ class CrossSectionRenderer(
                     label=UNLOGGED_LEGEND_LABEL,
                 )
             )
+        labels = [handle.get_label() for handle in legend_handles]
         if self._has_pinch_out:
-            legend_handles.append(
-                Patch(
-                    facecolor="none",
-                    edgecolor=POLYGON_EDGE_COLOR,
-                    linestyle="--",
-                    linewidth=1.0,
-                    label="Inferred pinch-out",
-                )
-            )
+            # Keyed by a faded, dashed wedge like the ones drawn.
+            legend_handles.append(PinchOutKey())
+            labels.append("Inferred pinch-out")
         legend = ax.legend(
             handles=legend_handles,
+            labels=labels,
             title="Lithology",
             loc="upper left",
             bbox_to_anchor=(1.01, 1.0),
@@ -1391,7 +1405,10 @@ class CrossSectionRenderer(
             fontsize=8,
             title_fontsize=9,
             ncol=max(1, self.profile.legend_ncol) if len(legend_handles) > 1 else 1,
+            handler_map=LEGEND_KEY_HANDLER_MAP,
+            handleheight=LEGEND_SWATCH_HANDLEHEIGHT,
         )
+        remember_legend_keys(legend, legend_handles, labels)
         if self._cad_svg_layers_enabled():
             self._set_cad_gid(legend, "legend")
 
@@ -1450,8 +1467,12 @@ class CrossSectionRenderer(
         legend = ax.get_legend()
         if not extras or legend is None:
             return
-        handles = list(legend.legend_handles) + [handle for handle, _label in extras]
-        labels = [text.get_text() for text in legend.get_texts()] + [label for _handle, label in extras]
+        # Rebuild from the source proxies, never ``legend.legend_handles``
+        # (drawn artists): a second rebuild lost the three-dot threshold key
+        # and the NM sample text.
+        keys = legend_source_keys(legend) + list(extras)
+        handles = [handle for handle, _label in keys]
+        labels = [label for _handle, label in keys]
         gid = legend.get_gid()
         rebuilt = ax.legend(
             handles=handles,
@@ -1466,7 +1487,9 @@ class CrossSectionRenderer(
             title_fontsize=9,
             ncol=legend._ncols,
             handler_map=LEGEND_KEY_HANDLER_MAP,
+            handleheight=LEGEND_SWATCH_HANDLEHEIGHT,
         )
+        remember_legend_keys(rebuilt, handles, labels)
         if gid:
             rebuilt.set_gid(gid)
 
@@ -1902,24 +1925,17 @@ class CrossSectionRenderer(
             elif fmt == "png":
                 png_bytes = self._savefig_format(figure, fmt="png", dpi=export_dpi)
             elif fmt == "pdf":
-                if self.profile.layout == "consulting_section":
-                    pdf_bytes = self._savefig_format(figure, fmt="pdf")
-                else:
-                    # Lazy import: PDF backend/font tools are heavy and slow startup for SVG/PNG-only runs.
-                    from report_export import export_section_pdf
+                # Lazy import: PDF backend/font tools are heavy and slow startup for SVG/PNG-only runs.
+                from report_export import assemble_section_pdf
 
-                    # Encode page 1 once with framing/DPI; summary page merges via pypdf.
-                    page1_pdf = self._savefig_format(figure, fmt="pdf")
-                    pdf_bytes = export_section_pdf(
-                        self,
-                        polygons,
-                        projected_df,
-                        collar_depths=collar_depths,
-                        water_levels=water_levels,
-                        lithology_codes=lithology_codes,
-                        qa_lines=qa_lines,
-                        section_page_pdf=page1_pdf,
-                    )
+                # Encode page 1 once with framing/DPI; report_export adds the
+                # summary page (or, for consulting sheets, a QA notes page).
+                pdf_bytes = assemble_section_pdf(
+                    self,
+                    self._savefig_format(figure, fmt="pdf"),
+                    lithology_codes=lithology_codes,
+                    qa_lines=qa_lines,
+                )
         return svg_bytes, png_bytes, pdf_bytes
 
     # Gap (points) between the under-axis row (VE note / scale bar) and the

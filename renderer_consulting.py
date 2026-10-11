@@ -2,24 +2,28 @@
 
 from __future__ import annotations
 
+import functools
 import io
 import logging
 import math
 import re
 import textwrap
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import matplotlib as mpl
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.backends.backend_agg import RendererAgg
 from matplotlib.figure import Figure
+from matplotlib.font_manager import FontProperties
 from matplotlib.gridspec import GridSpec
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.patches import FancyArrow, Rectangle
 from matplotlib.ticker import Formatter, FuncFormatter, Locator, MultipleLocator
-from matplotlib.transforms import offset_copy
+from matplotlib.transforms import ScaledTranslation, offset_copy
 from shapely.geometry import LineString
 from shapely.geometry import Polygon as ShapelyPolygon
 
@@ -48,20 +52,135 @@ from render_theme import (
     water_has_multiple_series,
 )
 from renderer_common import (
+    MIN_LEGEND_SWATCH_HEIGHT_IN,
     MIN_PRINT_MARGIN_IN,
     UNLOGGED_FILL_COLOR,
     UNLOGGED_LEGEND_LABEL,
     add_ve_caption,
     fitted_x_locators,
-    legend_swatch_hatch,
+    pinch_out_key_artist,
     release_twins,
     settle_figure_layout,
+    swatch_hatch_artists,
     water_status_legend_label,
     water_status_texts,
 )
 from stratigraphy import GeologicalPolygon
 
 logger = logging.getLogger(__name__)
+
+# Title-block legend: design / floor label sizes (pt, before the consulting
+# font scale), the absolute last-resort size, key column widths and the
+# narrowest label column (inches) a multi-column layout may use.
+_LEGEND_BASE_PT = 7.5
+_LEGEND_FLOOR_PT = 6.5
+_LEGEND_SQUEEZE_PT = 6.0
+_LEGEND_HARD_MIN_PT = 5.0
+_LEGEND_LINESPACING = 1.0
+_LEGEND_SWATCH_W_IN = 0.30
+_LEGEND_SWATCH_MIN_W_IN = 0.24
+_LEGEND_MIN_LABEL_W_IN = 0.45
+# Legend panel width (title-block axes fraction): the design width, and how
+# far it may widen (with / without a PREPARED FOR / BY panel) before units
+# are rolled up.
+_LEGEND_PANEL_DESIGN_W = 0.32
+_LEGEND_PANEL_MAX_W = 0.44
+_LEGEND_PANEL_MAX_W_NO_RIGHT = 0.52
+
+
+@dataclass
+class _LegendRow:
+    entry: tuple[str, str, dict[str, object]]
+    lines: list[str]
+    x: float  # panel-local inches from the left edge
+    y: float  # panel-local inches down from the top edge (row top)
+    full_width: bool
+
+
+@dataclass
+class _LegendLayout:
+    rows: list[_LegendRow]
+    font_pt: float
+    header_pt: float
+    line_h: float
+    swatch_h: float
+    key_w: float
+    text_gap: float
+    pad_x: float
+    pad_top: float
+    ncols: int
+    hidden_units: int = 0
+
+
+def _column_height(heights: Sequence[float], column: Sequence[int], gap: float) -> float:
+    if not column:
+        return 0.0
+    return sum(heights[i] for i in column) + gap * (len(column) - 1)
+
+
+@functools.lru_cache(maxsize=8)
+def _measuring_renderer(dpi: float) -> RendererAgg:
+    """An off-screen Agg renderer for text widths at ``dpi`` (never drawn to)."""
+    return RendererAgg(8, 8, dpi)
+
+
+def _contiguous_splits(n: int, ncols: int, *, max_rows: int | None = None):
+    """Splits of rows ``0..n-1``, in order, into exactly ``ncols`` non-empty columns.
+
+    ``max_rows`` skips splits with a column of more rows than that.
+    """
+    ncols = max(1, min(ncols, n))
+    limit = n if max_rows is None else max_rows
+
+    def rest(start: int, cols: int):
+        remaining = n - start
+        if cols == 1:
+            if remaining <= limit:
+                yield [list(range(start, n))]
+            return
+        for size in range(1, min(limit, remaining - cols + 1) + 1):
+            if remaining - size > limit * (cols - 1):
+                continue
+            head = list(range(start, start + size))
+            for tail in rest(start + size, cols - 1):
+                yield [head, *tail]
+
+    yield from rest(0, ncols)
+
+
+def _water_fill(need: Sequence[float], total: float) -> list[float]:
+    """Column widths for content ``need`` sharing ``total``.
+
+    Everything fits: each column gets its need plus an equal share of the
+    spare room. Otherwise the widest columns are capped at one common width
+    (they wrap) and the narrow ones keep their need.
+    """
+    count = len(need)
+    if count == 0:
+        return []
+    if sum(need) <= total:
+        spare = (total - sum(need)) / count
+        return [n + spare for n in need]
+    ordered = sorted(need)
+    remaining = total
+    for index, value in enumerate(ordered):
+        cap = remaining / (count - index)
+        if value >= cap:
+            return [min(n, cap) for n in need]
+        remaining -= value
+    return list(need)
+
+
+def _ellipsize(text: str, width_in: float, measure) -> str:
+    """``text`` cut with "…" to fit ``width_in`` (last-resort legend labels)."""
+    if measure(text) <= width_in:
+        return text
+    for end in range(len(text) - 1, 0, -1):
+        candidate = text[:end].rstrip(" -:(") + "…"
+        if measure(candidate) <= width_in:
+            return candidate
+    return "…"
+
 
 _MBGS_NOTE = "mbgs DENOTES METRES BELOW GROUND SURFACE."
 
@@ -71,8 +190,6 @@ def _is_masl_note(note: str) -> bool:
     return "MASL DENOTES METRES ABOVE SEA LEVEL" in note.upper()
 
 # Minimum legend column width (axes fraction) before wrapping to two columns.
-_LEGEND_MIN_COL_WIDTH = 0.14
-_LEGEND_CHAR_WIDTH = 0.0065  # approx. axes fraction per character at 7.5 pt
 
 
 _HEADER_FONT_PT = 8.0
@@ -151,10 +268,8 @@ _BAND_TITLE_HARD_MIN_PT = 6.0
 _BAND_TITLE_ROW_HEIGHT = 0.38
 
 # Notes panel: smallest notes size (pt) tried before the last note is cut
-# with "…", and the design width of the CAD block axes (letter landscape) that
-# the legend character budget was tuned on.
+# with "…".
 _NOTES_MIN_PT = 4.5
-_DESIGN_BLOCK_AXES_WIDTH_IN = 11.0 * (0.95 - 0.06)
 
 # A label that already names a (cross) section as a word is printed as-is.
 _SECTION_WORD_RE = re.compile(r"\bsection\b", re.IGNORECASE)
@@ -1280,7 +1395,7 @@ class ConsultingLayoutMixin:
     @staticmethod
     def _requested_map_scale(title_block: ConsultingTitleBlock | None) -> float | None:
         """Denominator of a user / workbook-set ``map_scale`` (never the model default)."""
-        if title_block is None or "map_scale" not in title_block.model_fields_set:
+        if title_block is None or not str(title_block.map_scale or "").strip():
             return None
         return parse_map_scale(title_block.map_scale)
 
@@ -1437,7 +1552,7 @@ class ConsultingLayoutMixin:
         max_m = max(max_frac, 0.2) * panel_px * metres_per_px
 
         length_m = nice_scale_bar_length(max_m)
-        requested = title_block.scale_bar_m if "scale_bar_m" in title_block.model_fields_set else None
+        requested = title_block.scale_bar_m
         if requested and 0.4 * max_m <= float(requested) <= max_m:
             length_m = float(requested)
         if length_m <= 0.0:
@@ -1749,38 +1864,37 @@ class ConsultingLayoutMixin:
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
 
-        # Three independent panels so legend / title / prepared content stay boxed.
-        legend_box = (0.01, 0.05, 0.32, 0.90)
-        has_right = bool(title_block.prepared_for or title_block.prepared_by)
-        if has_right:
-            title_box = (0.34, 0.05, 0.31, 0.90)
-            right_box = (0.66, 0.05, 0.33, 0.90)
-            panels = (legend_box, title_box, right_box)
-        else:
-            # Give the title/meta table the remaining width when no prepared logos.
-            title_box = (0.34, 0.05, 0.65, 0.90)
-            right_box = None
-            panels = (legend_box, title_box)
-        for box in panels:
-            ax.add_patch(
-                Rectangle(
-                    (box[0], box[1]),
-                    box[2],
-                    box[3],
-                    fill=False,
-                    edgecolor="#94A3B8",
-                    linewidth=1.0,
-                    transform=ax.transAxes,
-                    clip_on=False,
-                )
-            )
+        # Three independent panels so legend / title / prepared content stay
+        # boxed. The legend panel widens (title / prepared panels give way)
+        # when the design width would hide units or shrink the key below its
+        # floor size; it follows the page, so every unit re-fits with it.
+        def boxes():
+            return self._title_block_boxes(ax, style_cache, lithology_codes, title_block)
 
+        def draw_frames() -> None:
+            for box in boxes():
+                if box is None:
+                    continue
+                ax.add_patch(
+                    Rectangle(
+                        (box[0], box[1]),
+                        box[2],
+                        box[3],
+                        fill=False,
+                        edgecolor="#94A3B8",
+                        linewidth=1.0,
+                        transform=ax.transAxes,
+                        clip_on=False,
+                    )
+                )
+
+        self._draw_refittable(ax, draw_frames)
         self._draw_refittable(ax, lambda: self._draw_legend_panel(
             ax,
             style_cache,
             lithology_codes,
             title_block,
-            panel=legend_box,
+            panel=boxes()[0],
         ))
 
         meta_rows: list[tuple[str, str]] = []
@@ -1792,12 +1906,11 @@ class ConsultingLayoutMixin:
         if title_block.source:
             meta_rows.append(("SOURCE", title_block.source))
         scale_row = None
-        if title_block.map_scale:
-            # The user's scale only when the section is drawn at it on this
-            # page; the model default ("1:1000") or a scale that does not fit
-            # would contradict the true-scale bar, so "AS SHOWN" defers to it.
-            scale_row = len(meta_rows)
-            meta_rows.append(("SCALE", "AS SHOWN"))
+        # Always a SCALE row: the user's scale only when the section is drawn
+        # at it on this page; blank or a scale that does not fit would
+        # contradict the true-scale bar, so "AS SHOWN" defers to it.
+        scale_row = len(meta_rows)
+        meta_rows.append(("SCALE", "AS SHOWN"))
         if title_block.date:
             meta_rows.append(("DATE", title_block.date))
         if title_block.drawn_by:
@@ -1812,15 +1925,87 @@ class ConsultingLayoutMixin:
             rows = list(meta_rows)
             if scale_row is not None:
                 rows[scale_row] = ("SCALE", self._title_block_scale_value(figure, title_block))
-            self._draw_title_block_metadata_table(ax, rows, panel=title_box)
+            self._draw_title_block_metadata_table(ax, rows, panel=boxes()[1])
 
         # The SCALE row follows the exact-scale fit, which an export page
         # resize can change: it is part of the re-fit key.
         self._draw_refittable(ax, draw_meta, key_extra=lambda: self._map_scale_layout(figure))
 
-        if right_box is None:
+        if not (title_block.prepared_for or title_block.prepared_by):
             return
-        self._draw_refittable(ax, lambda: self._draw_prepared_panel(ax, title_block, right_box))
+        self._draw_refittable(ax, lambda: self._draw_prepared_panel(ax, title_block, boxes()[2]))
+
+    def _title_block_boxes(
+        self,
+        ax,
+        style_cache: dict,
+        lithology_codes: list[str],
+        title_block: ConsultingTitleBlock,
+    ) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float], tuple | None]:
+        """(legend, title, prepared-or-None) panel boxes in title-block axes fractions."""
+        has_right = bool(title_block.prepared_for or title_block.prepared_by)
+        key = (self._refit_key(ax), has_right, tuple(lithology_codes))
+        cache = ax.__dict__.setdefault("_css_title_block_boxes", {})
+        if key in cache:
+            return cache[key]
+        bottom, height = 0.05, 0.90
+        legend_w = self._legend_panel_width(
+            ax,
+            style_cache,
+            lithology_codes,
+            title_block,
+            height=height,
+            max_width=_LEGEND_PANEL_MAX_W if has_right else _LEGEND_PANEL_MAX_W_NO_RIGHT,
+        )
+        legend_box = (0.01, bottom, legend_w, height)
+        start = 0.01 + legend_w + 0.01
+        if has_right:
+            # Title and prepared panels share the rest at the design ratio.
+            avail = 0.99 - start - 0.01
+            title_w = avail * 0.31 / 0.64
+            title_box = (start, bottom, title_w, height)
+            right_box = (start + title_w + 0.01, bottom, 0.99 - (start + title_w + 0.01), height)
+        else:
+            # Give the title/meta table the remaining width when no prepared logos.
+            title_box = (start, bottom, 0.99 - start, height)
+            right_box = None
+        cache[key] = (legend_box, title_box, right_box)
+        return cache[key]
+
+    def _legend_panel_width(
+        self,
+        ax,
+        style_cache: dict,
+        lithology_codes: list[str],
+        title_block: ConsultingTitleBlock,
+        *,
+        height: float,
+        max_width: float,
+    ) -> float:
+        """Narrowest legend panel width (axes fraction) that keys every unit at the floor size."""
+        entries, n_codes = self._legend_panel_entries(ax, style_cache, lithology_codes, title_block)
+        figure = ax.figure
+        ax_w_in = max(ax.get_position().width * figure.get_size_inches()[0], 1e-6)
+        ax_h_in = max(ax.get_position().height * figure.get_size_inches()[1], 1e-6)
+        floor_pt = min(max(_LEGEND_FLOOR_PT, self._fs(_LEGEND_FLOOR_PT)), self._fs(_LEGEND_BASE_PT))
+        best = None
+        width = _LEGEND_PANEL_DESIGN_W
+        while width <= max_width + 1e-9:
+            layout = self._legend_panel_layout(
+                figure,
+                entries,
+                n_codes,
+                panel_w_in=width * ax_w_in,
+                panel_h_in=height * ax_h_in,
+                prefer_cols=2 if (self.profile.legend_ncol >= 2 and len(entries) > 6) else 1,
+            )
+            quality = (layout.hidden_units, layout.font_pt < floor_pt - 1e-9)
+            if quality == (0, False):
+                return width
+            if best is None or quality < best[0]:
+                best = (quality, width)
+            width += 0.04
+        return best[1] if best is not None else _LEGEND_PANEL_DESIGN_W
 
     def _draw_prepared_panel(
         self,
@@ -1886,25 +2071,6 @@ class ConsultingLayoutMixin:
         )
 
     @staticmethod
-    def _legend_label_char_budget(
-        col_width_axes: float,
-        font_size: float,
-        *,
-        swatch_w: float,
-        axes_width_in: float | None = None,
-    ) -> int:
-        """Estimate how many characters fit in a legend column without bleeding sideways.
-
-        ``_LEGEND_CHAR_WIDTH`` was tuned on the letter-landscape block axes; a
-        narrower axes (letter portrait) fits proportionally fewer characters.
-        """
-        usable = max(col_width_axes - swatch_w - 0.018, 0.02)
-        char_w = _LEGEND_CHAR_WIDTH * (font_size / 7.5)
-        if axes_width_in and abs(axes_width_in - _DESIGN_BLOCK_AXES_WIDTH_IN) > 1e-3:
-            char_w *= _DESIGN_BLOCK_AXES_WIDTH_IN / axes_width_in
-        return max(8, int(usable / char_w))
-
-    @staticmethod
     def _legend_panel_clip(ax, panel: tuple[float, float, float, float]) -> Rectangle:
         left, bottom, width, height = panel
         clip_rect = Rectangle(
@@ -1917,23 +2083,14 @@ class ConsultingLayoutMixin:
         ax.add_patch(clip_rect)
         return clip_rect
 
-    def _draw_legend_panel(
+    def _legend_panel_entries(
         self,
         ax,
         style_cache: dict,
         lithology_codes: list[str],
         title_block: ConsultingTitleBlock,
-        *,
-        panel: tuple[float, float, float, float],
-    ) -> None:
-        left, bottom, width, height = panel
-        pad_x = 0.025
-        pad_y = 0.04
-        content_left = left + pad_x
-        content_top = bottom + height - pad_y
-        content_bottom = bottom + pad_y
-        swatch_w = 0.03
-
+    ) -> tuple[list[tuple[str, str, dict[str, object]]], int]:
+        """``(kind, label, style)`` rows of the title-block legend, and the lithology count."""
         entries: list[tuple[str, str, dict[str, object]]] = []
         for code in lithology_codes:
             style = self._resolve_style(code, style_cache)
@@ -2067,68 +2224,54 @@ class ConsultingLayoutMixin:
                 )
             )
 
-        # Header + entries must stay inside the legend box (never bleed into title block).
-        ncol = max(1, self.profile.legend_ncol)
-        usable_width = width - 2 * pad_x
-        col_width_single = usable_width
-        col_width_two = (usable_width - 0.02) / 2
-        # Two columns when asked for, or whenever a single stack would need
-        # more than eight rows (entries past the panel were silently dropped).
-        # Row geometry follows the font scale so enlarged labels keep their
-        # line pitch (and the capacity / "+N MORE UNITS" trim stays honest).
-        scale = self._consulting_font_scale()
-        header_h = 0.14 * scale  # "LEGEND" at 8.5 pt plus a gap above the first row
-        min_step = 0.055 * scale
-        two_col_possible = col_width_two >= _LEGEND_MIN_COL_WIDTH
-        rows_available = max(1, int((content_top - header_h - content_bottom) // min_step))
-        capacity = rows_available * (2 if two_col_possible else 1)
-        if len(entries) > capacity:
-            # Trim lithology swatches (never the water/screen/parameter keys)
-            # and say how many units are not listed.
-            overflow = len(entries) - capacity + 1
-            keep_codes = max(0, n_code_entries - overflow)
-            hidden = n_code_entries - keep_codes
-            entries = (
-                entries[:keep_codes]
-                + [("text", f"+{hidden} MORE UNITS (SEE LOG)", {"color": LABEL_COLOR})]
-                + entries[n_code_entries:]
-            )
-        use_two_cols = two_col_possible and ((ncol >= 2 and len(entries) > 6) or len(entries) > 8)
-        if use_two_cols:
-            mid = (len(entries) + 1) // 2
-            column_groups: list[list[tuple[str, str, dict[str, object]]]] = [
-                entries[:mid],
-                entries[mid:],
-            ]
-            col_gap = 0.02
-            col_width = col_width_two
-            column_layouts = [
-                (content_left, content_left + swatch_w + 0.012),
-                (
-                    content_left + col_width + col_gap,
-                    content_left + col_width + col_gap + swatch_w + 0.012,
-                ),
-            ]
-        else:
-            column_groups = [entries]
-            col_width = col_width_single
-            column_layouts = [(content_left, content_left + swatch_w + 0.012)]
+        return entries, n_code_entries
 
+    def _draw_legend_panel(
+        self,
+        ax,
+        style_cache: dict,
+        lithology_codes: list[str],
+        title_block: ConsultingTitleBlock,
+        *,
+        panel: tuple[float, float, float, float],
+    ) -> None:
+        left, bottom, width, height = panel
+        entries, n_code_entries = self._legend_panel_entries(ax, style_cache, lithology_codes, title_block)
+
+        # Header + entries must stay inside the legend box (never bleed into
+        # the title block). The layout is measured in inches with the
+        # figure's renderer: one column at the design size when it fits,
+        # else more columns and/or a smaller size (never below the floor);
+        # lithology units roll up into "+N MORE UNITS" only when even three
+        # columns at the floor cannot hold them, and symbol keys never do.
+        figure = ax.figure
+        ax_w_in = max(ax.get_position().width * figure.get_size_inches()[0], 1e-6)
+        ax_h_in = max(ax.get_position().height * figure.get_size_inches()[1], 1e-6)
+        layout = self._legend_panel_layout(
+            figure,
+            entries,
+            n_code_entries,
+            panel_w_in=width * ax_w_in,
+            panel_h_in=height * ax_h_in,
+            prefer_cols=2 if (self.profile.legend_ncol >= 2 and len(entries) > 6) else 1,
+        )
         clip_rect = self._legend_panel_clip(ax, panel)
 
-        n_rows = max(len(group) for group in column_groups)
-        step = min(
-            0.10 * scale,
-            max(min_step, (content_top - header_h - content_bottom) / max(n_rows, 1)),
-        )
-        font_size = self._fs(7.5) if step >= 0.08 * scale else self._fs(6.5)
-        swatch_h = 0.04 * scale
-        y_header = content_top
+        def to_axes(x_in: float, y_in: float) -> tuple[float, float]:
+            # Panel-local inches (origin at the panel's top-left, y down).
+            return left + x_in / ax_w_in, bottom + height - y_in / ax_h_in
+
+        def inch_transform(x_in: float, y_in: float):
+            # Swatch-local inches (origin at panel point x_in, y_in; y up) -> display.
+            ax_x, ax_y = to_axes(x_in, y_in)
+            return figure.dpi_scale_trans + ScaledTranslation(ax_x, ax_y, ax.transAxes)
+
+        header_x, header_y = to_axes(layout.pad_x, layout.pad_top)
         header = ax.text(
-            content_left,
-            y_header,
+            header_x,
+            header_y,
             "LEGEND",
-            fontsize=self._fs(8.5),
+            fontsize=layout.header_pt,
             fontweight="bold",
             color=LABEL_COLOR,
             transform=ax.transAxes,
@@ -2136,188 +2279,375 @@ class ConsultingLayoutMixin:
             clip_on=True,
         )
         header.set_clip_path(clip_rect)
-        entry_top = y_header - max(step, header_h)
-
-        for group, (col_left, col_text_x) in zip(column_groups, column_layouts, strict=True):
-            y = entry_top
-            max_label_chars = self._legend_label_char_budget(
-                col_width,
-                font_size,
-                swatch_w=swatch_w,
-                axes_width_in=ax.get_position().width * ax.figure.get_size_inches()[0],
-            )
-            for kind, label, style in group:
-                if y < content_bottom + 0.02:
-                    break
-                display = label
-                if kind == "text" and len(label) > max_label_chars:
-                    # "+N MORE UNITS (SEE LOG)": drop a word, never cut mid-word.
-                    label = label.replace(" UNITS", "")
-                    display = label
-                wrapped_lines = 1
-                if len(label) > max_label_chars and kind != "text":
-                    # Keys wrap to a second line rather than losing words
-                    # ("CHLORIDE CONCENTRATION" / "(mg/kg)" on portrait pages).
-                    lines = textwrap.wrap(label, width=max_label_chars)
-                    if len(lines) == 2 and all(len(line) <= max_label_chars for line in lines):
-                        display = "\n".join(lines)
-                        wrapped_lines = 2
-                if wrapped_lines == 1 and len(label) > max_label_chars:
-                    paren = label.rfind("(")
-                    if paren > 0 and label.endswith(")") and len(label) - paren <= 14:
-                        prefix_budget = max_label_chars - (len(label) - paren) - 1
-                        if prefix_budget >= 8:
-                            display = label[:prefix_budget].rstrip(" -:") + "…" + label[paren:]
-                        else:
-                            display = label[: max_label_chars - 1] + "…"
-                    else:
-                        display = label[: max_label_chars - 1] + "…"
+        font_size = layout.font_pt
+        swatch_w = layout.key_w
+        swatch_h = layout.swatch_h
+        for row in layout.rows:
+            kind, _label, style = row.entry
+            key_x = row.x
+            # A wrapped key keeps its symbol beside the first line.
+            key_yc = row.y + max(swatch_h, layout.line_h) / 2.0
+            ax_key_x, ax_y = to_axes(key_x, key_yc)
+            ax_key_x1, _ = to_axes(key_x + swatch_w, key_yc)
+            if kind in {"swatch", "pinch_out"}:
+                trans = inch_transform(key_x, key_yc + swatch_h / 2.0)
                 if kind == "swatch":
                     rect = Rectangle(
-                        (col_left, y - swatch_h * 0.55),
+                        (0.0, 0.0),
                         swatch_w,
                         swatch_h,
                         facecolor=style["facecolor"],
                         edgecolor=style["edgecolor"],
                         linewidth=0.6,
-                        hatch=legend_swatch_hatch(
-                            style.get("hatch"),
-                            swatch_h * ax.get_position().height * ax.figure.get_size_inches()[1],
-                        ),
-                        transform=ax.transAxes,
+                        transform=trans,
                         clip_on=True,
                     )
                     ax.add_patch(rect)
                     rect.set_clip_path(clip_rect)
-                elif kind == "gradient":
-                    arrow = FancyArrow(
-                        col_left + 0.012,
-                        y - 0.01,
-                        0.0,
-                        0.03,
-                        width=0.006,
-                        head_width=0.016,
-                        head_length=0.01,
-                        length_includes_head=True,
-                        transform=ax.transAxes,
-                        facecolor=CONSULTING_WATER_COLOR,
-                        edgecolor=CONSULTING_WATER_COLOR,
-                        clip_on=True,
-                    )
-                    ax.add_patch(arrow)
-                    arrow.set_clip_path(clip_rect)
-                elif kind == "marker":
-                    (marker_line,) = ax.plot(
-                        [col_left, col_left + 0.03],
-                        [y, y - 0.02],
-                        marker=style.get("marker", "v"),
-                        color=style.get("color", CONSULTING_WATER_COLOR),
-                        linewidth=0,
-                        markersize=5,
-                        transform=ax.transAxes,
-                        clip_on=True,
-                    )
-                    marker_line.set_clip_path(clip_rect)
-                elif kind == "pinch_out":
-                    wedge = Rectangle(
-                        (col_left, y - swatch_h * 0.55),
-                        swatch_w,
-                        swatch_h,
-                        facecolor="#D1D5DB",
-                        alpha=0.6,
-                        edgecolor=LABEL_COLOR,
-                        linestyle="--",
-                        linewidth=0.8,
-                        transform=ax.transAxes,
-                        clip_on=True,
-                    )
+                    for mark in swatch_hatch_artists(style.get("hatch"), swatch_w, swatch_h, trans):
+                        ax.add_patch(mark)
+                else:
+                    wedge = pinch_out_key_artist(swatch_w, swatch_h, trans)
                     ax.add_patch(wedge)
                     wedge.set_clip_path(clip_rect)
-                elif kind == "status_text":
-                    status_sample = ax.text(
-                        col_left,
-                        y,
-                        style["sample"],
-                        fontsize=font_size * 0.9,
-                        fontweight="bold",
-                        va="center",
-                        ha="left",
-                        color=style["color"],
-                        transform=ax.transAxes,
-                        clip_on=True,
-                        gid="water-status-legend-sample",
-                    )
-                    status_sample.set_clip_path(clip_rect)
-                elif kind == "line":
-                    (line,) = ax.plot(
-                        [col_left, col_left + 0.03],
-                        [y, y],
-                        color=style.get("color", LABEL_COLOR),
-                        linewidth=1.4,
-                        linestyle=style.get("linestyle", "--"),
-                        transform=ax.transAxes,
-                        clip_on=True,
-                    )
-                    line.set_clip_path(clip_rect)
-                elif kind == "text":
-                    sample = self._draw_parameter_legend_sample(
-                        ax,
-                        col_left,
-                        y,
-                        style.get("parameter_entry") or {},
-                        font_size=font_size,
-                        clip_path=clip_rect,
-                    )
-                    if sample is not None:
-                        # Label moves to the text column, beside its sample.
-                        kind = "sampled_text"
-                elif kind == "threshold_dots":
-                    band_colors = list(style.get("parameter_entry", {}).get("threshold_colors", ()))
-                    dots = ax.scatter(
-                        [col_left + 0.004 + 0.011 * i for i in range(len(band_colors))],
-                        [y] * len(band_colors),
-                        c=band_colors,
-                        marker="o",
-                        s=14.0,
-                        linewidths=0,
-                        transform=ax.transAxes,
-                        clip_on=True,
-                        zorder=3,
-                    )
-                    dots.set_gid("parameter-legend-threshold-dots")
-                    dots.set_clip_path(clip_rect)
-                else:  # line_marker
-                    (lm_line,) = ax.plot(
-                        [col_left, col_left + 0.03],
-                        [y, y],
-                        marker=style.get("marker", "D"),
-                        color=style.get("color", PARAMETER_READING_COLOR),
-                        linewidth=1.4,
-                        linestyle=style.get("linestyle", "--"),
-                        markersize=5,
-                        transform=ax.transAxes,
-                        clip_on=True,
-                    )
-                    lm_line.set_clip_path(clip_rect)
-                # A wrapped key keeps its symbol beside the first line.
-                line_h = (
-                    font_size * 1.15 / 72.0
-                    / max(ax.get_position().height * ax.figure.get_size_inches()[1], 1e-6)
+            elif kind == "gradient":
+                arrow_h = swatch_h / ax_h_in
+                arrow = FancyArrow(
+                    ax_key_x + 0.4 * (ax_key_x1 - ax_key_x),
+                    ax_y - arrow_h / 2.0,
+                    0.0,
+                    arrow_h,
+                    width=0.006,
+                    head_width=0.016,
+                    head_length=0.35 * arrow_h,
+                    length_includes_head=True,
+                    transform=ax.transAxes,
+                    facecolor=CONSULTING_WATER_COLOR,
+                    edgecolor=CONSULTING_WATER_COLOR,
+                    clip_on=True,
                 )
-                text_y = y - 0.5 * line_h * (wrapped_lines - 1)
-                label_artist = ax.text(
-                    col_left if kind == "text" else col_text_x,  # sampled_text → text column
-                    text_y,
-                    display,
-                    fontsize=font_size,
-                    linespacing=1.0 if wrapped_lines > 1 else None,
-                    va="center",
-                    color=style.get("color", LABEL_COLOR) if kind == "text" else LABEL_COLOR,
+                ax.add_patch(arrow)
+                arrow.set_clip_path(clip_rect)
+            elif kind == "marker":
+                (marker_line,) = ax.plot(
+                    [(ax_key_x + ax_key_x1) / 2.0],
+                    [ax_y],
+                    marker=style.get("marker", "v"),
+                    color=style.get("color", CONSULTING_WATER_COLOR),
+                    linewidth=0,
+                    markersize=5,
                     transform=ax.transAxes,
                     clip_on=True,
                 )
-                label_artist.set_clip_path(clip_rect)
-                y -= step + line_h * (wrapped_lines - 1)
+                marker_line.set_clip_path(clip_rect)
+            elif kind == "status_text":
+                status_sample = ax.text(
+                    ax_key_x,
+                    ax_y,
+                    style["sample"],
+                    fontsize=font_size * 0.9,
+                    fontweight="bold",
+                    va="center",
+                    ha="left",
+                    color=style["color"],
+                    transform=ax.transAxes,
+                    clip_on=True,
+                    gid="water-status-legend-sample",
+                )
+                status_sample.set_clip_path(clip_rect)
+            elif kind == "line":
+                (line,) = ax.plot(
+                    [ax_key_x, ax_key_x1],
+                    [ax_y, ax_y],
+                    color=style.get("color", LABEL_COLOR),
+                    linewidth=1.4,
+                    linestyle=style.get("linestyle", "--"),
+                    transform=ax.transAxes,
+                    clip_on=True,
+                )
+                line.set_clip_path(clip_rect)
+            elif kind == "text":
+                sample = self._draw_parameter_legend_sample(
+                    ax,
+                    ax_key_x,
+                    ax_y,
+                    style.get("parameter_entry") or {},
+                    font_size=font_size,
+                    clip_path=clip_rect,
+                )
+                if sample is not None:
+                    # Label moves to the text column, beside its sample.
+                    kind = "sampled_text"
+            elif kind == "threshold_dots":
+                band_colors = list(style.get("parameter_entry", {}).get("threshold_colors", ()))
+                count = max(len(band_colors), 1)
+                dots = ax.scatter(
+                    [ax_key_x + (ax_key_x1 - ax_key_x) * (i + 0.5) / count for i in range(len(band_colors))],
+                    [ax_y] * len(band_colors),
+                    c=band_colors,
+                    marker="o",
+                    s=14.0,
+                    linewidths=0,
+                    transform=ax.transAxes,
+                    clip_on=True,
+                    zorder=3,
+                )
+                dots.set_gid("parameter-legend-threshold-dots")
+                dots.set_clip_path(clip_rect)
+            elif kind == "line_marker":
+                linestyle = style.get("linestyle", "--")
+                if linestyle in (None, "", " ", "none", "None"):
+                    # Markers only (red / black chemistry): one marker, as
+                    # drawn, not one at each end of an invisible line.
+                    xs, ys = [(ax_key_x + ax_key_x1) / 2.0], [ax_y]
+                else:
+                    xs, ys = [ax_key_x, ax_key_x1], [ax_y, ax_y]
+                (lm_line,) = ax.plot(
+                    xs,
+                    ys,
+                    marker=style.get("marker", "D"),
+                    color=style.get("color", PARAMETER_READING_COLOR),
+                    linewidth=1.4,
+                    linestyle=linestyle,
+                    markersize=5,
+                    transform=ax.transAxes,
+                    clip_on=True,
+                )
+                lm_line.set_clip_path(clip_rect)
+            full_width = row.full_width
+            text_x = key_x if full_width else key_x + swatch_w + layout.text_gap
+            if len(row.lines) == 1:
+                text_yc = key_yc
+            else:
+                text_yc = row.y + len(row.lines) * layout.line_h / 2.0
+            ax_text_x, ax_text_y = to_axes(text_x, text_yc)
+            label_artist = ax.text(
+                ax_text_x,
+                ax_text_y,
+                "\n".join(row.lines),
+                fontsize=font_size,
+                linespacing=_LEGEND_LINESPACING,
+                va="center",
+                color=style.get("color", LABEL_COLOR) if full_width else LABEL_COLOR,
+                transform=ax.transAxes,
+                clip_on=True,
+            )
+            label_artist.set_clip_path(clip_rect)
+
+    def _legend_panel_layout(
+        self,
+        figure: Figure,
+        entries: list[tuple[str, str, dict[str, object]]],
+        n_code_entries: int,
+        *,
+        panel_w_in: float,
+        panel_h_in: float,
+        prefer_cols: int = 1,
+    ) -> _LegendLayout:
+        """Fit every legend entry into the panel (see ``_draw_legend_panel``)."""
+        # A detached Agg renderer: asking the figure for one can trigger a
+        # full draw of the half-built figure (non-Agg canvas).
+        renderer = _measuring_renderer(float(figure.dpi))
+        px_per_in = renderer.points_to_pixels(72.0)
+        # Measured once per renderer (re-fits and candidate widths re-ask).
+        widths: dict[tuple, float] = self.__dict__.setdefault("_legend_text_widths", {})
+
+        def text_w(text: str, size: float, weight: str = "normal") -> float:
+            key = (text, float(size), weight, px_per_in)
+            if key not in widths:
+                prop = FontProperties(size=size, weight=weight)
+                width, _h, _d = renderer.get_text_width_height_descent(text, prop, ismath=False)
+                widths[key] = width / px_per_in
+            return widths[key]
+
+        pad_x = 0.09
+        pad_top = 0.05
+        pad_bottom = 0.06
+        header_pt = self._fs(8.5)
+        col_gap = 0.14
+        text_gap = 0.07
+        avail_w = panel_w_in - 2 * pad_x
+        base_pt = self._fs(_LEGEND_BASE_PT)
+        floor_pt = min(max(_LEGEND_FLOOR_PT, self._fs(_LEGEND_FLOOR_PT)), base_pt)
+        sizes: list[float] = []
+        pt = base_pt
+        while pt >= floor_pt - 1e-9:
+            sizes.append(pt)
+            pt -= 0.5
+        if sizes[-1] > floor_pt + 1e-9:
+            sizes.append(floor_pt)
+
+        def wrap(label: str, width_in: float, size: float, max_lines: int) -> list[str] | None:
+            words = label.split()
+            if not words:
+                return [label]
+            lines: list[str] = []
+            current = words[0]
+            for word in words[1:]:
+                trial = f"{current} {word}"
+                if text_w(trial, size) <= width_in:
+                    current = trial
+                else:
+                    lines.append(current)
+                    current = word
+            lines.append(current)
+            if len(lines) > max_lines or any(text_w(line, size) > width_in for line in lines):
+                return None
+            return lines
+
+        def is_full_width(item) -> bool:
+            kind, _label, style = item
+            if kind == "more":
+                return True
+            return kind == "text" and not (style.get("parameter_entry") or {}).get("sample_text")
+
+        def attempt(items, size: float, ncols: int, *, force: bool = False):
+            line_h = size * _LEGEND_LINESPACING * 1.17 / 72.0
+            swatch_h = max(MIN_LEGEND_SWATCH_HEIGHT_IN, min(0.13, line_h * 0.9))
+            samples = [text_w(str(style["sample"]), size * 0.9, "bold") for kind, _l, style in items if kind == "status_text"]
+            samples += [
+                text_w(str((style.get("parameter_entry") or {}).get("sample_text")), size)
+                for kind, _l, style in items
+                if kind == "text" and (style.get("parameter_entry") or {}).get("sample_text")
+            ]
+            uniform_col = (avail_w - (ncols - 1) * col_gap) / ncols
+            key_w = max(
+                _LEGEND_SWATCH_W_IN if ncols == 1 else _LEGEND_SWATCH_MIN_W_IN,
+                max(samples, default=0.0) + 0.02,
+            )
+            key_span = key_w + text_gap
+            if uniform_col - key_span < _LEGEND_MIN_LABEL_W_IN and not force:
+                return None
+            max_lines = 2 if ncols == 1 else 3
+            full = [is_full_width(item) for item in items]
+            # Unwrapped label width, in label-column units (a full-width row
+            # may also use the key column).
+            natural = [
+                text_w(item[1], size) - (key_span if full[i] else 0.0) for i, item in enumerate(items)
+            ]
+            row_gap = 0.28 * line_h
+            top = pad_top + header_pt / 72.0 + max(0.045, 0.45 * line_h)
+            avail_h = panel_h_in - top - pad_bottom
+
+            def label_budget(count: int) -> float:
+                return avail_w - count * key_span - (count - 1) * col_gap
+
+            def wrapped(i: int, label_w: float) -> list[str] | None:
+                width_in = label_w + (key_span if full[i] else 0.0)
+                lines = wrap(items[i][1], width_in, size, max_lines)
+                if lines is None and force:
+                    lines = [_ellipsize(items[i][1], width_in, lambda s: text_w(s, size))]
+                return lines
+
+            # Columns sized to their content: every in-order split into
+            # ``ncols`` columns is tried; each column gets its longest label's
+            # width (labels wrap only where the panel is short of room) and
+            # the split with the shortest tallest column wins.
+            wrap_cache: dict[tuple[int, float], list[str] | None] = {}
+
+            def lines_for(i: int, label_w: float) -> list[str] | None:
+                key = (i, int(float(label_w) * 1000.0))
+                if key not in wrap_cache:
+                    wrap_cache[key] = wrapped(i, label_w)
+                return wrap_cache[key]
+
+            # Every row is at least one line tall: a column whose one-line
+            # height already overflows can never fit (prunes the search).
+            one_line = max(swatch_h, line_h)
+            max_rows = len(items) if force else int((avail_h + row_gap + 1e-9) // (one_line + row_gap))
+            if max_rows < 1:
+                return None
+            best = None
+            for columns in _contiguous_splits(len(items), ncols, max_rows=max_rows):
+                need = [max(max(natural[i] for i in col), 0.0) for col in columns]
+                col_label_w = _water_fill(need, label_budget(len(columns)))
+                all_lines = []
+                for c, col in enumerate(columns):
+                    for i in col:
+                        all_lines.append(lines_for(i, col_label_w[c]))
+                if any(lines is None for lines in all_lines):
+                    continue
+                heights = [max(swatch_h, len(lines) * line_h) for lines in all_lines]
+                tallest = max(_column_height(heights, col, row_gap) for col in columns)
+                score = (tallest > avail_h + 1e-6, tallest, sum(len(lines) for lines in all_lines))
+                if best is None or score < best[0]:
+                    best = (score, columns, col_label_w, all_lines, heights, tallest)
+            if best is None or (best[0][0] and not force):
+                return None
+            _score, columns, col_label_w, all_lines, heights, tallest = best
+            # Spread spare height a little (at most to a roomy row pitch).
+            longest = max(len(col) for col in columns)
+            if longest > 1 and tallest < avail_h:
+                row_gap = min(row_gap + (avail_h - tallest) / (longest - 1), 0.9 * line_h)
+            placed = []
+            x = pad_x
+            for col_index, col in enumerate(columns):
+                y = top
+                for i in col:
+                    placed.append(_LegendRow(items[i], all_lines[i], x, y, full[i]))
+                    y += heights[i] + row_gap
+                x += key_span + col_label_w[col_index] + col_gap
+            return _LegendLayout(
+                rows=placed,
+                font_pt=size,
+                header_pt=header_pt,
+                line_h=line_h,
+                swatch_h=swatch_h,
+                key_w=key_w,
+                text_gap=text_gap,
+                pad_x=pad_x,
+                pad_top=pad_top,
+                ncols=len(columns),
+            )
+
+        col_options = sorted((1, 2, 3), key=lambda c: (c < prefer_cols, c))
+        for size in sizes:
+            for ncols in col_options:
+                fitted = attempt(entries, size, ncols)
+                if fitted is not None:
+                    return fitted
+        # A slightly smaller size before any unit is hidden from the key.
+        squeeze_pt = min(_LEGEND_SQUEEZE_PT, floor_pt)
+        if squeeze_pt < floor_pt - 1e-9:
+            for ncols in col_options:
+                fitted = attempt(entries, squeeze_pt, ncols)
+                if fitted is not None:
+                    return fitted
+            floor_pt = squeeze_pt
+        # Too many units even in three columns at the floor size: roll up the
+        # fewest lithology units; symbol keys are never dropped.
+        codes, others = entries[:n_code_entries], entries[n_code_entries:]
+
+        def rolled_up(hidden: int):
+            items = (
+                codes[: len(codes) - hidden]
+                + [("more", f"+{hidden} MORE UNITS (SEE LOG)", {"color": LABEL_COLOR})]
+                + others
+            )
+            for ncols in (1, 2, 3):
+                fitted = attempt(items, floor_pt, ncols)
+                if fitted is not None:
+                    fitted.hidden_units = hidden
+                    return fitted
+            return None
+
+        # Fewest hidden units that fit (more hidden -> fewer rows: monotone).
+        low, high, found = 1, len(codes), None
+        while low <= high:
+            mid = (low + high) // 2
+            fitted = rolled_up(mid)
+            if fitted is not None:
+                found, high = fitted, mid - 1
+            else:
+                low = mid + 1
+        if found is not None:
+            return found
+        # Last resort (a tiny panel): every symbol key at the hard minimum,
+        # labels cut with "…" rather than lost.
+        more = [("more", f"+{len(codes)} MORE UNITS (SEE LOG)", {"color": LABEL_COLOR})] if codes else []
+        fitted = attempt(more + others, min(_LEGEND_HARD_MIN_PT, floor_pt), 2, force=True)
+        fitted.hidden_units = len(codes)
+        return fitted
 
     def _draw_logo_image(self, ax, logo_bytes: bytes | None, position: tuple[float, float]) -> None:
         if not logo_bytes:

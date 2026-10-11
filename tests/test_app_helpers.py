@@ -326,8 +326,10 @@ def test_configure_gate_labels_and_reasons_use_plain_wording() -> None:
     from app_configure import ConfigureState, override_warnings_label
 
     assert override_warnings_label(0) == "Generate even if data checks found warnings"
-    assert override_warnings_label(1).endswith("(1 warning)")
-    assert override_warnings_label(3).endswith("(3 warnings)")
+    assert override_warnings_label(1).endswith("(1 warning needs review)")
+    assert override_warnings_label(3).endswith("(3 warnings need review)")
+    assert override_warnings_label(1, 1).endswith("(1 warning needs review; 1 more is advisory)")
+    assert override_warnings_label(2, 3).endswith("(2 warnings need review; 3 more are advisory)")
     base = dict(
         selected_holes=["A", "B"],
         coordinate_text="",

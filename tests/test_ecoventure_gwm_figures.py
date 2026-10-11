@@ -41,7 +41,8 @@ def test_ecoventure_gwm_figure_structure(transect_id: str) -> None:
     assert text.count("<path") >= 4
     if transect_id == "A_A":
         assert "WITH GROUNDWATER LEVELS" in text
-        assert "May 2024" in text or "2024-05" in text or "GROUNDWATER LEVEL (MAY 2024)" in text.upper()
+        # The legend key may wrap ("GROUNDWATER LEVEL" / "(MAY 2024)").
+        assert "May 2024" in text or "2024-05" in text or "(MAY 2024)" in text.upper()
     # The client's 1:1 000 / 1:1 500 sheets are tabloid; on the default letter
     # page the section can't be drawn at that scale, so the title block defers
     # to the scale bar and the build reports why.

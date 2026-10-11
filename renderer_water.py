@@ -1863,6 +1863,8 @@ class RendererWaterMixin:
         from matplotlib.legend import Legend
         from matplotlib.lines import Line2D
 
+        from renderer_common import remember_legend_keys
+
         handles = [
             Line2D(
                 [],
@@ -1887,6 +1889,7 @@ class RendererWaterMixin:
             handlelength=3.0,
             borderaxespad=0.6,
         )
+        remember_legend_keys(key, handles, labels)
         key.set_zorder(20)
         key.set_gid("water_series_key")
         ax.add_artist(key)

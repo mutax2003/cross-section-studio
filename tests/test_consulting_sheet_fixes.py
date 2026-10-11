@@ -320,8 +320,10 @@ def test_large_export_font_keeps_text_on_page_and_apart(dense_sheet) -> None:
         off, overlaps = _text_layout_faults(_render_dense(dense_sheet, size))
         assert off == [], (size, off)
         # Before the geometry followed the scale, 14 pt gave 40 overlaps
-        # against a 16 baseline (water/chemistry label stacks).
-        assert overlaps <= overlaps_8 + 3, (size, overlaps, overlaps_8)
+        # against a 16 baseline (water/chemistry label stacks). The 8 pt
+        # baseline no longer counts two legend rows printed over each other
+        # (the measured legend layout), hence the margin of 4.
+        assert overlaps <= overlaps_8 + 4, (size, overlaps, overlaps_8)
 
 
 # --- (5) re-fit on export resize; band title fitted -------------------------

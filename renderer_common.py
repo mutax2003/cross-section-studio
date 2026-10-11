@@ -556,6 +556,32 @@ def _round_step_up(value: float) -> float:
     return 10.0 * exponent  # pragma: no cover
 
 
+# --- Long labels ------------------------------------------------------------------
+
+# A hole ID / legend label longer than this wraps; past ``max_lines`` lines it
+# is cut with an ellipsis (a 120-character ID ran past both page edges and
+# shrank the section to a strip). 20 keeps paired IDs such as
+# "2017-BH11 / BH24-11" on one line.
+HOLE_LABEL_MAX_CHARS = 20
+LEGEND_LABEL_MAX_CHARS = 32
+
+
+def fit_label(label: str, *, max_chars: int = HOLE_LABEL_MAX_CHARS, max_lines: int = 2) -> str:
+    """``label`` wrapped at ``max_chars`` (words, then hard breaks), at most
+    ``max_lines`` lines, the last ellipsized when text was dropped."""
+    import textwrap
+
+    text = str(label)
+    if len(text) <= max_chars or "\n" in text:
+        return text
+    lines = textwrap.wrap(text, width=max_chars, break_long_words=True, break_on_hyphens=False)
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    kept = lines[:max_lines]
+    kept[-1] = kept[-1][: max_chars - 1].rstrip() + "\u2026"
+    return "\n".join(kept)
+
+
 # --- Hole-ID header stacking ------------------------------------------------------
 #
 # The first header pass (``renderer_water.resolve_header_collisions``) nudges

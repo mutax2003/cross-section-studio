@@ -57,6 +57,7 @@ from renderer_common import (
     UNLOGGED_FILL_COLOR,
     UNLOGGED_LEGEND_LABEL,
     add_ve_caption,
+    fit_label,
     fitted_x_locators,
     pinch_out_key_artist,
     release_twins,
@@ -1318,7 +1319,7 @@ class ConsultingLayoutMixin:
             header = ax.text(
                 float(row.x_profile),
                 1.02,
-                str(row.hole_id),
+                fit_label(str(row.hole_id)),
                 transform=header_transform,
                 ha="center",
                 va="bottom",

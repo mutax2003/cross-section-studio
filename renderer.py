@@ -67,6 +67,7 @@ from renderer_chemistry import (
 )
 from renderer_common import (
     LEGEND_KEY_HANDLER_MAP,
+    LEGEND_LABEL_MAX_CHARS,
     LEGEND_SWATCH_HANDLEHEIGHT,
     MIN_PRINT_MARGIN_IN,
     UNLOGGED_FILL_COLOR,
@@ -79,6 +80,7 @@ from renderer_common import (
     add_ve_caption,
     apply_ve_aspect,
     below_axes_anchor,
+    fit_label,
     format_ve_caption,
     header_overlaps,
     legend_source_keys,
@@ -1052,7 +1054,7 @@ class CrossSectionRenderer(
             header_shift_axes = 0.0
         detail = self.profile.column_header_detail
         for row in hole_summary.itertuples(index=False):
-            hole_id = str(row.hole_id)
+            hole_id = fit_label(str(row.hole_id))
             if detail == "id_only":
                 header_text = hole_id
             else:
@@ -1376,7 +1378,9 @@ class CrossSectionRenderer(
                     edgecolor=POLYGON_EDGE_COLOR,
                     hatch=style.hatch or None,
                     linewidth=0.75,
-                    label=code,
+                    # Long codes wrap to two lines, then ellipsize (a 120-
+                    # character code pushed the legend past the page edge).
+                    label=fit_label(code, max_chars=LEGEND_LABEL_MAX_CHARS),
                 )
             )
         if getattr(self, "_has_unlogged_intervals", False):
@@ -1854,7 +1858,7 @@ class CrossSectionRenderer(
         }
         kwargs["metadata"] = _export_file_metadata(fmt)
         if fmt == "png":
-            kwargs["dpi"] = dpi if dpi is not None else self._export_dpi()
+            kwargs["dpi"] = self._capped_png_dpi(fig, dpi if dpi is not None else self._export_dpi())
         fig.savefig(buffer, **kwargs)
         buffer.seek(0)
         payload = buffer.getvalue()
@@ -1863,6 +1867,35 @@ class CrossSectionRenderer(
         if fmt == "svg" and self._cad_svg_layers_enabled():
             return annotate_svg_layers(payload)
         return payload
+
+    # Largest PNG written (pixels); a tall tight-cropped figure at 600 dpi
+    # reached 275-524 Mpx and 1.2-1.7 GB of memory.
+    MAX_PNG_PIXELS = 100_000_000
+
+    def _capped_png_dpi(self, fig: Figure, dpi: float) -> float:
+        """``dpi``, lowered so the PNG stays within ``MAX_PNG_PIXELS`` (QA note when lowered)."""
+        kwargs = self._savefig_kwargs()
+        width_in, height_in = (float(v) for v in fig.get_size_inches())
+        if kwargs.get("bbox_inches") == "tight":
+            try:
+                box = fig.get_tightbbox(fig.canvas.get_renderer())
+                pad = float(kwargs.get("pad_inches") or 0.0)
+                width_in, height_in = box.width + 2.0 * pad, box.height + 2.0 * pad
+            except Exception:  # pragma: no cover - keep the figure size estimate
+                pass
+        area = max(width_in * height_in, 1e-6)
+        if area * float(dpi) ** 2 <= self.MAX_PNG_PIXELS:
+            return dpi
+        capped = max(1, int((self.MAX_PNG_PIXELS / area) ** 0.5))
+        note = (
+            f"PNG resolution lowered from {int(dpi)} to {capped} dpi: the "
+            f"{width_in:.1f} x {height_in:.1f} in figure would exceed "
+            f"{self.MAX_PNG_PIXELS // 1_000_000} megapixels."
+        )
+        notes = self.__dict__.setdefault("raster_notes", [])
+        if note not in notes:
+            notes.append(note)
+        return capped
 
     def to_svg_bytes(self, fig: Figure) -> bytes:
         self._prepare_export_figure(fig)
@@ -1905,6 +1938,10 @@ class CrossSectionRenderer(
         png_bytes = b""
         pdf_bytes = b""
         self._prepare_export_figure(figure)
+        self.raster_notes = []
+        if "png" in export_formats:
+            # Decided now so the PDF QA lines can carry the note.
+            self._capped_png_dpi(figure, self._export_dpi())
         if append_render_notes:
             # Labels are re-placed and the map-scale fit decided for the page
             # only now, so the notes are read after framing.
@@ -1913,6 +1950,7 @@ class CrossSectionRenderer(
                 + tuple(getattr(self, "chemistry_label_notes", None) or ())
                 + tuple(self.map_scale_notes(figure))
                 + tuple(self.header_overlap_notes(figure))
+                + tuple(self.raster_notes)
             )
         export_dpi = self._export_dpi()
         watermark_applied = False

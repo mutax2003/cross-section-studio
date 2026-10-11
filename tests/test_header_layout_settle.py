@@ -226,3 +226,69 @@ def test_exact_map_scale_still_adds_last_hole_label_room() -> None:
         assert ax.get_xlim()[1] > 30.0 + 2.0
     finally:
         plt.close(figure)
+
+
+# --- Long hole IDs / lithology codes and the raster size cap -------------------
+
+
+def test_fit_label_wraps_then_ellipsizes() -> None:
+    from renderer_common import fit_label
+
+    assert fit_label("2017-BH11 / BH24-11") == "2017-BH11 / BH24-11"
+    assert fit_label("MW-01 deep nest north bank") == "MW-01 deep nest\nnorth bank"
+    lines = fit_label("X" * 120).split("\n")
+    assert len(lines) == 2 and lines[-1].endswith("…")
+    assert all(len(line) <= 20 for line in lines)
+
+
+def _long_id_section(id_len: int, code_len: int):
+    ids = ["BH-1", "X" * id_len, "BH-3"]
+    collars = [
+        Collar(hole_id=h, easting=i * 50.0, northing=0.0, elevation=100.0, total_depth=20.0)
+        for i, h in enumerate(ids)
+    ]
+    lith = [Lithology(hole_id=h, from_depth=0.0, to_depth=10.0, lithology_code="Clay") for h in ids]
+    lith += [Lithology(hole_id=h, from_depth=10.0, to_depth=20.0, lithology_code="L" * code_len) for h in ids]
+    return collars, lith
+
+
+@pytest.mark.parametrize("layout", ["section_sheet", "consulting_section", "chart"])
+def test_very_long_hole_id_and_code_stay_on_the_page(layout) -> None:
+    collars, lith = _long_id_section(120, 120)
+    points = [(0.0, 0.0), (100.0, 0.0)]
+    result = render_cross_section_from_geometry(
+        compute_section_geometry(collars, lith, points),
+        points,
+        render_layout=layout,
+        export_framing=ExportFramingConfig(page_preset="letter_portrait", export_dpi=72),
+        export_formats=frozenset({"png"}),
+        close_figure=False,
+    )
+    figure = result.retained_export_bundle["figure"]
+    try:
+        figure.canvas.draw()
+        r = figure.canvas.get_renderer()
+        content = figure.get_tightbbox(r)
+        width, height = figure.get_size_inches()
+        assert content.x0 >= 0.2 and content.y0 >= 0.2
+        assert content.x1 <= width - 0.2 and content.y1 <= height - 0.2
+        ax = getattr(figure, "_css_ve_axes", None) or figure.axes[0]
+        # The section keeps a usable width (was a ~1.7 in strip).
+        assert ax.get_window_extent(r).width / figure.dpi > 3.0
+    finally:
+        plt.close(figure)
+
+
+def test_png_resolution_capped_with_a_note(monkeypatch) -> None:
+    import io
+
+    from PIL import Image
+
+    from renderer import CrossSectionRenderer
+
+    monkeypatch.setattr(CrossSectionRenderer, "MAX_PNG_PIXELS", 200_000)
+    result, figure, _renderer = _render(_section(3, 10.0), "section_sheet", "letter_landscape", None)
+    plt.close(figure)
+    w, h = Image.open(io.BytesIO(result.png_bytes)).size
+    assert w * h <= 200_000
+    assert any(note.startswith("PNG resolution lowered") for note in result.qa_notes)

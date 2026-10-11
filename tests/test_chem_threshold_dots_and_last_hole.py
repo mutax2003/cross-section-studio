@@ -226,16 +226,17 @@ def test_strip_knocks_out_fills_beside_each_labelled_column(profile) -> None:
         assert covered >= 0.95 * inside.width * inside.height, ann.get_text()
 
 
-def test_water_numbers_use_two_decimals_with_trailing_zeros_stripped() -> None:
+def test_water_numbers_use_two_fixed_decimals() -> None:
+    """One precision per figure: trailing zeros kept (744.00 beside 743.24)."""
     from renderer_water import _fmt_water_number
 
     assert [_fmt_water_number(v) for v in (745.29, 745.2904, 745.3, 745.0, 2.5, -0.001)] == [
         "745.29",
         "745.29",
-        "745.3",
-        "745",
-        "2.5",
-        "0",
+        "745.30",
+        "745.00",
+        "2.50",
+        "0.00",
     ]
 
 

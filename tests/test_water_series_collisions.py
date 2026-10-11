@@ -19,7 +19,7 @@ from render_theme import (
     consulting_gw_series_style,
 )
 from renderer import CrossSectionRenderer
-from renderer_water import _figure_renderer
+from renderer_water import WATER_MARKER_ZORDER, _figure_renderer
 from tests.conftest import run_pipeline
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -119,7 +119,7 @@ def test_section_sheet_shows_series_key_and_fans_out_markers() -> None:
     scatters = [
         c
         for c in ax.collections
-        if isinstance(c, PathCollection) and c.get_zorder() == 7 and len(c.get_offsets())
+        if isinstance(c, PathCollection) and c.get_zorder() == WATER_MARKER_ZORDER and len(c.get_offsets())
     ]
     assert len(scatters) == 3
     first_hole_px = [c.get_offset_transform().transform(c.get_offsets()[0])[0] for c in scatters]

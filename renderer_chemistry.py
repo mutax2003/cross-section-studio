@@ -9,7 +9,7 @@ from typing import NotRequired, TypedDict
 import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
-from matplotlib.offsetbox import AnnotationBbox, HPacker, TextArea
+from matplotlib.offsetbox import AnnotationBbox, HPacker, TextArea, VPacker
 from matplotlib.patheffects import withStroke
 from matplotlib.transforms import Bbox, offset_copy
 
@@ -24,7 +24,8 @@ from render_theme import (
     chemistry_threshold_bands,
     parameter_series_colors,
 )
-from renderer_water import _GW_MARKER_MAP
+from renderer_common import THRESHOLD_KEY_GID
+from renderer_water import _GW_MARKER_MAP, register_marker_set
 
 
 class ParameterLegendEntry(TypedDict):
@@ -45,6 +46,8 @@ class ParameterLegendEntry(TypedDict):
 
 
 _PARAMETER_LABEL_MIN_GAP_PTS = 26.0
+# The "N values not printed" line under the threshold key.
+_OMITTED_FOOTNOTE_GID = "chemistry-omitted-footnote"
 # Clearance between the lowest x-axis text and the threshold key below it.
 _THRESHOLD_KEY_GAP_PTS = 3.0
 # Threshold mode: a fence segment joining readings in different bands.
@@ -257,6 +260,17 @@ class RendererChemistryMixin:
     ) -> None:
         # Values dropped by the label placement (filled by renderer_water).
         self.chemistry_label_notes = []
+        # Column spans the collision pass keeps labels off (chemistry values
+        # and water numbers alike), set even when no chemistry is drawn.
+        self._column_spans = []
+        if not hole_summary.empty:
+            if profile_lookup is None:
+                profile_lookup = self._profile_lookup(hole_summary, collar_lookup)
+            self._column_spans = [
+                (ax, float(profile_lookup[h][0]) - column_half_m, float(profile_lookup[h][0]) + column_half_m)
+                for h in hole_summary["hole_id"].astype(str).tolist()
+                if h in profile_lookup
+            ]
         if hole_summary.empty or not self.environmental_readings:
             return
         if not self.profile.show_parameter_markers or not self.environmental_parameters:
@@ -290,12 +304,6 @@ class RendererChemistryMixin:
         font_size = (
             _PARAMETER_LABEL_FONTSIZE_CONSULTING if consulting else _PARAMETER_LABEL_FONTSIZE
         )
-        # Column spans the collision pass must keep value labels off.
-        self._column_spans = [
-            (ax, float(profile_lookup[h][0]) - column_half_m, float(profile_lookup[h][0]) + column_half_m)
-            for h in transect_hole_ids
-            if h in profile_lookup
-        ]
         self.parameter_series_legend = []
         # Units of readings whose label colour came from the threshold bands
         # (not a workbook colour); drives the on-figure threshold key.
@@ -432,7 +440,7 @@ class RendererChemistryMixin:
                         capstyle="round",
                     )
                     ax.add_collection(stick_collection)
-                ax.scatter(
+                dots = ax.scatter(
                     marker_xs,
                     marker_ys,
                     marker=marker,
@@ -440,6 +448,9 @@ class RendererChemistryMixin:
                     s=float(self.profile.parameter_marker_size),
                     zorder=8,
                 )
+                # Same-depth readings and groundwater markers on a dot are
+                # nudged apart by the label pass.
+                register_marker_set(ax, dots, "chem")
             elif not marker_labels:
                 units = sorted(
                     {
@@ -631,8 +642,17 @@ class RendererChemistryMixin:
         # Off the plot, in the white space under the x-axis label: anchored to
         # the axis' drawn extent at draw time, so it follows the axis through
         # export page resizes and margin refits without a re-layout pass.
+        # A column: the key row, plus (after the label pass) a footnote when
+        # values had to be left off. Every layout that makes room for the
+        # key measures the whole artist, so the footnote gets room too.
+        stack = VPacker(
+            children=[HPacker(children=parts, align="baseline", pad=0, sep=3)],
+            align="center",
+            pad=0,
+            sep=2,
+        )
         key = AnnotationBbox(
-            HPacker(children=parts, align="baseline", pad=0, sep=3),
+            stack,
             (0.5, 0.0),
             xycoords=_below_x_axis_anchor(ax),
             xybox=(0.0, -_THRESHOLD_KEY_GAP_PTS),
@@ -642,10 +662,72 @@ class RendererChemistryMixin:
             pad=0.0,
             annotation_clip=False,
         )
-        key.set_gid("chemistry-threshold-key")
+        key.set_gid(THRESHOLD_KEY_GID)
         key.set_zorder(9.5)
+        key._css_stack = stack
+        key._css_rows = list(stack.get_children())
         ax.add_artist(key)
         self._chemistry_threshold_key = key
+
+    def _update_chemistry_omitted_footnote(self, fig, labels) -> None:
+        """On-figure note when the label pass had to leave values off.
+
+        The QA note (app / PDF notes) names them; the figure itself says how
+        many are missing, as a line under the threshold key (or, without a
+        key, in the key's place under the distance label), so a reader of
+        the printed sheet knows values exist.
+        """
+        key = getattr(self, "_chemistry_threshold_key", None)
+        if key is not None and getattr(key, "_css_footnote_only", False):
+            key.remove()
+            self._chemistry_threshold_key = key = None
+        if key is not None and key.figure is not fig:
+            key = None
+        dropped = [
+            annotation
+            for kind, annotation, _color in labels
+            if kind == "chem" and getattr(annotation, "_water_dropped", False) and annotation.figure is fig
+        ]
+        stack = getattr(key, "_css_stack", None)
+        if stack is not None:
+            stack._children = list(key._css_rows)
+            stack.stale = True
+            key.stale = True
+        if not dropped:
+            return
+        count = len(dropped)
+        noun = "value" if count == 1 else "values"
+        text = f"{count} {noun} not printed (no room at this scale) \u2014 see QA notes"
+        font_size = (
+            _PARAMETER_LABEL_FONTSIZE_CONSULTING
+            if self.profile.layout == "consulting_section"
+            else _PARAMETER_LABEL_FONTSIZE
+        )
+        note = TextArea(text, textprops={"fontsize": font_size, "color": LABEL_COLOR, "fontstyle": "italic"})
+        note._text.set_gid(_OMITTED_FOOTNOTE_GID)
+        if stack is not None:
+            note.set_figure(fig)
+            stack._children.append(note)
+            return
+        ax = dropped[0].axes
+        # No threshold key: the note takes the key's row (same artist id, so
+        # the scale bar row and page layouts make room for it).
+        box = AnnotationBbox(
+            note,
+            (0.5, 0.0),
+            xycoords=_below_x_axis_anchor(ax),
+            xybox=(0.0, -_THRESHOLD_KEY_GAP_PTS),
+            boxcoords="offset points",
+            box_alignment=(0.5, 1.0),
+            frameon=False,
+            pad=0.0,
+            annotation_clip=False,
+        )
+        box.set_gid(THRESHOLD_KEY_GID)
+        box.set_zorder(9.5)
+        box._css_footnote_only = True
+        ax.add_artist(box)
+        self._chemistry_threshold_key = box
 
     def _draw_parameter_fence(
         self,

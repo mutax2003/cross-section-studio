@@ -17,6 +17,7 @@ from app_identity import COPYRIGHT_NOTICE, CREATED_BY
 # Primes stay: "A-A'" and "A-A" name different things on a drawing list, and
 # an apostrophe is valid in Windows, macOS and ZIP file names.
 _FILENAME_SAFE_RE = re.compile(r"[^\w\-']+")
+_TYPOGRAPHIC_FOLD = str.maketrans({"\u2032": "'", "\u2019": "'", "\u2018": "'", "\u02b9": "'", "\u2013": "-", "\u2014": "-", "\u2212": "-"})
 
 ExportPagePreset = Literal[
     "auto",
@@ -142,7 +143,9 @@ def avoid_windows_reserved_name(stem: str) -> str:
 
 def sanitize_filename_stem(text: str, *, fallback: str = "cross_section") -> str:
     """Safe file-name stem: ``A - A' WITH CL`` → ``A-A'_WITH_CL``."""
-    cleaned = _FILENAME_SAFE_RE.sub("_", text.strip())
+    # Typographic primes / dashes ("B-B′", "B–B’") name the same section as
+    # the ASCII form; fold them first so they neither vanish nor collide.
+    cleaned = _FILENAME_SAFE_RE.sub("_", text.strip().translate(_TYPOGRAPHIC_FOLD))
     # Keep a trailing prime ("A-A'"); only a leading one is meaningless.
     cleaned = cleaned.replace("_-_", "-")[:80].strip("_").lstrip("'").strip("_")
     return avoid_windows_reserved_name(cleaned) if cleaned else fallback
@@ -214,7 +217,8 @@ def build_export_filename(
         stem = f"{stem}_{label}"
     if rev:
         stem = f"{stem}_{_sanitize_stem(rev, fallback='rev')}"
-    return stem[:120].strip("_") or "cross_section"
+    # Re-apply the reserved-name guard: stripping "_" would undo "CON_".
+    return avoid_windows_reserved_name(stem[:120].strip("_") or "cross_section")
 
 
 def build_report_package_bytes(

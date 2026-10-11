@@ -18,7 +18,7 @@ from lithology_codes import collect_lithology_codes
 from models import WaterLevel
 from render_profiles import CHART_PROFILE
 from render_theme import AXES_BG, FIGURE_BG, GRID_COLOR, LABEL_COLOR, STICK_COLOR, SURFACE_COLOR
-from renderer_common import apply_true_value_y_axis
+from renderer_common import apply_true_value_y_axis, fit_label
 from stratigraphy import GeologicalPolygon
 
 
@@ -394,7 +394,7 @@ class ChartLayoutMixin:
             # The collar RL rides in the header box: as a separate label it
             # sat under the box and only "m RL" showed.
             rl_text = f"{float(row.collar_elevation):.1f} m RL"
-            lines = [str(row.hole_id), depth_text, rl_text]
+            lines = [fit_label(str(row.hole_id)), depth_text, rl_text]
             labels.append(
                 _LabelSpec(
                     x=float(row.x_profile),

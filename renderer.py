@@ -67,6 +67,7 @@ from renderer_chemistry import (
 )
 from renderer_common import (
     LEGEND_KEY_HANDLER_MAP,
+    LEGEND_LABEL_MAX_CHARS,
     LEGEND_SWATCH_HANDLEHEIGHT,
     MIN_PRINT_MARGIN_IN,
     UNLOGGED_FILL_COLOR,
@@ -79,7 +80,9 @@ from renderer_common import (
     add_ve_caption,
     apply_ve_aspect,
     below_axes_anchor,
+    fit_label,
     format_ve_caption,
+    header_overlaps,
     legend_source_keys,
     measured_vertical_exaggeration,
     page_margins_in,
@@ -88,6 +91,7 @@ from renderer_common import (
     restore_stacked_headers,
     settle_figure_layout,
     stack_hole_headers,
+    text_layout_signature,
     water_status_legend_label,
     water_status_texts,
 )
@@ -183,6 +187,12 @@ def _export_file_metadata(fmt: str) -> dict[str, str]:
     if fmt == "png":
         return {"Software": APP_NAME, "Author": author, "Copyright": COPYRIGHT_NOTICE}
     return {}
+
+
+def _title_engine(figure: Figure) -> bool:
+    """The figure's layout engine places the title over the hole headers (sets the top)."""
+    engine = figure.get_layout_engine()
+    return bool(getattr(engine, "_title", None)) and hasattr(engine, "_headers")
 
 
 class CrossSectionRenderer(
@@ -387,23 +397,89 @@ class CrossSectionRenderer(
         an aspect-locked (exact VE / map scale) box changes the box width and
         so every hole's position on the page.
         """
-        from renderer_common import draw_without_rendering_fast
-
         headers = [t for t in getattr(self, "_header_labels", None) or [] if t.figure is figure]
+        # Called again (chart render, label settle, page fit) with nothing
+        # changed since a pass that settled: the result would be the same.
+        state = self._header_pass_state(figure, headers)
+        if figure.__dict__.get("_css_headers_settled") == state:
+            return
+        figure.__dict__.pop("_css_headers_settled", None)
         for _attempt in range(4):
-            draw_without_rendering_fast(figure)
+            # Skipped when nothing that lays the figure out changed since the
+            # last draw (the previous attempt's closing settle).
+            settle_figure_layout(figure)
             before = self._plot_layout_key(figure)
+            margins_before = self._side_margins(figure)
             restore_stacked_headers(headers)
             resolve_header_collisions(figure, headers)
             stack_hole_headers(figure, headers, robust=_attempt >= 2)
             if str(getattr(self.profile, "layout", "")) == "section_sheet":
                 # Room under the (possibly taller) header row for the distance label.
                 self._fit_section_sheet_bottom(figure)
-            draw_without_rendering_fast(figure)
+            settle_figure_layout(figure)
             self._move_water_key_outside(figure)
             self._clear_outside_legend(figure)
-            if self._plot_layout_key(figure) == before:
+            # A title layout engine (chart; section sheet in depth mode) sets
+            # only the plot top, from the header extents alone. Each pass
+            # starts from the restored headers, so with the side / bottom
+            # margins unchanged a repeat would see the same boxes and place
+            # the headers the same way: the box it moved to is final.
+            if self._plot_layout_key(figure) == before or (
+                _title_engine(figure) and self._side_margins(figure) == margins_before
+            ):
+                figure._css_headers_settled = self._header_pass_state(figure, headers)
                 break
+
+    @staticmethod
+    def _side_margins(figure: Figure) -> tuple:
+        params = figure.subplotpars
+        return (tuple(figure.get_size_inches()), params.left, params.right, params.bottom)
+
+    def header_overlap_notes(self, figure: Figure) -> tuple[str, ...]:
+        """QA note when hole-ID headers still overprint after every header fallback.
+
+        Read after export framing (the pipeline adds it to the section notes).
+        """
+        headers = [
+            t for t in getattr(self, "_header_labels", None) or []
+            if t.figure is figure and t.get_visible() and t.get_text().strip()
+        ]
+        if len(headers) < 2:
+            return ()
+        pairs = header_overlaps(figure, headers, figure.canvas.get_renderer(), pad_pt=0.0)
+        if not pairs:
+            return ()
+        names: list[str] = []
+        for i, j in pairs:
+            for index in (i, j):
+                name = headers[index]._header_stack_orig[0] if hasattr(headers[index], "_header_stack_orig") else headers[index].get_text()
+                name = name.split("\n")[0]
+                if name not in names:
+                    names.append(name)
+        shown = ", ".join(names[:6]) + (f" +{len(names) - 6} more" if len(names) > 6 else "")
+        return (
+            f"Hole labels overlap at this scale \u2014 {len(names)} hole ID(s) print over each other "
+            f"({shown}). A larger page, a lower vertical exaggeration or fewer boreholes per section "
+            "separates them.",
+        )
+
+    def _header_pass_state(self, figure: Figure, headers: list) -> tuple:
+        """Inputs and outcome of a settled header pass (see ``_layout_headers``)."""
+        params = figure.subplotpars
+        legend_ax = getattr(self, "_ve_main_ax", None)
+        legend = legend_ax.get_legend() if legend_ax is not None and legend_ax.figure is figure else None
+        return (
+            tuple(figure.get_size_inches()),
+            float(figure.dpi),
+            (params.left, params.right, params.bottom, params.top),
+            self._plot_layout_key(figure),
+            tuple(text_layout_signature(t) for t in headers),
+            tuple((id(ax), len(ax.texts), len(ax.artists)) for ax in figure.axes),
+            id(legend),
+            # Read by the header fallbacks (fan bounds, room above the frame).
+            tuple(getattr(figure, "_css_page_margins_in", None) or ()),
+            bool(getattr(figure, "_css_headers_lift_top", False)),
+        )
 
     def _move_water_key_outside(self, figure: Figure) -> None:
         """A water series key that does not fit a short plot box joins the outside legend.
@@ -507,12 +583,35 @@ class CrossSectionRenderer(
             self._layout_headers(figure)
             if fit_page:
                 self.fit_page_content(figure)
+                self._lift_headers_if_overprinting(figure)
             if not water_here:
                 return
             before = self._plot_layout_key(figure)
             self._resolve_water_label_collisions(figure)
             if self._plot_layout_key(figure) == before:
                 return
+
+    def _lift_headers_if_overprinting(self, figure: Figure) -> None:
+        """Last header fallback on a fixed page: a fan taller than the room above the frame.
+
+        When the headers still overprint after the page fit, the header pass
+        may fan them out above the current room (``stack_hole_headers``) and
+        the page fit then lowers the plot top to keep them on the page.
+        """
+        if figure.__dict__.get("_css_headers_lift_top") or not self._fixed_page_export():
+            return
+        headers = [
+            t for t in getattr(self, "_header_labels", None) or []
+            if t.figure is figure and t.get_visible() and t.get_text().strip()
+        ]
+        if len(headers) < 2:
+            return
+        settle_figure_layout(figure)
+        if not header_overlaps(figure, headers, figure.canvas.get_renderer(), pad_pt=0.0):
+            return
+        figure._css_headers_lift_top = True
+        self._layout_headers(figure)
+        self.fit_page_content(figure)
 
     def _hole_context(self, projected_df: pd.DataFrame) -> _HoleContext:
         summary = (
@@ -955,7 +1054,7 @@ class CrossSectionRenderer(
             header_shift_axes = 0.0
         detail = self.profile.column_header_detail
         for row in hole_summary.itertuples(index=False):
-            hole_id = str(row.hole_id)
+            hole_id = fit_label(str(row.hole_id))
             if detail == "id_only":
                 header_text = hole_id
             else:
@@ -1279,7 +1378,9 @@ class CrossSectionRenderer(
                     edgecolor=POLYGON_EDGE_COLOR,
                     hatch=style.hatch or None,
                     linewidth=0.75,
-                    label=code,
+                    # Long codes wrap to two lines, then ellipsize (a 120-
+                    # character code pushed the legend past the page edge).
+                    label=fit_label(code, max_chars=LEGEND_LABEL_MAX_CHARS),
                 )
             )
         if getattr(self, "_has_unlogged_intervals", False):
@@ -1660,6 +1761,7 @@ class CrossSectionRenderer(
             stored = figure._css_fit_base = (size, (params.left, params.right, params.top, params.bottom))
         base = stored[1]
         sheet = str(getattr(self.profile, "layout", "")) == "section_sheet"
+        engine_owns_top = _title_engine(figure)
         for _pass in range(max_passes):
             footer_top = self._place_page_footers(figure, margins)
             if sheet:
@@ -1700,7 +1802,13 @@ class CrossSectionRenderer(
             # vertical headers turned into a lower tier layout.
             left = max(params.left + over_l / width, b_left)
             right = min(params.right - over_r / width, b_right)
-            top = min(params.top - over_t / height, b_top)
+            if engine_owns_top:
+                # The title layout sets the top on every draw (from the
+                # title and header heights); resetting it here only made the
+                # next draw move it back, and every pass re-ran the headers.
+                top = params.top
+            else:
+                top = min(params.top - over_t / height, b_top)
             if sheet:
                 bottom = params.bottom + max(over_b, 0.0) / height
             else:
@@ -1725,6 +1833,7 @@ class CrossSectionRenderer(
         """Layout-specific refits after ``subplots_adjust`` (no-op by default)."""
         layout = str(getattr(self.profile, "layout", ""))
         if layout == "consulting_section":
+            self._keep_band_heights(figure)
             self._refresh_last_hole_label_room(figure)
             self._reserve_threshold_key_band(figure)
             self._suppress_header_tick_collisions(figure)
@@ -1749,7 +1858,7 @@ class CrossSectionRenderer(
         }
         kwargs["metadata"] = _export_file_metadata(fmt)
         if fmt == "png":
-            kwargs["dpi"] = dpi if dpi is not None else self._export_dpi()
+            kwargs["dpi"] = self._capped_png_dpi(fig, dpi if dpi is not None else self._export_dpi())
         fig.savefig(buffer, **kwargs)
         buffer.seek(0)
         payload = buffer.getvalue()
@@ -1758,6 +1867,35 @@ class CrossSectionRenderer(
         if fmt == "svg" and self._cad_svg_layers_enabled():
             return annotate_svg_layers(payload)
         return payload
+
+    # Largest PNG written (pixels); a tall tight-cropped figure at 600 dpi
+    # reached 275-524 Mpx and 1.2-1.7 GB of memory.
+    MAX_PNG_PIXELS = 100_000_000
+
+    def _capped_png_dpi(self, fig: Figure, dpi: float) -> float:
+        """``dpi``, lowered so the PNG stays within ``MAX_PNG_PIXELS`` (QA note when lowered)."""
+        kwargs = self._savefig_kwargs()
+        width_in, height_in = (float(v) for v in fig.get_size_inches())
+        if kwargs.get("bbox_inches") == "tight":
+            try:
+                box = fig.get_tightbbox(fig.canvas.get_renderer())
+                pad = float(kwargs.get("pad_inches") or 0.0)
+                width_in, height_in = box.width + 2.0 * pad, box.height + 2.0 * pad
+            except Exception:  # pragma: no cover - keep the figure size estimate
+                pass
+        area = max(width_in * height_in, 1e-6)
+        if area * float(dpi) ** 2 <= self.MAX_PNG_PIXELS:
+            return dpi
+        capped = max(1, int((self.MAX_PNG_PIXELS / area) ** 0.5))
+        note = (
+            f"PNG resolution lowered from {int(dpi)} to {capped} dpi: the "
+            f"{width_in:.1f} x {height_in:.1f} in figure would exceed "
+            f"{self.MAX_PNG_PIXELS // 1_000_000} megapixels."
+        )
+        notes = self.__dict__.setdefault("raster_notes", [])
+        if note not in notes:
+            notes.append(note)
+        return capped
 
     def to_svg_bytes(self, fig: Figure) -> bytes:
         self._prepare_export_figure(fig)
@@ -1800,6 +1938,10 @@ class CrossSectionRenderer(
         png_bytes = b""
         pdf_bytes = b""
         self._prepare_export_figure(figure)
+        self.raster_notes = []
+        if "png" in export_formats:
+            # Decided now so the PDF QA lines can carry the note.
+            self._capped_png_dpi(figure, self._export_dpi())
         if append_render_notes:
             # Labels are re-placed and the map-scale fit decided for the page
             # only now, so the notes are read after framing.
@@ -1807,6 +1949,8 @@ class CrossSectionRenderer(
                 tuple(qa_lines)
                 + tuple(getattr(self, "chemistry_label_notes", None) or ())
                 + tuple(self.map_scale_notes(figure))
+                + tuple(self.header_overlap_notes(figure))
+                + tuple(self.raster_notes)
             )
         export_dpi = self._export_dpi()
         watermark_applied = False

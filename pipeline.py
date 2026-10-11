@@ -760,6 +760,10 @@ def render_cross_section_from_geometry(
     )
     # Read after export framing: whether the map scale fits depends on the page.
     qa_notes = tuple(renderer.map_scale_notes(figure))
+    # Hole-ID headers that still overprint after every header fallback.
+    qa_notes = qa_notes + tuple(renderer.header_overlap_notes(figure))
+    # PNG resolution lowered to stay within the raster size cap.
+    qa_notes = qa_notes + tuple(getattr(renderer, "raster_notes", None) or ())
     # Surface them with the other section notes the app shows after Generate.
     overlap_warnings = tuple(overlap_warnings) + qa_notes
     retained: dict[str, object] | None = None

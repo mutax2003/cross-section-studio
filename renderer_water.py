@@ -191,6 +191,9 @@ _CHEM_STRIP_MAX_GAP_SHARE = 0.45
 _CHEM_MAX_GAP_DRIFT_SHARE = 0.5
 # Re-runs that settle one font size per hole (no tiny stragglers).
 _CHEM_FONT_SETTLE_PASSES = 3
+# Most full placement passes one label resolution may run (compact
+# escalation x font settling); bounds the time on pathological input.
+_MAX_LABEL_PASSES = (_CHEM_MAX_COMPACT_LEVEL + 1) * (_CHEM_FONT_SETTLE_PASSES + 1)
 # Clearance around each label box (points) so neighbours never touch.
 _LABEL_PAD_PT = 2.0
 # Sideways nudge (points) between coincident markers of different series on
@@ -1502,15 +1505,23 @@ class RendererWaterMixin:
         # consistent size per figure reads better than a few tiny values
         # among normal ones.
         font_caps: dict[float, float] = {}
+        # Hard cap on full placement passes: escalation raises every hole
+        # with drops at once, so a well-formed figure needs at most
+        # _CHEM_MAX_COMPACT_LEVEL + 1 passes per font settle.
+        budget = _MAX_LABEL_PASSES
         for _settle in range(_CHEM_FONT_SETTLE_PASSES + 1):
             while True:
                 dropped_holes = self._label_collision_pass(
                     fig, labels, renderer, compact, font_caps=font_caps
                 )
+                self._label_pass_count = getattr(self, "_label_pass_count", 0) + 1
+                budget -= 1
                 escalate = {
-                    hole for hole in dropped_holes if compact.get(hole, 0) < _CHEM_MAX_COMPACT_LEVEL
+                    hole
+                    for hole in dropped_holes
+                    if np.isfinite(hole) and compact.get(hole, 0) < _CHEM_MAX_COMPACT_LEVEL
                 }
-                if not escalate:
+                if not escalate or budget <= 0:
                     break
                 for hole in escalate:
                     compact[hole] = compact.get(hole, 0) + 1
@@ -1520,7 +1531,7 @@ class RendererWaterMixin:
                 for hole, scale in mixed.items()
                 if scale < font_caps.get(hole, 1.0) - 1e-9
             }
-            if not mixed or _settle == _CHEM_FONT_SETTLE_PASSES:
+            if not mixed or _settle == _CHEM_FONT_SETTLE_PASSES or budget <= 0:
                 break
             font_caps.update(mixed)
 
@@ -1790,6 +1801,15 @@ class RendererWaterMixin:
             if not hasattr(annotation, "_water_base_xyann"):
                 annotation._water_base_xyann = tuple(annotation.xyann)
             base = annotation._water_base_xyann
+            if not np.all(np.isfinite(annotation.axes.transData.transform([annotation.xy])[0])):
+                # Degenerate axes (every hole at one x, a zero span): the
+                # label has no place on the page. Drop it once; it never
+                # escalates a re-run (a NaN hole key matched no earlier
+                # pass and re-ran the placement without end).
+                annotation._water_dropped = True
+                annotation.arrow_patch.set_visible(False)
+                _set_label_visible(annotation, False)
+                continue
             if kind == "chem":
                 hole_key = _chem_hole_key(annotation)
                 own = _own_column(annotation, column_boxes)

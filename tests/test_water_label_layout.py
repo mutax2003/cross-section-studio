@@ -401,3 +401,60 @@ def test_omitted_values_are_counted_on_the_figure(site) -> None:
                 assert key is None
         finally:
             plt.close(figure)
+
+
+def test_degenerate_section_places_labels_in_bounded_passes(site) -> None:
+    """Every hole at one x (a transect across a line of holes): the axes span
+    is zero and label anchors are not finite. The labels are dropped once
+    instead of re-running placement without end (fuzz seed 6108 hung > 600 s:
+    NaN hole keys never matched, so escalation never finished)."""
+    import time
+
+    from pipeline import build_cross_section
+    from renderer import CrossSectionRenderer
+    from renderer_water import _MAX_LABEL_PASSES
+
+    holes = site.section_specs[0].hole_ids
+    sub = subset_parse_result(site, holes)
+    e0, n0 = sub.collars[0].easting, sub.collars[0].northing
+    collars = [
+        collar.model_copy(update={"easting": e0, "northing": n0 + 8.0 * i})
+        for i, collar in enumerate(sub.collars)
+    ]
+    base = sub.environmental_readings[0]
+    readings = [
+        base.model_copy(update={"hole_id": c.hole_id, "sample_depth": 0.5 + 0.4 * k, "value": 10.0 * k})
+        for c in collars
+        for k in range(20)
+    ]
+    passes: list[int] = []
+    original = CrossSectionRenderer._run_label_passes
+
+    def counted(self, *args, **kwargs):
+        self._label_pass_count = 0
+        result = original(self, *args, **kwargs)
+        passes.append(self._label_pass_count)
+        return result
+
+    CrossSectionRenderer._run_label_passes = counted
+    try:
+        start = time.perf_counter()
+        build_cross_section(
+            collars,
+            sub.lithologies,
+            [(e0 - 50.0, n0), (e0 + 50.0, n0)],
+            water_levels=sub.water_levels,
+            environmental_readings=readings,
+            environmental_parameters=(base.parameter,),
+            show_parameter_labels=True,
+            chemistry_color_mode="threshold",
+            render_layout="section_sheet",
+            elevation_mode="relative",
+            vertical_exaggeration=0.3,
+            export_formats=frozenset({"svg"}),
+        )
+        elapsed = time.perf_counter() - start
+    finally:
+        CrossSectionRenderer._run_label_passes = original
+    assert passes and max(passes) <= _MAX_LABEL_PASSES
+    assert elapsed < 60.0

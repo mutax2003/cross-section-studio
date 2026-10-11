@@ -8,16 +8,19 @@ import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_agg import RendererAgg
 from matplotlib.collections import PolyCollection
+from matplotlib.patches import PathPatch, Polygon, Rectangle
 from matplotlib.path import Path
 from matplotlib.text import Annotation, Text
 from matplotlib.ticker import FuncFormatter, Locator, MaxNLocator
+from matplotlib.transforms import Affine2D
 from shapely.geometry import Polygon as ShapelyPolygon
 
 import hatch_patterns
-from constants import get_lithology_style
+from constants import HATCH_LINE_COLOR, POLYGON_EDGE_COLOR, get_lithology_style
 from models import ScreenInterval
 from render_theme import (
     CONSULTING_COLUMN_FILL,
+    PINCH_OUT_ALPHA,
     SCREEN_INTERVAL_HATCH,
     TRACK_BORDER_COLOR,
     TRACK_FILL_COLOR,
@@ -1120,6 +1123,75 @@ def thin_unit_densify_factor(
 
 
 
+# Hatch marks in legend keys are drawn by ``swatch_hatch_artists`` at the
+# section's marks per inch. The line width and colour match the section's
+# hatch rc (``CrossSectionRenderer.render``), which a later re-fit outside
+# that rc context would not see, so they are fixed here.
+LEGEND_HATCH_LINEWIDTH_PT = 0.65
+# Smallest swatch height (inches): one whole template mark (a 4.35 pt "+",
+# a 5 pt-high silty dash) with its stroke and a clear gap to the border, and
+# two staggered rows of the sand stipple (rows 1/14 in apart), so the key
+# reads as the same texture as the section.
+MIN_LEGEND_SWATCH_HEIGHT_IN = 8.0 / 72.0
+PINCH_OUT_KEY_FACE = "#D1D5DB"
+
+
+def swatch_hatch_artists(
+    hatch: str | None,
+    width_in: float,
+    height_in: float,
+    transform,
+) -> list[PathPatch]:
+    """Hatch marks for a legend swatch, identical to the section's hatch.
+
+    ``transform`` maps swatch-local inches (origin at the swatch's lower-left
+    corner) to display. Isolated marks are whole and centred; line hatches
+    are clipped to the swatch. Matplotlib's own hatch would show a random,
+    page-anchored slice of the 1 in pattern cell instead.
+    """
+    marks, lines = hatch_patterns.swatch_marks_path(hatch, width_in, height_in)
+    linewidth = hatch_patterns.hatch_linewidth_for(hatch) or LEGEND_HATCH_LINEWIDTH_PT
+    artists: list[PathPatch] = []
+    for path, clip in ((marks, False), (lines, True)):
+        if path is None:
+            continue
+        patch = PathPatch(
+            path,
+            facecolor=HATCH_LINE_COLOR,
+            edgecolor=HATCH_LINE_COLOR,
+            linewidth=linewidth,
+            transform=transform,
+        )
+        patch.set_gid("legend-swatch-hatch")
+        if clip:
+            # A path clip (a Rectangle would become a clip *box*, which
+            # ``Axes.add_patch`` then replaces with the axes box).
+            box = Path([(0.0, 0.0), (width_in, 0.0), (width_in, height_in), (0.0, height_in), (0.0, 0.0)], closed=True)
+            patch.set_clip_path(box, transform)
+        artists.append(patch)
+    return artists
+
+
+def pinch_out_key_artist(width_in: float, height_in: float, transform, *, linewidth: float = 0.75) -> Polygon:
+    """An inferred pinch-out key: a tapering wedge drawn like the section's.
+
+    Same alpha and dashed edge as the faded wedges in the section (a grey box
+    did not read as the wedge it keys).
+    """
+    wedge = Polygon(
+        [(0.0, 0.0), (0.0, height_in), (width_in, height_in * 0.5)],
+        closed=True,
+        facecolor=PINCH_OUT_KEY_FACE,
+        edgecolor=POLYGON_EDGE_COLOR,
+        alpha=PINCH_OUT_ALPHA,
+        linestyle="--",
+        linewidth=linewidth,
+        transform=transform,
+    )
+    wedge.set_gid("pinch-out-legend-key")
+    return wedge
+
+
 def legend_swatch_hatch(hatch: str | None, height_in: float) -> str | None:
     """Hatch for a legend swatch ``height_in`` inches tall.
 
@@ -1635,7 +1707,9 @@ class _ThresholdDotsHandler:
                 [x0 + width * (index + 0.5) / count],
                 [y0 + height / 2.0],
                 marker=orig_handle.marker,
-                markersize=5.0,
+                # Three dots share a 2 em key: 4 pt dots stay apart (5 pt
+                # dots touched and read as one blob).
+                markersize=min(5.0, 0.75 * width / count),
                 markerfacecolor=color,
                 markeredgecolor=color,
                 linestyle="none",
@@ -1664,7 +1738,86 @@ class _SampleTextHandler:
         return sample
 
 
-LEGEND_KEY_HANDLER_MAP = {ThresholdDotsKey: _ThresholdDotsHandler(), SampleTextKey: _SampleTextHandler()}
+class PinchOutKey:
+    """Legend proxy: the inferred pinch-out wedge."""
+
+
+class _PinchOutHandler:
+    def legend_artist(self, legend, orig_handle, fontsize, handlebox):
+        to_display = Affine2D().scale(72.0).translate(handlebox.xdescent, handlebox.ydescent)
+        wedge = pinch_out_key_artist(
+            handlebox.width / 72.0,
+            handlebox.height / 72.0,
+            to_display + handlebox.get_transform(),
+        )
+        handlebox.add_artist(wedge)
+        return wedge
+
+
+class _LithologySwatchHandler:
+    """A lithology ``Patch`` key with its hatch drawn as whole, centred marks."""
+
+    def legend_artist(self, legend, orig_handle, fontsize, handlebox):
+        x0, y0 = handlebox.xdescent, handlebox.ydescent
+        width, height = handlebox.width, handlebox.height
+        rect = Rectangle(
+            (x0, y0),
+            width,
+            height,
+            facecolor=orig_handle.get_facecolor(),
+            edgecolor=orig_handle.get_edgecolor(),
+            linewidth=orig_handle.get_linewidth(),
+            linestyle=orig_handle.get_linestyle(),
+            transform=handlebox.get_transform(),
+        )
+        handlebox.add_artist(rect)
+        to_display = Affine2D().scale(72.0).translate(x0, y0) + handlebox.get_transform()
+        for artist in swatch_hatch_artists(orig_handle.get_hatch(), width / 72.0, height / 72.0, to_display):
+            handlebox.add_artist(artist)
+        return rect
+
+
+def _legend_handler_map() -> dict:
+    from matplotlib.patches import Patch
+
+    return {
+        ThresholdDotsKey: _ThresholdDotsHandler(),
+        SampleTextKey: _SampleTextHandler(),
+        PinchOutKey: _PinchOutHandler(),
+        Patch: _LithologySwatchHandler(),
+    }
+
+
+LEGEND_KEY_HANDLER_MAP = _legend_handler_map()
+# Key height (em) for matplotlib legends holding lithology swatches: tall
+# enough for one whole hatch mark at 8 pt (the default 0.7 em is not).
+LEGEND_SWATCH_HANDLEHEIGHT = 1.0
+
+
+_LEGEND_SOURCE_ATTR = "_css_source_keys"
+
+
+def remember_legend_keys(legend, handles: Sequence[object], labels: Sequence[str]) -> None:
+    """Keep the proxy ``(handle, label)`` pairs a legend was built from.
+
+    ``Legend.legend_handles`` are the artists the handlers *drew*, not the
+    proxies: a threshold-dots key comes back as one green dot and a
+    ``SampleTextKey`` as a bare ``Text`` (which a new legend rejects). A
+    rebuild reads these pairs instead.
+    """
+    setattr(legend, _LEGEND_SOURCE_ATTR, list(zip(handles, labels, strict=False)))
+
+
+def legend_source_keys(legend) -> list[tuple[object, str]]:
+    """``(handle, label)`` pairs to rebuild ``legend`` from (see ``remember_legend_keys``)."""
+    stored = getattr(legend, _LEGEND_SOURCE_ATTR, None)
+    if stored is not None:
+        return list(stored)
+    return [
+        (handle, text.get_text())
+        for handle, text in zip(legend.legend_handles, legend.get_texts(), strict=False)
+        if handle is not None
+    ]
 
 
 def parameter_legend_keys(entries, *, draw_markers: bool, upper: bool = False) -> list[tuple[object, str]]:

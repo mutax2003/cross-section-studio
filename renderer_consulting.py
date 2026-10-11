@@ -1237,7 +1237,7 @@ class ConsultingLayoutMixin:
     @staticmethod
     def _requested_map_scale(title_block: ConsultingTitleBlock | None) -> float | None:
         """Denominator of a user / workbook-set ``map_scale`` (never the model default)."""
-        if title_block is None or "map_scale" not in title_block.model_fields_set:
+        if title_block is None or not str(title_block.map_scale or "").strip():
             return None
         return parse_map_scale(title_block.map_scale)
 
@@ -1371,7 +1371,7 @@ class ConsultingLayoutMixin:
         max_m = max(max_frac, 0.2) * panel_px * metres_per_px
 
         length_m = nice_scale_bar_length(max_m)
-        requested = title_block.scale_bar_m if "scale_bar_m" in title_block.model_fields_set else None
+        requested = title_block.scale_bar_m
         if requested and 0.4 * max_m <= float(requested) <= max_m:
             length_m = float(requested)
         if length_m <= 0.0:
@@ -1726,12 +1726,11 @@ class ConsultingLayoutMixin:
         if title_block.source:
             meta_rows.append(("SOURCE", title_block.source))
         scale_row = None
-        if title_block.map_scale:
-            # The user's scale only when the section is drawn at it on this
-            # page; the model default ("1:1000") or a scale that does not fit
-            # would contradict the true-scale bar, so "AS SHOWN" defers to it.
-            scale_row = len(meta_rows)
-            meta_rows.append(("SCALE", "AS SHOWN"))
+        # Always a SCALE row: the user's scale only when the section is drawn
+        # at it on this page; blank or a scale that does not fit would
+        # contradict the true-scale bar, so "AS SHOWN" defers to it.
+        scale_row = len(meta_rows)
+        meta_rows.append(("SCALE", "AS SHOWN"))
         if title_block.date:
             meta_rows.append(("DATE", title_block.date))
         if title_block.drawn_by:

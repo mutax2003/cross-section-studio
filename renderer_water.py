@@ -1282,6 +1282,58 @@ def _straight_leader_bound(annotation, renderer):
     return Bbox.union([Text.get_window_extent(annotation, renderer), segment])
 
 
+def _annotation_extent_key(annotation, renderer) -> tuple:
+    """Everything an annotation's drawn extent depends on (text layout, its
+    anchor in display space, offset, alignment, font, leader, dpi)."""
+    arrow = annotation.arrow_patch
+    return (
+        annotation.get_text(),
+        tuple(np.asarray(annotation.xyann, dtype=float).ravel()),
+        annotation.get_horizontalalignment(),
+        annotation.get_verticalalignment(),
+        annotation.get_rotation(),
+        hash(annotation.get_fontproperties()),
+        float(renderer.dpi),
+        annotation.get_visible(),
+        None if arrow is None else (arrow.get_visible(), getattr(annotation, "_arrow_relpos", None)),
+        _bbox_patch_key(annotation.get_bbox_patch()),
+    )
+
+
+def _bbox_patch_key(patch):
+    if patch is None:
+        return None
+    style = patch.get_boxstyle()
+    return (type(style).__name__, getattr(style, "pad", None), patch.get_mutation_scale())
+
+
+def _cached_annotation_extent(annotation, renderer, kind: str, measure):
+    """Memoised ``measure(annotation, renderer)`` relative to the label's anchor.
+
+    Header passes re-measure the same value labels (and their leader
+    paths: a clipped-path extent per label) after every layout step, where
+    only the plot moved. The extent of a label in offset points is a pure
+    translation of its anchor, so it is measured once per text / offset /
+    font / dpi and moved with the anchor.
+    """
+    try:
+        key = (kind, _annotation_extent_key(annotation, renderer))
+        anchor = np.asarray(annotation._get_position_xy(renderer), dtype=float)
+    except Exception:  # pragma: no cover - unusual coordinate systems
+        return measure(annotation, renderer)
+    if not np.all(np.isfinite(anchor)):
+        return measure(annotation, renderer)
+    cache = annotation.__dict__.setdefault("_css_extent_cache", {})
+    if key in cache:
+        rel = cache[key]
+        return None if rel is None else Bbox(rel + anchor)
+    value = measure(annotation, renderer)
+    if len(cache) > 8:
+        cache.clear()
+    cache[key] = None if value is None else np.asarray(value.get_points(), dtype=float) - anchor
+    return value
+
+
 def _header_obstacles(fig, renderer, pad, *, exclude: set[int], header_bands=None) -> list:
     """Tick labels, axis labels, titles and figure text a header must not cover.
 
@@ -1303,12 +1355,18 @@ def _header_obstacles(fig, renderer, pad, *, exclude: set[int], header_bands=Non
     for artist in artists:
         if id(artist) in exclude or not artist.get_visible() or not artist.get_text().strip():
             continue
-        if header_bands is not None and isinstance(artist, Annotation):
-            bound = _straight_leader_bound(artist, renderer)
-            if bound is not None:
-                y0, y1 = bound.y0 - pad, bound.y1 + pad
-                if not any(y0 < top and y1 > bottom for bottom, top in header_bands):
-                    continue
+        if isinstance(artist, Annotation):
+            if header_bands is not None:
+                bound = _cached_annotation_extent(artist, renderer, "leader", _straight_leader_bound)
+                if bound is not None:
+                    y0, y1 = bound.y0 - pad, bound.y1 + pad
+                    if not any(y0 < top and y1 > bottom for bottom, top in header_bands):
+                        continue
+            extent = _cached_annotation_extent(
+                artist, renderer, "extent", lambda a, r: a.get_window_extent(r)
+            )
+            boxes.append(extent.padded(pad))
+            continue
         boxes.append(artist.get_window_extent(renderer).padded(pad))
     return boxes
 

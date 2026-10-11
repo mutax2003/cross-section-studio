@@ -334,3 +334,16 @@ def test_title_block_scale_defers_to_the_bar_when_not_set() -> None:
         renderer_mod.CrossSectionRenderer.render = original
         for fig in texts.get("figs", []):
             plt.close(fig)
+
+
+def test_blank_map_scale_survives_a_json_round_trip_as_unset() -> None:
+    """The app sends the title block through JSON, which marks every field as
+    set; a blank scale must still mean "AS SHOWN", never a phantom 1:1000."""
+    from models import ConsultingTitleBlock
+    from renderer_consulting import ConsultingLayoutMixin
+
+    block = ConsultingTitleBlock.model_validate_json(ConsultingTitleBlock(section_label="A-A'").model_dump_json())
+    assert ConsultingLayoutMixin._requested_map_scale(block) is None
+    assert block.scale_bar_m is None
+    explicit = ConsultingTitleBlock.model_validate_json(ConsultingTitleBlock(map_scale="1:500").model_dump_json())
+    assert ConsultingLayoutMixin._requested_map_scale(explicit) == 500.0

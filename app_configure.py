@@ -44,12 +44,20 @@ OVERLAP_GATE_MESSAGE = (
 )
 
 
-def override_warnings_label(warning_count: int) -> str:
-    """Checkbox label with the current warning count next to it."""
+def override_warnings_label(warning_count: int, advisory_count: int = 0) -> str:
+    """Checkbox label with the warnings it covers.
+
+    Data health counts every warning; only ``warning_count`` of them need this
+    tick (coverage gaps are advisory), so both are named: "1 warning needs
+    review; 1 more is advisory" instead of a bare "1 warning" beside "2 warnings".
+    """
     if warning_count <= 0:
         return OVERRIDE_WARNINGS_LABEL
-    noun = "warning" if warning_count == 1 else "warnings"
-    return f"{OVERRIDE_WARNINGS_LABEL} ({warning_count} {noun})"
+    noun, verb = ("warning", "needs") if warning_count == 1 else ("warnings", "need")
+    detail = f"{warning_count} {noun} {verb} review"
+    if advisory_count > 0:
+        detail += f"; {advisory_count} more {'is' if advisory_count == 1 else 'are'} advisory"
+    return f"{OVERRIDE_WARNINGS_LABEL} ({detail})"
 
 
 # Logging gaps draw grey ("Not logged") and are flagged in Validate; real logs
@@ -412,26 +420,34 @@ def render_configure_step(
     warnings_default = not is_consulting_layout
     if "override_warnings_checkbox" not in st.session_state:
         st.session_state["override_warnings_checkbox"] = warnings_default
-    # The count sits in the label; the warnings themselves are listed in
-    # Validate on the same screen, so they are not repeated here.
-    override_warnings = st.checkbox(
-        override_warnings_label(warning_count),
-        key="override_warnings_checkbox",
-        help=(
-            "Data checks are listed under Validate. The consulting report style starts "
-            "with this off so warnings are reviewed before a client figure is made."
-        ),
-    )
     if "fail_on_overlaps_checkbox" not in st.session_state:
         st.session_state["fail_on_overlaps_checkbox"] = is_consulting_layout
-    fail_on_overlaps = st.checkbox(
-        FAIL_ON_OVERLAPS_LABEL,
-        key="fail_on_overlaps_checkbox",
-        help=(
-            "When ticked, Generate stops if the shaded layers drawn between two holes "
-            "cross over each other."
-        ),
-    )
+    if len(all_hole_ids) < 2:
+        # One hole cannot make a section: no Generate gates to offer.
+        override_warnings = bool(st.session_state.get("override_warnings_checkbox"))
+        fail_on_overlaps = bool(st.session_state.get("fail_on_overlaps_checkbox"))
+    else:
+        total_warnings = quality_report.warning_count if quality_report is not None else 0
+        # The count sits in the label; the warnings themselves are listed in
+        # Validate on the same screen, so they are not repeated here.
+        override_warnings = st.checkbox(
+            override_warnings_label(warning_count, max(0, total_warnings - warning_count)),
+            key="override_warnings_checkbox",
+            help=(
+                "Data checks are listed under Validate. Coverage gaps (nothing logged "
+                "over a depth range) are advisory and never need this tick. The consulting "
+                "report style starts with this off so warnings are reviewed before a client "
+                "figure is made."
+            ),
+        )
+        fail_on_overlaps = st.checkbox(
+            FAIL_ON_OVERLAPS_LABEL,
+            key="fail_on_overlaps_checkbox",
+            help=(
+                "When ticked, Generate stops if the shaded layers drawn between two holes "
+                "cross over each other."
+            ),
+        )
 
     environmental_parameters: tuple[str, ...] = ()
     show_parameter_labels = True
@@ -538,12 +554,21 @@ def render_configure_step(
                     "Show parameter value labels",
                     key="show_parameter_labels_toggle",
                     disabled=prefer_chemistry and show_parameter_labels_default is not None,
+                    help=(
+                        "Print each chemistry value (e.g. 120 mg/L) beside its sample depth. "
+                        "Off draws the markers only. Locked by chemistry output styles."
+                    ),
                 )
                 parameter_interpolate_segments = st.toggle(
                     "Interpolate parameter between adjacent holes",
                     key="parameter_interpolate_segments_toggle",
                     disabled=(
                         prefer_chemistry and parameter_interpolate_segments_default is not None
+                    ),
+                    help=(
+                        "Join values at similar depths in neighbouring holes with schematic "
+                        "lines (not a plume contour; a footnote says so). Off keeps each "
+                        "hole's values on its own column."
                     ),
                 )
                 if prefer_chemistry:
@@ -598,6 +623,7 @@ def render_configure_step(
                                 value=100.0,
                                 step=1.0,
                                 key="chemistry_threshold_green_max",
+                                help="Values up to this limit print green (same units as the data).",
                             )
                         )
                     with threshold_cols[1]:
@@ -608,6 +634,10 @@ def render_configure_step(
                                 value=250.0,
                                 step=1.0,
                                 key="chemistry_threshold_yellow_max",
+                                help=(
+                                    "Values above Green and up to this limit print orange; "
+                                    "anything higher prints red."
+                                ),
                             )
                         )
                     if chemistry_threshold_yellow_max < chemistry_threshold_green_max:
@@ -1245,12 +1275,14 @@ def render_manual_correlation_overrides(active_ids: Sequence[str], subset: Parse
                     f"{left_id} layer",
                     options=left_units,
                     key=f"corr_left_{pair_index}",
+                    help=f"Layer (unit order) in {left_id} to join to the layer picked for {right_id}.",
                 )
             with col2:
                 right_order = st.selectbox(
                     f"{right_id} layer",
                     options=right_units,
                     key=f"corr_right_{pair_index}",
+                    help=f"Layer (unit order) in {right_id} to join to the layer picked for {left_id}; then click Link.",
                 )
             with col3:
                 if st.button("Link", key=f"corr_link_{pair_index}"):
@@ -1369,6 +1401,7 @@ def render_section_qa(
             "Your question",
             key="section_qa_question",
             placeholder="Which wells are NM? What is clay thickness at MW-01?",
+            help="Ask about the holes on this section line; answers use only their logged data.",
         )
         if st.button("Ask", key="section_qa_ask") and qa_question.strip():
             offset_map: dict[str, float] = {

@@ -328,3 +328,12 @@ def test_file_names_keep_the_section_prime_without_stray_fragments() -> None:
     )
     assert with_label == "Section_A-A'_BH_1"
     assert "_'_" not in with_label
+
+
+def test_title_that_prefixes_a_hole_id_does_not_clip_it() -> None:
+    from export_framing import build_export_filename
+
+    name = build_export_filename(
+        pattern="section_title", section_title="B", transect_label="BH-01→BH-06", include_transect_label=True
+    )
+    assert name == "B_BH-01_BH-06"

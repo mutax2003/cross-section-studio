@@ -24,6 +24,7 @@ from app_common import (
 )
 from ingestion import NATIVE_PROFILE_ID
 from parsing import skipped_row_hole_ids
+from ui_helpers import unique_download_bytes
 
 
 def _render_fix_step_actions(
@@ -703,7 +704,7 @@ def render_validate_step(*, show_coach: bool = True) -> None:
         if cleaned:
             st.download_button(
                 "Download cleaned workbook (.xlsx)",
-                data=cleaned,
+                data=unique_download_bytes(cleaned),
                 file_name="cross_section_cleaned.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="download_cleaned_workbook",

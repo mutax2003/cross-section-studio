@@ -43,6 +43,7 @@ from ui_helpers import (
     legend_hatch_background,
     preview_img_style,
     svg_display_meta,
+    unique_download_bytes,
 )
 from ui_output_presets import ve_short_text
 
@@ -326,7 +327,7 @@ def render_full_lithology_legend() -> None:
         )
         st.download_button(
             "Download legend (PNG)",
-            data=png,
+            data=unique_download_bytes(png),
             file_name="lithology_legend.png",
             mime="image/png",
             key="download_full_lithology_legend",

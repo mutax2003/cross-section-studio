@@ -25,6 +25,7 @@ from app_common import (
 from app_identity import COPYRIGHT_SHORT, CREATED_BY
 from app_upload import (
     DESTRUCTIVE_PROMPTS,
+    USER_VE_KEY,
     WORKBOOK_VE_KEY,
     apply_pending_project_seed,
     render_input_template_download,
@@ -157,6 +158,20 @@ _EXPORT_WIDGET_KEYS: tuple[str, ...] = (
     "export_viewport_ymax",
     "export_output_dir",
 )
+
+
+def _remember_user_ve() -> None:
+    """An explicit VE pick survives later Output style switches."""
+    st.session_state[USER_VE_KEY] = st.session_state.get("vertical_exaggeration")
+
+
+# The user's own "Include QA notes (PDF)" choice; without one each output
+# style applies its default (off for the one-sheet consulting styles).
+USER_QA_NOTES_KEY = "_user_include_qa_notes"
+
+
+def _remember_user_qa_notes() -> None:
+    st.session_state[USER_QA_NOTES_KEY] = bool(st.session_state.get("export_include_qa_footer"))
 
 
 def _keep_widget_state(*keys: str) -> None:
@@ -360,7 +375,13 @@ def _render_export_framing_panel() -> None:
         st.toggle(
             "Include QA notes (PDF)",
             key="export_include_qa_footer",
-            help="Adds the data-check notes (overlaps, gaps, crossing layers) to the PDF.",
+            on_change=_remember_user_qa_notes,
+            help=(
+                "Adds the section notes (overlaps, gaps, crossing layers, map scale, "
+                "dropped chemistry values) to the PDF: on the summary page for Section "
+                "sheet, as an extra QA notes page for the one-sheet consulting styles "
+                "(off by default there, as those PDFs go to the client)."
+            ),
         )
     st.text_input(
         "Save exports to folder (optional)",
@@ -545,15 +566,32 @@ def render_sidebar() -> SidebarState:
                 st.session_state.interpretation_mode = preset_config.interpretation_mode
             if preset_config.elevation_mode is not None:
                 st.session_state.elevation_mode = preset_config.elevation_mode
-            if preset_config.vertical_exaggeration is not None:
-                workbook_ve = st.session_state.get(WORKBOOK_VE_KEY)
-                # The workbook's Project VE beats a style's default (Auto);
-                # a style that fixes VE (Chemistry columns, 1x) still wins.
+            if not visibility.vertical_exaggeration_editable:
+                # A style that fixes VE (Chemistry columns, 1x) shows its lock;
+                # the user's own choice (USER_VE_KEY) is kept for other styles.
                 st.session_state.vertical_exaggeration = normalize_ve_choice(
-                    workbook_ve
-                    if workbook_ve is not None and visibility.vertical_exaggeration_editable
-                    else preset_config.vertical_exaggeration
+                    preset_config.vertical_exaggeration
                 )
+            else:
+                # The VE the user picked beats the workbook's Project VE, which
+                # beats the style's default (Auto); seeded once per workbook.
+                for candidate in (
+                    st.session_state.get(USER_VE_KEY),
+                    st.session_state.get(WORKBOOK_VE_KEY),
+                    preset_config.vertical_exaggeration,
+                    DEFAULT_VE_CHOICE,
+                ):
+                    if candidate is not None:
+                        st.session_state.vertical_exaggeration = normalize_ve_choice(candidate)
+                        break
+            user_qa_notes = st.session_state.get(USER_QA_NOTES_KEY)
+            # Consulting styles are one client sheet: no QA notes page unless
+            # the user turned it on; Section sheet / Quick preview list them.
+            st.session_state.export_include_qa_footer = (
+                bool(user_qa_notes)
+                if user_qa_notes is not None
+                else preset_config.render_layout != "consulting_section"
+            )
             st.session_state._synced_output_preset = output_preset
 
         if visibility.interpretation_editable:
@@ -615,6 +653,7 @@ def render_sidebar() -> SidebarState:
                 options=ve_choice_options(st.session_state.vertical_exaggeration),
                 format_func=ve_choice_label,
                 key="vertical_exaggeration",
+                on_change=_remember_user_ve,
                 help=(
                     "Auto fits the section to the page and prints the vertical exaggeration "
                     "it really ends up with. A number draws exactly that exaggeration "

@@ -370,7 +370,11 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
             )
         )
 
-    for left, right in zip(sorted_intervals, sorted_intervals[1:]):
+    # Zero-thickness rows get their own warning (zero_thickness_interval) and
+    # are dropped from the fence; pairing them here read "1.2–3.29 m overlaps
+    # 1.2–1.2 m".
+    thick = [i for i in sorted_intervals if i.to_depth - i.from_depth >= ZERO_THICKNESS_M]
+    for left, right in zip(thick, thick[1:]):
         if right.from_depth > left.to_depth + 0.01:
             issues.append(
                 QualityIssue(
@@ -397,7 +401,7 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
                 )
             )
 
-    last = sorted_intervals[-1]
+    last = max(thick or sorted_intervals, key=lambda interval: interval.to_depth)
     if last.to_depth < collar.total_depth - 0.01:
         issues.append(
             QualityIssue(

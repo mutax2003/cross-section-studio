@@ -259,6 +259,22 @@ def _label_pattern(label: str) -> str:
     return rf"(?<![A-Za-z0-9]){re.escape(label.strip())}(?![A-Za-z0-9])"
 
 
+def _base_section_label(base_request: SectionBuildRequest) -> str:
+    """The title block's section label, unless it is just the whole title.
+
+    Consulting styles copy the whole title ("A - A' WITH CHLORIDE") into the
+    title block label; swapping that whole label named batch files "B-B'"
+    there but "B-B'_WITH_CHLORIDE" under Section sheet (no title block). The
+    "A-A'" inside the title is used instead, so every style names alike.
+    """
+    block = base_request.consulting_title_block
+    base_label = (block.section_label if block else "").strip()
+    title = base_request.section_title.strip()
+    if base_label and base_label == title and _TITLE_SECTION_LABEL_RE.search(title):
+        return ""
+    return base_label
+
+
 def _batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
     """Title for one batch transect.
 
@@ -268,8 +284,7 @@ def _batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
     title = base_request.section_title
     if not label:
         return title
-    block = base_request.consulting_title_block
-    base_label = (block.section_label if block else "").strip()
+    base_label = _base_section_label(base_request)
     if base_label and base_label != label and label_in_title(base_label, title):
         return re.sub(_label_pattern(base_label), lambda _m: label, title)
     if label_in_title(label, title):
@@ -288,20 +303,30 @@ def batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
 def batch_cover_title(base_request: SectionBuildRequest, labels: Sequence[str]) -> str:
     """Binder cover / ZIP name for the whole batch, not the previewed section.
 
-    "Site X A-A'" with lines A-A', B-B', C-C' → "Site X — Cross Sections A-A', B-B', C-C'".
+    "Site X A-A'" with lines A-A', B-B', C-C' → "Site X — Cross Sections A-A', B-B', C-C'";
+    "A - A' WITH CHLORIDE" → "Cross Sections A-A', B-B', C-C' WITH CHLORIDE" (text
+    after the label stays after it, so the name still starts "Cross_Sections").
     """
     title = base_request.section_title.strip()
-    block = base_request.consulting_title_block
-    base_label = (block.section_label if block else "").strip()
+    base_label = _base_section_label(base_request)
     if base_label and label_in_title(base_label, title):
-        title = re.sub(_label_pattern(base_label), "", title)
+        pattern = re.compile(_label_pattern(base_label))
     else:
-        title = _TITLE_SECTION_LABEL_RE.sub("", title)
-    title = title.strip(" -—–:,")
+        pattern = _TITLE_SECTION_LABEL_RE
+    match = pattern.search(title)
+    if match is None:
+        prefix, suffix = title, ""
+    else:
+        prefix = pattern.sub("", title[: match.start()])
+        suffix = pattern.sub("", title[match.end() :])
+    prefix = prefix.strip(" -—–:,")
+    suffix = suffix.strip(" -—–:,")
     shown = [label for label in labels if label]
     noun = "Cross Section" if len(shown) == 1 else "Cross Sections"
     sections = f"{noun} {', '.join(shown)}" if shown else "Cross Sections"
-    return f"{title} — {sections}" if title else sections
+    if suffix:
+        sections = f"{sections} {suffix}"
+    return f"{prefix} — {sections}" if prefix else sections
 
 
 def prepare_batch_section_request(

@@ -353,3 +353,24 @@ def test_batch_title_swaps_every_occurrence_of_a_single_letter_label() -> None:
         section_title="Cross Section A-A'", consulting_title_block=SimpleNamespace(section_label="A")
     )
     assert _batch_section_title(request, "B") == "Cross Section B-B'"
+
+
+def test_batch_names_match_across_styles_and_keep_trailing_title_text() -> None:
+    """Section sheet named the ZIP "WITH_CHLORIDE_Cross_Sections_…" and the
+    sections "B-B'_WITH_CHLORIDE", while consulting styles (title block label
+    = whole title) gave "Cross_Sections_…" and "B-B'"."""
+    from types import SimpleNamespace
+
+    from batch_export import _batch_section_title, batch_cover_title
+
+    title = "A - A' WITH CHLORIDE"
+    labels = ["A-A'", "B-B'", "C-C'"]
+    sheet = SimpleNamespace(section_title=title, consulting_title_block=None)
+    consulting = SimpleNamespace(
+        section_title=title, consulting_title_block=SimpleNamespace(section_label=title)
+    )
+    for request in (sheet, consulting):
+        assert _batch_section_title(request, "B-B'") == "B-B' WITH CHLORIDE"
+        assert batch_cover_title(request, labels) == "Cross Sections A-A', B-B', C-C' WITH CHLORIDE"
+    site = SimpleNamespace(section_title="Site X A-A' chloride", consulting_title_block=None)
+    assert batch_cover_title(site, labels) == "Site X — Cross Sections A-A', B-B', C-C' chloride"

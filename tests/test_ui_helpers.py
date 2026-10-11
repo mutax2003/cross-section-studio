@@ -64,3 +64,91 @@ def test_legend_hatch_background_tolerates_whitespace_hatches() -> None:
     assert legend_hatch_background(" ") == "none"
     assert legend_hatch_background("") == "none"
     assert "gradient" in legend_hatch_background("OO")
+
+
+def _same_length_pair(head: bytes, tail: bytes) -> tuple[bytes, bytes]:
+    """Two >1 MiB payloads that differ only where Streamlit does not sample
+    (a quarter of the way in: not head, middle or tail)."""
+    filler = 3 * 1024 * 1024
+    body_a = bytearray(b"a" * filler)
+    body_b = bytearray(body_a)
+    body_b[filler // 4] = ord("b")
+    return head + bytes(body_a) + tail, head + bytes(body_b) + tail
+
+
+def _file_id(data: bytes, mime: str, name: str) -> str:
+    from streamlit.runtime.memory_media_file_storage import _calculate_file_id
+
+    return _calculate_file_id(data, mime, name)
+
+
+def test_same_length_downloads_get_different_file_ids() -> None:
+    """Black vs red-label SVGs (same 1,478,243 B) shared one Streamlit file
+    id, so the SVG button served the previous figure."""
+    import io
+    import zipfile
+
+    from PIL import Image
+    from pypdf import PdfReader
+    from streamlit.runtime import memory_media_file_storage as storage
+
+    from ui_helpers import DOWNLOAD_FULL_HASH_LIMIT, unique_download_bytes
+
+    assert DOWNLOAD_FULL_HASH_LIMIT == storage._PARTIAL_HASH_THRESHOLD
+
+    svg_a, svg_b = _same_length_pair(b'<svg xmlns="http://www.w3.org/2000/svg"><!--', b"--></svg>\n")
+    assert _file_id(svg_a, "image/svg+xml", "f.svg") == _file_id(svg_b, "image/svg+xml", "f.svg")
+    out_a, out_b = unique_download_bytes(svg_a), unique_download_bytes(svg_b)
+    assert _file_id(out_a, "image/svg+xml", "f.svg") != _file_id(out_b, "image/svg+xml", "f.svg")
+    assert out_a.startswith(svg_a) and out_a.rstrip().endswith(b"-->")
+
+    # ZIP (also Word / Excel): digest goes in the archive comment.
+    def big_zip(marker: bytes) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("a.bin", b"x" * (2 * 1024 * 1024) + marker + b"x" * (1024 * 1024))
+            zf.writestr("b.txt", "end")
+        return buf.getvalue()
+
+    zip_a, zip_b = big_zip(b"1"), big_zip(b"2")
+    assert len(zip_a) == len(zip_b)
+    out_a, out_b = unique_download_bytes(zip_a), unique_download_bytes(zip_b)
+    assert _file_id(out_a, "application/zip", "z.zip") != _file_id(out_b, "application/zip", "z.zip")
+    with zipfile.ZipFile(io.BytesIO(out_a)) as zf:
+        assert zf.testzip() is None and zf.comment.startswith(b"sha256:")
+
+    # PNG: digest in a tEXt chunk before IEND; the image still opens.
+    def big_png(seed: int) -> bytes:
+        import numpy as np
+
+        rng = np.random.default_rng(0)
+        pixels = rng.integers(0, 255, (700, 700, 3), dtype=np.uint8)
+        pixels[100, 100, 0] = seed
+        buf = io.BytesIO()
+        Image.fromarray(pixels).save(buf, format="PNG", compress_level=0)
+        return buf.getvalue()
+
+    png = big_png(7)
+    assert len(png) > DOWNLOAD_FULL_HASH_LIMIT
+    out = unique_download_bytes(png)
+    assert out != png
+    with Image.open(io.BytesIO(out)) as image:
+        image.load()
+        assert image.text.get("Digest", "").startswith("sha256:")
+
+    # PDF: a comment line after %%EOF; the PDF still reads.
+    from matplotlib.figure import Figure
+
+    fig = Figure(figsize=(10, 10), dpi=100)
+    noise = __import__("numpy").random.default_rng(1).integers(0, 255, (1000, 1000, 3), dtype="uint8")
+    fig.figimage(noise)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="pdf")
+    pdf = buf.getvalue()
+    assert len(pdf) > DOWNLOAD_FULL_HASH_LIMIT
+    out = unique_download_bytes(pdf)
+    assert out.startswith(pdf) and b"%sha256:" in out[-100:]
+    assert len(PdfReader(io.BytesIO(out)).pages) == 1
+
+    # Small files are hashed in full by Streamlit: left untouched.
+    assert unique_download_bytes(b"<svg></svg>") == b"<svg></svg>"

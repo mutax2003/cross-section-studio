@@ -641,7 +641,7 @@ def test_new_workbook_reseeds_title_block_after_style_switches() -> None:
     assert at.text_input(key="consulting_section_label").value == "B - B' SECOND"
 
 
-def test_template_without_lithology_shows_the_missing_sheet_error() -> None:
+def test_template_without_lithology_shows_the_missing_sheet_error(caplog) -> None:
     """Deleting only the Lithology tab (the Data Entry sheet stays) loaded
     0 holes with "Data health OK" though Collars listed every hole."""
     from io import BytesIO
@@ -658,8 +658,12 @@ def test_template_without_lithology_shows_the_missing_sheet_error() -> None:
 
     at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
     at.run()
-    at.file_uploader[0].upload("no_lith.xlsx", buffer.getvalue()).run()
+    with caplog.at_level("INFO", logger="app_upload"):
+        at.file_uploader[0].upload("no_lith.xlsx", buffer.getvalue()).run()
     assert not at.exception
+    # An expected workbook problem: one warning line, no ERROR traceback.
+    upload_logs = [r for r in caplog.records if r.name == "app_upload"]
+    assert upload_logs and all(r.levelname == "WARNING" and not r.exc_info for r in upload_logs)
     assert at.session_state["parse_result"] is None
     errors = [str(item.value) for item in at.error]
     assert any("No **Lithology** sheet was found" in text for text in errors), errors
@@ -930,6 +934,9 @@ def test_one_hole_workbook_asks_for_another_hole_not_a_section_line() -> None:
     assert not any("choose holes under" in t.lower() for t in texts)
     assert not any("Choose at least two holes under **Section line**" in t for t in texts)
     assert not any(" 1 boreholes" in t or "**1** boreholes" in t or " 1 warnings" in t for t in texts)
+    # Nothing can be generated: no Generate gates to tick.
+    assert not [box for box in at.checkbox if (box.label or "").startswith("Generate even if")]
+    assert not [box for box in at.checkbox if box.key == "fail_on_overlaps_checkbox"]
     assert upload_headline(hole_count=1, interval_count=1, skipped_count=0, error_count=0)[1] == (
         "Loaded **1** borehole and **1** lithology interval."
     )

@@ -648,7 +648,12 @@ def handle_workbook_upload(
             )
             st.rerun()
         except Exception as exc:
-            logger.exception("Workbook parse failed")
+            if isinstance(exc, (ValueError, KeyError, zipfile.BadZipFile)):
+                # Expected workbook problems (missing sheet / column, bad
+                # values): the UI explains them; no traceback in the log.
+                logger.warning("Workbook parse failed: %s", exc)
+            else:
+                logger.exception("Workbook parse failed")
             st.session_state.parse_result = None
             st.session_state.import_report = None
             st.session_state.quality_report = None

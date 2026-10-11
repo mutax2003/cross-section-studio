@@ -44,12 +44,20 @@ OVERLAP_GATE_MESSAGE = (
 )
 
 
-def override_warnings_label(warning_count: int) -> str:
-    """Checkbox label with the current warning count next to it."""
+def override_warnings_label(warning_count: int, advisory_count: int = 0) -> str:
+    """Checkbox label with the warnings it covers.
+
+    Data health counts every warning; only ``warning_count`` of them need this
+    tick (coverage gaps are advisory), so both are named: "1 warning needs
+    review; 1 more is advisory" instead of a bare "1 warning" beside "2 warnings".
+    """
     if warning_count <= 0:
         return OVERRIDE_WARNINGS_LABEL
-    noun = "warning" if warning_count == 1 else "warnings"
-    return f"{OVERRIDE_WARNINGS_LABEL} ({warning_count} {noun})"
+    noun, verb = ("warning", "needs") if warning_count == 1 else ("warnings", "need")
+    detail = f"{warning_count} {noun} {verb} review"
+    if advisory_count > 0:
+        detail += f"; {advisory_count} more {'is' if advisory_count == 1 else 'are'} advisory"
+    return f"{OVERRIDE_WARNINGS_LABEL} ({detail})"
 
 
 # Logging gaps draw grey ("Not logged") and are flagged in Validate; real logs
@@ -412,26 +420,34 @@ def render_configure_step(
     warnings_default = not is_consulting_layout
     if "override_warnings_checkbox" not in st.session_state:
         st.session_state["override_warnings_checkbox"] = warnings_default
-    # The count sits in the label; the warnings themselves are listed in
-    # Validate on the same screen, so they are not repeated here.
-    override_warnings = st.checkbox(
-        override_warnings_label(warning_count),
-        key="override_warnings_checkbox",
-        help=(
-            "Data checks are listed under Validate. The consulting report style starts "
-            "with this off so warnings are reviewed before a client figure is made."
-        ),
-    )
     if "fail_on_overlaps_checkbox" not in st.session_state:
         st.session_state["fail_on_overlaps_checkbox"] = is_consulting_layout
-    fail_on_overlaps = st.checkbox(
-        FAIL_ON_OVERLAPS_LABEL,
-        key="fail_on_overlaps_checkbox",
-        help=(
-            "When ticked, Generate stops if the shaded layers drawn between two holes "
-            "cross over each other."
-        ),
-    )
+    if len(all_hole_ids) < 2:
+        # One hole cannot make a section: no Generate gates to offer.
+        override_warnings = bool(st.session_state.get("override_warnings_checkbox"))
+        fail_on_overlaps = bool(st.session_state.get("fail_on_overlaps_checkbox"))
+    else:
+        total_warnings = quality_report.warning_count if quality_report is not None else 0
+        # The count sits in the label; the warnings themselves are listed in
+        # Validate on the same screen, so they are not repeated here.
+        override_warnings = st.checkbox(
+            override_warnings_label(warning_count, max(0, total_warnings - warning_count)),
+            key="override_warnings_checkbox",
+            help=(
+                "Data checks are listed under Validate. Coverage gaps (nothing logged "
+                "over a depth range) are advisory and never need this tick. The consulting "
+                "report style starts with this off so warnings are reviewed before a client "
+                "figure is made."
+            ),
+        )
+        fail_on_overlaps = st.checkbox(
+            FAIL_ON_OVERLAPS_LABEL,
+            key="fail_on_overlaps_checkbox",
+            help=(
+                "When ticked, Generate stops if the shaded layers drawn between two holes "
+                "cross over each other."
+            ),
+        )
 
     environmental_parameters: tuple[str, ...] = ()
     show_parameter_labels = True

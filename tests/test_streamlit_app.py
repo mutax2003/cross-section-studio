@@ -1001,3 +1001,63 @@ def test_user_ve_choice_survives_output_style_switches() -> None:
     )).run()
     at.run()
     assert at.session_state["vertical_exaggeration"] == 2.0
+
+
+def test_chemistry_correlation_and_question_inputs_have_help() -> None:
+    """QA: no tooltip on the parameter toggles, the Green/Orange limits, the
+    "Match layers by hand" layer pickers and "Your question"."""
+    from streamlit.testing.v1 import AppTest
+
+    from io import BytesIO
+
+    import openpyxl
+
+    book = openpyxl.load_workbook(BytesIO(_project_workbook_bytes(figure_preset="section_sheet")))
+    counts: dict[str, int] = {}
+    for row in book["Lithology"].iter_rows(min_row=2):
+        if row[0].value:
+            counts[row[0].value] = counts.get(row[0].value, 0) + 1
+            row[4].value = counts[row[0].value]  # unit_order: enables the layer pickers
+    buffer = BytesIO()
+    book.save(buffer)
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("project.xlsx", buffer.getvalue()).run()
+    at.run()
+    radio = [r for r in at.radio if r.key == "chemistry_color_mode_radio"]
+    assert radio
+    radio[0].set_value("Green / orange / red thresholds").run()
+    assert not at.exception
+    widgets = _widgets_by_label(at)
+    for label in (
+        "Show parameter value labels",
+        "Interpolate parameter between adjacent holes",
+        "Green ≤",
+        "Orange ≤",
+        "Your question",
+    ):
+        assert getattr(widgets.get(label), "help", None), label
+    layer_pickers = [sb for sb in at.selectbox if (sb.key or "").startswith("corr_")]
+    assert layer_pickers and all(sb.help for sb in layer_pickers)
+
+
+def test_qa_notes_pdf_toggle_defaults_by_style_and_keeps_the_user_choice() -> None:
+    """Consulting PDFs go to the client: QA notes page off by default there,
+    on for Section sheet; once the user sets it, the choice is kept."""
+    from streamlit.testing.v1 import AppTest
+
+    workbook = _project_workbook_bytes(figure_preset="consulting_report")
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=120)
+    at.run()
+    at.file_uploader[0].upload("project.xlsx", workbook).run()
+    at.run()
+    assert at.session_state["export_include_qa_footer"] is False
+    at.selectbox(key="output_preset").set_value("section_sheet").run()
+    assert at.session_state["export_include_qa_footer"] is True
+    at.selectbox(key="output_preset").set_value("gwm_fence").run()
+    assert at.session_state["export_include_qa_footer"] is False
+    at.toggle(key="export_include_qa_footer").set_value(True).run()
+    for style in ("consulting_report", "section_sheet", "p2_chemistry_sticks"):
+        at.selectbox(key="output_preset").set_value(style).run()
+        assert not at.exception
+        assert at.session_state["export_include_qa_footer"] is True, style

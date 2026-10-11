@@ -538,12 +538,21 @@ def render_configure_step(
                     "Show parameter value labels",
                     key="show_parameter_labels_toggle",
                     disabled=prefer_chemistry and show_parameter_labels_default is not None,
+                    help=(
+                        "Print each chemistry value (e.g. 120 mg/L) beside its sample depth. "
+                        "Off draws the markers only. Locked by chemistry output styles."
+                    ),
                 )
                 parameter_interpolate_segments = st.toggle(
                     "Interpolate parameter between adjacent holes",
                     key="parameter_interpolate_segments_toggle",
                     disabled=(
                         prefer_chemistry and parameter_interpolate_segments_default is not None
+                    ),
+                    help=(
+                        "Join values at similar depths in neighbouring holes with schematic "
+                        "lines (not a plume contour; a footnote says so). Off keeps each "
+                        "hole's values on its own column."
                     ),
                 )
                 if prefer_chemistry:
@@ -598,6 +607,7 @@ def render_configure_step(
                                 value=100.0,
                                 step=1.0,
                                 key="chemistry_threshold_green_max",
+                                help="Values up to this limit print green (same units as the data).",
                             )
                         )
                     with threshold_cols[1]:
@@ -608,6 +618,10 @@ def render_configure_step(
                                 value=250.0,
                                 step=1.0,
                                 key="chemistry_threshold_yellow_max",
+                                help=(
+                                    "Values above Green and up to this limit print orange; "
+                                    "anything higher prints red."
+                                ),
                             )
                         )
                     if chemistry_threshold_yellow_max < chemistry_threshold_green_max:
@@ -1245,12 +1259,14 @@ def render_manual_correlation_overrides(active_ids: Sequence[str], subset: Parse
                     f"{left_id} layer",
                     options=left_units,
                     key=f"corr_left_{pair_index}",
+                    help=f"Layer (unit order) in {left_id} to join to the layer picked for {right_id}.",
                 )
             with col2:
                 right_order = st.selectbox(
                     f"{right_id} layer",
                     options=right_units,
                     key=f"corr_right_{pair_index}",
+                    help=f"Layer (unit order) in {right_id} to join to the layer picked for {left_id}; then click Link.",
                 )
             with col3:
                 if st.button("Link", key=f"corr_link_{pair_index}"):
@@ -1369,6 +1385,7 @@ def render_section_qa(
             "Your question",
             key="section_qa_question",
             placeholder="Which wells are NM? What is clay thickness at MW-01?",
+            help="Ask about the holes on this section line; answers use only their logged data.",
         )
         if st.button("Ask", key="section_qa_ask") and qa_question.strip():
             offset_map: dict[str, float] = {

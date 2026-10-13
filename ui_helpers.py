@@ -9,8 +9,8 @@ import math
 import re
 import struct
 import zlib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 from app_identity import APP_NAME, COPYRIGHT_NOTICE, CREATED_BY
 from export_framing import sanitize_filename_stem
@@ -433,8 +433,15 @@ def export_metadata_payload(
     transect_label: str | None,
     overlap_warnings: Sequence[str],
     consulting_fields: dict[str, str] | None = None,
+    chemistry_color_mode: str | None = None,
+    chemistry_thresholds: Mapping[str, Sequence[float | None]] | None = None,
 ) -> dict[str, object]:
-    """JSON-serializable metadata for report packages."""
+    """JSON-serializable metadata for report packages.
+
+    In threshold colour mode the per-parameter limits are listed as
+    ``{"Chloride": {"green_max": 100, "orange_max": 250}, ...}`` so the
+    metadata JSON / Word table state which limits coloured the figure.
+    """
     payload: dict[str, object] = {
         "section_title": section_title,
         "preset": preset_label,
@@ -448,4 +455,14 @@ def export_metadata_payload(
     }
     if consulting_fields:
         payload.update(consulting_fields)
+    if chemistry_color_mode:
+        payload["chemistry_label_colour_mode"] = chemistry_color_mode
+    if chemistry_color_mode == "threshold" and chemistry_thresholds:
+        payload["chemistry_thresholds"] = {
+            str(parameter): {
+                "green_max": (None if pair[0] is None else float(pair[0])),
+                "orange_max": (None if len(pair) < 2 or pair[1] is None else float(pair[1])),
+            }
+            for parameter, pair in chemistry_thresholds.items()
+        }
     return payload

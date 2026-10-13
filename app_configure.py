@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 import streamlit as st
@@ -24,7 +24,14 @@ from app_services import cached_configure_preflight, cached_recommend_transects
 from app_upload import queue_session_values
 from batch_export import validate_batch_transect_lines
 from models import Collar, CorrelationOverride, ParseResult, subset_parse_result
-from render_profiles import ChemistryLabelStyle
+from render_profiles import (
+    DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX,
+    DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX,
+    ChemistryLabelStyle,
+    ChemistryThresholdMap,
+    chemistry_parameter_key,
+    chemistry_thresholds_from_readings,
+)
 from ui_output_presets import resolve_output_preset
 
 OVERRIDE_WARNINGS_LABEL = "Generate even if data checks found warnings"
@@ -96,6 +103,9 @@ class ConfigureState:
     chemistry_color_mode: str = "black"
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
+    # Per-parameter limits (parameter -> (green_max, orange_max)) for the
+    # selected parameters; the pair above is the fallback.
+    chemistry_thresholds: ChemistryThresholdMap = field(default_factory=dict)
     chemistry_label_style: ChemistryLabelStyle = "strip"
     placeholder_blocks_masl_water: bool = False
 
@@ -456,6 +466,7 @@ def render_configure_step(
     chemistry_color_mode: str = "black"
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
+    chemistry_thresholds: ChemistryThresholdMap = {}
     chemistry_label_style = "strip"
     subset_ready = False
     has_overlap_warnings = False
@@ -623,7 +634,10 @@ def render_configure_step(
                                 value=100.0,
                                 step=1.0,
                                 key="chemistry_threshold_green_max",
-                                help="Values up to this limit print green (same units as the data).",
+                                help=(
+                                    "Default green limit (same units as the data) for parameters "
+                                    "without their own row below."
+                                ),
                             )
                         )
                     with threshold_cols[1]:
@@ -635,13 +649,21 @@ def render_configure_step(
                                 step=1.0,
                                 key="chemistry_threshold_yellow_max",
                                 help=(
-                                    "Values above Green and up to this limit print orange; "
-                                    "anything higher prints red."
+                                    "Default orange limit: values above Green and up to this "
+                                    "print orange; anything higher prints red. Parameters with "
+                                    "their own row below use those limits instead."
                                 ),
                             )
                         )
                     if chemistry_threshold_yellow_max < chemistry_threshold_green_max:
                         st.warning("Orange threshold should be ≥ green threshold.")
+                    chemistry_thresholds = _render_parameter_threshold_editor(
+                        environmental_parameters,
+                        parse_result,
+                        subset_preflight,
+                        default_green=chemistry_threshold_green_max,
+                        default_orange=chemistry_threshold_yellow_max,
+                    )
                 if any(r.label_color for r in parse_result.environmental_readings):
                     st.caption(
                         "Rows with a **label_color** (green / red / black / orange) in the "
@@ -850,8 +872,149 @@ def render_configure_step(
         chemistry_color_mode=chemistry_color_mode,
         chemistry_threshold_green_max=chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
+        chemistry_thresholds=chemistry_thresholds,
         chemistry_label_style=chemistry_label_style,
     )
+
+
+# Session-state key prefix for the per-parameter threshold inputs. The key
+# carries the workbook hash and the parameter, so each parameter remembers
+# its limits for that workbook across reruns and parameter re-selection.
+CHEMISTRY_THRESHOLD_KEY_PREFIX = "chem_threshold"
+
+
+def chemistry_threshold_widget_key(parameter: str, limit: str, workbook_token: str = "") -> str:
+    """Session-state key of one per-parameter limit input (``limit`` is ``green`` / ``orange``)."""
+    return f"{CHEMISTRY_THRESHOLD_KEY_PREFIX}::{workbook_token}::{chemistry_parameter_key(parameter)}::{limit}"
+
+
+def _is_chloride_like(parameter: str) -> bool:
+    name = parameter.lower()
+    return "chlor" in name or name in {"cl", "cl-"}
+
+
+def seeded_parameter_thresholds(
+    parameter: str,
+    workbook_thresholds: ChemistryThresholdMap,
+    *,
+    default_green: float | None,
+    default_orange: float | None,
+) -> tuple[float, float]:
+    """Starting limits for a parameter's editor row.
+
+    Workbook ``green_max`` / ``orange_max`` win; chloride-like parameters
+    start on the 100 / 250 mg/kg bands the client figures use; anything else
+    starts on the sheet-wide pair (then the Configure defaults).
+    """
+    key = chemistry_parameter_key(parameter)
+    own = next(
+        (pair for name, pair in workbook_thresholds.items() if chemistry_parameter_key(name) == key),
+        (None, None),
+    )
+    if _is_chloride_like(parameter):
+        fallback_green = DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX
+        fallback_orange = DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX
+    else:
+        fallback_green = (
+            float(default_green) if default_green is not None else DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX
+        )
+        fallback_orange = (
+            float(default_orange)
+            if default_orange is not None
+            else DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX
+        )
+    green = float(own[0]) if own[0] is not None else fallback_green
+    orange = float(own[1]) if own[1] is not None else max(green, fallback_orange)
+    return green, orange
+
+
+def _parameter_units(readings, parameters: Sequence[str]) -> dict[str, str]:
+    units: dict[str, set[str]] = {chemistry_parameter_key(p): set() for p in parameters}
+    for reading in readings:
+        key = chemistry_parameter_key(reading.parameter)
+        unit = (reading.unit or "").strip()
+        if key in units and unit:
+            units[key].add(unit)
+    return {
+        parameter: " / ".join(sorted(units[chemistry_parameter_key(parameter)]))
+        for parameter in parameters
+    }
+
+
+def _render_parameter_threshold_editor(
+    parameters: Sequence[str],
+    parse_result: ParseResult,
+    subset_preflight: ParseResult,
+    *,
+    default_green: float | None,
+    default_orange: float | None,
+) -> ChemistryThresholdMap:
+    """Compact Green ≤ / Orange ≤ editor for the selected parameters only.
+
+    Each parameter is banded by its own limits in its own units (chloride
+    mg/kg and benzene mg/kg cannot share one pair). Rows are seeded from the
+    workbook's ``green_max`` / ``orange_max`` columns, else from the
+    chloride defaults or the sheet-wide pair, and remembered per workbook
+    and parameter in session state.
+    """
+    if not parameters:
+        return {}
+    workbook_thresholds = chemistry_thresholds_from_readings(parse_result.environmental_readings)
+    units = _parameter_units(subset_preflight.environmental_readings, parameters)
+    token = str(st.session_state.get("file_hash") or "")
+    result: ChemistryThresholdMap = {}
+    with st.expander("Per-parameter limits", expanded=True):
+        st.caption(
+            "Each parameter is coloured by its own limits (in its own units). "
+            "Rows start from the workbook's green_max / orange_max columns when given."
+        )
+        for parameter in parameters:
+            green_key = chemistry_threshold_widget_key(parameter, "green", token)
+            orange_key = chemistry_threshold_widget_key(parameter, "orange", token)
+            if green_key not in st.session_state or orange_key not in st.session_state:
+                seed_green, seed_orange = seeded_parameter_thresholds(
+                    parameter,
+                    workbook_thresholds,
+                    default_green=default_green,
+                    default_orange=default_orange,
+                )
+                st.session_state.setdefault(green_key, seed_green)
+                st.session_state.setdefault(orange_key, seed_orange)
+            unit = units.get(parameter, "")
+            name_col, green_col, orange_col = st.columns([2, 1, 1])
+            with name_col:
+                st.markdown(f"**{parameter}**" + (f"  \n{unit}" if unit else ""))
+            unit_text = f" ({unit})" if unit else ""
+            with green_col:
+                green = float(
+                    st.number_input(
+                        f"Green ≤ — {parameter}",
+                        min_value=0.0,
+                        step=1.0,
+                        key=green_key,
+                        label_visibility="collapsed",
+                        help=f"{parameter}: values up to this limit print green{unit_text}.",
+                    )
+                )
+            with orange_col:
+                orange = float(
+                    st.number_input(
+                        f"Orange ≤ — {parameter}",
+                        min_value=0.0,
+                        step=1.0,
+                        key=orange_key,
+                        label_visibility="collapsed",
+                        help=(
+                            f"{parameter}: values above Green and up to this limit print "
+                            f"orange; higher prints red{unit_text}."
+                        ),
+                    )
+                )
+            if orange < green:
+                st.warning(f"{parameter}: orange limit should be ≥ its green limit.")
+            result[parameter] = (green, orange)
+        st.caption("Columns: parameter · Green ≤ · Orange ≤ (red above orange).")
+    return result
 
 
 BATCH_OPEN_FLAG = "_batch_section_lines_open"

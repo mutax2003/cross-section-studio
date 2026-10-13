@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from export_framing import ExportFramingConfig
 from models import (
@@ -22,7 +22,14 @@ from models import (
     VerticalGradient,
     WaterLevel,
 )
-from render_profiles import ChemistryColorMode, ChemistryLabelStyle, ColumnHeaderDetail, LayoutMode
+from render_profiles import (
+    ChemistryColorMode,
+    ChemistryLabelStyle,
+    ChemistryThresholdMap,
+    ColumnHeaderDetail,
+    LayoutMode,
+    normalise_chemistry_thresholds,
+)
 
 ElevationMode = Literal["absolute", "relative"]
 
@@ -68,6 +75,10 @@ class SectionBuildRequest(BaseModel, frozen=True):
     chemistry_color_mode: ChemistryColorMode | None = None
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
+    # Per-parameter limits (parameter -> (green_max, orange_max), in that
+    # parameter's units); the pair above covers parameters not listed here.
+    # Cosmetic: colours labels only, so it stays out of the geometry cache key.
+    chemistry_thresholds: ChemistryThresholdMap = Field(default_factory=dict)
     chemistry_label_style: ChemistryLabelStyle | None = None
     render_layout: LayoutMode = "section_sheet"
     track_width_m: float = 3.0
@@ -88,11 +99,19 @@ class SectionBuildRequest(BaseModel, frozen=True):
     vertical_gradients: tuple[VerticalGradient, ...] = ()
     export_framing: ExportFramingConfig | None = None
 
+    @field_validator("chemistry_thresholds", mode="before")
+    @classmethod
+    def _clean_chemistry_thresholds(cls, value: object) -> dict:
+        # Accepts pairs, lists (JSON round trip) or {"green_max": .., "orange_max": ..}
+        # per parameter; blank entries are dropped and names trimmed.
+        return normalise_chemistry_thresholds(value)  # type: ignore[arg-type]
+
     def geometry_cache_payload(self) -> dict:
         """Fields that affect ``compute_section_geometry`` (projection + stratigraphy).
 
         Excludes render-only cosmetics (title, VE — auto or exact, it only scales the
-        plotted y values and the axes box — hatches, fonts, water style, etc.),
+        plotted y values and the axes box — hatches, fonts, water style, chemistry
+        colour mode and threshold limits, etc.),
         uncertainty_* thresholds (renderer banding only), and QA flags
         (``fail_on_overlaps``, ``warn_on_correlation_gaps``) — those are applied after
         cache hit and do not change polygons.

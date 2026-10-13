@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import get_args
 
@@ -42,6 +42,7 @@ from projection import DEFAULT_OFFSET_WARNING_M, project_boreholes, transect_azi
 from render_profiles import (
     ChemistryLabelStyle,
     LayoutMode,
+    normalise_chemistry_thresholds,
     profile_for_layout,
     profile_with_elevation_mode,
     resolved_chemistry_thresholds,
@@ -393,6 +394,7 @@ def build_cross_section(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
+    chemistry_thresholds: Mapping[str, tuple[float | None, float | None]] | None = None,
     chemistry_label_style: ChemistryLabelStyle | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
@@ -476,6 +478,7 @@ def build_cross_section(
         chemistry_color_mode=chemistry_color_mode,
         chemistry_threshold_green_max=chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
+        chemistry_thresholds=chemistry_thresholds,
         chemistry_label_style=chemistry_label_style,
         render_layout=render_layout,
         track_width_m=track_width_m,
@@ -532,6 +535,7 @@ def render_cross_section_from_geometry(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
+    chemistry_thresholds: Mapping[str, tuple[float | None, float | None]] | None = None,
     chemistry_label_style: ChemistryLabelStyle | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
@@ -618,6 +622,12 @@ def render_cross_section_from_geometry(
         ("chemistry_threshold_yellow_max", chemistry_threshold_yellow_max),
         ("chemistry_label_style", chemistry_label_style),
     )
+    if chemistry_thresholds:
+        # Per-parameter limits (parameter -> (green_max, orange_max)); the
+        # sheet-wide pair above fills any limit a parameter leaves blank.
+        profile_updates["chemistry_thresholds"] = normalise_chemistry_thresholds(
+            chemistry_thresholds
+        )
     if show_water_legend is False:
         # The sidebar "Show groundwater legend" switch was turned off: no
         # per-series water key either, even with several series.

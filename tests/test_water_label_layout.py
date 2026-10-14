@@ -264,17 +264,14 @@ def test_crowded_gwm_style_band_drops_gradients_first(site) -> None:
 
 
 def test_one_chemistry_label_style_per_figure(site) -> None:
-    """strip style: every hole gets a strip, or (one hole too tight) every
-    value gets a box — never a mix (synthetic chart, letter portrait, VE 20)."""
+    """strip style: every hole gets flush strips and no value a box, however
+    tight the holes (synthetic chart, letter portrait, VE 20)."""
     renderer, figure, _result = _render(site, layout="chart", page="letter_portrait", ve=20.0)
     try:
         values = [a for k, a, _c in renderer._water_labels if k == "chem" and a.get_visible()]
-        boxed = [getattr(a, "_chem_box_fallback", False) for a in values]
         strips = list(getattr(figure, "_chem_strips", ()))
-        assert values
-        assert all(boxed) or not any(boxed)
-        if all(boxed):
-            assert strips == []
+        assert values and strips
+        assert all(a.get_bbox_patch() is None for a in values)
     finally:
         plt.close(figure)
 

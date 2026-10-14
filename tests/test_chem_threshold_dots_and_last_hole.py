@@ -21,6 +21,7 @@ from render_theme import (
     parameter_series_color,
 )
 from renderer import CrossSectionRenderer
+from renderer_water import _CHEM_STRIP_PAD_PT
 from tests.conftest import run_pipeline
 from tests.test_chem_labels_right_of_column import _audit, _order_inversions
 
@@ -224,6 +225,65 @@ def test_strip_knocks_out_fills_beside_each_labelled_column(profile) -> None:
             continue
         covered = sum(_overlap_area(inside, s) for s in strip_boxes)
         assert covered >= 0.95 * inside.width * inside.height, ann.get_text()
+    # True to its name: every strip starts flush at its column's right edge
+    # (no gap, no pad on the column side) and ends at its values' right edge
+    # plus the pad -- never a detached box.
+    pad = mpl_renderer.points_to_pixels(_CHEM_STRIP_PAD_PT)
+    values = [
+        _chem_footprint(ann, mpl_renderer)
+        for kind, ann, _c in renderer._water_labels
+        if kind == "chem" and ann.get_visible()
+    ]
+    for box in strip_boxes:
+        own = max((c for c in columns if c.x1 <= box.x0 + 1.0), key=lambda c: c.x1)
+        assert abs(box.x0 - own.x1) <= 1.0
+        on_it = [v for v in values if v.x0 >= box.x0 - 1 and v.y0 >= box.y0 - 1 and v.y1 <= box.y1 + 1]
+        assert on_it and box.x1 <= max(v.x1 for v in on_it) + pad + 1.0
+
+
+@pytest.mark.parametrize("profile", [CONSULTING_SECTION_PROFILE, SECTION_SHEET_PROFILE])
+def test_box_style_draws_padded_boxes_detached_from_the_column(profile) -> None:
+    """"box" style: a padded white box around the text only, clear of the
+    column by the normal gap, and no strip."""
+    from matplotlib.patches import FancyBboxPatch
+
+    from renderer_water import _CHEM_COLUMN_GAP_PT, _figure_renderer
+
+    collars, lith = _section()
+    projected, polygons, _ = run_pipeline(collars, lith, [(0.0, 0.0), (100.0, 0.0)])
+    renderer = CrossSectionRenderer(
+        show_legend=False,
+        render_profile=profile.model_copy(
+            update={
+                "show_parameter_markers": True,
+                "show_parameter_labels": True,
+                "chemistry_label_style": "box",
+            }
+        ),
+        environmental_readings=_readings(12, 20.0),
+        environmental_parameters=("Chloride",),
+    )
+    figure = renderer.render(polygons, projected, collar_depths={h: 30.0 for h in _HOLES})
+    figure.draw_without_rendering()
+    mpl_renderer = _figure_renderer(figure)
+    assert _strips(figure) == []
+    columns = renderer._column_obstacle_boxes(figure)
+    gap = mpl_renderer.points_to_pixels(_CHEM_COLUMN_GAP_PT)
+    seen = 0
+    for kind, ann, _c in renderer._water_labels:
+        if kind != "chem" or not ann.get_visible():
+            continue
+        patch = ann.get_bbox_patch()
+        assert isinstance(patch, FancyBboxPatch)
+        assert patch.get_alpha() in (None, 1.0)
+        assert patch.get_boxstyle().pad > 0.0
+        box = patch.get_window_extent(mpl_renderer)
+        own = max((c for c in columns if c.x1 <= box.x0 + 1.0), key=lambda c: c.x1, default=None)
+        if own is None:
+            continue
+        assert box.x0 >= own.x1 + gap - 0.5, ann.get_text()
+        seen += 1
+    assert seen
 
 
 def test_water_numbers_use_two_fixed_decimals() -> None:

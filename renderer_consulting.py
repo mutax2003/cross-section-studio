@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import io
+import itertools
 import logging
 import math
 import re
@@ -147,6 +148,42 @@ def _contiguous_splits(n: int, ncols: int, *, max_rows: int | None = None):
                 yield [head, *tail]
 
     yield from rest(0, ncols)
+
+
+def _balanced_splits(n: int, ncols: int, *, keep_tail: int = 0, max_rows: int | None = None):
+    """In-order splits of rows ``0..n-1`` into ``ncols`` columns of (nearly) equal length.
+
+    Every column holds ``n // ncols`` or ``n // ncols + 1`` rows (counts differ
+    by at most one), so no column is left with a lone entry while the next
+    one runs long. Splits that keep the last ``keep_tail`` rows (the symbol
+    keys that follow the lithology units) together in one column are the only
+    ones offered when any exists. ``max_rows`` yields nothing when the longest
+    column would exceed it.
+    """
+    ncols = max(1, min(ncols, n))
+    base, extra = divmod(n, ncols)
+    if max_rows is not None and base + (1 if extra else 0) > max_rows:
+        return
+    splits = []
+    for tall in itertools.combinations(range(ncols), extra):
+        sizes = [base + (1 if column in tall else 0) for column in range(ncols)]
+        columns, start = [], 0
+        for size in sizes:
+            columns.append(list(range(start, start + size)))
+            start += size
+        splits.append(columns)
+    together = [split for split in splits if len(split[-1]) >= keep_tail]
+    yield from together or splits
+
+
+def _largest_polygon(geometry) -> ShapelyPolygon | None:
+    """The polygon of a shapely geometry (the largest piece of a collection)."""
+    if geometry is None or geometry.is_empty:
+        return None
+    if isinstance(geometry, ShapelyPolygon):
+        return geometry
+    pieces = [g for g in getattr(geometry, "geoms", ()) if isinstance(g, ShapelyPolygon)]
+    return max(pieces, key=lambda g: g.area) if pieces else None
 
 
 def _water_fill(need: Sequence[float], total: float) -> list[float]:
@@ -1131,8 +1168,11 @@ class ConsultingLayoutMixin:
         generic consulting default) stratigraphy builds no polygon for a unit
         logged in a single hole, which then appeared in the legend but nowhere
         on the section. Return those intervals (drawn in the column) and a
-        short inferred pinch-out lens either side of the hole, toward each
-        neighbouring hole.
+        short inferred pinch-out lens toward each neighbouring hole: never
+        past the first / last column (an end hole gets one lens, inward),
+        never beyond the mid-point to the neighbour, and clipped to the fence
+        envelope (under the ground line between the collars, above the hole
+        bottoms) so a lens never spills outside the drawn section.
         """
         empty = projected_df.iloc[0:0]
         if (
@@ -1175,6 +1215,7 @@ class ConsultingLayoutMixin:
             else pd.Series(dtype=float)
         )
         xs_sorted = np.sort(hole_x.to_numpy(dtype=float))
+        envelope = self._fence_envelope(hole_summary)
         lenses: list[GeologicalPolygon] = []
         for _, row in orphans.iterrows():
             hole_id = str(row["hole_id"])
@@ -1197,16 +1238,43 @@ class ConsultingLayoutMixin:
                 # pinch-out would close), but always clear of the column.
                 reach = min(0.5 * abs(spacing), max(0.25 * abs(spacing), 3.0 * track_half))
                 apex_x = x + np.sign(spacing) * reach
+                lens = ShapelyPolygon([(x, top), (x, bottom), (apex_x, mid)])
+                if envelope is not None:
+                    lens = _largest_polygon(lens.intersection(envelope))
+                    if lens is None or lens.is_empty or lens.area <= 1e-9:
+                        continue
                 lenses.append(
                     GeologicalPolygon(
                         lithology_code=str(row["lithology_code"]),
-                        polygon=ShapelyPolygon([(x, top), (x, bottom), (apex_x, mid)]),
+                        polygon=lens,
                         # Both ends on this hole: depth-axis plots keep its collar RL.
                         hole_pair=(hole_id, hole_id),
                         is_pinch_out=True,
                     )
                 )
         return orphans, lenses
+
+    @staticmethod
+    def _fence_envelope(hole_summary: pd.DataFrame) -> ShapelyPolygon | None:
+        """The region the fence can occupy: between the end columns, under the
+        collar-to-collar ground line and above the hole bottoms."""
+        needed = {"x_profile", "collar_elevation", "bottom_elevation"}
+        if hole_summary.empty or not needed.issubset(hole_summary.columns):
+            return None
+        rows = hole_summary.sort_values("x_profile")
+        xs = rows["x_profile"].to_numpy(dtype=float)
+        tops = rows["collar_elevation"].to_numpy(dtype=float)
+        bottoms = rows["bottom_elevation"].to_numpy(dtype=float)
+        keep = np.isfinite(xs) & np.isfinite(tops) & np.isfinite(bottoms)
+        xs, tops, bottoms = xs[keep], tops[keep], bottoms[keep]
+        if xs.size < 2 or xs[-1] - xs[0] <= 1e-9:
+            return None
+        ring = [(float(x), float(t)) for x, t in zip(xs, tops, strict=True)]
+        ring += [(float(x), float(b)) for x, b in zip(xs[::-1], bottoms[::-1], strict=True)]
+        envelope = ShapelyPolygon(ring)
+        if not envelope.is_valid:
+            envelope = envelope.buffer(0)
+        return envelope if not envelope.is_empty else None
 
     def _draw_well_columns(
         self,
@@ -2502,7 +2570,9 @@ class ConsultingLayoutMixin:
                 return True
             return kind == "text" and not (style.get("parameter_entry") or {}).get("sample_text")
 
-        def attempt(items, size: float, ncols: int, *, force: bool = False):
+        def attempt(
+            items, size: float, ncols: int, *, n_codes: int, force: bool = False, balanced: bool = True
+        ):
             line_h = size * _LEGEND_LINESPACING * 1.17 / 72.0
             swatch_h = max(MIN_LEGEND_SWATCH_HEIGHT_IN, min(0.13, line_h * 0.9))
             samples = [text_w(str(style["sample"]), size * 0.9, "bold") for kind, _l, style in items if kind == "status_text"]
@@ -2540,10 +2610,13 @@ class ConsultingLayoutMixin:
                     lines = [_ellipsize(items[i][1], width_in, lambda s: text_w(s, size))]
                 return lines
 
-            # Columns sized to their content: every in-order split into
-            # ``ncols`` columns is tried; each column gets its longest label's
-            # width (labels wrap only where the panel is short of room) and
-            # the split with the shortest tallest column wins.
+            # Columns sized to their content: every balanced in-order split
+            # into ``ncols`` columns (row counts within one of each other, the
+            # symbol keys kept together) is tried; each column gets its
+            # longest label's width (labels wrap only where the panel is
+            # short of room) and the split with the shortest tallest column
+            # wins. Unbalanced splits (a lone "CLAY" beside eight rows) are a
+            # last resort before any unit is hidden from the key.
             wrap_cache: dict[tuple[int, float], list[str] | None] = {}
 
             def lines_for(i: int, label_w: float) -> list[str] | None:
@@ -2559,7 +2632,13 @@ class ConsultingLayoutMixin:
             if max_rows < 1:
                 return None
             best = None
-            for columns in _contiguous_splits(len(items), ncols, max_rows=max_rows):
+            if balanced:
+                splits = _balanced_splits(
+                    len(items), ncols, keep_tail=len(items) - n_codes, max_rows=max_rows
+                )
+            else:
+                splits = _contiguous_splits(len(items), ncols, max_rows=max_rows)
+            for columns in splits:
                 need = [max(max(natural[i] for i in col), 0.0) for col in columns]
                 col_label_w = _water_fill(need, label_budget(len(columns)))
                 all_lines = []
@@ -2604,17 +2683,22 @@ class ConsultingLayoutMixin:
         col_options = sorted((1, 2, 3), key=lambda c: (c < prefer_cols, c))
         for size in sizes:
             for ncols in col_options:
-                fitted = attempt(entries, size, ncols)
+                fitted = attempt(entries, size, ncols, n_codes=n_code_entries)
                 if fitted is not None:
                     return fitted
         # A slightly smaller size before any unit is hidden from the key.
         squeeze_pt = min(_LEGEND_SQUEEZE_PT, floor_pt)
         if squeeze_pt < floor_pt - 1e-9:
             for ncols in col_options:
-                fitted = attempt(entries, squeeze_pt, ncols)
+                fitted = attempt(entries, squeeze_pt, ncols, n_codes=n_code_entries)
                 if fitted is not None:
                     return fitted
             floor_pt = squeeze_pt
+        # Uneven columns before any unit is hidden from the key.
+        for ncols in col_options:
+            fitted = attempt(entries, floor_pt, ncols, n_codes=n_code_entries, balanced=False)
+            if fitted is not None:
+                return fitted
         # Too many units even in three columns at the floor size: roll up the
         # fewest lithology units; symbol keys are never dropped.
         codes, others = entries[:n_code_entries], entries[n_code_entries:]
@@ -2625,11 +2709,14 @@ class ConsultingLayoutMixin:
                 + [("more", f"+{hidden} MORE UNITS (SEE LOG)", {"color": LABEL_COLOR})]
                 + others
             )
-            for ncols in (1, 2, 3):
-                fitted = attempt(items, floor_pt, ncols)
-                if fitted is not None:
-                    fitted.hidden_units = hidden
-                    return fitted
+            for balanced in (True, False):
+                for ncols in (1, 2, 3):
+                    fitted = attempt(
+                        items, floor_pt, ncols, n_codes=len(codes) - hidden, balanced=balanced
+                    )
+                    if fitted is not None:
+                        fitted.hidden_units = hidden
+                        return fitted
             return None
 
         # Fewest hidden units that fit (more hidden -> fewer rows: monotone).
@@ -2646,7 +2733,9 @@ class ConsultingLayoutMixin:
         # Last resort (a tiny panel): every symbol key at the hard minimum,
         # labels cut with "…" rather than lost.
         more = [("more", f"+{len(codes)} MORE UNITS (SEE LOG)", {"color": LABEL_COLOR})] if codes else []
-        fitted = attempt(more + others, min(_LEGEND_HARD_MIN_PT, floor_pt), 2, force=True)
+        fitted = attempt(
+            more + others, min(_LEGEND_HARD_MIN_PT, floor_pt), 2, n_codes=0, force=True, balanced=False
+        )
         fitted.hidden_units = len(codes)
         return fitted
 

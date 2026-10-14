@@ -24,13 +24,17 @@ def _metadata_text(value: object) -> str:
         lines = []
         for key, item in value.items():
             if isinstance(item, Mapping):
-                parts = ", ".join(f"{k} {v}" for k, v in item.items() if v is not None)
+                parts = ", ".join(
+                    f"{k} {_metadata_text(v)}" for k, v in item.items() if v is not None
+                )
                 lines.append(f"{key}: {parts}")
             else:
-                lines.append(f"{key}: {item}")
+                lines.append(f"{key}: {_metadata_text(item)}")
         return "\n".join(lines)
     if isinstance(value, (list, tuple)):
         return "; ".join(_metadata_text(item) for item in value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))  # limits read as typed: 100, not 100.0
     return str(value)
 
 

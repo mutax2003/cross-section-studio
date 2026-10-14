@@ -297,7 +297,7 @@ def skipped_row_hole_ids(errors: Sequence[str]) -> dict[str, set[str]]:
     return holes
 
 
-_COLUMN_SPELLINGS = {"label_colour": "label_color"}
+_COLUMN_SPELLINGS = {"label_colour": "label_color", "yellow_max": "orange_max"}
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:

@@ -14,7 +14,7 @@ from matplotlib.patheffects import withStroke
 from matplotlib.transforms import Bbox, offset_copy
 
 from models import EnvironmentalReading
-from render_profiles import resolved_chemistry_thresholds
+from render_profiles import resolved_chemistry_thresholds_for
 from render_theme import (
     CHEMISTRY_FIXED_COLORS,
     CHEMISTRY_LABEL_BLACK,
@@ -83,6 +83,24 @@ def _threshold_key_text(green_max: float, yellow_max: float, unit: str | None = 
     text = " \u00b7 ".join(f"{name} {span}" for name, _hex, span in bands)
     unit = (unit or "").strip()
     return f"{text} {unit}" if unit else text
+
+
+def _threshold_key_lines(
+    entries: Sequence[tuple[str, str, float, float]],
+) -> tuple[str, ...]:
+    """One key line per plotted parameter: ``(parameter, unit, green, orange)``.
+
+    A single parameter keeps the bare band text (``green <= 100 . ...``); with
+    several parameters each line is prefixed by its parameter name, since
+    every parameter carries its own limits in its own units.
+    """
+    if len(entries) == 1:
+        _parameter, unit, green_max, yellow_max = entries[0]
+        return (_threshold_key_text(green_max, yellow_max, unit),)
+    return tuple(
+        f"{parameter}: {_threshold_key_text(green_max, yellow_max, unit)}"
+        for parameter, unit, green_max, yellow_max in entries
+    )
 
 
 def _below_x_axis_anchor(ax):
@@ -305,17 +323,14 @@ class RendererChemistryMixin:
             _PARAMETER_LABEL_FONTSIZE_CONSULTING if consulting else _PARAMETER_LABEL_FONTSIZE
         )
         self.parameter_series_legend = []
-        # Units of readings whose label colour came from the threshold bands
-        # (not a workbook colour); drives the on-figure threshold key.
-        threshold_units: set[str] = set()
-        # Missing limits fall back to the Configure defaults (the pipeline
-        # fills them too), so labels, dots and the key always agree.
+        # Per parameter: the units of readings whose label colour came from
+        # the threshold bands (not a workbook colour) and the limits used;
+        # drives the on-figure threshold key, one line per parameter.
+        threshold_key_units: dict[str, set[str]] = {}
+        threshold_key_limits: dict[str, tuple[float, float]] = {}
         threshold_active = bool(label_values) and self.profile.chemistry_color_mode == "threshold"
-        green_max, yellow_max = resolved_chemistry_thresholds(
-            self.profile.chemistry_threshold_green_max,
-            self.profile.chemistry_threshold_yellow_max,
-        )
         self.chemistry_threshold_key_text = None
+        self.chemistry_threshold_key_lines = ()
         self._chemistry_threshold_key = None
         # Fixed label colour (P2 red or black) earns a sample value in the
         # consulting legend, as on the client P2 figures; threshold mode has
@@ -330,6 +345,16 @@ class RendererChemistryMixin:
                 color = series_colors[parameter]
             else:
                 color = CHEMISTRY_LABEL_BLACK
+            # Each parameter is banded by its own limits (in its own units);
+            # a parameter without an entry uses the sheet-wide pair, and any
+            # limit still missing the Configure defaults (the pipeline fills
+            # those too), so labels, dots and the key always agree.
+            green_max, yellow_max = resolved_chemistry_thresholds_for(
+                parameter,
+                self.profile.chemistry_thresholds,
+                self.profile.chemistry_threshold_green_max,
+                self.profile.chemistry_threshold_yellow_max,
+            )
             readings_by_hole: dict[str, list[EnvironmentalReading]] = {}
             for reading in readings:
                 readings_by_hole.setdefault(reading.hole_id, []).append(reading)
@@ -425,7 +450,10 @@ class RendererChemistryMixin:
                         marker_labels.append((x_profile, y, label_text, label_color))
                         label_holes.append(hole_id)
                         if threshold_active and reading.label_color not in CHEMISTRY_FIXED_COLORS:
-                            threshold_units.add((reading.unit or "").strip())
+                            threshold_key_units.setdefault(parameter, set()).add(
+                                (reading.unit or "").strip()
+                            )
+                            threshold_key_limits[parameter] = (green_max, yellow_max)
 
             if draw_markers:
                 if not marker_xs:
@@ -613,40 +641,55 @@ class RendererChemistryMixin:
                     for _name, hex_color, _span in _shown_threshold_bands(green_max, yellow_max)
                 )
             self.parameter_series_legend.append(legend_entry)
-        if threshold_units:
-            self._draw_chemistry_threshold_key(ax, threshold_units, font_size, green_max, yellow_max)
+        if threshold_key_limits:
+            entries = []
+            for parameter in sorted(threshold_key_limits):
+                named_units = sorted(unit for unit in threshold_key_units[parameter] if unit)
+                unit = named_units[0] if len(named_units) == 1 else ""
+                green_limit, yellow_limit = threshold_key_limits[parameter]
+                entries.append((parameter, unit, green_limit, yellow_limit))
+            self._draw_chemistry_threshold_key(ax, entries, font_size)
 
     def _draw_chemistry_threshold_key(
-        self, ax, units: set[str], font_size: float, green_max: float, yellow_max: float
+        self, ax, entries: Sequence[tuple[str, str, float, float]], font_size: float
     ) -> None:
         """State the threshold bands in words on the figure (threshold mode only).
 
         Colour alone must not carry the band (WCAG 1.4.1): each band is named
         and given its range, e.g. ``green ≤ 100 · orange 100–300 · red > 300 mg/L``,
-        with the name drawn in the band colour as a secondary cue.
+        with the name drawn in the band colour as a secondary cue. One row per
+        plotted parameter (``(parameter, unit, green_max, orange_max)``): each
+        parameter has its own limits in its own units, so a shared row would
+        mis-state one of them.
         """
-        named_units = sorted(unit for unit in units if unit)
-        unit = named_units[0] if len(named_units) == 1 else ""
-        self.chemistry_threshold_key_text = _threshold_key_text(green_max, yellow_max, unit)
+        self.chemistry_threshold_key_lines = _threshold_key_lines(entries)
+        self.chemistry_threshold_key_text = "\n".join(self.chemistry_threshold_key_lines)
         text_props = {"fontsize": font_size, "color": LABEL_COLOR}
-        parts: list[TextArea] = [TextArea("Label colour:", textprops=text_props)]
-        bands = _shown_threshold_bands(green_max, yellow_max)
-        for index, (name, hex_color, span) in enumerate(bands):
-            parts.append(
-                TextArea(name, textprops={**text_props, "color": hex_color, "fontweight": "bold"})
-            )
-            suffix = span if index == len(bands) - 1 else f"{span} \u00b7"
-            parts.append(TextArea(suffix, textprops=text_props))
-        if unit:
-            parts.append(TextArea(unit, textprops=text_props))
+        rows: list[HPacker] = []
+        for index, (parameter, unit, green_max, yellow_max) in enumerate(entries):
+            parts: list[TextArea] = []
+            if index == 0:
+                parts.append(TextArea("Label colour:", textprops=text_props))
+            if len(entries) > 1:
+                parts.append(TextArea(f"{parameter}:", textprops=text_props))
+            bands = _shown_threshold_bands(green_max, yellow_max)
+            for band_index, (name, hex_color, span) in enumerate(bands):
+                parts.append(
+                    TextArea(name, textprops={**text_props, "color": hex_color, "fontweight": "bold"})
+                )
+                suffix = span if band_index == len(bands) - 1 else f"{span} \u00b7"
+                parts.append(TextArea(suffix, textprops=text_props))
+            if unit:
+                parts.append(TextArea(unit, textprops=text_props))
+            rows.append(HPacker(children=parts, align="baseline", pad=0, sep=3))
         # Off the plot, in the white space under the x-axis label: anchored to
         # the axis' drawn extent at draw time, so it follows the axis through
         # export page resizes and margin refits without a re-layout pass.
-        # A column: the key row, plus (after the label pass) a footnote when
+        # A column: the key rows, plus (after the label pass) a footnote when
         # values had to be left off. Every layout that makes room for the
-        # key measures the whole artist, so the footnote gets room too.
+        # key measures the whole artist, so extra rows get room too.
         stack = VPacker(
-            children=[HPacker(children=parts, align="baseline", pad=0, sep=3)],
+            children=rows,
             align="center",
             pad=0,
             sep=2,

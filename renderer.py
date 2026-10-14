@@ -1859,7 +1859,11 @@ class CrossSectionRenderer(
         kwargs["metadata"] = _export_file_metadata(fmt)
         if fmt == "png":
             kwargs["dpi"] = self._capped_png_dpi(fig, dpi if dpi is not None else self._export_dpi())
-        fig.savefig(buffer, **kwargs)
+        # SVG text: outlines by default (identical on every machine); editable
+        # <text> on request so labels can be nudged in Illustrator / Inkscape.
+        editable = fmt == "svg" and bool(getattr(self.export_framing, "svg_editable_text", False))
+        with mpl.rc_context({"svg.fonttype": "none" if editable else "path"}):
+            fig.savefig(buffer, **kwargs)
         buffer.seek(0)
         payload = buffer.getvalue()
         # TODO(cad-svg-layers): tag water artists with gid="water" in renderer_water.py

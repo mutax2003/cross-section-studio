@@ -412,6 +412,7 @@ def build_export_framing_from_mapping(values: dict[str, object]) -> "ExportFrami
         viewport_ymin=_optional_float(values.get("export_viewport_ymin")),
         viewport_ymax=_optional_float(values.get("export_viewport_ymax")),
         cad_svg_layers=bool(values.get("export_cad_svg_layers", False)),
+        svg_editable_text=bool(values.get("export_svg_editable_text", False)),
     )
 
 

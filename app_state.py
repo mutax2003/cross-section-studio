@@ -147,6 +147,7 @@ DEFAULT_SESSION: dict[str, object] = {
     "export_viewport_ymin": None,
     "export_viewport_ymax": None,
     "export_cad_svg_layers": False,
+    "export_svg_editable_text": False,
     "export_output_dir": "",
     "batch_transect_specs": "",
     "_batch_specs_seeded_from_sections": False,

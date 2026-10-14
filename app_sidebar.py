@@ -148,6 +148,7 @@ _EXPORT_WIDGET_KEYS: tuple[str, ...] = (
     "export_fence_only",
     "export_show_draft_watermark",
     "export_cad_svg_layers",
+    "export_svg_editable_text",
     "export_include_title_block",
     "export_include_legend",
     "export_include_water_table",
@@ -427,6 +428,15 @@ def _render_export_layout_advanced() -> None:
         "Layered SVG for CAD",
         key="export_cad_svg_layers",
         help="Groups the SVG into named layers (geology, water, labels) for CAD editing.",
+    )
+    st.toggle(
+        "Editable text in SVG",
+        key="export_svg_editable_text",
+        help=(
+            "Keeps labels as real text in the SVG so they can be moved in Illustrator or "
+            "Inkscape. Needs the DejaVu Sans font on that computer (a substitute is used "
+            "otherwise). Off: text is drawn as outlines and looks the same everywhere."
+        ),
     )
 
 

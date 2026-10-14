@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -881,6 +882,10 @@ def render_configure_step(
 # carries the workbook hash and the parameter, so each parameter remembers
 # its limits for that workbook across reruns and parameter re-selection.
 CHEMISTRY_THRESHOLD_KEY_PREFIX = "chem_threshold"
+# Streamlit forgets a keyed widget's value on any run that does not draw it
+# (a parameter deselected, or the colour mode switched away), so the limits
+# are also kept here (widget key -> value) and restored when the row returns.
+CHEMISTRY_THRESHOLD_MEMORY_KEY = "_chem_threshold_memory"
 
 
 def chemistry_threshold_widget_key(parameter: str, limit: str, workbook_token: str = "") -> str:
@@ -888,9 +893,27 @@ def chemistry_threshold_widget_key(parameter: str, limit: str, workbook_token: s
     return f"{CHEMISTRY_THRESHOLD_KEY_PREFIX}::{workbook_token}::{chemistry_parameter_key(parameter)}::{limit}"
 
 
+_CHLORIDE_NAME = re.compile(r"^(chloride|cl-?)\b")
+
+
 def _is_chloride_like(parameter: str) -> bool:
-    name = parameter.lower()
-    return "chlor" in name or name in {"cl", "cl-"}
+    """``Chloride``, ``Cl``, ``Cl-`` or ``Chloride (Cl)``: the parameter the
+    client P2 100 / 250 mg/kg bands belong to. Chlorinated solvents (vinyl
+    chloride, trichloroethene, ...) are not chloride and keep the sheet-wide pair."""
+    return bool(_CHLORIDE_NAME.match(parameter.strip().lower()))
+
+
+def _limit_step(*limits: float) -> float:
+    """Spinner step for a parameter's limit inputs, scaled to its magnitude
+    (chloride at 100 / 250 steps by 1; benzene at 0.5 / 5 by 0.1; 0.005 by 0.001)."""
+    largest = max((float(limit) for limit in limits if limit is not None), default=0.0)
+    if largest >= 10.0:
+        return 1.0
+    if largest >= 1.0:
+        return 0.1
+    if largest >= 0.1:
+        return 0.01
+    return 0.001
 
 
 def seeded_parameter_thresholds(
@@ -962,6 +985,7 @@ def _render_parameter_threshold_editor(
     workbook_thresholds = chemistry_thresholds_from_readings(parse_result.environmental_readings)
     units = _parameter_units(subset_preflight.environmental_readings, parameters)
     token = str(st.session_state.get("file_hash") or "")
+    memory = st.session_state.setdefault(CHEMISTRY_THRESHOLD_MEMORY_KEY, {})
     result: ChemistryThresholdMap = {}
     with st.expander("Per-parameter limits", expanded=True):
         st.caption(
@@ -978,8 +1002,15 @@ def _render_parameter_threshold_editor(
                     default_green=default_green,
                     default_orange=default_orange,
                 )
-                st.session_state.setdefault(green_key, seed_green)
-                st.session_state.setdefault(orange_key, seed_orange)
+                # An edited value outlives the row being hidden; the seed
+                # applies only the first time the row appears for a workbook.
+                st.session_state.setdefault(green_key, memory.get(green_key, seed_green))
+                st.session_state.setdefault(orange_key, memory.get(orange_key, seed_orange))
+            # Spinner step and display precision follow the limits' size, so
+            # benzene 0.5 / 5 shows as typed rather than rounded to 2 dp.
+            step = _limit_step(
+                st.session_state.get(green_key), st.session_state.get(orange_key)
+            )
             unit = units.get(parameter, "")
             name_col, green_col, orange_col = st.columns([2, 1, 1])
             with name_col:
@@ -990,7 +1021,8 @@ def _render_parameter_threshold_editor(
                     st.number_input(
                         f"Green ≤ — {parameter}",
                         min_value=0.0,
-                        step=1.0,
+                        step=step,
+                        format="%g",
                         key=green_key,
                         label_visibility="collapsed",
                         help=f"{parameter}: values up to this limit print green{unit_text}.",
@@ -1001,7 +1033,8 @@ def _render_parameter_threshold_editor(
                     st.number_input(
                         f"Orange ≤ — {parameter}",
                         min_value=0.0,
-                        step=1.0,
+                        step=step,
+                        format="%g",
                         key=orange_key,
                         label_visibility="collapsed",
                         help=(
@@ -1012,6 +1045,7 @@ def _render_parameter_threshold_editor(
                 )
             if orange < green:
                 st.warning(f"{parameter}: orange limit should be ≥ its green limit.")
+            memory[green_key], memory[orange_key] = green, orange
             result[parameter] = (green, orange)
         st.caption("Columns: parameter · Green ≤ · Orange ≤ (red above orange).")
     return result

@@ -77,7 +77,7 @@ After `_polygons_for_pair()` builds polygons for one adjacent hole pair, **`_res
 2. Walk in order; skip probes that do not intersect occupied area (`shapely.prepared.prep` when available for faster `intersects` / `touches`)
 3. Subtract already-occupied area from each polygon via Shapely `difference`
 4. Keep a fragment: for pinch-outs, the piece still touching its source-hole edge (`_pinch_anchor_edge`, `_anchored_fragment`) so wedges never float mid-section; otherwise the largest (`_largest_polygon`); drop empty fragments
-5. Clip against both the batch-unioned occupied area and the polygons still pending in the current batch; batch-union every `batch_limit` (4) polygons (or at end) and refresh the prepared geometry
+5. Every overlay runs on operands snapped to a fixed precision grid (`CLIP_PRECISION_GRID_M` = 1e-9 m, GEOS snap rounding) so forward and reversed transects clip identically; `detect_polygon_overlaps` ignores grid slivers thinner than `OVERLAP_SLIVER_WIDTH_M`. Clip against both the batch-unioned occupied area and the polygons still pending in the current batch; batch-union every `batch_limit` (4) polygons (or at end) and refresh the prepared geometry
 
 Called inside `build_stratigraphy()` for every adjacent pair **before** polygons are returned to the pipeline. This reduces false overlap markers on section-sheet figures; residual overlaps may still be detected and surfaced.
 

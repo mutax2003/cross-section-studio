@@ -18,10 +18,10 @@ import asyncio
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 PROMPTS_DIR = Path(__file__).resolve().parent / "agent_prompts"
@@ -100,7 +100,7 @@ def run_verify_with_log() -> tuple[int, str]:
 
 def build_run_report_markdown(report: RunReport) -> str:
     """Assemble a consolidated markdown report from phase records."""
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     modules_text = _format_modules(report.modules)
     lines = [
         "# Cross Section Studio — Orchestration Run Report",
@@ -222,6 +222,14 @@ def module_boundary_warnings(modules: Sequence[str]) -> list[str]:
         "section_build_request.py",
         "transect_planner.py",
         "ai_quality.py",
+        "renderer_water.py",
+        "renderer_chemistry.py",
+        "hatch_patterns.py",
+        "lithology_legend_sheet.py",
+        "export_framing.py",
+        "batch_export.py",
+        "docx_export.py",
+        "hydro_metrics.py",
     }
     svg_first_triad = {"app_services.py", "pipeline.py", "section_build_request.py"}
     has_ui = any(_is_ui_module(name) for name in basenames)

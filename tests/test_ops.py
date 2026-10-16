@@ -326,3 +326,25 @@ def test_auth_lockout_survives_a_fresh_browser_session(monkeypatch) -> None:
     finally:
         store["failures"].clear()
         store["lock_until"].clear()
+
+
+def test_logout_wipes_every_parse_and_section_key() -> None:
+    """Sign out on a shared-password kiosk must drop the workbook, the
+    Configure preflight JSON and every prepared deliverable."""
+    from app_state import SESSION_PARSE_KEYS, SESSION_SECTION_KEYS
+    from ops_auth import _clear_sensitive_session_on_logout
+
+    keys = (
+        *SESSION_PARSE_KEYS,
+        *SESSION_SECTION_KEYS,
+        "report_package_bytes",
+        "figure_docx_bytes",
+        "batch_package_bytes",
+        "_preflight_subset_json",
+        "section_build_request_json",
+    )
+    session = {key: f"value-{key}" for key in keys}
+    session["unrelated"] = "kept"
+    _clear_sensitive_session_on_logout(session)
+    assert all(session[key] is None for key in keys), [k for k in keys if session[k] is not None]
+    assert session["unrelated"] == "kept"

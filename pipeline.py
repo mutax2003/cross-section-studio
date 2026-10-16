@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import get_args
@@ -59,6 +60,12 @@ from stratigraphy import (
 )
 
 logger = logging.getLogger(__name__)
+
+# pyplot keeps process-wide figure state (figure manager, current figure):
+# two Streamlit sessions rendering at once replaced each other's canvas with
+# a bare FigureCanvasBase ("no attribute get_renderer"). Every render → export
+# → close (and the later export of a retained figure) runs under this lock.
+_RENDER_LOCK = threading.RLock()
 
 CROSSING_CORRELATION_PREFIX = "Crossing correlation"
 FENCE_NOTE_PREFIXES = (CROSSING_CORRELATION_PREFIX, "Fence clipped")
@@ -733,71 +740,76 @@ def render_cross_section_from_geometry(
         render_profile=render_profile,
         raster_log_strips=raster_log_strips,
         consulting_title_block=effective_consulting_block,
-        screen_intervals=screen_intervals or (),
+        screen_intervals=(
+            ()
+            if export_framing is not None and not export_framing.include_screens
+            else (screen_intervals or ())
+        ),
         vertical_gradients=vertical_gradients or (),
         stick_up_by_hole=stick_up_by_hole,
         export_framing=export_framing,
     )
-    figure = renderer.render(
-        polygons,
-        projected,
-        collar_depths=collar_depths,
-        water_levels=plotted_water,
-        lithology_codes=lithology_codes,
-    )
-    # Chemistry values the label placement could not fit beside their hole are
-    # dropped (markers stay) and a set map scale may not fit the page; both are
-    # only final after export framing, so the export appends them to the PDF
-    # QA lines and they are read back below for the app warnings.
-    include_render_notes = not (export_framing is not None and not export_framing.include_qa_footer)
-    try:
-        svg_bytes, png_bytes, pdf_bytes = renderer.export_figure_bytes(
-            figure,
-            export_formats,
-            polygons=polygons,
-            projected_df=projected,
+    with _RENDER_LOCK:
+        figure = renderer.render(
+            polygons,
+            projected,
             collar_depths=collar_depths,
-            water_levels=water_levels,
+            water_levels=plotted_water,
             lithology_codes=lithology_codes,
-            qa_lines=qa_lines,
-            append_render_notes=include_render_notes,
         )
-    except Exception:
-        from matplotlib import pyplot as plt
+        # Chemistry values the label placement could not fit beside their hole are
+        # dropped (markers stay) and a set map scale may not fit the page; both are
+        # only final after export framing, so the export appends them to the PDF
+        # QA lines and they are read back below for the app warnings.
+        include_render_notes = not (export_framing is not None and not export_framing.include_qa_footer)
+        try:
+            svg_bytes, png_bytes, pdf_bytes = renderer.export_figure_bytes(
+                figure,
+                export_formats,
+                polygons=polygons,
+                projected_df=projected,
+                collar_depths=collar_depths,
+                water_levels=water_levels,
+                lithology_codes=lithology_codes,
+                qa_lines=qa_lines,
+                append_render_notes=include_render_notes,
+            )
+        except Exception:
+            from matplotlib import pyplot as plt
 
-        plt.close(figure)
-        raise
-    # Export re-places labels for the page size: report the final drops.
-    overlap_warnings = tuple(overlap_warnings) + tuple(
-        getattr(renderer, "chemistry_label_notes", None) or ()
-    )
-    # Read after export framing: whether the map scale fits depends on the page.
-    qa_notes = tuple(renderer.map_scale_notes(figure)) + tuple(
-        getattr(renderer, "raster_notes", None) or ()
-    )
-    # Hole-ID headers that still overprint after every header fallback.
-    qa_notes = qa_notes + tuple(renderer.header_overlap_notes(figure))
-    # PNG resolution lowered to stay within the raster size cap.
-    qa_notes = qa_notes + tuple(getattr(renderer, "raster_notes", None) or ())
-    # Surface them with the other section notes the app shows after Generate.
-    overlap_warnings = tuple(overlap_warnings) + qa_notes
-    retained: dict[str, object] | None = None
-    if close_figure:
-        from matplotlib import pyplot as plt
+            plt.close(figure)
+            raise
+        # Export re-places labels for the page size: report the final drops.
+        overlap_warnings = tuple(overlap_warnings) + tuple(
+            getattr(renderer, "chemistry_label_notes", None) or ()
+        )
+        # Read after export framing: whether the map scale fits depends on the page.
+        qa_notes = tuple(renderer.map_scale_notes(figure)) + tuple(
+            getattr(renderer, "raster_notes", None) or ()
+        )
+        # Hole-ID headers that still overprint after every header fallback.
+        qa_notes = qa_notes + tuple(renderer.header_overlap_notes(figure))
+        # PNG resolution lowered to stay within the raster size cap.
+        qa_notes = qa_notes + tuple(getattr(renderer, "raster_notes", None) or ())
+        # Surface them with the other section notes the app shows after Generate.
+        overlap_warnings = tuple(overlap_warnings) + qa_notes
+        retained: dict[str, object] | None = None
+        if close_figure:
+            from matplotlib import pyplot as plt
 
-        plt.close(figure)
-    else:
-        retained = {
-            "figure": figure,
-            "renderer": renderer,
-            "polygons": polygons,
-            "projected": projected,
-            "collar_depths": collar_depths,
-            "water_levels": water_levels,
-            "lithology_codes": lithology_codes,
-            "qa_lines": qa_lines,
-            "append_render_notes": include_render_notes,
-        }
+            plt.close(figure)
+        else:
+            retained = {
+                "figure": figure,
+                "renderer": renderer,
+                "polygons": polygons,
+                "projected": projected,
+                "collar_depths": collar_depths,
+                "water_levels": water_levels,
+                "lithology_codes": lithology_codes,
+                "qa_lines": qa_lines,
+                "append_render_notes": include_render_notes,
+            }
     return CrossSectionResult(
         projected=projected,
         polygons=polygons,

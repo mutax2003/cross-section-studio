@@ -53,6 +53,7 @@ class ExportFramingConfig(BaseModel, frozen=True):
     include_title_block: bool = True
     include_legend: bool = True
     include_water_table: bool = True
+    include_screens: bool = True
     include_qa_footer: bool = True
     fence_only: bool = False
     filename_pattern: ExportFilenamePattern = "section_title"

@@ -138,6 +138,7 @@ DEFAULT_SESSION: dict[str, object] = {
     "export_include_title_block": True,
     "export_include_legend": True,
     "export_include_water_table": True,
+    "export_include_screens": True,
     "export_include_qa_footer": True,
     "export_fence_only": False,
     "export_filename_pattern": "section_title",

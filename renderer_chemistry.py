@@ -24,7 +24,7 @@ from render_theme import (
     chemistry_threshold_bands,
     parameter_series_colors,
 )
-from renderer_common import THRESHOLD_KEY_GID
+from renderer_common import LEGEND_LABEL_MAX_CHARS, THRESHOLD_KEY_GID, fit_label
 from renderer_water import _GW_MARKER_MAP, register_marker_set
 
 
@@ -65,6 +65,42 @@ _PARAMETER_LABEL_BBOX = {
 }
 # "box" readability style: fully opaque so hatch lines never show through.
 _PARAMETER_LABEL_BBOX_SOLID = {**_PARAMETER_LABEL_BBOX, "alpha": 1.0, "boxstyle": "square,pad=0.18"}
+# Marker shapes handed out to the second, third, ... plotted parameter (the
+# first keeps the Configure marker): with two parameters at one hole the dots
+# and the legend samples are the only thing telling "0.4" from "380".
+_PARAMETER_MARKER_CYCLE = ("o", "s", "^", "D", "v", "P", "X", "*", "h")
+# Threshold key: a parameter name longer than this takes its own row above its
+# band text (inline, a 40-character name pushed the row past the frame).
+_THRESHOLD_KEY_INLINE_NAME_CHARS = 12
+
+
+def parameter_series_markers(parameters: Sequence[str], base_marker: str) -> dict[str, str]:
+    """Distinct matplotlib marker per parameter, in the given (Configure) order.
+
+    The first parameter keeps ``base_marker`` (the Configure choice, circle by
+    default) so a single-parameter figure is unchanged; each further parameter
+    takes the next unused shape from ``_PARAMETER_MARKER_CYCLE``.
+    """
+    markers: dict[str, str] = {}
+    used: set[str] = set()
+    for index, name in enumerate(parameters):
+        if name in markers:
+            continue
+        marker = base_marker
+        if index:
+            marker = next(
+                (shape for shape in _PARAMETER_MARKER_CYCLE if shape not in used and shape != base_marker),
+                base_marker,
+            )
+        markers[name] = marker
+        used.add(marker)
+    return markers
+
+
+def _fit_legend_label(text: str) -> str:
+    """Legend text wrapped / ellipsized like the lithology entries (a 40-character
+    parameter name pushed the key off a letter page)."""
+    return fit_label(text, max_chars=LEGEND_LABEL_MAX_CHARS)
 
 
 def _shown_threshold_bands(green_max: float, yellow_max: float):
@@ -303,7 +339,7 @@ class RendererChemistryMixin:
         across_gaps = self.profile.parameter_interpolate_across_gaps
         label_values = self.profile.show_parameter_labels
         draw_markers = self.profile.parameter_draw_markers
-        marker = _GW_MARKER_MAP.get(self.profile.parameter_marker, self.profile.parameter_marker)
+        base_marker = _GW_MARKER_MAP.get(self.profile.parameter_marker, self.profile.parameter_marker)
         transect_hole_ids = hole_summary["hole_id"].astype(str).tolist()
         transect_x = (
             dict(zip(transect_hole_ids, hole_summary["x_profile"].to_numpy(dtype=float)))
@@ -340,7 +376,15 @@ class RendererChemistryMixin:
         # Stable per parameter name (chloride keeps its colour on every
         # section), with collisions on one sheet resolved to distinct colours.
         series_colors = parameter_series_colors(by_parameter)
+        # Marker shape per parameter, in Configure order: the first keeps the
+        # Configure marker, the rest take distinct shapes (see the cycle).
+        configured_order = [
+            name for name in dict.fromkeys(n.strip() for n in self.environmental_parameters) if name in by_parameter
+        ]
+        configured_order += sorted(name for name in by_parameter if name not in configured_order)
+        series_markers = parameter_series_markers(configured_order, base_marker)
         for parameter, readings in sorted(by_parameter.items()):
+            marker = series_markers[parameter]
             if draw_markers:
                 color = series_colors[parameter]
             else:
@@ -497,7 +541,7 @@ class RendererChemistryMixin:
                         "parameter": parameter,
                         "color": color,
                         "marker": marker,
-                        "label": empty_label,
+                        "label": _fit_legend_label(empty_label),
                     }
                 )
                 continue
@@ -577,7 +621,7 @@ class RendererChemistryMixin:
                     (dot,) = ax.plot(
                         [anchor[0]],
                         [y],
-                        marker="o",
+                        marker=marker,
                         markersize=3.6,
                         color=label_color,
                         linestyle="none",
@@ -624,7 +668,7 @@ class RendererChemistryMixin:
                 "parameter": parameter,
                 "color": color,
                 "marker": marker,
-                "label": legend_label,
+                "label": _fit_legend_label(legend_label),
                 # The key draws what the plot draws: a dashed fence line only
                 # when one joins the readings, else the isolated markers.
                 "linestyle": "--" if fence_drawn else "none",
@@ -671,7 +715,15 @@ class RendererChemistryMixin:
             if index == 0:
                 parts.append(TextArea("Label colour:", textprops=text_props))
             if len(entries) > 1:
-                parts.append(TextArea(f"{parameter}:", textprops=text_props))
+                if len(parameter) > _THRESHOLD_KEY_INLINE_NAME_CHARS:
+                    # A long name takes its own row (wrapped to at most two
+                    # lines) so the band text under it never runs past the frame.
+                    name = fit_label(parameter, max_chars=LEGEND_LABEL_MAX_CHARS)
+                    parts.append(TextArea(f"{name}:", textprops=text_props))
+                    rows.append(HPacker(children=parts, align="baseline", pad=0, sep=3))
+                    parts = []
+                else:
+                    parts.append(TextArea(f"{parameter}:", textprops=text_props))
             bands = _shown_threshold_bands(green_max, yellow_max)
             for band_index, (name, hex_color, span) in enumerate(bands):
                 parts.append(

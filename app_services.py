@@ -21,6 +21,7 @@ from models import (
     Transect,
 )
 from pipeline import (
+    _RENDER_LOCK,
     ALL_EXPORT_FORMATS,
     SectionGeometry,
     compute_section_geometry,
@@ -159,17 +160,18 @@ def _try_export_from_retained_figure(
         renderer = retained["renderer"]
         if figure is None or renderer is None:
             return None
-        _svg, png_bytes, pdf_bytes = renderer.export_figure_bytes(  # type: ignore[union-attr]
-            figure,
-            formats,
-            polygons=retained["polygons"],  # type: ignore[arg-type]
-            projected_df=retained["projected"],  # type: ignore[arg-type]
-            collar_depths=retained.get("collar_depths"),  # type: ignore[arg-type]
-            water_levels=retained.get("water_levels"),  # type: ignore[arg-type]
-            lithology_codes=retained.get("lithology_codes"),  # type: ignore[arg-type]
-            qa_lines=tuple(retained.get("qa_lines") or ()),  # type: ignore[arg-type]
-            append_render_notes=bool(retained.get("append_render_notes", False)),
-        )
+        with _RENDER_LOCK:
+            _svg, png_bytes, pdf_bytes = renderer.export_figure_bytes(  # type: ignore[union-attr]
+                figure,
+                formats,
+                polygons=retained["polygons"],  # type: ignore[arg-type]
+                projected_df=retained["projected"],  # type: ignore[arg-type]
+                collar_depths=retained.get("collar_depths"),  # type: ignore[arg-type]
+                water_levels=retained.get("water_levels"),  # type: ignore[arg-type]
+                lithology_codes=retained.get("lithology_codes"),  # type: ignore[arg-type]
+                qa_lines=tuple(retained.get("qa_lines") or ()),  # type: ignore[arg-type]
+                append_render_notes=bool(retained.get("append_render_notes", False)),
+            )
         # Reject non-bytes so we never memoize None / str and greenwash a bad retain.
         if not isinstance(png_bytes, (bytes, bytearray)) or not isinstance(
             pdf_bytes, (bytes, bytearray)

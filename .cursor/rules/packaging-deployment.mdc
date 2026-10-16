@@ -31,7 +31,7 @@ alwaysApply: false
 
 `ops_auth.py`, `ops_logging.py`, `ops_audit.py`, `ops_apm.py` — env-gated. May use Streamlit for the auth gate only; **never** import into `pipeline` / `projection` / `stratigraphy` / `renderer*`.
 
-**Auth (`ops_auth`):** `CROSS_SECTION_AUTH_PASSWORD` enables the gate; `CROSS_SECTION_AUTH_REQUIRED=1` refuses to run if password unset; 5 failed attempts → 30s lockout; `render_logout_control()` shows Sign out when authenticated. Timing-safe compare via fixed-length `hmac.digest` digests + `hmac.compare_digest`. On logout, `_clear_sensitive_session_on_logout()` wipes workbook/parse/export/AI session keys (`_LOGOUT_CLEAR_KEYS`).
+**Auth (`ops_auth`):** `CROSS_SECTION_AUTH_PASSWORD` enables the gate; `CROSS_SECTION_AUTH_REQUIRED=1` refuses to run if password unset; 5 failed attempts → 30s lockout; `render_logout_control()` shows Sign out when authenticated. Timing-safe compare via fixed-length `hmac.digest` digests + `hmac.compare_digest`. On logout, `_clear_sensitive_session_on_logout()` wipes workbook/parse/export/AI session keys (`_LOGOUT_CLEAR_KEYS` plus `app_state.SESSION_PARSE_KEYS` / `SESSION_SECTION_KEYS`, so preflight JSON and prepared deliverables go too).
 
 **Logging / APM:** secret redaction in `ops_logging` (incl. query-string API key/password patterns); Sentry `send_default_pii=False` + header / query / message scrubbing in `ops_apm`.
 

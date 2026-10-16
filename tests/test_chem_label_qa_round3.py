@@ -3,9 +3,10 @@
 1. A value read just below a groundwater level was pushed out of its strip
    (the water labels took the slot right of the column first); DRY / NM notes
    sat on the strip.
-2. Holes close together on the page: opaque strips hid the geology between
-   the columns; values shrank one by one to mixed sizes; the last hole's
-   values sat on the right frame line.
+2. Holes close together on the page: strips are only as wide as their own
+   values (round 5: always a flush knock-out, never swapped for boxes);
+   values shrank one by one to mixed sizes; the last hole's values sat on
+   the right frame line.
 3. Long, thin sections: values drifted far sideways from their hole.
 4. "plain" / "stroke" drew the same white box as "box"; the legend glyph
    showed a dashed line the plot never draws.
@@ -172,20 +173,28 @@ def _tight_case(spacing=(0.0, 3.5, 7.0, 10.5, 14.0, 17.5, 60.0)):
     return _render(CONSULTING_SECTION_PROFILE, _TIGHT, spacing, readings)
 
 
-def test_close_holes_get_boxed_values_not_strips_over_the_geology() -> None:
+def test_close_holes_keep_flush_strips_no_wider_than_their_values() -> None:
+    """Round 5: a strip is a knock-out flush with its column running to its
+    values' right edge (plus the pad), never a solid box, however close the
+    next hole is; it never reaches the next column."""
     renderer, figure = _tight_case()
     try:
-        r, _px_per_pt = _px(figure)
+        r, px = _px(figure)
         columns = sorted(renderer._column_obstacle_boxes(figure), key=lambda b: b.x0)
-        gaps = {round(a.x1, 1): b.x0 - a.x1 for a, b in zip(columns, columns[1:], strict=False)}
+        pad = renderer_water._CHEM_STRIP_PAD_PT * px
+        values = [renderer_water._chem_footprint(a, r) for a in _chem(renderer)]
+        assert figure._chem_strips
+        assert all(a.get_bbox_patch() is None for a in _chem(renderer))
         for strip in figure._chem_strips:
             box = strip.get_window_extent(r)
             own = max((c for c in columns if c.x1 <= box.x0 + 1.0), key=lambda c: c.x1)
-            gap = gaps.get(round(own.x1, 1))
-            if gap is not None:
-                assert box.width <= renderer_water._CHEM_STRIP_MAX_GAP_SHARE * gap + 1.0
-        boxed = [a for a in _chem(renderer) if getattr(a, "_chem_box_fallback", False)]
-        assert boxed and all(a.get_bbox_patch() is not None for a in boxed)
+            assert abs(box.x0 - own.x1) <= 1.0
+            on_it = [v for v in values if v.x0 >= box.x0 - 1 and v.y0 >= box.y0 - 1 and v.y1 <= box.y1 + 1]
+            assert on_it
+            assert box.x1 <= max(v.x1 for v in on_it) + pad + 1.0
+            nxt = [c.x0 for c in columns if c.x0 > own.x1]
+            if nxt:
+                assert box.x1 <= min(nxt) + 1.0
     finally:
         plt.close(figure)
 
@@ -365,7 +374,7 @@ def test_section_sheet_strip_defaults_unchanged_for_wide_holes() -> None:
     renderer, figure = _render(SECTION_SHEET_PROFILE, _WIDE, 60.0, readings)
     try:
         assert figure._chem_strips
-        assert not any(getattr(a, "_chem_box_fallback", False) for a in _chem(renderer))
+        assert all(a.get_bbox_patch() is None for a in _chem(renderer))
     finally:
         plt.close(figure)
 

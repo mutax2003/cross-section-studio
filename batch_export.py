@@ -400,7 +400,7 @@ def build_one_transect_exports(
             max_offset_for_interpolation_m=request.max_offset_for_interpolation_m,
             correlation_overrides=request.correlation_overrides,
             deviation_readings=request.deviation_readings,
-            warn_on_correlation_gaps=False,
+            warn_on_correlation_gaps=request.warn_on_correlation_gaps,
         )
 
     geometry = _memo_section_geometry(geometry_key, _compute)

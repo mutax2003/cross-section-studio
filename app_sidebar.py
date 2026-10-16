@@ -152,6 +152,7 @@ _EXPORT_WIDGET_KEYS: tuple[str, ...] = (
     "export_include_title_block",
     "export_include_legend",
     "export_include_water_table",
+    "export_include_screens",
     "export_include_qa_footer",
     "export_viewport_xmin",
     "export_viewport_ymin",
@@ -373,6 +374,7 @@ def _render_export_framing_panel() -> None:
         st.toggle("Include lithology legend", key="export_include_legend", help="Key of soil and rock patterns shown.")
     with layer_cols[1]:
         st.toggle("Include water table", key="export_include_water_table", help="Groundwater lines and labels.")
+        st.toggle("Include screened intervals", key="export_include_screens", help="Well screen symbols on the boreholes (drawn only when the Screens sheet has rows).")
         st.toggle(
             "Include QA notes (PDF)",
             key="export_include_qa_footer",

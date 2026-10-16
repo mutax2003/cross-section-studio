@@ -403,6 +403,7 @@ def build_export_framing_from_mapping(values: dict[str, object]) -> "ExportFrami
         include_title_block=bool(values.get("export_include_title_block", True)),
         include_legend=bool(values.get("export_include_legend", True)),
         include_water_table=bool(values.get("export_include_water_table", True)),
+        include_screens=bool(values.get("export_include_screens", True)),
         include_qa_footer=bool(values.get("export_include_qa_footer", True)),
         fence_only=bool(values.get("export_fence_only", False)),
         filename_pattern=values.get("export_filename_pattern", "section_title"),  # type: ignore[arg-type]

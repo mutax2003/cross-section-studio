@@ -27,7 +27,7 @@ Click **Prepare deliverables** once. That builds PNG and PDF in a **single** dra
 
 ## Sidebar framing
 
-Under sidebar **Export** (margins, crop and CAD layers are under **Advanced**): page preset, margins, DPI, fence-only, DRAFT watermark, layer toggles, viewport crop, filename pattern, CAD-friendly SVG layers (Inkscape layer groups when enabled), **Editable text in SVG** (labels stay real text so they can be moved in Illustrator or Inkscape; off by default because it needs the DejaVu Sans font on the viewing computer, while outlines look identical everywhere), and optional output folder path.
+Under sidebar **Export** (margins, crop and CAD layers are under **Advanced**): page preset, margins, DPI, fence-only, DRAFT watermark, layer toggles (title block, legend, water table, screened intervals), viewport crop, filename pattern, CAD-friendly SVG layers (Inkscape layer groups when enabled), **Editable text in SVG** (labels stay real text so they can be moved in Illustrator or Inkscape; off by default because it needs the DejaVu Sans font on the viewing computer, while outlines look identical everywhere), and optional output folder path.
 
 ## File names
 

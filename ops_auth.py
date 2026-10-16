@@ -18,6 +18,18 @@ _AUTH_HMAC_KEY = b"css-auth"
 
 # Sensitive session keys cleared on Sign out (shared-password / kiosk safety).
 _LOGOUT_CLEAR_KEYS = (
+    # Configure preflight + prepared deliverables: a shared-password kiosk must
+    # not keep site JSON or exports after Sign out.
+    "_preflight_json_key",
+    "_preflight_subset_json",
+    "_preflight_overrides_json",
+    "section_build_subset_json",
+    "section_build_request_json",
+    "report_package_bytes",
+    "figure_docx_bytes",
+    "batch_package_bytes",
+    "_batch_package_token",
+    "_batch_zip_name",
     "file_bytes",
     "parse_result",
     "import_report",
@@ -119,7 +131,11 @@ def _passwords_match(entered: str, password: str) -> bool:
 def _clear_sensitive_session_on_logout(session: Any | None = None) -> None:
     """Drop workbook / export / AI residuals so the next shared-password user starts clean."""
     target = session if session is not None else st.session_state
-    for key in _LOGOUT_CLEAR_KEYS:
+    # The explicit list plus the app's own parse / section key lists, so a
+    # new session key never needs a matching edit here to be wiped on Sign out.
+    from app_state import SESSION_PARSE_KEYS, SESSION_SECTION_KEYS
+
+    for key in (*_LOGOUT_CLEAR_KEYS, *SESSION_PARSE_KEYS, *SESSION_SECTION_KEYS):
         if key in target:
             target[key] = None
     for key in [k for k in list(target.keys()) if str(k).startswith(_LOGOUT_CLEAR_PREFIXES)]:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 # Bump when session key shapes change so Cloud reconnects drop stale state.
-SESSION_SCHEMA_VERSION = 3
+SESSION_SCHEMA_VERSION = 4  # 1.0.0: VE store, per-parameter thresholds, SVG text toggle
 
 # Domain key groups for targeted resets
 SESSION_PARSE_KEYS = (

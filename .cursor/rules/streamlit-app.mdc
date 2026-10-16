@@ -68,7 +68,7 @@ result = cached_build_section(subset.model_dump_json(), request.model_dump_json(
 
 ## Boundaries
 
-- Widgets only in `app*.py` (except services); `app_services.py` may call projection/stratigraphy for cache/preflight/build only
+- Widgets only in `app*.py` plus the `ops_auth.py` auth gate (`app_services.py` is cache-only: no widgets; may call projection/stratigraphy for cache/preflight/build only)
 - Widget modules may use thin QA helpers (`suggest_offset_threshold_m`, etc.); do not reimplement geometry
 - No new stratigraphy or projection algorithms in Streamlit modules
 - Export framing / DOCX / ZIP packaging stay in `export_framing` / `docx_export` / `batch_export` (not engine geometry)

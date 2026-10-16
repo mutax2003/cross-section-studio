@@ -1118,3 +1118,26 @@ def test_collar_rejects_out_of_range_coordinates() -> None:
         kwargs[field] = value
         with pytest.raises(ValidationError, match="out of range"):
             Collar(**kwargs)
+
+
+def test_title_block_control_characters_never_reach_the_svg() -> None:
+    """A soft line break pasted from Word (\\x0b) used to make the SVG unparseable."""
+    from xml.etree import ElementTree as ET
+
+    from models import Collar, ConsultingTitleBlock, Lithology
+    from pipeline import build_cross_section
+
+    block = ConsultingTitleBlock(
+        section_label="A\x0bB", project_number="P\x0c1", prepared_for="Client\x00", notes=("n\x1fote",)
+    )
+    assert block.section_label == "AB" and block.notes == ("note",)
+    collars = [
+        Collar(hole_id="BH-01", easting=0, northing=0, elevation=100, total_depth=10),
+        Collar(hole_id="BH-02", easting=40, northing=0, elevation=100, total_depth=10),
+    ]
+    lithology = [Lithology(hole_id=h, from_depth=0, to_depth=10, lithology_code="Clay") for h in ("BH-01", "BH-02")]
+    result = build_cross_section(
+        collars, lithology, [(0, 0), (40, 0)],
+        render_layout="consulting_section", consulting_title_block=block, export_formats=frozenset({"svg"}),
+    )
+    ET.fromstring(result.svg_bytes)  # must parse

@@ -49,3 +49,6 @@ data/ecoventure_gwm/*.pdf
 data/Data2/*.pdf
 data/Data2/test_output/*debug*
 data/pdf_extract_p2/
+# Client report text extracts stay local (reference PNGs under data/pdf_extract* are tracked on purpose)
+_pdf_extract/
+data/pdf_extract*/*.txt

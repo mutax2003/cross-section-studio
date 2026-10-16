@@ -490,6 +490,17 @@ class ConsultingTitleBlock(BaseModel, frozen=True):
     scale_bar_m: float | None = None
     show_gradient_legend: bool = False
 
+    @field_validator("*", mode="before")
+    @classmethod
+    def scrub_control_characters(cls, value: object) -> object:
+        """Drop XML-illegal control characters (e.g. a soft line break pasted
+        from Word): matplotlib writes these fields verbatim into the SVG."""
+        if isinstance(value, str):
+            return _XML_ILLEGAL.sub("", value)
+        if isinstance(value, (tuple, list)):
+            return type(value)(_XML_ILLEGAL.sub("", v) if isinstance(v, str) else v for v in value)
+        return value
+
 
 class SectionFigureMetadata(BaseModel, frozen=True):
     """Cartographic and geologic metadata for figure footers."""

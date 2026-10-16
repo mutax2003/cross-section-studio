@@ -394,7 +394,9 @@ def generate_cross_section(
         }
     )
     # Reuse Configure-warmed subset JSON when hole set + workbook signature match
-    # (avoids a second full ParseResult.model_dump_json on Generate).
+    # (avoids a second full ParseResult.model_dump_json on Generate). The main
+    # app passes a lithology_index, so it always dumps afresh; the reuse only
+    # serves callers without an index (batch / scripted builds).
     cached_subset_json = st.session_state.get("_preflight_subset_json")
     if (
         lithology_index is None

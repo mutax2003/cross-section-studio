@@ -171,3 +171,21 @@ def test_degrees_in_easting_northing_are_flagged_but_local_grids_are_not() -> No
     assert "coordinates_in_degrees" in codes([(-79.38, 43.65), (-79.37, 43.66)])
     assert "coordinates_in_degrees" not in codes([(0.0, 0.0), (5.0, 0.0), (32.0, 0.0)])
     assert "coordinates_in_degrees" not in codes([(372500.0, 6494000.0), (372600.0, 6494100.0)])
+
+
+def test_hydro_status_aliases_match_the_model_normaliser() -> None:
+    """hydro_metrics.water_status must agree with WaterLevel.normalize_status for
+    every alias the model accepts (the model canonicalises first; this guards drift)."""
+    from hydro_metrics import water_status
+    from models import WaterLevel
+
+    aliases = {
+        "measured": ["measured", "meas", "m", "wet", "", None],
+        "dry": ["dry", "d", "DRY"],
+        "nm": ["nm", "n/m", "not measured", "not_measured", "ns", "not sampled", "not_sampled", "NM"],
+    }
+    for expected, spellings in aliases.items():
+        for raw in spellings:
+            level = WaterLevel(hole_id="BH1", depth=1.0, status=raw)
+            assert level.status == expected, raw
+            assert water_status(level) == expected, raw

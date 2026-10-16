@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from io import BytesIO
 from typing import Any
@@ -175,13 +175,16 @@ def _try_export_from_retained_figure(
             pdf_bytes, (bytes, bytearray)
         ):
             return None
+        # PNG-resolution notes only exist once a PNG is drawn (Prepare, not
+        # Generate), so they join the Generate-time warnings here.
+        raster_notes = tuple(getattr(renderer, "raster_notes", None) or ())
         return (
             b"",
             bytes(png_bytes),
             bytes(pdf_bytes),
             int(retained.get("polygon_count") or 0),
             tuple(retained.get("lithology_codes_tuple") or ()),  # type: ignore[arg-type]
-            tuple(retained.get("overlap_warnings") or ()),  # type: ignore[arg-type]
+            tuple(retained.get("overlap_warnings") or ()) + raster_notes,  # type: ignore[arg-type]
         )
     except Exception:
         return None
@@ -268,6 +271,8 @@ def _consume_retained_prepare_exports(
         return None, False
 
     packed = _try_export_from_retained_figure(retained, formats)
+    if packed is not None:
+        _remember_prepare_notes(request_key, packed[5])
     if packed is None:
         _drop_export_memo_for_request(request_key[0], request_key[1], request_key[2])
         _invalidate_streamlit_prepare_caches()
@@ -283,6 +288,25 @@ def _consume_retained_prepare_exports(
     # Drop any warm Streamlit draw left after a failed Generate-time clear.
     _invalidate_streamlit_prepare_caches()
     return (packed[1], packed[2]), False
+
+
+_prepare_notes: OrderedDict[tuple[str, str, str], tuple[str, ...]] = OrderedDict()
+_PREPARE_NOTES_MAX = 32
+
+
+def _remember_prepare_notes(request_key: tuple[str, str, str], warnings: Sequence[str]) -> None:
+    """Keep the section notes the Prepare draw produced (e.g. PNG resolution lowered)."""
+    with _memo_lock:
+        _prepare_notes[request_key] = tuple(warnings)
+        _prepare_notes.move_to_end(request_key)
+        while len(_prepare_notes) > _PREPARE_NOTES_MAX:
+            _prepare_notes.popitem(last=False)
+
+
+def prepare_export_notes(subset_json: str, request_json: str) -> tuple[str, ...]:
+    """Section notes from the last Prepare of this request (empty when none / cache hit)."""
+    with _memo_lock:
+        return _prepare_notes.get(_request_memo_key(subset_json, request_json), ())
 
 
 def _lookup_prepare_export_memo(
@@ -737,13 +761,14 @@ def _build_prepare_exports_uncached(
 ) -> tuple[bytes, bytes]:
     """One matplotlib PNG+PDF draw without Streamlit cache (failed-retain escape hatch)."""
     subset, request = _cached_section_inputs(subset_json, request_json)
-    _svg, png, pdf, _count, _codes, _warnings = _run_build_cross_section(
+    _svg, png, pdf, _count, _codes, warnings = _run_build_cross_section(
         subset,
         request,
         export_formats=frozenset({"png", "pdf"}),
         subset_json=subset_json,
         request_json=request_json,
     )
+    _remember_prepare_notes(_request_memo_key(subset_json, request_json), warnings)
     return png, pdf
 
 
@@ -778,41 +803,6 @@ def _cached_build_section_exports_draw(
 ) -> tuple[bytes, bytes]:
     """Inner Prepare draw cache: one matplotlib draw for PNG+PDF on retain miss."""
     return _build_prepare_exports_uncached(subset_json, request_json)
-
-
-def preflight_correlation_health(
-    subset: ParseResult,
-    transect_points: tuple[tuple[float, float], ...],
-    *,
-    interpretation_mode: str,
-    allow_pinch_outs: bool,
-    correlation_overrides: tuple[CorrelationOverride, ...],
-    offset_warning_m: float = 50.0,
-    max_offset_for_interpolation_m: float | None = None,
-) -> list[CorrelationPairSummary]:
-    """Project transect subset and summarize correlation match rates (UI preflight only)."""
-    if interpretation_mode == "borehole_only":
-        return []
-    projected = project_boreholes(
-        subset.collars,
-        subset.lithologies,
-        Transect(points=list(transect_points)),
-        offset_warning_m=offset_warning_m,
-        deviation_readings=subset.deviation_readings or None,
-    )
-    if projected.empty:
-        return []
-    try:
-        projected = filter_projected_for_interpolation(
-            projected, max_offset_for_interpolation_m
-        )
-    except ValueError:
-        return []
-    return preview_correlation_health(
-        projected,
-        allow_pinch_outs=allow_pinch_outs,
-        correlation_overrides=correlation_overrides,
-    )
 
 
 def preflight_polygon_overlap_warnings(

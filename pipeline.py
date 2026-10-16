@@ -772,7 +772,9 @@ def render_cross_section_from_geometry(
         getattr(renderer, "chemistry_label_notes", None) or ()
     )
     # Read after export framing: whether the map scale fits depends on the page.
-    qa_notes = tuple(renderer.map_scale_notes(figure))
+    qa_notes = tuple(renderer.map_scale_notes(figure)) + tuple(
+        getattr(renderer, "raster_notes", None) or ()
+    )
     # Hole-ID headers that still overprint after every header fallback.
     qa_notes = qa_notes + tuple(renderer.header_overlap_notes(figure))
     # PNG resolution lowered to stay within the raster size cap.

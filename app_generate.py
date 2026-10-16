@@ -14,6 +14,7 @@ from app_services import (
     cached_build_section_bundle,
     cached_build_section_exports,
     cached_parse_request,
+    prepare_export_notes,
 )
 from batch_export import (
     BATCH_DEFAULT_EXPORT_FORMATS,
@@ -79,6 +80,12 @@ def _ensure_both_exports() -> bool:
     png_bytes, pdf_bytes = cached_build_section_exports(subset_json, request_json)
     st.session_state.png_bytes = png_bytes
     st.session_state.pdf_bytes = pdf_bytes
+    # Notes that only exist once the rasters are drawn (PNG resolution lowered)
+    # join the section notes shown under the figure.
+    shown = list(st.session_state.get("polygon_overlap_warnings") or [])
+    extra = [n for n in prepare_export_notes(subset_json, request_json) if n not in shown]
+    if extra:
+        st.session_state.polygon_overlap_warnings = shown + extra
     st.session_state.pop("figure_docx_bytes", None)
     st.session_state.pop("_figure_docx_cache_token", None)
     st.session_state.pop("report_package_bytes", None)

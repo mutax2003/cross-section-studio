@@ -17,7 +17,7 @@ When editing supervisor scripts, prompts, or CI workflows:
 
 ```text
 python -m ruff check <paths>   # prefer scoped over ruff check .
-pytest --cov=pipeline --cov=projection --cov=stratigraphy --cov=ingestion --cov-fail-under=70
+python -m pytest --cov=pipeline --cov=projection --cov=stratigraphy --cov=ingestion --cov-fail-under=70
 pip-audit -r requirements.txt
 ```
 

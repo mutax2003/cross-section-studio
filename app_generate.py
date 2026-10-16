@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import streamlit as st
@@ -390,6 +391,8 @@ def render_profile_and_downloads(
     consulting_title_block: ConsultingTitleBlock | None = None,
     can_generate: bool = True,
     blocked_reason: str | None = None,
+    chemistry_color_mode: str | None = None,
+    chemistry_thresholds: Mapping[str, tuple[float | None, float | None]] | None = None,
 ) -> None:
     """Render profile chips, SVG, and SVG/PNG/PDF downloads."""
     if st.session_state.svg_bytes is None:
@@ -414,6 +417,8 @@ def render_profile_and_downloads(
         transect_label=transect_label,
         overlap_warnings=st.session_state.get("polygon_overlap_warnings") or [],
         consulting_fields=_consulting_field_map(consulting_title_block),
+        chemistry_color_mode=chemistry_color_mode,
+        chemistry_thresholds=chemistry_thresholds,
     )
     if is_stale:
         raster_help = "Out of date — click Generate section first."

@@ -13,7 +13,29 @@ _XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 def _xml_safe(value: object) -> str:
     """Text Word can store: XML-illegal control characters removed."""
-    return _XML_ILLEGAL.sub("", "" if value is None else str(value))
+    return _XML_ILLEGAL.sub("", "" if value is None else _metadata_text(value))
+
+
+def _metadata_text(value: object) -> str:
+    """Readable cell text for a metadata value (nested mappings such as the
+    per-parameter chemistry thresholds print as ``Chloride: green_max 100,
+    orange_max 250`` lines instead of a Python dict)."""
+    if isinstance(value, Mapping):
+        lines = []
+        for key, item in value.items():
+            if isinstance(item, Mapping):
+                parts = ", ".join(
+                    f"{k} {_metadata_text(v)}" for k, v in item.items() if v is not None
+                )
+                lines.append(f"{key}: {parts}")
+            else:
+                lines.append(f"{key}: {_metadata_text(item)}")
+        return "\n".join(lines)
+    if isinstance(value, (list, tuple)):
+        return "; ".join(_metadata_text(item) for item in value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))  # limits read as typed: 100, not 100.0
+    return str(value)
 
 
 def build_figure_docx_bytes(

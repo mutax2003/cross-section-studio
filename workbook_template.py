@@ -87,6 +87,8 @@ ENVIRONMENTAL_COLUMNS = (
     "unit",
     "value_label",
     "label_color",
+    "green_max",
+    "orange_max",
 )
 LABEL_COLOR_CHOICES = LABEL_COLOR_NAMES
 SCREEN_COLUMNS = ("hole_id", "from_depth", "to_depth")
@@ -301,6 +303,8 @@ def _sample_environmental() -> list[dict[str, object]]:
             "unit": "mg/L",
             "value_label": "<5 mg/L",
             "label_color": "green",
+            "green_max": 100,
+            "orange_max": 250,
         },
         {
             "hole_id": "MW-01",
@@ -402,6 +406,8 @@ def _column_hints() -> dict[str, dict[str, str]]:
             "unit": "e.g. mg/L",
             "value_label": "Optional figure text (e.g. <5 mg/L)",
             "label_color": "Optional: green, red, black or orange (blue is reserved for groundwater)",
+            "green_max": "Optional: this parameter's green limit (values <= print green), same units as value",
+            "orange_max": "Optional: this parameter's orange limit (above green, <= this prints orange; higher red)",
         },
         SCREENS_SHEET: {
             "hole_id": "Must match Collars.hole_id",
@@ -439,7 +445,7 @@ def _instructions_lines() -> list[str]:
         "4. Optionally fill Water, Environmental, Screens, Gradients, and Sections.",
         "5. Upload this file in Cross Section Studio (Upload step).",
         "6. On Configure, pick the transect holes, groundwater series (max 4), and lab parameters to plot.",
-        "7. Optional: colour chemistry labels per row (label_color) or by green/orange/red thresholds on Configure.",
+        "7. Optional: colour chemistry labels per row (label_color) or by green/orange/red thresholds on Configure; green_max / orange_max on one row per parameter pre-fills that parameter's limits.",
         "",
         "TAB GUIDE",
         "• Instructions — this guide.",
@@ -461,7 +467,8 @@ def _instructions_lines() -> list[str]:
         "ENVIRONMENTAL RULES",
         "• Use depth for a point sample, OR from_depth + to_depth for an interval — not both.",
         "• value_label is optional display text on the figure (e.g. <5 mg/L for non-detects).",
-        "• label_color is optional: green, red, black or orange (one fixed colour each; blue is reserved for groundwater). Blank = black, or G/Y/R thresholds if set on Configure.",
+        "• label_color is optional: green, red, black or orange (one fixed colour each; blue is reserved for groundwater). Blank = black, or G/O/R thresholds if set on Configure.",
+        "• green_max / orange_max are optional per-parameter limits in the parameter's own units (fill one row per parameter, e.g. Chloride 100 / 250, Benzene 0.5 / 5). Configure seeds its threshold editor from them; parameters without limits use the sheet-wide defaults.",
         "• Select parameters on Configure after upload.",
         "",
         "WATER RULES",
@@ -1145,6 +1152,8 @@ def export_cleaned_workbook_bytes(
             "unit": reading.unit or "",
             "value_label": reading.value_label or "",
             "label_color": reading.label_color or "",
+            "green_max": reading.green_max if reading.green_max is not None else "",
+            "orange_max": reading.orange_max if reading.orange_max is not None else "",
         }
         for reading in parse_result.environmental_readings
     ]

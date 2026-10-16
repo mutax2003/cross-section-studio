@@ -94,6 +94,7 @@ def _section_request_kwargs(sidebar, configure_state, selection) -> dict[str, ob
         "chemistry_color_mode": configure_state.chemistry_color_mode,
         "chemistry_threshold_green_max": configure_state.chemistry_threshold_green_max,
         "chemistry_threshold_yellow_max": configure_state.chemistry_threshold_yellow_max,
+        "chemistry_thresholds": configure_state.chemistry_thresholds,
         "chemistry_label_style": configure_state.chemistry_label_style,
         "render_layout": sidebar.render_layout,
         "track_width_m": sidebar.track_width_m,
@@ -243,6 +244,12 @@ else:
                 consulting_title_block=sidebar.consulting_title_block,
                 can_generate=bool(configure_state and configure_state.can_generate),
                 blocked_reason=configure_state.blocked_reason if configure_state else None,
+                chemistry_color_mode=(
+                    configure_state.chemistry_color_mode if configure_state else None
+                ),
+                chemistry_thresholds=(
+                    configure_state.chemistry_thresholds if configure_state else None
+                ),
             )
         else:
             # Reserve the slot above Validate/Configure; filled below once

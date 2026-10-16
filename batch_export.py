@@ -450,6 +450,7 @@ def build_one_transect_exports(
         chemistry_color_mode=request.chemistry_color_mode,
         chemistry_threshold_green_max=request.chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=request.chemistry_threshold_yellow_max,
+        chemistry_thresholds=request.chemistry_thresholds,
         chemistry_label_style=request.chemistry_label_style,
         render_layout=request.render_layout,
         track_width_m=request.track_width_m,

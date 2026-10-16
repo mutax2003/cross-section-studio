@@ -62,6 +62,9 @@ class ExportFramingConfig(BaseModel, frozen=True):
     viewport_ymin: float | None = None
     viewport_ymax: float | None = None
     cad_svg_layers: bool = False
+    # SVG text as editable <text> (needs the font on the viewer's machine)
+    # instead of outlines; off keeps every machine's rendering identical.
+    svg_editable_text: bool = False
 
     @field_validator("viewport_xmin", "viewport_xmax", "viewport_ymin", "viewport_ymax")
     @classmethod

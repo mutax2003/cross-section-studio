@@ -373,11 +373,32 @@ class EnvironmentalReading(BaseModel, frozen=True):
     unit: str = ""
     value_label: str = ""
     label_color: str = ""  # "", green, red, black or orange (fixed hex each)
+    # Optional per-parameter threshold limits typed in the workbook (same
+    # units as ``value``): green <= green_max < orange <= orange_max < red.
+    # One filled row per parameter seeds the Configure editor.
+    green_max: float | None = None
+    orange_max: float | None = None
 
     @field_validator("hole_id", "parameter", mode="before")
     @classmethod
     def strip_text(cls, value: object) -> str:
         return _clean_text(value)
+
+    @field_validator("green_max", "orange_max", mode="before")
+    @classmethod
+    def blank_limit_is_none(cls, value: object) -> object:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("green_max", "orange_max")
+    @classmethod
+    def limit_is_non_negative(cls, value: float | None) -> float | None:
+        if value is not None and (pd.isna(value) or value < 0):
+            raise ValueError("green_max / orange_max must be >= 0 (same units as value)")
+        return value
 
     @field_validator("label_color", mode="before")
     @classmethod

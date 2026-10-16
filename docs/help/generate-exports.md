@@ -27,7 +27,7 @@ Click **Prepare deliverables** once. That builds PNG and PDF in a **single** dra
 
 ## Sidebar framing
 
-Under sidebar **Export** (margins, crop and CAD layers are under **Advanced**): page preset, margins, DPI, fence-only, DRAFT watermark, layer toggles, viewport crop, filename pattern, CAD-friendly SVG layers (Inkscape layer groups when enabled), and optional output folder path.
+Under sidebar **Export** (margins, crop and CAD layers are under **Advanced**): page preset, margins, DPI, fence-only, DRAFT watermark, layer toggles, viewport crop, filename pattern, CAD-friendly SVG layers (Inkscape layer groups when enabled), **Editable text in SVG** (labels stay real text so they can be moved in Illustrator or Inkscape; off by default because it needs the DejaVu Sans font on the viewing computer, while outlines look identical everywhere), and optional output folder path.
 
 ## File names
 
@@ -78,7 +78,7 @@ Anything you should check before issuing the figure is listed in one amber box u
 
 If **Stop if matched layers overlap** is on in Configure, resolve overlaps (or clear the gate after manual review) before Generate or batch ZIP. Cosmetic changes (title, VE, hatches, fonts, column width) still need Generate for a new SVG; projection/stratigraphy can reuse cached geometry when only cosmetics change.
 
-Water and chemistry connector layers (when plotted) add footer text clarifying they are **schematic** — not potentiometric surfaces or plume contours. Chemistry colour thresholds in Configure apply to every plotted parameter (not per-parameter guidelines); keep chemistry interpolate off for stick-style P2 figures.
+Water and chemistry connector layers (when plotted) add footer text clarifying they are **schematic** — not potentiometric surfaces or plume contours. Chemistry colour thresholds in Configure are set **per parameter** (each plotted parameter has its own Green ≤ / Orange ≤ limits in its own units; the sheet-wide pair is the fallback) and the key under the distance label prints one line per parameter; the metadata JSON and Word figure table list the limits used. Keep chemistry interpolate off for stick-style P2 figures.
 
 ## Generate again
 

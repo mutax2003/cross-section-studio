@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
+import shapely
 from shapely.errors import GEOSException
 from shapely.geometry import LineString, Polygon
 from shapely.strtree import STRtree
@@ -1290,6 +1291,43 @@ def _anchored_fragment(geom, anchor: LineString | None) -> Polygon | None:
 # loss is reported to the user (``clip_warnings``) rather than only logged.
 CLIP_LOSS_WARN_FRACTION = 0.15
 
+# Coordinate grid (m) the overlap clipping works on. Fence polygons of one pair
+# share edges exactly (a wedge's top edge *is* the fill's base; wedges from one
+# hole taper to one tip), and GEOS's floating overlay is not robust on such
+# input: it reported a 4 mm sliver wedge as lying wholly inside the fill it
+# touched (``difference`` → empty) and split a ring joined by a ~1e-13 m "neck"
+# into one polygon in one direction and two in the other — so a reversed
+# transect kept different wedges (fuzz seeds 7308, 7440, 7428). With a fixed
+# precision model the overlay uses snap rounding, which is exact: both
+# directions give the same fragments. A nanometre is the order of the float
+# noise the floating overlay already leaves on intersection points, and far
+# below anything drawn.
+CLIP_PRECISION_GRID_M = 1e-9
+
+# Overlap detection ignores an intersection thinner than this across the two
+# polygons' perimeters. Snap rounding leaves a clipped edge's nodes up to half
+# a grid step off the neighbour it was cut against, so polygons that only share
+# an edge can "overlap" by grid × edge length (2e-7 m² on a 7 km perimeter);
+# the floating overlay left ~1e-9 m² slivers of the same kind.
+OVERLAP_SLIVER_WIDTH_M = 10.0 * CLIP_PRECISION_GRID_M
+
+
+def _snap_for_overlay(geom):
+    """``geom`` rounded to ``CLIP_PRECISION_GRID_M`` and carrying that precision
+    model, so overlays on it snap-round (robust) instead of floating.
+
+    Pointwise: vertices are rounded in place (ring order and start unchanged;
+    every polygon of a pair is rounded the same way, so shared edges stay
+    shared). Falls back to the input when rounding would leave it invalid.
+    """
+    try:
+        snapped = shapely.set_precision(geom, CLIP_PRECISION_GRID_M, mode="pointwise")
+    except (GEOSException, ValueError):  # pragma: no cover - defensive
+        return geom
+    if snapped is None or snapped.is_empty or not snapped.is_valid:
+        return geom
+    return snapped
+
 
 def _resolve_overlaps_in_pair(
     polygons: list[GeologicalPolygon],
@@ -1328,7 +1366,10 @@ def _resolve_overlaps_in_pair(
     last_index = len(ordered) - 1
     for index, geo_polygon in enumerate(ordered):
         original_area = float(geo_polygon.polygon.area)
-        geom = geo_polygon.polygon
+        # Every overlay below runs on the fixed grid (see CLIP_PRECISION_GRID_M);
+        # the polygon is returned on that grid too, clipped or not.
+        snapped = _snap_for_overlay(geo_polygon.polygon)
+        geom = snapped
         if occupied_geom is not None and not occupied_geom.is_empty:
             # Prepared predicates for skip checks; difference still uses raw geom.
             probe = occupied_prep if occupied_prep is not None else occupied_geom
@@ -1341,14 +1382,18 @@ def _resolve_overlaps_in_pair(
                 break
             if pending.intersects(geom) and not pending.touches(geom):
                 geom = geom.difference(pending)
-        if geo_polygon.is_pinch_out and geom is not geo_polygon.polygon:
+        if geo_polygon.is_pinch_out and geom is not snapped:
             # A wedge must stay attached to the hole where the unit was logged; the
             # largest clip fragment can be a sliver floating mid-way between holes.
-            largest = _anchored_fragment(geom, _pinch_anchor_edge(geo_polygon.polygon, hole_xs))
+            # The anchor comes from the snapped wedge, so it meets the fragment's
+            # hole edge exactly.
+            largest = _anchored_fragment(geom, _pinch_anchor_edge(snapped, hole_xs))
         else:
             largest = _largest_polygon(geom)
-        if largest is not None and not largest.is_empty and largest is not geo_polygon.polygon:
-            largest = _clean_polygon(largest)
+        if largest is not None and not largest.is_empty and largest is not snapped:
+            # Back on the grid after the vertex clean-up (a rebuilt Polygon has
+            # no precision model), so later unions stay snap-rounded.
+            largest = _snap_for_overlay(_clean_polygon(largest))
         kept_area = 0.0 if largest is None or largest.is_empty else float(largest.area)
         if (
             warn_on_clip
@@ -1434,13 +1479,18 @@ def detect_polygon_overlaps(polygons: list[GeologicalPolygon]) -> list[PolygonOv
                 right_index = indices[right_pos]
                 right = polygons[right_index]
                 intersection = left.polygon.intersection(right.polygon)
-                # Skip empty/tiny area and pure line touches (area < 1e-9).
-                if intersection.is_empty or intersection.area < 1e-9:
+                # Skip empty/tiny area and pure line touches: anything thinner
+                # than ``OVERLAP_SLIVER_WIDTH_M`` across the pair's perimeter is
+                # a precision artefact of the clip grid, not a correlation conflict.
+                sliver_area = max(
+                    1e-9, OVERLAP_SLIVER_WIDTH_M * (left.polygon.length + right.polygon.length)
+                )
+                if intersection.is_empty or intersection.area < sliver_area:
                     continue
                 # GEOS overlay on near-degenerate rings is direction-sensitive; a
                 # real overlap has area both ways round, a precision artefact not.
                 reverse = right.polygon.intersection(left.polygon)
-                if reverse.is_empty or reverse.area < 1e-9:
+                if reverse.is_empty or reverse.area < sliver_area:
                     continue
                 centroid = intersection.centroid
                 overlaps.append(

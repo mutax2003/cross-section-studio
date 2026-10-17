@@ -607,6 +607,7 @@ class CrossSectionRenderer(
         """
         water = getattr(self, "_water_labels", None) or []
         water_here = bool(water) and all(annotation.figure is figure for _kind, annotation, _c in water)
+        sheet = str(getattr(self.profile, "layout", "")) == "section_sheet"
         for _attempt in range(3):
             self._layout_headers(figure)
             if fit_page:
@@ -615,9 +616,27 @@ class CrossSectionRenderer(
             if not water_here:
                 return
             before = self._plot_layout_key(figure)
+            key_before = self._threshold_key_state(figure)
             self._resolve_water_label_collisions(figure)
+            if self._threshold_key_state(figure) != key_before:
+                # The label pass added or changed the "N values not printed"
+                # footnote under the distance label: the sheet's bottom fit
+                # (part of the page fit) stacks it clear of the footer lines.
+                if fit_page:
+                    self.fit_page_content(figure)
+                elif sheet:
+                    self._fit_section_sheet_bottom(figure)
             if self._plot_layout_key(figure) == before:
                 return
+
+    def _threshold_key_state(self, figure: Figure) -> tuple:
+        """Identity and rows of the threshold key / omitted-values footnote on ``figure``."""
+        key = getattr(self, "_chemistry_threshold_key", None)
+        if key is None or key.figure is not figure:
+            return ()
+        stack = getattr(key, "_css_stack", None)
+        rows = len(stack.get_children()) if stack is not None else 1
+        return (id(key), rows)
 
     def _lift_headers_if_overprinting(self, figure: Figure) -> None:
         """Last header fallback on a fixed page: a fan taller than the room above the frame.

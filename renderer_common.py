@@ -2119,17 +2119,17 @@ def parameter_legend_keys(entries, *, draw_markers: bool, upper: bool = False) -
     for entry in entries or ():
         label = str(entry.get("label") or entry.get("parameter") or "Parameter")
         label = label.upper() if upper else label
+        # Each parameter's own marker shape (set per entry by the chemistry
+        # pass) keys its samples, with or without markers on the section.
         marker = entry.get("marker") or "o"
         if entry.get("threshold_colors"):
-            keys.append((ThresholdDotsKey(entry["threshold_colors"]), label))
+            keys.append((ThresholdDotsKey(entry["threshold_colors"], marker=marker), label))
         elif entry.get("sample_text"):
             color = entry.get("sample_color") or entry.get("color") or "#111827"
             keys.append((SampleTextKey(entry["sample_text"], color), label))
         else:
             color = entry.get("sample_color") or entry.get("color") or "#111827"
-            handle = Line2D(
-                [], [], color=color, marker=marker if draw_markers else "o", markersize=6, linestyle="none"
-            )
+            handle = Line2D([], [], color=color, marker=marker, markersize=6, linestyle="none")
             keys.append((handle, label))
     return keys
 

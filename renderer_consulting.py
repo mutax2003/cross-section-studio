@@ -2477,7 +2477,7 @@ class ConsultingLayoutMixin:
                     [ax_key_x + (ax_key_x1 - ax_key_x) * (i + 0.5) / count for i in range(len(band_colors))],
                     [ax_y] * len(band_colors),
                     c=band_colors,
-                    marker="o",
+                    marker=style.get("marker", "o"),
                     s=14.0,
                     linewidths=0,
                     transform=ax.transAxes,

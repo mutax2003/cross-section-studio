@@ -1405,10 +1405,11 @@ class ConsultingLayoutMixin:
     def _draw_well_id_labels(self, ax, hole_summary: pd.DataFrame) -> None:
         header_transform = ax.get_xaxis_transform()
         for row in hole_summary.itertuples(index=False):
+            hole_id = fit_label(str(row.hole_id))
             header = ax.text(
                 float(row.x_profile),
                 1.02,
-                fit_label(str(row.hole_id)),
+                hole_id,
                 transform=header_transform,
                 ha="center",
                 va="bottom",
@@ -1418,6 +1419,7 @@ class ConsultingLayoutMixin:
                 clip_on=False,
                 zorder=10,
             )
+            header._header_hole_id = hole_id
             self._header_labels.append(header)
 
     def _transect_endpoint_lines(self, title_block: ConsultingTitleBlock) -> tuple[tuple[str, str], tuple[str, str]]:

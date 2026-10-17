@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 import numpy as np
@@ -566,15 +567,43 @@ HOLE_LABEL_MAX_CHARS = 20
 LEGEND_LABEL_MAX_CHARS = 32
 
 
-def fit_label(label: str, *, max_chars: int = HOLE_LABEL_MAX_CHARS, max_lines: int = 2) -> str:
-    """``label`` wrapped at ``max_chars`` (words, then hard breaks), at most
-    ``max_lines`` lines, the last ellipsized when text was dropped."""
-    import textwrap
+# Label pieces: runs of whitespace, or text up to and including a '-', '_'
+# or '/' (a line may break after one), or text with none of those.
+_LABEL_PIECE_RE = re.compile(r"\s+|[^\s\-_/]*[-_/]|[^\s\-_/]+")
 
+
+def _wrap_label(text: str, width: int) -> list[str]:
+    """Lines of at most ``width`` characters: broken at spaces or after '-',
+    '_' and '/' ("MW-2017-01-DEEP-" / "NESTED", never "...-NEST" / "ED");
+    only a piece longer than the width breaks mid-token."""
+    width = max(1, int(width))
+    lines: list[str] = []
+    current = ""
+    for piece in _LABEL_PIECE_RE.findall(text):
+        if piece.isspace():
+            if current:
+                current += " "
+            continue
+        if current.strip() and len(current) + len(piece) > width:
+            lines.append(current.rstrip())
+            current = ""
+        while len(piece) > width:
+            lines.append(piece[:width])
+            piece = piece[width:]
+        current += piece
+    if current.strip():
+        lines.append(current.rstrip())
+    return lines
+
+
+def fit_label(label: str, *, max_chars: int = HOLE_LABEL_MAX_CHARS, max_lines: int = 2) -> str:
+    """``label`` wrapped at ``max_chars`` (at spaces or after '-' '_' '/',
+    then hard breaks), at most ``max_lines`` lines, the last ellipsized when
+    text was dropped."""
     text = str(label)
     if len(text) <= max_chars or "\n" in text:
         return text
-    lines = textwrap.wrap(text, width=max_chars, break_long_words=True, break_on_hyphens=False)
+    lines = _wrap_label(text, max_chars)
     if len(lines) <= max_lines:
         return "\n".join(lines)
     kept = lines[:max_lines]
@@ -938,8 +967,13 @@ def _stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, rob
     margins = getattr(fig, "_css_page_margins_in", None) or (0.05,) * 4
     label_sets = [(plain, attempts)]
     # Multi-line headers (chart: ID / TD / RL): the hole ID alone, when the
-    # full headers cannot be spread over the page width.
-    first_lines = [label.split("\n")[0] for label in plain]
+    # full headers cannot be spread over the page width. The ID as drawn
+    # (``_header_hole_id``, wrapped by ``fit_label``), not the first wrapped
+    # line of it, which cut a long ID short.
+    first_lines = [
+        str(getattr(text, "_header_hole_id", "") or label.split("\n")[0])
+        for text, label in zip(ordered, plain, strict=True)
+    ]
     if first_lines != plain:
         first_wrapped = [label.replace(" / ", " /\n") for label in first_lines]
         first_attempts = [(first_lines, 1.0)]

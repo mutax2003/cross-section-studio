@@ -30,6 +30,8 @@ class _LabelSpec:
     dx: float = 0.0
     dy: float = 0.0
     draw_leader: bool = False
+    # The (wrapped) hole ID on its own: the header fallback's short label.
+    hole_id: str = ""
 
 
 # Reading / chemistry settings the caller's profile keeps on the chart layout.
@@ -308,6 +310,7 @@ class ChartLayoutMixin:
                     zorder=8,
                     clip_on=False,
                 )
+                header._header_hole_id = label.hole_id or label.text.split("\n")[0]
                 self._header_labels.append(header)
 
             self._draw_scale_bar(ax)
@@ -435,12 +438,14 @@ class ChartLayoutMixin:
             # The collar RL rides in the header box: as a separate label it
             # sat under the box and only "m RL" showed.
             rl_text = f"{float(row.collar_elevation):.1f} m RL"
-            lines = [fit_label(str(row.hole_id)), depth_text, rl_text]
+            hole_id = fit_label(str(row.hole_id))
+            lines = [hole_id, depth_text, rl_text]
             labels.append(
                 _LabelSpec(
                     x=float(row.x_profile),
                     y=float(row.collar_elevation),
                     text="\n".join(line for line in lines if line),
+                    hole_id=hole_id,
                 )
             )
         return labels

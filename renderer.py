@@ -1088,6 +1088,8 @@ class CrossSectionRenderer(
                 clip_on=False,
                 zorder=10,
             )
+            # The (wrapped) ID alone: the header fallback's short label.
+            text_artist._header_hole_id = hole_id
             self._header_labels.append(text_artist)
             if self._cad_svg_layers_enabled():
                 self._set_cad_gid(text_artist, "headers")

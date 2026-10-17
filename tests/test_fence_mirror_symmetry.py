@@ -126,3 +126,33 @@ def test_overlap_detection_ignores_grid_slivers_but_not_real_overlaps() -> None:
     assert detect_polygon_overlaps(_pair(left, sliver)) == []
     real = affinity.translate(sliver, xoff=-0.01)
     assert len(detect_polygon_overlaps(_pair(left, real))) == 1
+
+
+def test_extreme_coordinates_still_build_a_fence() -> None:
+    """Coordinates near 5e8 m made GEOS snap-rounding reject some overlays
+    ("Ring edge missing"); the floating fallback must keep the fence buildable."""
+    import random
+
+    from models import Collar, Lithology
+    from pipeline import compute_section_geometry
+
+    rng = random.Random(7264)
+    codes = ["Clay", "Sand", "Silt", "Till", "Gravel", "Bedrock"]
+    collars = [
+        Collar(hole_id=f"H{i}", easting=5e8 + i * 37.3, northing=1e6 + rng.uniform(-3, 3),
+               elevation=99000 + rng.uniform(-40, 40), total_depth=60)
+        for i in range(8)
+    ]
+    rows = []
+    for collar in collars:
+        depth = 0.0
+        for _ in range(rng.randint(3, 7)):
+            top = depth
+            depth = min(depth + rng.uniform(0.004, 15), 60)
+            rows.append(Lithology(hole_id=collar.hole_id, from_depth=round(top, 5), to_depth=round(depth, 5),
+                                  lithology_code=rng.choice(codes)))
+            if depth >= 60:
+                break
+    line = [(collars[0].easting, collars[0].northing), (collars[-1].easting, collars[-1].northing)]
+    geometry = compute_section_geometry(collars, rows, line)
+    assert geometry.polygons

@@ -12,6 +12,7 @@ import pandas as pd
 import shapely
 from shapely.errors import GEOSException
 from shapely.geometry import LineString, Polygon
+from shapely.ops import unary_union
 from shapely.strtree import STRtree
 
 from models import CorrelationOverride
@@ -1278,7 +1279,7 @@ def _anchored_fragment(geom, anchor: LineString | None) -> Polygon | None:
         for part in getattr(geom, "geoms", ())
         if part.geom_type == "Polygon" and not part.is_empty
     ]
-    attached = [(part.boundary.intersection(anchor).length, part.area) for part in parts]
+    attached = [(_overlay("intersection", part.boundary, anchor).length, part.area) for part in parts]
     candidates = [
         (contact, area, part) for (contact, area), part in zip(attached, parts) if contact > 0.0
     ]
@@ -1329,6 +1330,37 @@ def _snap_for_overlay(geom):
     return snapped
 
 
+def _unsnapped(geom):
+    """``geom`` without a precision model (floating overlay fallback)."""
+    try:
+        plain = shapely.set_precision(geom, 0.0)
+    except (GEOSException, ValueError):  # pragma: no cover - defensive
+        plain = geom
+    if plain is None or plain.is_empty:
+        return plain
+    return plain if plain.is_valid else plain.buffer(0)
+
+
+def _overlay(op: str, left, right):
+    """``left.<op>(right)`` on the precision grid, falling back to a floating
+    overlay when GEOS's snap-rounding rejects the pair (seen with coordinates
+    near 5e8 m: "Ring edge missing"). The result keeps whichever model worked."""
+    try:
+        return getattr(left, op)(right)
+    except GEOSException:
+        logger.debug("Grid overlay failed (%s); retrying without the precision model", op)
+        return getattr(_unsnapped(left), op)(_unsnapped(right))
+
+
+def _union_all(parts):
+    try:
+        return unary_union(parts) if len(parts) > 1 else parts[0]
+    except GEOSException:
+        logger.debug("Grid union failed; retrying without the precision model")
+        plain = [_unsnapped(part) for part in parts]
+        return unary_union(plain) if len(plain) > 1 else plain[0]
+
+
 def _resolve_overlaps_in_pair(
     polygons: list[GeologicalPolygon],
     *,
@@ -1344,7 +1376,6 @@ def _resolve_overlaps_in_pair(
     if len(polygons) <= 1:
         return polygons
 
-    from shapely.ops import unary_union
     from shapely.prepared import prep
 
     ordered = sorted(
@@ -1374,14 +1405,14 @@ def _resolve_overlaps_in_pair(
             # Prepared predicates for skip checks; difference still uses raw geom.
             probe = occupied_prep if occupied_prep is not None else occupied_geom
             if probe.intersects(geom) and not probe.touches(geom):
-                geom = geom.difference(occupied_geom)
+                geom = _overlay("difference", geom, occupied_geom)
         # Polygons kept earlier in the current (not yet unioned) batch also occupy
         # area; without this, up to ``batch_limit`` fills could stack unclipped.
         for pending in batch:
             if geom.is_empty:
                 break
             if pending.intersects(geom) and not pending.touches(geom):
-                geom = geom.difference(pending)
+                geom = _overlay("difference", geom, pending)
         if geo_polygon.is_pinch_out and geom is not snapped:
             # A wedge must stay attached to the hole where the unit was logged; the
             # largest clip fragment can be a sliver floating mid-way between holes.
@@ -1428,8 +1459,8 @@ def _resolve_overlaps_in_pair(
         )
         batch.append(largest)
         if len(batch) >= batch_limit or index == last_index:
-            chunk = unary_union(batch) if len(batch) > 1 else batch[0]
-            occupied_geom = chunk if occupied_geom is None else occupied_geom.union(chunk)
+            chunk = _union_all(batch)
+            occupied_geom = chunk if occupied_geom is None else _overlay("union", occupied_geom, chunk)
             occupied_prep = (
                 prep(occupied_geom)
                 if occupied_geom is not None and not occupied_geom.is_empty
@@ -1478,7 +1509,7 @@ def detect_polygon_overlaps(polygons: list[GeologicalPolygon]) -> list[PolygonOv
                     continue
                 right_index = indices[right_pos]
                 right = polygons[right_index]
-                intersection = left.polygon.intersection(right.polygon)
+                intersection = _overlay("intersection", left.polygon, right.polygon)
                 # Skip empty/tiny area and pure line touches: anything thinner
                 # than ``OVERLAP_SLIVER_WIDTH_M`` across the pair's perimeter is
                 # a precision artefact of the clip grid, not a correlation conflict.
@@ -1489,7 +1520,7 @@ def detect_polygon_overlaps(polygons: list[GeologicalPolygon]) -> list[PolygonOv
                     continue
                 # GEOS overlay on near-degenerate rings is direction-sensitive; a
                 # real overlap has area both ways round, a precision artefact not.
-                reverse = right.polygon.intersection(left.polygon)
+                reverse = _overlay("intersection", right.polygon, left.polygon)
                 if reverse.is_empty or reverse.area < sliver_area:
                     continue
                 centroid = intersection.centroid

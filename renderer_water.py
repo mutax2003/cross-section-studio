@@ -232,9 +232,10 @@ def _fmt_water_number(value: float, decimals: int = 2) -> str:
 def _water_compact_text(annotation, level: int) -> str:
     """Text of a water number at a compaction level (see the ladder above)."""
     value = getattr(annotation, "_water_value", None)
-    base = getattr(annotation, "_water_base_text", annotation.get_text())
     if value is None:
-        return base
+        # A DRY / NM note (merged from both statuses after it was drawn):
+        # its text never compacts, so it keeps what it says now.
+        return annotation.get_text()
     suffix = str(getattr(annotation, "_water_suffix", "") or "")
     number = _fmt_water_number(value, 1 if level >= 2 else 2)
     return number if level >= 1 or not suffix else f"{number} {suffix}"

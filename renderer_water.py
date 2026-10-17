@@ -73,8 +73,18 @@ _WATER_LEADER_SHRINK_PT = 2.0
 # length, midpoint first), offset perpendicular to it by the box half-extent
 # plus a small extra; never on another line, never with a leader.
 _GRADIENT_T = (0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74, 0.18, 0.82)
-_GRADIENT_PERP_EXTRA_PT = (0.0, 2.0, 5.0, 9.0)
+_GRADIENT_PERP_EXTRA_PT = (0.0, 2.0, 5.0, 9.0, 14.0, 20.0)
 _GRADIENT_BELOW_COST = 1.5
+# Water-number compaction ladder, one level for the whole figure (as the
+# chemistry values shrink together): 0 full text; 1 unit suffix dropped
+# ("737.00 m" -> "737.00"; the axis names the unit); 2 one decimal; 3 text
+# at _WATER_COMPACT_FONT_SCALE (gradients shrink with the numbers). The
+# level is raised only while a level number would otherwise be dropped or
+# printed over a neighbouring column; a neighbouring column is the last
+# resort before the drop (its own column is never covered).
+_WATER_MAX_COMPACT_LEVEL = 3
+_WATER_COMPACT_FONT_LEVEL = 3
+_WATER_COMPACT_FONT_SCALE = 0.8
 # Water label boxes: opaque white so lines and hatching never show through.
 _WATER_LABEL_BBOX = {"boxstyle": "square,pad=0.12", "fc": "white", "ec": "none", "alpha": 1.0}
 _WATER_LABEL_BBOX_PAD = 0.12
@@ -206,14 +216,51 @@ _SERIES_MARKER_STEP_PT = 7.5
 _SERIES_DASHES = ("--", "-.", ":", (0, (6, 2, 1, 2)))
 
 
-def _fmt_water_number(value: float) -> str:
+def _fmt_water_number(value: float, decimals: int = 2) -> str:
     """Water level / depth text: always 2 decimals (745.29, 745.30, 745.00).
 
     One fixed precision per figure: "744" beside "743.24" read as different
-    survey accuracies.
+    survey accuracies. A crowded figure drops to one decimal for every
+    number at once (``decimals=1``), never for a few of them.
     """
-    text = f"{float(value):.2f}"
-    return "0.00" if text == "-0.00" else text
+    decimals = max(0, int(decimals))
+    text = f"{float(value):.{decimals}f}"
+    zero = f"{0.0:.{decimals}f}"
+    return zero if text == f"-{zero}" else text
+
+
+def _water_compact_text(annotation, level: int) -> str:
+    """Text of a water number at a compaction level (see the ladder above)."""
+    value = getattr(annotation, "_water_value", None)
+    base = getattr(annotation, "_water_base_text", annotation.get_text())
+    if value is None:
+        return base
+    suffix = str(getattr(annotation, "_water_suffix", "") or "")
+    number = _fmt_water_number(value, 1 if level >= 2 else 2)
+    return number if level >= 1 or not suffix else f"{number} {suffix}"
+
+
+def _apply_water_compaction(labels, level: int) -> bool:
+    """Set every water number / gradient to a compaction level; True if any changed."""
+    changed = False
+    scale = _WATER_COMPACT_FONT_SCALE if level >= _WATER_COMPACT_FONT_LEVEL else 1.0
+    for kind, annotation, _color in labels:
+        if kind == "chem":
+            continue
+        base_size = getattr(annotation, "_water_base_fontsize", None)
+        if base_size is None:
+            base_size = float(annotation.get_fontsize())
+            annotation._water_base_fontsize = base_size
+        size = float(base_size) * scale
+        if abs(float(annotation.get_fontsize()) - size) > 1e-9:
+            annotation.set_fontsize(size)
+            changed = True
+        if kind in ("rl", "nm"):
+            text = _water_compact_text(annotation, level)
+            if text != annotation.get_text():
+                annotation.set_text(text)
+                changed = True
+    return changed
 
 
 class _ObstacleArray:
@@ -1423,18 +1470,25 @@ def _connect_subgroups(
 class RendererWaterMixin:
     """Water-table markers, polylines, and compact GW legend."""
 
-    def _water_elevation_label(self, level: WaterLevel, collar_rl: float) -> str:
-        """Annotate water as RL (masl) in elevation mode, or depth (mbgs) in relative mode."""
+    def _water_elevation_parts(self, level: WaterLevel, collar_rl: float) -> tuple[float, str]:
+        """``(value, unit suffix)`` of a water number: RL (masl) in elevation
+        mode, depth (mbgs) in relative mode; consulting sheets print no unit."""
         if self.profile.y_axis_mode == "depth_below_collar":
-            return f"{_fmt_water_number(level.depth)} mbgs"
+            return float(level.depth), "mbgs"
         water_rl = (
             float(level.elevation_masl)
             if level.elevation_masl is not None
             else collar_rl - level.depth
         )
         if self.profile.layout == "consulting_section":
-            return _fmt_water_number(water_rl)
-        return f"{_fmt_water_number(water_rl)} m"
+            return float(water_rl), ""
+        return float(water_rl), "m"
+
+    def _water_elevation_label(self, level: WaterLevel, collar_rl: float) -> str:
+        """Annotate water as RL (masl) in elevation mode, or depth (mbgs) in relative mode."""
+        value, suffix = self._water_elevation_parts(level, collar_rl)
+        number = _fmt_water_number(value)
+        return f"{number} {suffix}" if suffix else number
 
     def _water_legend_captions(
         self,
@@ -1521,6 +1575,8 @@ class RendererWaterMixin:
             },
         )
         annotation.arrow_patch.set_visible(False)
+        annotation._water_base_text = text
+        annotation._water_base_fontsize = float(fontsize)
         if not hasattr(self, "_water_labels"):
             self._water_labels = []
         self._water_labels.append((kind, annotation, color))
@@ -1574,7 +1630,12 @@ class RendererWaterMixin:
         # Hard cap on full placement passes: escalation raises every hole
         # with drops at once, so a well-formed figure needs at most
         # _CHEM_MAX_COMPACT_LEVEL + 1 passes per font settle.
-        budget = _MAX_LABEL_PASSES
+        budget = _MAX_LABEL_PASSES + _WATER_MAX_COMPACT_LEVEL
+        # Water numbers: one compaction level for the whole figure, raised
+        # (unit dropped, one decimal, smaller text) while a level number
+        # would otherwise be dropped or printed over a neighbouring column.
+        water_level = int(getattr(self, "_water_compact_level", 0))
+        _apply_water_compaction(labels, water_level)
         for _settle in range(_CHEM_FONT_SETTLE_PASSES + 1):
             while True:
                 dropped_holes = self._label_collision_pass(
@@ -1587,7 +1648,15 @@ class RendererWaterMixin:
                     for hole in dropped_holes
                     if np.isfinite(hole) and compact.get(hole, 0) < _CHEM_MAX_COMPACT_LEVEL
                 }
-                if not escalate or budget <= 0:
+                raise_water = False
+                if getattr(self, "_water_labels_short", False):
+                    while water_level < _WATER_MAX_COMPACT_LEVEL and not raise_water:
+                        water_level += 1
+                        # A level that changes nothing (consulting numbers
+                        # carry no unit to drop) costs no pass.
+                        raise_water = _apply_water_compaction(labels, water_level)
+                    self._water_compact_level = water_level
+                if (not escalate and not raise_water) or budget <= 0:
                     break
                 for hole in escalate:
                     compact[hole] = compact.get(hole, 0) + 1
@@ -1737,6 +1806,9 @@ class RendererWaterMixin:
         dropped_holes: set[float] = set()
         font_caps = font_caps or {}
         pad = renderer.points_to_pixels(_LABEL_PAD_PT)
+        # Set when a level number / note is dropped or lands on a
+        # neighbouring column: the figure's water numbers then compact.
+        self._water_labels_short = False
         # A re-run (page resize) starts from scratch: restore labels a previous
         # pass dropped so they get another chance at the new size.
         for _kind, annotation, _color in labels:
@@ -1883,6 +1955,10 @@ class RendererWaterMixin:
                 annotation._water_dropped = True
                 annotation.arrow_patch.set_visible(False)
                 _set_label_visible(annotation, False)
+                if kind in ("rl", "nm"):
+                    self._water_labels_short = True
+            elif kind in ("rl", "nm") and getattr(annotation, "_water_on_neighbour", False):
+                self._water_labels_short = True
         return dropped_holes
 
     def _water_label_scene(self, fig, labels, renderer, column_boxes, strip_arr) -> dict:
@@ -1916,11 +1992,13 @@ class RendererWaterMixin:
         """Put one water number / note / gradient on its best free spot.
 
         Hard rules (a spot breaking one is never used): inside the frame, off
-        every placed label and leader, off the borehole columns and the
+        every placed label and leader, off its own borehole column and the
         groundwater markers, and a leader (if any) crossing no other label or
-        leader. RL numbers and NM notes prefer spots off every water / ground
+        leader. Neighbouring columns are soft: every spot clear of them is
+        tried first (the figure compacts its numbers before one is used).
+        RL numbers and NM notes prefer spots off every water / ground
         line and the chemistry strips, but take a line over being dropped;
-        gradients never sit on a line. A spot within ``_WATER_NEAR_HEIGHTS``
+        gradients take a line only as the last resort. A spot within ``_WATER_NEAR_HEIGHTS``
         label heights of the marker (beside it, however far out sideways)
         beats any further down or up the hole, even one on the water line
         itself (never the ground line): a number beside its marker on the
@@ -2000,14 +2078,29 @@ class RendererWaterMixin:
             # series' line it reads as that line's gradient.
             ok &= ~_segments_cross(np.column_stack((feet, centres)), scene["lines"]).any(axis=1)
         idx = np.flatnonzero(ok)
+        # Own column (the one the marker / note sits in): never covered.
+        # Every other column is a soft obstacle, the last resort before
+        # the label is dropped (the figure compacts its numbers first).
+        columns = scene["columns"]
+        own_col = np.zeros(columns.shape[0], dtype=bool)
+        if kind != "gradient" and columns.shape[0]:
+            own_col = (
+                (columns[:, 0] - 0.5 <= anchor[0])
+                & (anchor[0] <= columns[:, 2] + 0.5)
+                & (columns[:, 1] - 0.5 <= anchor[1])
+                & (anchor[1] <= columns[:, 3] + 0.5)
+            )
+        col_clear = _WATER_COLUMN_CLEAR_PT * ppt
+        other_col_hit = np.zeros(boxes.shape[0], dtype=bool)
         if idx.size:
             sub = boxes[idx]
             bad = placed_arr.overlaps_many(sub)
-            col_clear = _WATER_COLUMN_CLEAR_PT * ppt
-            bad |= _boxes_overlap_any(scene["columns"], sub + np.array([-col_clear, 0.0, col_clear, 0.0]))
+            cleared = sub + np.array([-col_clear, 0.0, col_clear, 0.0])
+            bad |= _boxes_overlap_any(columns[own_col], cleared)
             bad |= _circles_hit_boxes(scene["markers"], sub, _WATER_MARKER_CLEAR_PT * ppt)
             if scene["leaders"].shape[0]:
                 bad |= _segment_box_hits(scene["leaders"], sub + np.array([-pad, -pad, pad, pad])).any(axis=0)
+            other_col_hit[idx] = _boxes_overlap_any(columns[~own_col], cleared)
             idx = idx[~bad]
         leader_segs = None
         if idx.size and leadered[idx].any():
@@ -2039,8 +2132,11 @@ class RendererWaterMixin:
         if scene["strips"].shape[0]:
             on_strip = _boxes_overlap_any(scene["strips"], sub)
         near = np.abs(centres[idx, 1] - float(anchor[1])) <= _WATER_NEAR_HEIGHTS * h
+        on_other = other_col_hit[idx]
         if kind == "gradient":
-            tiers = [~on_line & ~on_strip, ~on_line]
+            # Off every line first; a spot touching a line (the bend at a
+            # hole, not its own segment) beats dropping the gradient.
+            tiers = [~on_line & ~on_strip, ~on_line, ~on_strip, np.ones(idx.size, dtype=bool)]
         else:
             on_ground = np.zeros(idx.size, dtype=bool)
             if scene["ground_lines"].shape[0]:
@@ -2062,6 +2158,9 @@ class RendererWaterMixin:
                 ~on_line,
                 np.ones(idx.size, dtype=bool),
             ]
+        # Every tier clear of the neighbouring columns first, then the same
+        # ladder over them (never the own column, filtered above).
+        tiers = [keep & ~on_other for keep in tiers] + tiers
         choice = None
         for keep in tiers:
             if keep.any():
@@ -2070,6 +2169,7 @@ class RendererWaterMixin:
                 break
         if choice is None:
             return False
+        annotation._water_on_neighbour = bool(other_col_hit[choice])
         cx, cy = centres[choice]
         drawn = ax.transData.transform([annotation.xy])[0]
         dx, dy = (cx - drawn[0]) / ppt, (cy - drawn[1]) / ppt
@@ -2313,6 +2413,11 @@ class RendererWaterMixin:
                             color=color,
                             fontsize=7,
                             xytext=(4, -8),
+                        )
+                        # The number's parts, for the figure-wide compaction
+                        # ladder (unit dropped, one decimal, smaller text).
+                        rl_label._water_value, rl_label._water_suffix = self._water_elevation_parts(
+                            level, collar_rl
                         )
                         # Its own marker: a marker nudged off a coincident
                         # one pulls the number to its side.

@@ -358,6 +358,7 @@ class CrossSectionRenderer(
         self.water_series_legend = []
         self._ve_main_ax = None
         self._water_labels = []
+        self._water_compact_level = 0
         self._header_labels = []
         self._has_unlogged_intervals = False
         if self.profile.layout == "section_sheet":

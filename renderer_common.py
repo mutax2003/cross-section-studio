@@ -688,19 +688,45 @@ def _outward(text) -> float:
     return 1.0 if text.get_verticalalignment() == "bottom" else -1.0
 
 
-def _off_page(box, page, outward: float, *, horizontal: bool = False, flexible_top: bool = False) -> bool:
+def _off_page(
+    box,
+    page,
+    outward: float,
+    *,
+    horizontal: bool = False,
+    flexible_top: bool = False,
+    top_limit: float | None = None,
+) -> bool:
     """Header box past the page edge it grows toward.
 
     Rows below the plot (section sheet) are exempt vertically: the sheet's
     bottom fit makes room under whatever the header pass draws. So are rows
     above the plot when a title layout engine lowers the plot to fit them
-    (``flexible_top``: section sheet depth mode, chart).
+    (``flexible_top``: section sheet depth mode, chart) — up to
+    ``top_limit`` (display y), the most the engine can lower the plot by
+    while keeping the title on the page (``_header_top_limit``).
     """
     if horizontal and (box.x0 < page.x0 or box.x1 > page.x1):
         return True
-    if outward > 0 and not flexible_top:
+    if outward > 0:
+        if flexible_top:
+            return top_limit is not None and box.y1 > top_limit
         return box.y1 > page.y1
     return False
+
+
+def _header_top_limit(fig, headers) -> float | None:
+    """Display y a header row above the plot may reach under a title layout
+    engine (``renderer_chart._ChartTitleLayout.header_room_px``); None when
+    the engine sets no bound."""
+    room = getattr(fig.get_layout_engine(), "header_room_px", None)
+    if room is None:
+        return None
+    room_px = room(fig)
+    frame = next((t.axes.bbox for t in headers if t.axes is not None), None)
+    if room_px is None or frame is None:
+        return None
+    return float(frame.y1 + room_px)
 
 
 def _title_fits_headers(fig) -> bool:
@@ -774,6 +800,8 @@ def _stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, rob
     pad = _HEADER_PAD_PT * px_per_pt
     flexible_top = _title_fits_headers(fig)
     ordered = sorted(headers, key=lambda t: t.get_unitless_position()[0])
+    # How high a row above the plot may reach under the title engine.
+    top_limit = _header_top_limit(fig, ordered) if flexible_top else None
     # The nudge pass's layout, kept when nothing here does better.
     first_pass = [
         (t.get_transform(), t.get_horizontalalignment(), t.get_rotation(), t.get_text(), t.get_fontsize())
@@ -834,7 +862,7 @@ def _stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, rob
                 if box.x0 < page.x0 or box.x1 > page.x1:
                     shift = (page.x0 - box.x0 + pad) if box.x0 < page.x0 else (page.x1 - box.x1 - pad)
                     box = box.translated(shift, 0.0)
-                if _off_page(box, page, outward, flexible_top=flexible_top):
+                if _off_page(box, page, outward, flexible_top=flexible_top, top_limit=top_limit):
                     break
                 if any(_boxes_overlap(box, other, pad) for other in placed):
                     continue
@@ -897,7 +925,7 @@ def _stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, rob
         ) + sum(
             1
             for t, box in zip(ordered, boxes, strict=True)
-            if _off_page(box, page, _outward(t), flexible_top=flexible_top)
+            if _off_page(box, page, _outward(t), flexible_top=flexible_top, top_limit=top_limit)
         )
         if rotated_cost is None or cost < rotated_cost[0]:
             rotated_cost = (cost, size)
@@ -930,7 +958,7 @@ def _stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, rob
                 size = max(_HEADER_MIN_PT, base_size * factor)
                 if _apply_fan(
                     fig, ordered, base_states, labels, size, renderer, reset, obstacles, margins,
-                    flexible_top=top_flexible, side_boxes=side_boxes,
+                    flexible_top=top_flexible, side_boxes=side_boxes, top_limit=top_limit,
                 ):
                     if top_flexible and not flexible_top:
                         # Sticky: the page fit keeps the lowered top from now on.
@@ -941,7 +969,7 @@ def _stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, rob
                 size = max(_HEADER_MIN_PT, base_size * factor)
                 if _apply_fan(
                     fig, ordered, base_states, vertical_labels, size, renderer, reset, obstacles, margins,
-                    flexible_top=top_flexible, rotation=90.0, side_boxes=side_boxes,
+                    flexible_top=top_flexible, rotation=90.0, side_boxes=side_boxes, top_limit=top_limit,
                 ):
                     if top_flexible and not flexible_top:
                         # Sticky: the page fit keeps the lowered top from now on.
@@ -963,7 +991,7 @@ def _stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, rob
 
 def _apply_fan(
     fig, ordered, base_states, labels, size, renderer, reset, obstacles, margins,
-    *, flexible_top: bool = False, rotation: float = 0.0, side_boxes=(),
+    *, flexible_top: bool = False, rotation: float = 0.0, side_boxes=(), top_limit: float | None = None,
 ) -> bool:
     """One row of headers spread in hole order with straight leaders; False if it can't fit.
 
@@ -1017,7 +1045,7 @@ def _apply_fan(
     placed = []
     for box, centre, anchor in zip(boxes0, centres, anchors, strict=True):
         moved = box.translated(centre - anchor, outward * lift_pt * px_per_pt)
-        if _off_page(moved, page, outward, flexible_top=flexible_top):
+        if _off_page(moved, page, outward, flexible_top=flexible_top, top_limit=top_limit):
             return False
         if any(_boxes_overlap(moved, other, 0.0) for other in obstacles):
             return False

@@ -67,6 +67,9 @@ _TITLE_TOP_MARGIN_PT = 8.0
 # frame (pad 0.25 em at 8 pt) adds about this much around the text.
 _HEADER_OFFSET_PT = 4.0
 _HEADER_BOX_PAD_PT = 2.0
+# The plot frame keeps at least this share of the page height under the
+# title and headers (the title layout never lowers the top past it).
+_MIN_PLOT_SHARE = 0.25
 
 
 def _header_box(text, renderer):
@@ -114,29 +117,67 @@ class _ChartTitleLayout(LayoutEngine):
             for text in self._headers
             if text.figure is fig and text.get_visible() and text.get_text().strip()
         ]
-        # Reserve two header tiers (a neighbour may raise one; the header pass
-        # steps by text height + 1 pt) and more when a header reaches higher.
         above_pt = 0.0
         if headers:
-            tier_pt = max(t.get_window_extent(renderer).height for t in headers) / px_per_pt
-            above_pt = _HEADER_OFFSET_PT + 2.0 * (tier_pt + 1.0) + _HEADER_BOX_PAD_PT
             reach_pt = (max(_header_box(t, renderer).y1 for t in headers) - ax_top) / px_per_pt
             above_pt = max(above_pt, reach_pt)
+            if all(abs(float(t.get_rotation())) % 180.0 < 1.0 for t in headers):
+                # Horizontal rows: reserve two header tiers (a neighbour may
+                # raise one; the header pass steps by text height + 1 pt). A
+                # rotated row's extent is its reach already; two of those
+                # reserved more than a page.
+                tier_pt = max(t.get_window_extent(renderer).height for t in headers) / px_per_pt
+                above_pt = max(above_pt, _HEADER_OFFSET_PT + 2.0 * (tier_pt + 1.0) + _HEADER_BOX_PAD_PT)
         pad_pt = max(6.0, above_pt + _TITLE_HEADER_GAP_PT)
         ax.set_title(self._title, pad=pad_pt, **self._title_kwargs)
         title_h = ax.title.get_window_extent(renderer).height
         # Export pages keep the printable margin above the title.
-        margins = getattr(fig, "_css_page_margins_in", None)
-        top_margin_pt = max(_TITLE_TOP_MARGIN_PT, margins[2] * 72.0) if margins else _TITLE_TOP_MARGIN_PT
-        need_px = pad_pt * px_per_pt + title_h + top_margin_pt * px_per_pt
+        top_margin_pt = self._top_margin_pt(fig)
         fig_h = fig.bbox.height
         if fig_h <= 0:
             return
         bottom = fig.subplotpars.bottom
+        # The plot keeps at least _MIN_PLOT_SHARE of the page: a header row
+        # taller than the room left above it would push the title past the
+        # page edge, so the title pad stops at that room (the header pass
+        # bounds its fans by ``header_room_px``; a taller row prints under
+        # the title rather than off the page).
+        room_px = fig_h * (1.0 - bottom - _MIN_PLOT_SHARE) - title_h - top_margin_pt * px_per_pt
+        if pad_pt * px_per_pt > room_px:
+            pad_pt = max(6.0, room_px / px_per_pt)
+            ax.set_title(self._title, pad=pad_pt, **self._title_kwargs)
+        need_px = pad_pt * px_per_pt + title_h + top_margin_pt * px_per_pt
         top = min(1.0 - need_px / fig_h, 0.98)
-        top = max(top, bottom + 0.25)
+        top = max(top, bottom + _MIN_PLOT_SHARE)
         if abs(top - fig.subplotpars.top) > 1e-4:
             fig.subplots_adjust(top=top)
+
+    def _top_margin_pt(self, fig) -> float:
+        margins = getattr(fig, "_css_page_margins_in", None)
+        return max(_TITLE_TOP_MARGIN_PT, margins[2] * 72.0) if margins else _TITLE_TOP_MARGIN_PT
+
+    def header_room_px(self, fig) -> float | None:
+        """How far (display px) above the plot frame the hole headers may reach.
+
+        The room the title pad can grow to while the plot keeps
+        ``_MIN_PLOT_SHARE`` of the page and the title its gap and top margin;
+        the header pass rejects a tier or fan reaching past it. None when the
+        engine is not this figure's.
+        """
+        ax = self._ax
+        if ax.figure is not fig or not self._title:
+            return None
+        renderer = fig._get_renderer()
+        px_per_pt = renderer.points_to_pixels(1.0)
+        if ax.title.get_text() != self._title:
+            ax.set_title(self._title, pad=6.0, **self._title_kwargs)
+        title_h = ax.title.get_window_extent(renderer).height
+        room_px = (
+            fig.bbox.height * (1.0 - fig.subplotpars.bottom - _MIN_PLOT_SHARE)
+            - title_h
+            - (self._top_margin_pt(fig) + _TITLE_HEADER_GAP_PT) * px_per_pt
+        )
+        return max(room_px, 0.0)
 
 
 class ChartLayoutMixin:

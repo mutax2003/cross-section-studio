@@ -2566,6 +2566,21 @@ class ConsultingLayoutMixin:
             pt -= 0.5
         if sizes[-1] > floor_pt + 1e-9:
             sizes.append(floor_pt)
+        if not entries:
+            # Nothing to key (no units, no symbols): the header alone.
+            line_h = base_pt * _LEGEND_LINESPACING * 1.17 / 72.0
+            return _LegendLayout(
+                rows=[],
+                font_pt=base_pt,
+                header_pt=header_pt,
+                line_h=line_h,
+                swatch_h=max(MIN_LEGEND_SWATCH_HEIGHT_IN, min(0.13, line_h * 0.9)),
+                key_w=_LEGEND_SWATCH_W_IN,
+                text_gap=text_gap,
+                pad_x=pad_x,
+                pad_top=pad_top,
+                ncols=1,
+            )
 
         def wrap(label: str, width_in: float, size: float, max_lines: int) -> list[str] | None:
             words = label.split()

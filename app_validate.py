@@ -24,6 +24,7 @@ from app_common import (
 )
 from ingestion import NATIVE_PROFILE_ID
 from parsing import skipped_row_hole_ids
+from ui_helpers import unique_download_bytes
 
 
 def _render_fix_step_actions(
@@ -554,6 +555,12 @@ def render_next_step_coach(
                 f"<strong>Next:</strong> section line {holes} is selected — click "
                 "<strong>Generate section</strong> above."
             )
+    elif len(st.session_state.get("hole_ids") or ()) < 2:
+        # Choosing holes cannot help: there is nothing to choose.
+        coach = (
+            "<strong>Next:</strong> a section needs at least two holes — add at least "
+            "one more hole to the workbook (Collars and Lithology), then upload it again."
+        )
     else:
         coach = (
             "<strong>Next:</strong> choose holes under <strong>Section line</strong> "
@@ -606,12 +613,21 @@ def render_validate_step(*, show_coach: bool = True) -> None:
     skipped_rows = list(parse_result.errors)
     skipped_holes = lithology_skipped_holes(skipped_rows)
     error_total = quality_report.error_count + len(skipped_rows)
-    status_label = _health_status_label(error_total, quality_report.warning_count)
+    if skipped_rows and not quality_report.has_blocking_errors:
+        # Skipped rows count as errors (same total as the upload banner) but
+        # do not block Generate; "Needs fixes" next to an enabled Generate
+        # and "Next: click Generate" contradicted each other.
+        status_label = "Rows skipped"
+        status_note = " — the skipped rows are left out; you can still generate."
+    else:
+        status_label = _health_status_label(error_total, quality_report.warning_count)
+        status_note = ""
     status_line = (
         f"**{status_label}** — "
         f"**{error_total} {'error' if error_total == 1 else 'errors'}**, "
-        f"**{quality_report.warning_count} warnings**, "
-        f"**{quality_report.info_count} info**"
+        f"**{quality_report.warning_count} "
+        f"{'warning' if quality_report.warning_count == 1 else 'warnings'}**, "
+        f"**{quality_report.info_count} info**{status_note}"
     )
     compact = not quality_report.has_blocking_errors
     if compact:
@@ -688,7 +704,7 @@ def render_validate_step(*, show_coach: bool = True) -> None:
         if cleaned:
             st.download_button(
                 "Download cleaned workbook (.xlsx)",
-                data=cleaned,
+                data=unique_download_bytes(cleaned),
                 file_name="cross_section_cleaned.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="download_cleaned_workbook",

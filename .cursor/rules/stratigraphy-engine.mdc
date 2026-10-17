@@ -27,6 +27,14 @@ For each adjacent pair, match intervals using hashable keys (not code-only union
 
 Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) or skipped.
 
+**Logging gaps:** a fence-only copy of each hole closes mid-log not-logged gaps (unit above and below meet at the gap midpoint) so the fence tiles; the projected data the columns draw from is untouched (they still show the grey "Not logged" interval). Top / base gaps stay open.
+
+**Zero-thickness intervals:** intervals thinner than `MIN_FENCE_THICKNESS_M` (1 mm; `from_depth == to_depth`) are dropped in `_sorted_hole_profiles` before gap closing and correlation — a degenerate match collapsed the neighbouring fills and broke mirror symmetry. Columns / projected data keep them; `ai_quality` warns ("zero-thickness interval … ignored in the fence").
+
+**Crossing matches:** automatic matches that cross (layers logged in opposite order in the two holes) are un-matched, keeping the best-ranked order-preserving set; the dropped units become anchored pinch-outs and are listed in `CorrelationPairSummary.crossing_codes`. Explicit overrides are always kept. Crossing is judged on **elevation order** (`_stratigraphic_positions`), not the `unit_order` sort of `_intervals_for_hole`: user `unit_order` is a hint, so `('order', …)` matches whose numbering runs against depth are un-matched like code-only ones (and `ai_quality` warns "unit_order runs against depth"). Same-code shifted candidates that are rejected only because they strictly cross a kept match (neither interval matched elsewhere) are re-keyed `('crossed', …)` too, so the "Crossing correlation" note appears whether or not the holes carry `unit_order`. `build_stratigraphy(..., clip_warnings=list)` collects "Fence clipped … kept N%" when clipping removes > 15% of a polygon; `pipeline.compute_section_geometry` surfaces both as `overlap_warnings` ("Crossing correlation …", "Fence clipped …") and Configure preflight shows them.
+
+**Shifted-unit re-match (`_rematch_shifted_units`, via `_correlate_pair`):** after overrides, unmatched same-lithology candidate pairs are ranked across the whole hole pair (shared elevation range, then closest mid-elevation, then elevation-rank position) and accepted in that order when they don't cross an existing match; equal-ranked conflicting candidates are all rejected, so reversing the transect mirrors the result. This keeps e.g. Clay continuous when one hole logs an extra lens (which shifts every deeper per-hole `unit_order` by one). Leftover repeats stay pinch-outs. Used by both `_polygons_for_pair` and `preview_correlation_health`.
+
 `correlation_overrides` from workbook or session remap left/right `unit_order` pairs before matching. Overrides keyed with **reversed** hole order are accepted via `_overrides_for_hole_pair` (unit orders swapped to transect left→right). Prefer exact `(left, right)` when both directions exist.
 
 ## Pinch-Out Algorithm
@@ -39,14 +47,27 @@ Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) 
 - `is_pinch_out = False`
 
 **Case 2 — Pinch-out** (key in one hole only, `allow_pinch_outs=True`):
-- `Z_mid` = average boundary elevation from neighboring units in the other hole
-- When the pinch interval has **`unit_order`**, prefer neighbor intervals with adjacent `unit_order` (±1) before **elevation-position** neighbors (compare RLs / top–bottom elevations — not hole-local depths — so unequal collar elevations stay correct)
-- `X_mid = (X_Bᵢ + X_Bᵢ₊₁) / 2`
-- 3-vertex triangular wedge tapering to `(X_mid, Z_mid)`
+- `_pinch_out_wedge_coords`: vertical edge exactly on the source hole from logged top to bottom; tip at `PINCH_OUT_FRACTION` (0.5) of the way to the neighbour
+- Wedges are planned first: `_bracketing_matches` finds the nearest matched units above/below in the source hole; tip z (`_bracket_tip_z`) = mean of the two bounding contact lines interpolated hole-to-hole at the tip x (one-sided wedges sit on that single contact); no matched bracket → `_pinch_out_z_mid` fallback (adjacent `unit_order` ±1, then elevation position — RLs, not hole-local depths)
+- No bending when crossing correlations invert the bracketing contacts or the tip falls outside the fill's vertical extent
+- When both bracketing units exist, the upper unit's bottom edge and the lower unit's top edge bend through the tip (`_bend_path`) so upper unit, wedge(s) and lower unit tile the gap with no white triangle; stacked lenses share one tip
+- **Single-bounded wedges (`_tile_open_wedges`):** unmatched units below the lowest match (base units) or above the highest match (top units) have one bracketing contact only, so a tip wedge would leave a white triangle against the fence base line (hole bottom → hole bottom) or ground line (hole top → hole top). They are grouped by `(above, below)` bracket and tiled instead:
+  - **Opposing** (X only in the left hole, Y only in the right, same bracket, each group filling its hole from the contact to the hole end): vertical facies-change boundary at `PINCH_OUT_FRACTION` of the span — X fills the left part, Y the right part, between the bracketing contact (with any bends) and the base/top line. Stacked units in a group keep their thickness proportions across the region.
+  - **Lone** (nothing opposite; the neighbour ends exactly at the contact): the unit runs to the neighbour, thinning to zero at its hole end, so its edge follows the base/top line (the neighbour simply did not penetrate it).
+  - Falls back to tip wedges when a group does not reach its hole end / contact or the region is not ordered. Unbracketed wedges (no match above or below, e.g. crossing un-matches with nothing correlated) keep their `_pinch_out_z_mid` tips.
+  - Tiles are `is_pinch_out=True`; `_resolve_overlaps_in_pair(..., hole_xs=(x_left, x_right))` anchors clip fragments on the hole edge, not the mid-span facies boundary (`_pinch_anchor_edge(polygon, hole_xs)`).
+- 3-vertex triangular wedge tapering to `(X_tip, Z_tip)` (two-sided / unbracketed cases)
 - `is_pinch_out = True` — renderer draws dashed edges and lower alpha
 - `_make_polygon` always stores a single Shapely `Polygon` (largest part after `buffer(0)` repair) so the renderer can use `.exterior`
 
-**Case 3 — `allow_pinch_outs=False`:** skip unmatched intervals (leave inter-hole gap).
+**Case 3 — `allow_pinch_outs=False`:** unmatched intervals are not drawn between the holes, but the fence still tiles — the bracketing matched fills take over their space at the source hole (`_closed_unmatched_ends`; endpoints only, no mid-span bends; hole/column data untouched):
+- **Two-sided** (match above and below): the upper unit's base and the lower unit's top both run to the mid-elevation of the gap at the source hole, so the contacts converge there (the pinch-out bend with its tip on the hole).
+- **Above only** (units below the lowest match): the upper unit's base runs to the deepest unmatched base (fence base line). **Below only**: the lower unit's top runs to the highest unmatched top (fence top line).
+- Unbracketed units and mis-ordered (crossing) brackets keep the old behaviour (gap left).
+
+## Depth mode (depth below collar)
+
+Polygons are always built in elevation (RL). The renderer (`renderer._fence_plot_coords`, `hole_x_lookup=_HoleContext.x_by_hole`) converts to depth with the collar RL **interpolated linearly along x between the pair's holes** — an affine map, so a fence that tiles in elevation tiles identically in depth (mirror), and vertices on a hole land on that hole's exact depths. Never use a per-vertex left/right collar step: it tore pinch-out wedges off their bent fills (white triangle + overlap) whenever collars differ.
 
 ## Overlap clipping (`_resolve_overlaps_in_pair`)
 
@@ -55,8 +76,8 @@ After `_polygons_for_pair()` builds polygons for one adjacent hole pair, **`_res
 1. Sort polygons by `(is_pinch_out, -bounds[3], bounds[1])` — continuous fills before pinch-outs, then descending top elevation
 2. Walk in order; skip probes that do not intersect occupied area (`shapely.prepared.prep` when available for faster `intersects` / `touches`)
 3. Subtract already-occupied area from each polygon via Shapely `difference`
-4. Keep the largest remaining polygon fragment (`_largest_polygon`); drop empty fragments
-5. Batch-union occupied area every `batch_limit` (4) polygons (or at end) and refresh the prepared geometry
+4. Keep a fragment: for pinch-outs, the piece still touching its source-hole edge (`_pinch_anchor_edge`, `_anchored_fragment`) so wedges never float mid-section; otherwise the largest (`_largest_polygon`); drop empty fragments
+5. Every overlay runs on operands snapped to a fixed precision grid (`CLIP_PRECISION_GRID_M` = 1e-9 m, GEOS snap rounding) so forward and reversed transects clip identically; `detect_polygon_overlaps` ignores grid slivers thinner than `OVERLAP_SLIVER_WIDTH_M`. Clip against both the batch-unioned occupied area and the polygons still pending in the current batch; batch-union every `batch_limit` (4) polygons (or at end) and refresh the prepared geometry
 
 Called inside `build_stratigraphy()` for every adjacent pair **before** polygons are returned to the pipeline. This reduces false overlap markers on section-sheet figures; residual overlaps may still be detected and surfaced.
 

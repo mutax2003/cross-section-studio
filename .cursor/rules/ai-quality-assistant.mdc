@@ -20,6 +20,8 @@ Runs after ingest via `analyze_parsed_data()` → `QualityReport` with `issues`,
 | `depth_overlap` | error | Overlapping interval depths |
 | `duplicate_lithology_no_unit_order` | error | Same `lithology_code` twice in one hole without `unit_order` |
 | `duplicate_unit_order` | error | Conflicting `unit_order` values in one hole |
+| `unit_order_against_depth` | warning | `unit_order` decreases going down a hole ("unit_order runs against depth in BH… — check numbering"); the fence judges crossings on depth, so those matches drop to crossing pinch-outs |
+| `zero_thickness_interval` | warning | `from_depth == to_depth` (< 1 mm, `ZERO_THICKNESS_M`, synced with `stratigraphy.MIN_FENCE_THICKNESS_M`) — ignored in the fence |
 | `orphan_lithology` | error | Lithology `hole_id` missing from collars |
 | `below_td` | error | Interval extends below collar `total_depth` |
 | `flat_collar_grid` | warning | Collars share identical easting/northing |

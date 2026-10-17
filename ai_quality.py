@@ -37,6 +37,9 @@ from projection import TransectGeometry
 
 logger = logging.getLogger(__name__)
 MAPPING_CONFIDENCE_THRESHOLD = 0.8
+# Intervals thinner than this are left out of the inter-hole fence by
+# ``stratigraphy.MIN_FENCE_THICKNESS_M`` (kept in sync; no engine import here).
+ZERO_THICKNESS_M = 1e-3
 
 COLLAR_ALIASES: dict[str, set[str]] = {
     "hole_id": {"hole_id", "hole", "bh_id", "borehole", "borehole_id", "id", "bh"},
@@ -353,7 +356,11 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
             )
         )
 
-    sorted_intervals = sorted(intervals, key=lambda item: item.from_depth)
+    # Full key so equal tops (e.g. a zero-thickness row) sort the same way
+    # whatever the sheet's row order.
+    sorted_intervals = sorted(
+        intervals, key=lambda item: (item.from_depth, item.to_depth, str(item.lithology_code))
+    )
     if sorted_intervals[0].from_depth > 0.01:
         issues.append(
             QualityIssue(
@@ -367,7 +374,11 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
             )
         )
 
-    for left, right in zip(sorted_intervals, sorted_intervals[1:]):
+    # Zero-thickness rows get their own warning (zero_thickness_interval) and
+    # are dropped from the fence; pairing them here read "1.2–3.29 m overlaps
+    # 1.2–1.2 m".
+    thick = [i for i in sorted_intervals if i.to_depth - i.from_depth >= ZERO_THICKNESS_M]
+    for left, right in zip(thick, thick[1:]):
         if right.from_depth > left.to_depth + 0.01:
             issues.append(
                 QualityIssue(
@@ -394,7 +405,7 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
                 )
             )
 
-    last = sorted_intervals[-1]
+    last = max(thick or sorted_intervals, key=lambda interval: interval.to_depth)
     if last.to_depth < collar.total_depth - 0.01:
         issues.append(
             QualityIssue(
@@ -442,7 +453,62 @@ def _hole_quality_issues(collar: Collar, intervals: list[Lithology]) -> list[Qua
                 )
             )
 
+    issues.extend(_zero_thickness_issues(collar.hole_id, sorted_intervals))
+    against_depth = _unit_order_against_depth_issue(collar.hole_id, sorted_intervals)
+    if against_depth is not None:
+        issues.append(against_depth)
     return issues
+
+
+def _zero_thickness_issues(hole_id: str, intervals: Sequence[Lithology]) -> list[QualityIssue]:
+    """Warn for intervals with from_depth == to_depth (dropped from the fence)."""
+    return [
+        QualityIssue(
+            code="zero_thickness_interval",
+            message=(
+                f"{hole_id}: zero-thickness interval {interval.lithology_code} at "
+                f"{_m(interval.from_depth)} m (from_depth = to_depth) ignored in the fence — "
+                "fix to_depth or delete the row"
+            ),
+            severity=Severity.WARNING.value,
+            hole_id=hole_id,
+        )
+        for interval in intervals
+        if interval.to_depth - interval.from_depth < ZERO_THICKNESS_M
+    ]
+
+
+def _unit_order_against_depth_issue(
+    hole_id: str, intervals: Sequence[Lithology]
+) -> QualityIssue | None:
+    """Warn once per hole when unit_order decreases going down the hole.
+
+    The fence judges correlation crossings on depth, so contradictory numbering
+    makes numbered matches drop out as crossing pinch-outs.
+    """
+    # Zero-thickness rows are left out of the fence (and warned about on
+    # their own), so they cannot make the numbering run against depth.
+    numbered = [
+        interval
+        for interval in intervals
+        if interval.unit_order is not None and interval.to_depth - interval.from_depth >= ZERO_THICKNESS_M
+    ]
+    for upper, lower in zip(numbered, numbered[1:]):
+        if lower.from_depth < upper.to_depth - 0.01 or lower.from_depth <= upper.from_depth:
+            continue  # overlapping / same-top rows are reported elsewhere
+        if lower.unit_order < upper.unit_order:
+            return QualityIssue(
+                code="unit_order_against_depth",
+                message=(
+                    f"unit_order runs against depth in {hole_id}: {upper.lithology_code} "
+                    f"(unit_order {upper.unit_order}) at {_m(upper.from_depth)} m sits above "
+                    f"{lower.lithology_code} (unit_order {lower.unit_order}) at "
+                    f"{_m(lower.from_depth)} m — check numbering"
+                ),
+                severity=Severity.WARNING.value,
+                hole_id=hole_id,
+            )
+    return None
 
 
 def collars_use_placeholder_elevation(
@@ -454,6 +520,37 @@ def collars_use_placeholder_elevation(
     if not collars:
         return False
     return all(abs(collar.elevation - placeholder_m) <= tolerance for collar in collars)
+
+
+def _coordinates_look_like_degrees(collars: Sequence[Collar]) -> QualityIssue | None:
+    """Warn when easting/northing hold latitude/longitude, not metres.
+
+    Degrees typed into easting/northing (e.g. -79.38 / 43.65) project as a
+    section a few centimetres long. Local site grids can also be small
+    numbers (0, 5, 10 m), so only flag a sub-metre spread of non-integer
+    values that all fit the degree range.
+    """
+    if len(collars) < 2:
+        return None
+    eastings = [float(c.easting) for c in collars]
+    northings = [float(c.northing) for c in collars]
+    in_range = all(abs(e) <= 180 for e in eastings) and all(abs(n) <= 90 for n in northings)
+    spread = max(max(eastings) - min(eastings), max(northings) - min(northings))
+    decimal_degrees = any(
+        abs(v) >= 1 and abs(v - round(v)) > 1e-6 for v in (*eastings, *northings)
+    )
+    if not (in_range and 0 < spread < 1.0 and decimal_degrees):
+        return None
+    return QualityIssue(
+        code="coordinates_in_degrees",
+        message=(
+            "Collar easting/northing look like latitude/longitude (all within ±180/±90 and "
+            f"only {spread:.4f} apart), so the section would be a few centimetres long — "
+            "enter projected coordinates in metres (e.g. UTM), or put degrees in latitude/"
+            "longitude columns"
+        ),
+        severity=Severity.WARNING.value,
+    )
 
 
 def analyze_parsed_data(
@@ -470,6 +567,9 @@ def analyze_parsed_data(
     collar_by_id = {collar.hole_id: collar for collar in collars}
     collar_ids = set(collar_by_id)
     lithology_by_hole: dict[str, list[Lithology]] = {}
+    degrees_issue = _coordinates_look_like_degrees(collars)
+    if degrees_issue is not None:
+        issues.append(degrees_issue)
 
     for lithology in lithologies:
         lithology_by_hole.setdefault(lithology.hole_id, []).append(lithology)

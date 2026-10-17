@@ -314,7 +314,7 @@ def test_consulting_relative_mode_water_labels_use_mbgs() -> None:
         ],
     )
     text = renderer.to_svg_bytes(figure).decode("utf-8", errors="ignore")
-    assert "2.50 mbgs" in text
+    assert "2.50 mbgs" in text  # 2 fixed decimals per figure
     assert "3.00 mbgs" in text
     assert "97.500 masl" not in text
     assert "mbgs" in text
@@ -749,6 +749,7 @@ def test_consulting_water_labels_do_not_overlap_and_series_get_own_colours() -> 
     mpl_renderer = _figure_renderer(figure)
     labels = [annotation for _kind, annotation, _color in renderer._water_labels]
     assert len(labels) >= 8
+    labels = [annotation for annotation in labels if annotation.get_visible()]
     boxes = []
     for annotation in labels:
         annotation.update_positions(mpl_renderer)
@@ -861,7 +862,12 @@ def test_header_and_water_passes_are_idempotent_and_rerun_for_export_pages() -> 
 
     first = positions()
     for _ in range(3):
+        # The full header pass: shared nudge pass, then tier / vertical stacking.
+        renderer._layout_headers(figure)
+    np.testing.assert_allclose(positions(), first, atol=0.5)
+    for _ in range(2):
         resolve_header_collisions(figure, renderer._header_labels)
+        renderer._layout_headers(figure)
     np.testing.assert_allclose(positions(), first, atol=0.5)
 
     renderer.export_framing = ExportFramingConfig(page_preset="letter_portrait", export_dpi=72)
@@ -1010,10 +1016,9 @@ def test_consulting_first_borehole_is_drawn_in_full() -> None:
     assert "0" in labels
 
 
-def test_stale_excel_legend_only_overrides_listed_codes(tmp_path, monkeypatch, caplog) -> None:
-    """A leftover BH Log Lithology Legend.xlsx used to replace the whole agreed
-    scheme (dropping codes to grey); now it only overrides the codes it lists,
-    and says so."""
+def test_old_excel_legend_is_fallback_only(tmp_path, monkeypatch, caplog) -> None:
+    """Template 261002 supersedes the old BH Log hex sheet: a leftover Excel
+    legend never recolours scheme codes; it only adds codes the scheme lacks."""
     import logging
 
     import openpyxl
@@ -1027,6 +1032,7 @@ def test_stale_excel_legend_only_overrides_listed_codes(tmp_path, monkeypatch, c
     sheet.append(["BH Log Lithology Legend"])  # title row; the parser reads header=1
     sheet.append(["Colour", "", "Lithology", "RGB"])
     sheet.append(["#38220F", "", "Clay", ""])
+    sheet.append(["#123456", "", "Legacy Fill Unit", ""])
     book.save(legend)
     monkeypatch.setattr(paths, "bh_log_lithology_legend_xlsx_path", lambda: legend)
     monkeypatch.setattr(constants, "bh_log_lithology_legend_xlsx_path", lambda: legend)
@@ -1034,10 +1040,10 @@ def test_stale_excel_legend_only_overrides_listed_codes(tmp_path, monkeypatch, c
     try:
         with caplog.at_level(logging.WARNING):
             palette = constants._build_lithology_palette()
-        assert palette["Clay"] == "#38220F"  # the listed code is overridden...
-        assert palette["Coal"] == "#000000" and palette["Silty Sand"] == "#FFE39F"  # ...the rest keep the scheme
-        assert len(palette) == len(constants.USGS_LITHOLOGY_COLORS)
-        assert any("overrides the agreed scheme" in r.message for r in caplog.records)
+        assert palette["Clay"] == constants.USGS_LITHOLOGY_COLORS["Clay"] != "#38220F"
+        assert palette["Coal"] == "#000000" and palette["Silty Sand"] == "#FFE39F"
+        assert palette["Legacy Fill Unit"] == "#123456"  # old-only code falls back
+        assert any("the scheme wins" in r.message for r in caplog.records)
     finally:
         constants._load_bh_log_lithology_colors.cache_clear()
 
@@ -1241,3 +1247,33 @@ def test_palette_matches_cad_template_261002() -> None:
         if get_lithology_style(code).color.upper() != expected
     }
     assert not mismatched, mismatched
+
+
+def test_section_sheet_legend_stays_on_the_page() -> None:
+    """Long lithology names in a two-column legend ran off the right edge."""
+    import matplotlib.pyplot as plt
+
+    codes = ["Sandy Clay Loam", "Silty Clay Loam", "Sand and Gravel", "Loamy Sand", "Clay Loam", "Fill"]
+    collars = [Collar(hole_id=f"BH-{i}", easting=10.0 * i, northing=0.0, elevation=100.0, total_depth=12.0) for i in range(3)]
+    liths = [
+        Lithology(hole_id=c.hole_id, from_depth=2.0 * k, to_depth=2.0 * (k + 1), lithology_code=code)
+        for c in collars
+        for k, code in enumerate(codes)
+    ]
+    projected, polygons, _ = run_pipeline(collars, liths, [(0.0, 0.0), (20.0, 0.0)])
+    for page in ("letter_landscape", "letter_portrait"):
+        from export_framing import ExportFramingConfig
+
+        renderer = CrossSectionRenderer(
+            show_legend=True,
+            render_profile=SECTION_SHEET_PROFILE,
+            export_framing=ExportFramingConfig(page_preset=page),
+        )
+        fig = renderer.render(polygons, projected, collar_depths={c.hole_id: 12.0 for c in collars})
+        try:
+            renderer._prepare_export_figure(fig)
+            fig.draw_without_rendering()
+            box = fig.axes[0].get_legend().get_window_extent(fig.canvas.get_renderer())
+            assert box.x1 <= fig.bbox.x1 + 0.5, page
+        finally:
+            plt.close(fig)

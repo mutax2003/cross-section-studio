@@ -453,3 +453,147 @@ def test_unknown_render_layout_is_rejected() -> None:
     liths = [Lithology(hole_id=c.hole_id, from_depth=0.0, to_depth=5.0, lithology_code="Clay") for c in collars]
     with pytest.raises(ValueError, match="render_layout"):
         build_cross_section(collars, liths, [(0.0, 0.0), (10.0, 0.0)], render_layout="consulting")
+
+
+def test_layers_logged_in_opposite_order_are_reported() -> None:
+    from models import Collar, Lithology
+    from pipeline import compute_section_geometry
+
+    collars = [
+        Collar(hole_id="A", easting=0, northing=0, elevation=100, total_depth=10),
+        Collar(hole_id="B", easting=50, northing=0, elevation=100, total_depth=10),
+    ]
+    rows = [("A", 0, 5, "Sand"), ("A", 5, 10, "Clay"), ("B", 0, 5, "Clay"), ("B", 5, 10, "Sand")]
+    lithology = [Lithology(hole_id=h, from_depth=a, to_depth=b, lithology_code=c) for h, a, b, c in rows]
+    geometry = compute_section_geometry(collars, lithology, [(0, 0), (50, 0)])
+    assert any(message.startswith("Crossing correlation A–B") for message in geometry.overlap_warnings)
+
+
+def test_crossing_note_wording_follows_pinch_out_setting() -> None:
+    from models import Collar, Lithology
+    from pipeline import compute_section_geometry
+
+    collars = [
+        Collar(hole_id="A", easting=0, northing=0, elevation=100, total_depth=10),
+        Collar(hole_id="B", easting=50, northing=0, elevation=100, total_depth=10),
+    ]
+    rows = [("A", 0, 5, "Sand"), ("A", 5, 10, "Clay"), ("B", 0, 5, "Clay"), ("B", 5, 10, "Sand")]
+    lithology = [Lithology(hole_id=h, from_depth=a, to_depth=b, lithology_code=c) for h, a, b, c in rows]
+    off = compute_section_geometry(collars, lithology, [(0, 0), (50, 0)], allow_pinch_outs=False)
+    notes = [m for m in off.overlap_warnings if m.startswith("Crossing correlation")]
+    assert notes and all("not drawn between these holes" in m for m in notes)
+
+
+def test_wedge_only_pairs_do_not_report_correlation_conflicts() -> None:
+    from models import Collar, Lithology
+    from pipeline import compute_section_geometry
+
+    collars = [
+        Collar(hole_id="A", easting=0, northing=0, elevation=100, total_depth=10),
+        Collar(hole_id="B", easting=30, northing=0, elevation=96, total_depth=12),
+    ]
+    rows = [
+        ("A", 0, 4, "Sand"), ("A", 4, 10, "Clay"),
+        ("B", 0, 3, "Silt"), ("B", 3, 7, "Gravel"), ("B", 7, 12, "Till"),
+    ]
+    lithology = [Lithology(hole_id=h, from_depth=a, to_depth=b, lithology_code=c) for h, a, b, c in rows]
+    geometry = compute_section_geometry(collars, lithology, [(0, 0), (30, 0)])
+    assert not [m for m in geometry.overlap_warnings if m.startswith("Fence clipped")]
+
+
+def test_render_notes_are_appended_after_export_framing(monkeypatch) -> None:
+    import renderer as renderer_module
+    from export_framing import ExportFramingConfig
+    from models import Collar, Lithology
+    from pipeline import build_cross_section
+
+    calls = []
+    original = renderer_module.CrossSectionRenderer.export_figure_bytes
+
+    def spy(self, figure, export_formats, **kwargs):
+        calls.append(kwargs.get("append_render_notes"))
+        return original(self, figure, export_formats, **kwargs)
+
+    monkeypatch.setattr(renderer_module.CrossSectionRenderer, "export_figure_bytes", spy)
+    collars = [
+        Collar(hole_id="A", easting=0, northing=0, elevation=100, total_depth=10),
+        Collar(hole_id="B", easting=50, northing=0, elevation=100, total_depth=10),
+    ]
+    lithology = [Lithology(hole_id=h, from_depth=0, to_depth=10, lithology_code="Clay") for h in "AB"]
+    build_cross_section(collars, lithology, [(0, 0), (50, 0)], export_formats=frozenset({"png"}))
+    build_cross_section(
+        collars,
+        lithology,
+        [(0, 0), (50, 0)],
+        export_formats=frozenset({"png"}),
+        export_framing=ExportFramingConfig(include_qa_footer=False),
+    )
+    assert calls == [True, False]
+
+
+def _crossing_holes():
+    collars = [
+        Collar(hole_id="A", easting=0, northing=0, elevation=100, total_depth=10),
+        Collar(hole_id="B", easting=50, northing=0, elevation=100, total_depth=10),
+    ]
+    rows = [("A", 0, 5, "Sand"), ("A", 5, 10, "Clay"), ("B", 0, 5, "Clay"), ("B", 5, 10, "Sand")]
+    lithology = [Lithology(hole_id=h, from_depth=a, to_depth=b, lithology_code=c) for h, a, b, c in rows]
+    return collars, lithology
+
+
+def _pdf_pages(pdf: bytes) -> list[tuple[float, float, str]]:
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    return [
+        (round(float(p.mediabox.width) / 72, 2), round(float(p.mediabox.height) / 72, 2), p.extract_text())
+        for p in PdfReader(BytesIO(pdf)).pages
+    ]
+
+
+def test_section_sheet_summary_page_is_letter_with_wrapped_text() -> None:
+    """The summary page claimed letter but was cropped to its text (19.9 x
+    8.9 in with a long disclaimer)."""
+    collars, lithology = _crossing_holes()
+    result = build_cross_section(
+        collars, lithology, [(0, 0), (50, 0)], title="X" * 40, export_formats=frozenset({"pdf"})
+    )
+    pages = _pdf_pages(result.pdf_bytes)
+    assert len(pages) >= 2
+    assert all(page[:2] == (11.0, 8.5) for page in pages[1:])
+    assert "QA notes" in pages[1][2] and "Crossing correlation" in pages[1][2]
+
+
+def test_consulting_pdf_gets_a_qa_notes_page_only_when_notes_are_on() -> None:
+    """Consulting styles were one page, so section notes never reached the PDF."""
+    from export_framing import ExportFramingConfig
+
+    collars, lithology = _crossing_holes()
+    common = dict(render_layout="consulting_section", export_formats=frozenset({"pdf"}))
+    with_notes = build_cross_section(collars, lithology, [(0, 0), (50, 0)], **common)
+    pages = _pdf_pages(with_notes.pdf_bytes)
+    assert len(pages) == 2
+    assert pages[1][:2] == (11.0, 8.5)
+    assert "QA notes" in pages[1][2] and "Crossing correlation" in pages[1][2]
+    without = build_cross_section(
+        collars,
+        lithology,
+        [(0, 0), (50, 0)],
+        export_framing=ExportFramingConfig(include_qa_footer=False),
+        **common,
+    )
+    assert len(_pdf_pages(without.pdf_bytes)) == 1
+
+
+def test_normalize_pdf_pages_fits_every_page_on_letter_landscape() -> None:
+    from report_export import normalize_pdf_pages
+
+    collars, lithology = _crossing_holes()
+    pdf = build_cross_section(
+        collars, lithology, [(0, 0), (50, 0)], export_formats=frozenset({"pdf"})
+    ).pdf_bytes
+    assert _pdf_pages(pdf)[0][:2] != (11.0, 8.5)
+    normalized = _pdf_pages(normalize_pdf_pages(pdf))
+    assert {page[:2] for page in normalized} == {(11.0, 8.5)}
+    assert "QA notes" in normalized[1][2]

@@ -14,7 +14,10 @@ from pydantic import BaseModel, Field, field_validator
 
 from app_identity import COPYRIGHT_NOTICE, CREATED_BY
 
-_FILENAME_SAFE_RE = re.compile(r"[^\w\-]+")
+# Primes stay: "A-A'" and "A-A" name different things on a drawing list, and
+# an apostrophe is valid in Windows, macOS and ZIP file names.
+_FILENAME_SAFE_RE = re.compile(r"[^\w\-']+")
+_TYPOGRAPHIC_FOLD = str.maketrans({"\u2032": "'", "\u2019": "'", "\u2018": "'", "\u02b9": "'", "\u2013": "-", "\u2014": "-", "\u2212": "-"})
 
 ExportPagePreset = Literal[
     "auto",
@@ -50,6 +53,7 @@ class ExportFramingConfig(BaseModel, frozen=True):
     include_title_block: bool = True
     include_legend: bool = True
     include_water_table: bool = True
+    include_screens: bool = True
     include_qa_footer: bool = True
     fence_only: bool = False
     filename_pattern: ExportFilenamePattern = "section_title"
@@ -59,6 +63,9 @@ class ExportFramingConfig(BaseModel, frozen=True):
     viewport_ymin: float | None = None
     viewport_ymax: float | None = None
     cad_svg_layers: bool = False
+    # SVG text as editable <text> (needs the font on the viewer's machine)
+    # instead of outlines; off keeps every machine's rendering identical.
+    svg_editable_text: bool = False
 
     @field_validator("viewport_xmin", "viewport_xmax", "viewport_ymin", "viewport_ymax")
     @classmethod
@@ -121,9 +128,52 @@ def export_figsize_in(
     return None
 
 
-def _sanitize_stem(text: str, *, fallback: str = "cross_section") -> str:
-    cleaned = _FILENAME_SAFE_RE.sub("_", text.strip())[:80].strip("_")
-    return cleaned or fallback
+_WINDOWS_RESERVED_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
+def avoid_windows_reserved_name(stem: str) -> str:
+    """Append ``_`` to stems Windows reserves for devices (``CON``, ``LPT1`` …).
+
+    ``CON.svg`` can't be created on Windows (the desktop build saves to a
+    project folder) and confuses ZIP extractors there.
+    """
+    base = stem.split(".", 1)[0]
+    return f"{stem}_" if base.upper() in _WINDOWS_RESERVED_STEMS else stem
+
+
+def sanitize_filename_stem(text: str, *, fallback: str = "cross_section") -> str:
+    """Safe file-name stem: ``A - A' WITH CL`` → ``A-A'_WITH_CL``."""
+    # Typographic primes / dashes ("B-B′", "B–B’") name the same section as
+    # the ASCII form; fold them first so they neither vanish nor collide.
+    cleaned = _FILENAME_SAFE_RE.sub("_", text.strip().translate(_TYPOGRAPHIC_FOLD))
+    # Keep a trailing prime ("A-A'"); only a leading one is meaningless.
+    cleaned = cleaned.replace("_-_", "-")[:80].strip("_").lstrip("'").strip("_")
+    return avoid_windows_reserved_name(cleaned) if cleaned else fallback
+
+
+_sanitize_stem = sanitize_filename_stem
+
+
+def _label_tokens(text: str) -> str:
+    return " ".join(re.findall(r"[0-9a-z]+", text.casefold()))
+
+
+def _transect_label_without_title(transect_label: str, section_title: str) -> str:
+    """Drop the section name from ``"<name> <first>→<last>"`` when the title
+    already carries it ("A - A' WITH CHLORIDE" + "A-A' BH-01→BH-06")."""
+    raw = transect_label.strip()
+    head, _sep, tail = raw.rpartition(" ")
+    if not head or "→" not in tail:
+        return raw
+    head_tokens = _label_tokens(head)
+    title_tokens = _label_tokens(section_title)
+    if head_tokens and re.search(rf"(?<![0-9a-z]){re.escape(head_tokens)}(?![0-9a-z])", title_tokens):
+        return tail
+    return raw
 
 
 def build_export_filename(
@@ -156,20 +206,23 @@ def build_export_filename(
         return stem[:120].strip("_") or "cross_section"
 
     stem = _sanitize_stem(section_title)
+    if include_transect_label:
+        transect_label = _transect_label_without_title(transect_label, section_title)
     label = (
         _sanitize_stem(transect_label, fallback="")
         if (include_transect_label and transect_label.strip())
         else ""
     )
-    if label.startswith(stem):
+    if label.startswith(stem) and label[len(stem):len(stem) + 1] in ("", "_", "'"):
         # The app's transect label is "<section title> <first>→<last>": keep
         # only the hole range instead of printing the title twice.
-        label = label[len(stem):].strip("_")
+        label = label[len(stem):].strip("_'")
     if label and label != stem:
         stem = f"{stem}_{label}"
     if rev:
         stem = f"{stem}_{_sanitize_stem(rev, fallback='rev')}"
-    return stem[:120].strip("_") or "cross_section"
+    # Re-apply the reserved-name guard: stripping "_" would undo "CON_".
+    return avoid_windows_reserved_name(stem[:120].strip("_") or "cross_section")
 
 
 def build_report_package_bytes(
@@ -199,16 +252,44 @@ def build_report_package_bytes(
         )
         archive.writestr(
             "README_deliverable.txt",
-            (readme or _default_readme(stem)).encode("utf-8"),
+            (
+                readme
+                or _default_readme(
+                    stem,
+                    has_svg=bool(svg_bytes),
+                    has_png=bool(png_bytes),
+                    has_pdf=bool(pdf_bytes),
+                    has_docx=bool(docx_bytes),
+                )
+            ).encode("utf-8"),
         )
     buffer.seek(0)
     return buffer.getvalue()
 
 
-def _default_readme(stem: str) -> str:
+def _default_readme(
+    stem: str,
+    *,
+    has_svg: bool = True,
+    has_png: bool = True,
+    has_pdf: bool = True,
+    has_docx: bool = False,
+) -> str:
+    """README listing exactly the files in the package."""
+    contents = [
+        label
+        for present, label in (
+            (has_svg, "SVG (CAD)"),
+            (has_png, "PNG (reports)"),
+            (has_pdf, "PDF (print)"),
+            (has_docx, "Word figure (.docx)"),
+        )
+        if present
+    ]
+    contents.append("metadata JSON")
     return (
         f"Cross Section Studio deliverable package: {stem}\n"
-        "Contents: SVG (CAD), PNG (reports), PDF (print), metadata JSON.\n"
+        f"Contents: {', '.join(contents)}.\n"
         "Import SVG into CAD; paste PNG into Word; file PDF for client binders.\n"
         f"{CREATED_BY}. {COPYRIGHT_NOTICE}\n"
     )

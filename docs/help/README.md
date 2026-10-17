@@ -13,7 +13,7 @@ Operator-facing help for Cross Section Studio (Help menu). Keep topics short and
 
 ## Writing guidelines
 
-- Prefer exact UI button labels (`Prepare deliverables (PNG · PDF · Word · package)`, **Try sample project**, **Block export on polygon overlaps**).
+- Prefer exact UI button labels (**Prepare deliverables**, **Generate section**, **Try sample project**, **Stop if matched layers overlap**).
 - Always distinguish the four workflow steps from **Prepare** (Generate-step export action).
 - Mention the rule-based fence disclaimer where operators might otherwise assume geostat interpolation.
 - Document **Sections** and **Field Data** whenever optional sheets are listed.

@@ -21,6 +21,7 @@ from models import ParseResult, lithologies_by_hole
 from ops_audit import audit_event
 from paths import sample_boreholes_workbook
 from projection import suggest_offset_threshold_m
+from ui_helpers import unique_download_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ def render_input_template_download(*, key: str, help: str | None = None) -> None
     data, file_name = payload
     st.download_button(
         "Download template (data entry)",
-        data=data,
+        data=unique_download_bytes(data),
         file_name=file_name,
         mime=_TEMPLATE_MIME,
         key=key,
@@ -107,6 +108,13 @@ def render_input_template_download(*, key: str, help: str | None = None) -> None
             "Includes Instructions, Project, optional Water/Screens/Gradients/Environmental."
         ),
     )
+
+
+_EMPTY_FILE_MESSAGE = (
+    "This file is empty (0 bytes), so there is nothing to read. It may not have finished "
+    "saving or downloading. Save the workbook again in Excel and upload it, or start from "
+    "**Download template**."
+)
 
 
 def _friendly_workbook_error(exc: Exception) -> str:
@@ -122,15 +130,38 @@ def _friendly_workbook_error(exc: Exception) -> str:
     if "Could not detect a supported workbook format" in text:
         found = text.split("Sheets found:", 1)[-1].strip() if "Sheets found:" in text else ""
         sheets = f" (sheets in this file: {found})" if found else ""
+        found_names = {name.strip().strip("[]'\" ").casefold() for name in found.split(",")}
+        if "collars" in found_names:
+            # Collars is there, so the missing piece is the lithology log.
+            return (
+                f"No **Lithology** sheet was found{sheets}. Add a Lithology sheet with hole_id, "
+                "from_depth, to_depth and lithology_code, or start from **Download template**. "
+                "See Help → Workbook and data entry."
+            )
         return (
             f"No **Collars** sheet was found{sheets}. Add a Collars sheet with hole_id, easting, "
             "northing, elevation and total_depth, or start from **Download template**. "
-            "See Help → Workbook & data entry."
+            "See Help → Workbook and data entry."
         )
     if "sheet is missing the" in text:
         # Already plain language from the parser: names the sheet and the column.
         return text
     if "Missing required sheet" in text:
+        missing = {
+            name.strip().casefold() for name in text.split(":", 1)[-1].split(",") if name.strip()
+        }
+        if missing == {"lithology"}:
+            return (
+                "No **Lithology** sheet was found. Add a Lithology sheet with hole_id, "
+                "from_depth, to_depth and lithology_code, or start from **Download template**. "
+                "See Help → Workbook and data entry."
+            )
+        if missing == {"collars"}:
+            return (
+                "No **Collars** sheet was found. Add a Collars sheet with hole_id, easting, "
+                "northing, elevation and total_depth, or start from **Download template**. "
+                "See Help → Workbook and data entry."
+            )
         return f"{text}. Add the missing sheet(s), or start from **Download template**."
     if "rows (limit" in text:
         return f"The workbook is too large to read: {text}"
@@ -178,7 +209,9 @@ def upload_headline(
         )
     return (
         "success",
-        f"Loaded **{hole_count}** boreholes and **{interval_count}** lithology intervals.",
+        f"Loaded **{hole_count}** {'borehole' if hole_count == 1 else 'boreholes'} and "
+        f"**{interval_count}** "
+        f"{'lithology interval' if interval_count == 1 else 'lithology intervals'}.",
     )
 
 
@@ -258,7 +291,7 @@ def run_destructive(action: str) -> None:
 def request_destructive(action: str) -> None:
     """Act immediately unless it would discard a generated section; then confirm.
 
-    Shared by the sidebar, File menu and Ctrl+Shift+O so no entry point can
+    Shared by the sidebar, File menu and Alt+Shift+O so no entry point can
     discard a section silently; the sidebar renders the pending prompt.
     """
     if st.session_state.get("svg_bytes") is None:
@@ -276,7 +309,7 @@ def render_welcome_card() -> None:
   in the sidebar. Or try the sample project to skip prep.</p>
   <ol class="welcome-steps">
     <li><strong>Enter</strong> — Download the multi-tab template and fill <em>Collars</em> + <em>Lithology</em> (optional Water, Screens, …).</li>
-    <li><strong>Upload</strong> — Use <em>Upload Excel workbook</em> in the sidebar Data source section.</li>
+    <li><strong>Upload</strong> — Use <em>Upload Excel workbook</em> in the sidebar Data section.</li>
     <li><strong>Validate &amp; Configure</strong> — Review data health, then pick the holes on the section line and the style.</li>
     <li><strong>Generate</strong> — SVG is ready immediately; Prepare deliverables for PNG/PDF/Word/package.</li>
   </ol>
@@ -300,6 +333,11 @@ def render_welcome_card() -> None:
 
 
 _PENDING_PROJECT_SEED_KEY = "_pending_project_seed"
+# Vertical exaggeration from the workbook's Project tab (a VE choice), if any.
+WORKBOOK_VE_KEY = "_workbook_vertical_exaggeration"
+# The VE the user picked in the sidebar for this workbook, if any; it wins over
+# the workbook VE and the style default when the Output style changes.
+USER_VE_KEY = "_user_vertical_exaggeration"
 
 
 def _seed_consulting_fields_from_project_metadata(project: dict[str, str]) -> None:
@@ -360,9 +398,14 @@ def _seed_consulting_fields_from_project_metadata(project: dict[str, str]) -> No
         st.session_state[_PENDING_PROJECT_SEED_KEY] = pending
 
 
-# Widget keys the Project tab (or the Section picker) seeds; cleared together
-# when the workbook goes away so nothing leaks onto the next one.
+# Every typed title block field (whether or not the Project tab seeds it, e.g.
+# Figure no. and Revised) plus the section title belongs to one workbook;
+# cleared together when the workbook goes away so nothing leaks onto the next.
+# The two logo uploaders are not here: an uploaded file cannot be reset from
+# session state.
 PROJECT_SEEDED_KEYS: tuple[str, ...] = (
+    "consulting_figure_number",
+    "consulting_revised",
     "consulting_prepared_for",
     "consulting_prepared_by",
     "consulting_project_number",
@@ -398,8 +441,23 @@ def queue_session_values(**values: object) -> None:
 def apply_pending_project_seed() -> None:
     """Apply queued Project metadata before sidebar widgets are created."""
     if st.session_state.pop("_reset_project_seed", False):
+        # The sidebar keeps a non-widget copy of these fields (so they survive
+        # output-style switches); the new workbook must not inherit it.
+        store = st.session_state.get("_sidebar_widget_store")
         for key in PROJECT_SEEDED_KEYS:
             st.session_state.pop(key, None)
+            if isinstance(store, dict):
+                store.pop(key, None)
+        # Output style and VE can come from the Project tab too: a workbook
+        # that sets neither (or Clear workbook) starts from the defaults, not
+        # from whatever the previous workbook chose.
+        from ui_output_presets import DEFAULT_VE_CHOICE
+
+        st.session_state["output_preset"] = DEFAULT_SESSION["output_preset"]
+        st.session_state.pop("_synced_output_preset", None)
+        st.session_state["vertical_exaggeration"] = DEFAULT_VE_CHOICE
+        st.session_state.pop(WORKBOOK_VE_KEY, None)
+        st.session_state.pop(USER_VE_KEY, None)
     pending = st.session_state.pop(_PENDING_PROJECT_SEED_KEY, None)
     if not isinstance(pending, dict):
         return
@@ -409,10 +467,15 @@ def apply_pending_project_seed() -> None:
     for key, value in pending.items():
         st.session_state[key] = value
     if ve_raw is not None:
-        try:
-            st.session_state.vertical_exaggeration = float(ve_raw)
-        except ValueError:
-            pass
+        from ui_output_presets import normalize_ve_choice
+
+        # "5" -> exact 5x; "auto" (or anything unreadable) -> Auto (fit page).
+        choice = normalize_ve_choice(ve_raw)
+        st.session_state.vertical_exaggeration = choice
+        # Remembered so a style's default VE (Groundwater fence = Auto) does
+        # not override it when the style syncs; locked styles still lock.
+        st.session_state[WORKBOOK_VE_KEY] = choice
+        st.session_state.pop(USER_VE_KEY, None)
 
 
 def handle_workbook_upload(
@@ -463,7 +526,9 @@ def handle_workbook_upload(
         except Exception as exc:
             st.session_state.detection_result = None
             clear_section_output_state()
-            st.session_state.upload_banner_error = _friendly_workbook_error(exc)
+            st.session_state.upload_banner_error = (
+                _EMPTY_FILE_MESSAGE if not file_bytes else _friendly_workbook_error(exc)
+            )
             st.session_state.upload_banner_error_detail = str(exc)
             st.session_state.pop("upload_banner_success", None)
             st.session_state.pop("upload_banner_problem", None)
@@ -476,7 +541,9 @@ def handle_workbook_upload(
                 f"Detected format: **{detection.label}** "
                 f"({detection.confidence:.0%} confidence)"
             )
-        if detection.profile_id != NATIVE_PROFILE_ID:
+        # Field exports only: the native and Data Entry templates have no
+        # Field Data sheet, so the note only confused them.
+        if detection.profile_id != NATIVE_PROFILE_ID and not detection.is_native:
             st.info(
                 "Field Data sheet (if present) is not used for stratigraphy. "
                 "OVA/EC columns map to environmental readings — select them on Configure."
@@ -547,11 +614,15 @@ def handle_workbook_upload(
                     for key in ("client_name", "project_number", "report_date", "section_title")
                     if str(project_metadata.get(key, "")).strip() == sample.get(key, "")
                 ]
-                if stale:
+                # A real project can share a number format or date with the
+                # sample; only the client name or section title identify a
+                # Project tab that was never filled in.
+                if stale and {"client_name", "section_title"} & set(stale):
+                    quoted = ", ".join(f"{key} = '{sample[key]}'" for key in stale)
                     st.session_state.upload_banner_caution = (
-                        "The Project tab still holds the template's sample values for "
-                        f"{', '.join(stale)} (e.g. {sample['client_name']}); they will print on "
-                        "the title block — update them before issuing figures."
+                        "The Project tab still holds the template's sample values "
+                        f"({quoted}); they will print on the title block — update them "
+                        "before issuing figures."
                     )
             level, headline = upload_headline(
                 hole_count=len(hole_ids),
@@ -577,7 +648,12 @@ def handle_workbook_upload(
             )
             st.rerun()
         except Exception as exc:
-            logger.exception("Workbook parse failed")
+            if isinstance(exc, (ValueError, KeyError, zipfile.BadZipFile)):
+                # Expected workbook problems (missing sheet / column, bad
+                # values): the UI explains them; no traceback in the log.
+                logger.warning("Workbook parse failed: %s", exc)
+            else:
+                logger.exception("Workbook parse failed")
             st.session_state.parse_result = None
             st.session_state.import_report = None
             st.session_state.quality_report = None

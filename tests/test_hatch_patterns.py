@@ -59,7 +59,7 @@ def test_silty_pattern_is_short_dashes_not_lines() -> None:
 def test_clay_loam_pattern_is_isolated_plus_marks() -> None:
     marks = _marks("+")
     lengths_pt = {round(float(np.hypot(*(m[-1] - m[0])) * 72), 1) for m in marks}
-    assert lengths_pt == {2.2}  # two 2.2 pt strokes per mark, no grid lines
+    assert lengths_pt <= {4.3, 4.4}  # template: two 4.35 pt strokes per mark, no grid lines
     assert len(marks) % 2 == 0
 
 
@@ -70,3 +70,39 @@ def test_other_patterns_keep_stock_matplotlib_shapes() -> None:
     assert long_strokes
     assert len(mhatch.get_path("-", 6).vertices) > 0
     assert len(mhatch.get_path("O", 6).vertices) > 0
+
+
+def test_gravel_draws_template_cobble_outlines_not_circles() -> None:
+    """Template 261002 draws gravel as irregular stone outlines on a ~17 pt
+    tile; matplotlib's "O" drew even circles."""
+    from hatch_patterns import COBBLE_TILE_SEGMENTS
+
+    path = mhatch.get_path("O", 6)
+    codes = path.codes
+    assert set(codes) <= {Path.MOVETO, Path.LINETO}  # straight outline segments, no curves
+    # 8 tiles per inch (the legend size) plus one tile of overlap on each side.
+    assert len(path.vertices) == len(COBBLE_TILE_SEGMENTS) * 2 * 10 * 10
+    assert len(COBBLE_TILE_SEGMENTS) == 41
+
+
+def test_gravel_outlines_are_thin_on_every_hatched_artist() -> None:
+    """Small legend-size stones filled in at the shared 0.65 pt hatch line."""
+    from matplotlib.collections import PolyCollection
+    from matplotlib.patches import Rectangle
+
+    from hatch_patterns import GRAVEL_HATCH_LINEWIDTH_PT
+
+    patch = Rectangle((0, 0), 1, 1, hatch="O")
+    collection = PolyCollection([[(0, 0), (1, 0), (1, 1)]], hatch="OO")
+    assert patch.get_hatch_linewidth() == GRAVEL_HATCH_LINEWIDTH_PT
+    assert collection.get_hatch_linewidth() == GRAVEL_HATCH_LINEWIDTH_PT
+    assert Rectangle((0, 0), 1, 1, hatch="/").get_hatch_linewidth() != GRAVEL_HATCH_LINEWIDTH_PT
+
+
+def test_hatch_change_away_from_gravel_restores_the_normal_line() -> None:
+    import matplotlib
+    from matplotlib.patches import Rectangle
+
+    patch = Rectangle((0, 0), 1, 1, hatch="O")
+    patch.set_hatch("/")
+    assert patch.get_hatch_linewidth() == matplotlib.rcParams["hatch.linewidth"]

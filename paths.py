@@ -69,7 +69,9 @@ def _template_has_named_data_tabs(path: Path) -> bool:
     try:
         import pandas as pd
 
-        names = {str(name) for name in pd.ExcelFile(path).sheet_names}
+        # Close the workbook: an open handle locks the template on Windows.
+        with pd.ExcelFile(path) as workbook:
+            names = {str(name) for name in workbook.sheet_names}
         return {"Collars", "Lithology"}.issubset(names)
     except Exception:
         return False

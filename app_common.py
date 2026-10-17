@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from collections.abc import Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -42,7 +43,9 @@ from ui_helpers import (
     legend_hatch_background,
     preview_img_style,
     svg_display_meta,
+    unique_download_bytes,
 )
+from ui_output_presets import ve_short_text
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +227,7 @@ def _render_metric_card(value: str | int, label: str, tone: str = "ok") -> None:
 def profile_chips_html(
     *,
     interpretation_mode: str,
-    vertical_exaggeration: float,
+    vertical_exaggeration: float | None,
     hole_count: int | None,
     polygon_count: int | None,
     is_stale: bool,
@@ -241,10 +244,11 @@ def profile_chips_html(
     }.get(interpretation_mode, "Interpolated fence")
     chips = [
         f'<span class="chip brand">{escape_html(preset_label or mode_label)}</span>',
-        f'<span class="chip">VE {escape_html(f"{vertical_exaggeration:g}")}×</span>',
+        f'<span class="chip">VE {escape_html(ve_short_text(vertical_exaggeration))}</span>',
     ]
     if hole_count is not None:
-        chips.append(f'<span class="chip">{escape_html(hole_count)} holes</span>')
+        noun = "hole" if hole_count == 1 else "holes"
+        chips.append(f'<span class="chip">{escape_html(hole_count)} {noun}</span>')
     extra: list[str] = []
     if preset_label:
         extra.append(mode_label)
@@ -304,6 +308,31 @@ def _render_lithology_legend(codes: list[str]) -> None:
     st.markdown("".join(rows), unsafe_allow_html=True)
 
 
+
+@st.cache_data(show_spinner=False)
+def _full_legend_png() -> bytes:
+    from lithology_legend_sheet import build_legend_sheet_png
+
+    return build_legend_sheet_png()
+
+
+def render_full_lithology_legend() -> None:
+    """Every palette code with its colour and pattern, as drawn in figures."""
+    with st.expander("Full lithology legend (all codes)", expanded=False):
+        png = _full_legend_png()
+        st.image(
+            png,
+            caption="Colours and patterns follow the client legend template (261002).",
+            width="stretch",
+        )
+        st.download_button(
+            "Download legend (PNG)",
+            data=unique_download_bytes(png),
+            file_name="lithology_legend.png",
+            mime="image/png",
+            key="download_full_lithology_legend",
+        )
+
 def _display_svg(
     svg_bytes: bytes,
     alt_text: str = "Cross-section profile",
@@ -356,19 +385,40 @@ def _display_svg(
     )
 
 
-def _render_overlap_warnings(warnings: Sequence[str]) -> None:
-    unique = dedupe_messages(warnings)
+_POLYGON_OVERLAP_RE = re.compile(r"^.+ / .+ between .+[–-].+$")
+
+
+def _section_note_text(message: str) -> str:
+    """Overlap pairs read "Clay / Silt between BH1–BH2"; other notes stand alone."""
+    return f"Polygon overlap: {message}" if _POLYGON_OVERLAP_RE.match(message) else message
+
+
+_MARKDOWN_SPECIALS = re.compile(r"([\\`*_\[\]$<>#|~])")
+
+
+def _plain_markdown(text: str) -> str:
+    """Show note text literally (layer codes such as SM* or $ must not format)."""
+    return _MARKDOWN_SPECIALS.sub(r"\\\1", text)
+
+
+def section_notes_markdown(warnings: Sequence[str]) -> str:
+    """One amber box for every section note, so one note and several look alike."""
+    unique = [_plain_markdown(_section_note_text(message)) for message in dedupe_messages(warnings)]
     if not unique:
-        return
+        return ""
     if len(unique) == 1:
-        st.warning(f"Polygon overlap: {unique[0]}")
-        return
-    with st.expander(
-        f"{len(unique)} polygon overlaps detected on section",
-        expanded=True,
-    ):
-        for message in unique:
-            st.write(message)
+        return unique[0]
+    bullets = "\n".join(f"- {message}" for message in unique)
+    return f"**{len(unique)} notes about this section**\n\n{bullets}"
+
+
+def _render_overlap_warnings(warnings: Sequence[str]) -> None:
+    """Section notes after Generate: overlaps, crossing layers, fence clipping,
+    dropped chemistry labels, map scale. Always one warning box (a plain
+    expander for 2+ notes read as body text and was easy to miss)."""
+    text = section_notes_markdown(warnings)
+    if text:
+        st.warning(text, icon=":material/info:")
 
 
 def _active_transect_selection(
@@ -497,7 +547,11 @@ def _build_consulting_title_block(
     logo_prepared_by_bytes: bytes | None,
 ) -> ConsultingTitleBlock:
     notes = tuple(line.strip() for line in notes_text.splitlines() if line.strip())
+    # Only a scale the user entered is passed on; left blank, the title block
+    # prints "AS SHOWN" and defers to the true-scale bar.
+    scale_kwargs = {"map_scale": map_scale.strip()} if map_scale.strip() else {}
     return ConsultingTitleBlock(
+        **scale_kwargs,
         section_label=section_label or section_title,
         transect_start_label=transect_start_label.strip(),
         transect_end_label=transect_end_label.strip(),
@@ -505,7 +559,6 @@ def _build_consulting_title_block(
         transect_start_secondary=transect_start_secondary.strip(),
         transect_end_primary=transect_end_primary.strip(),
         transect_end_secondary=transect_end_secondary.strip(),
-        map_scale=map_scale.strip() or "1:1000",
         figure_number=figure_number.strip(),
         project_number=project_number.strip(),
         source=source.strip(),
@@ -669,7 +722,7 @@ def _report_context_from_selection(
     parse_result: ParseResult,
     hole_ids: Sequence[str],
     *,
-    vertical_exaggeration: float,
+    vertical_exaggeration: float | None,
     map_scale: str,
     section_title: str,
 ) -> dict[str, object]:

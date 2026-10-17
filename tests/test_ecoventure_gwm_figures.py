@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from pipeline import build_cross_section
 from gwm_reference import GWM_TRANSECTS, build_subset
+from pipeline import build_cross_section
 from ui_helpers import svg_is_valid
 
 
@@ -41,9 +41,40 @@ def test_ecoventure_gwm_figure_structure(transect_id: str) -> None:
     assert text.count("<path") >= 4
     if transect_id == "A_A":
         assert "WITH GROUNDWATER LEVELS" in text
-        assert "May 2024" in text or "2024-05" in text or "GROUNDWATER LEVEL (MAY 2024)" in text.upper()
-    if transect_id in {"B_B", "C_C", "D_D"}:
-        assert "1:1 500" in text or "1:1 5000" in text.replace(" ", "")
+        # The legend key may wrap ("GROUNDWATER LEVEL" / "(MAY 2024)").
+        assert "May 2024" in text or "2024-05" in text or "(MAY 2024)" in text.upper()
+    # The client's 1:1 000 / 1:1 500 sheets are tabloid; on the default letter
+    # page the section can't be drawn at that scale, so the title block defers
+    # to the scale bar and the build reports why.
+    assert "AS SHOWN" in text
+    assert result.qa_notes
+    assert spec.title_block.map_scale in result.qa_notes[0]
+    assert "letter landscape" in result.qa_notes[0]
+
+
+def test_ecoventure_gwm_d_d_prints_title_block_scale_on_tabloid() -> None:
+    """Fig 6 at 1:1 500 fits the client's tabloid page: drawn at exactly that scale."""
+    from export_framing import ExportFramingConfig
+
+    spec, subset = build_subset("D_D")
+    result = build_cross_section(
+        subset.collars,
+        subset.lithologies,
+        [(collar.easting, collar.northing) for collar in subset.collars],
+        render_layout="consulting_section",
+        vertical_exaggeration=spec.vertical_exaggeration,
+        show_legend=False,
+        water_levels=subset.water_levels,
+        consulting_title_block=spec.title_block,
+        screen_intervals=subset.screen_intervals,
+        export_formats=frozenset({"svg"}),
+        export_framing=ExportFramingConfig(page_preset="tabloid_landscape"),
+    )
+    text = result.svg_bytes.decode("utf-8", errors="ignore")
+    assert result.qa_notes == ()
+    assert "1:1 500" in text
+    assert "SCALE 1:1500" in text
+    assert "AS SHOWN" not in text
 
 
 def test_ecoventure_gwm_hole_order_matches_transect_spec() -> None:
@@ -103,8 +134,8 @@ def test_transect_spec_validates_hole_profile_lengths() -> None:
 
 
 def test_screen_interval_warnings_helper() -> None:
-    from ui_helpers import screen_interval_warnings
     from models import ScreenInterval
+    from ui_helpers import screen_interval_warnings
 
     warnings = screen_interval_warnings(
         ("MW-01", "MW-02"),
@@ -112,3 +143,55 @@ def test_screen_interval_warnings_helper() -> None:
     )
     assert len(warnings) == 1
     assert "MW-02" in warnings[0]
+
+
+@pytest.mark.parametrize("transect_id", ["A_A", "D_D"])
+def test_end_labels_sit_above_the_edge_hole_headers(transect_id: str) -> None:
+    """"A / NORTHWEST" shared the header row and the edge headers printed into
+    it ("MW18-18NORTHWEST"); the client figures stack the end label above."""
+    import matplotlib.pyplot as plt
+
+    import renderer as renderer_mod
+
+    spec, subset = build_subset(transect_id)
+    captured = {}
+    original = renderer_mod.CrossSectionRenderer.render
+
+    def spy(self, *args, **kwargs):
+        captured["fig"] = original(self, *args, **kwargs)
+        return captured["fig"]
+
+    renderer_mod.CrossSectionRenderer.render = spy
+    try:
+        build_cross_section(
+            subset.collars,
+            subset.lithologies,
+            [(collar.easting, collar.northing) for collar in subset.collars],
+            render_layout="consulting_section",
+            vertical_exaggeration=spec.vertical_exaggeration,
+            water_levels=subset.water_levels,
+            consulting_title_block=spec.title_block,
+            screen_intervals=subset.screen_intervals,
+            export_formats=frozenset({"png"}),
+        )
+    finally:
+        renderer_mod.CrossSectionRenderer.render = original
+    fig = captured["fig"]
+    try:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        canvas = FigureCanvasAgg(fig)
+        canvas.draw()
+        renderer = canvas.get_renderer()
+        ax = fig.axes[0]
+        ends = [t for t in ax.texts if t.get_text().split("\n")[0] in {spec.title_block.transect_start_primary, spec.title_block.transect_end_primary} and "\n" in t.get_text()]
+        assert ends, "end labels drawn"
+        hole_ids = {c.hole_id for c in subset.collars}
+        headers = [t for t in list(ax.texts) + list(fig.texts) if t.get_text() in hole_ids]
+        assert headers
+        for end in ends:
+            end_box = end.get_window_extent(renderer)
+            for header in headers:
+                assert not end_box.overlaps(header.get_window_extent(renderer)), header.get_text()
+    finally:
+        plt.close(fig)

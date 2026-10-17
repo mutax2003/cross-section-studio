@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import math
 import re
+import struct
+import zlib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 from app_identity import APP_NAME, COPYRIGHT_NOTICE, CREATED_BY
+from export_framing import sanitize_filename_stem
 from models import Collar, Lithology, ScreenInterval, Transect
 from projection import (
     DEFAULT_OFFSET_WARNING_M,
@@ -144,13 +148,18 @@ def workflow_stage(
     has_profile: bool,
     has_blocking_errors: bool = False,
     has_transect: bool = False,
+    upload_failed: bool = False,
 ) -> int:
     """Return workflow step index: 0 upload, 1 validate, 2 configure, 3 generate.
 
     Stay on Validate until QA is clear and a transect is selected so the stepper
     matches the main-pane work. Generate (3) requires a live parse — leftover
-    SVG alone must not advance the stepper after a failed re-upload.
+    SVG alone must not advance the stepper after a failed re-upload. An empty
+    or unreadable file (``upload_failed``) keeps Upload as the current step
+    instead of ticking it.
     """
+    if upload_failed and not has_parse_result:
+        return 0
     if has_profile and has_parse_result and not has_blocking_errors:
         return 3
     if has_parse_result and not has_blocking_errors and has_transect:
@@ -268,8 +277,101 @@ def holes_missing_lithology(
 
 def sanitize_filename(text: str, *, fallback: str = "cross_section") -> str:
     """Return a safe filename stem for downloads."""
-    cleaned = re.sub(r"[^\w\-]+", "_", text.strip())[:80].strip("_")
-    return cleaned or fallback
+    return sanitize_filename_stem(text, fallback=fallback)
+
+
+# Streamlit (1.64) fingerprints media files above 1 MiB by length plus three
+# 64 KiB samples (head, middle, tail) when it picks the download file id. Two
+# figures of the same size that differ elsewhere (black vs red chemistry
+# labels) got the same id, and the button served the previous file.
+DOWNLOAD_FULL_HASH_LIMIT = 1024 * 1024
+_PNG_IEND = b"\x00\x00\x00\x00IEND\xaeB`\x82"
+_ZIP_EOCD = b"PK\x05\x06"
+
+
+def _png_with_digest(data: bytes, digest: str) -> bytes | None:
+    if not data.endswith(_PNG_IEND):
+        return None
+    body = b"Digest\x00" + f"sha256:{digest}".encode()
+    chunk = (
+        struct.pack(">I", len(body))
+        + b"tEXt"
+        + body
+        + struct.pack(">I", zlib.crc32(b"tEXt" + body) & 0xFFFFFFFF)
+    )
+    return data[: -len(_PNG_IEND)] + chunk + _PNG_IEND
+
+
+def _zip_with_digest(data: bytes, digest: str) -> bytes | None:
+    eocd = data.rfind(_ZIP_EOCD, max(0, len(data) - 65557))
+    if eocd < 0 or eocd + 22 > len(data):
+        return None
+    comment_len = struct.unpack("<H", data[eocd + 20 : eocd + 22])[0]
+    if eocd + 22 + comment_len != len(data):
+        return None
+    comment = data[eocd + 22 :] + f"sha256:{digest}".encode()
+    if len(comment) > 0xFFFF:
+        return None
+    return data[: eocd + 20] + struct.pack("<H", len(comment)) + comment
+
+
+def unique_download_bytes(data: bytes) -> bytes:
+    """Make a large download's bytes unique to its content, harmlessly.
+
+    Files up to 1 MiB are hashed in full by Streamlit and returned as is.
+    Larger ones get a content digest in their last bytes, which Streamlit
+    does hash: an XML comment after ``</svg>``, a ``tEXt`` chunk before a
+    PNG's ``IEND``, the ZIP comment (ZIP, Word, Excel), or a PDF comment line
+    after ``%%EOF``. Anything else is returned unchanged.
+    """
+    if not data or len(data) <= DOWNLOAD_FULL_HASH_LIMIT:
+        return data
+    digest = hashlib.sha256(data).hexdigest()
+    if data.startswith(b"\x89PNG"):
+        return _png_with_digest(data, digest) or data
+    if data.startswith(b"PK"):
+        return _zip_with_digest(data, digest) or data
+    tail = data[-1024:].rstrip()
+    if data.startswith(b"%PDF") and tail.endswith(b"%%EOF"):
+        return data + f"\n%sha256:{digest}\n".encode()
+    if tail.endswith(b"</svg>"):
+        return data + f"\n<!-- sha256:{digest} -->\n".encode()
+    return data
+
+
+# Below this a fixed-VE plot is a strip too thin to read on the page.
+THIN_PLOT_HEIGHT_IN = 1.0
+# Typical plot width on a letter landscape consulting sheet.
+_SHEET_PLOT_WIDTH_IN = 9.0
+
+
+def fixed_ve_plot_height_in(
+    transect_points: Sequence[tuple[float, float]],
+    collars: Sequence[Collar],
+    *,
+    vertical_exaggeration: float,
+    relative: bool = False,
+    plot_width_in: float = _SHEET_PLOT_WIDTH_IN,
+) -> float | None:
+    """Rough printed plot height at an exact VE: width x depth span x VE / length.
+
+    Chemistry columns is locked at 1x; on a 320 m line with shallow holes
+    that is a ~0.4 in strip. None when the span cannot be measured.
+    """
+    length = sum(
+        math.dist(a, b) for a, b in zip(transect_points, transect_points[1:])
+    )
+    if length <= 0 or not collars or vertical_exaggeration <= 0:
+        return None
+    if relative:
+        z_span = max(collar.total_depth for collar in collars)
+    else:
+        top = max(collar.elevation for collar in collars)
+        bottom = min(collar.elevation - collar.total_depth for collar in collars)
+        z_span = top - bottom
+    if z_span <= 0:
+        return None
+    return plot_width_in * z_span * vertical_exaggeration / length
 
 
 def screen_interval_warnings(
@@ -301,6 +403,7 @@ def build_export_framing_from_mapping(values: dict[str, object]) -> "ExportFrami
         include_title_block=bool(values.get("export_include_title_block", True)),
         include_legend=bool(values.get("export_include_legend", True)),
         include_water_table=bool(values.get("export_include_water_table", True)),
+        include_screens=bool(values.get("export_include_screens", True)),
         include_qa_footer=bool(values.get("export_include_qa_footer", True)),
         fence_only=bool(values.get("export_fence_only", False)),
         filename_pattern=values.get("export_filename_pattern", "section_title"),  # type: ignore[arg-type]
@@ -310,6 +413,7 @@ def build_export_framing_from_mapping(values: dict[str, object]) -> "ExportFrami
         viewport_ymin=_optional_float(values.get("export_viewport_ymin")),
         viewport_ymax=_optional_float(values.get("export_viewport_ymax")),
         cad_svg_layers=bool(values.get("export_cad_svg_layers", False)),
+        svg_editable_text=bool(values.get("export_svg_editable_text", False)),
     )
 
 
@@ -326,13 +430,20 @@ def export_metadata_payload(
     *,
     section_title: str,
     preset_label: str | None,
-    vertical_exaggeration: float,
+    vertical_exaggeration: float | None,
     hole_count: int | None,
     transect_label: str | None,
     overlap_warnings: Sequence[str],
     consulting_fields: dict[str, str] | None = None,
+    chemistry_color_mode: str | None = None,
+    chemistry_thresholds: Mapping[str, Sequence[float | None]] | None = None,
 ) -> dict[str, object]:
-    """JSON-serializable metadata for report packages."""
+    """JSON-serializable metadata for report packages.
+
+    In threshold colour mode the per-parameter limits are listed as
+    ``{"Chloride": {"green_max": 100, "orange_max": 250}, ...}`` so the
+    metadata JSON / Word table state which limits coloured the figure.
+    """
     payload: dict[str, object] = {
         "section_title": section_title,
         "preset": preset_label,
@@ -346,4 +457,14 @@ def export_metadata_payload(
     }
     if consulting_fields:
         payload.update(consulting_fields)
+    if chemistry_color_mode:
+        payload["chemistry_label_colour_mode"] = chemistry_color_mode
+    if chemistry_color_mode == "threshold" and chemistry_thresholds:
+        payload["chemistry_thresholds"] = {
+            str(parameter): {
+                "green_max": (None if pair[0] is None else float(pair[0])),
+                "orange_max": (None if len(pair) < 2 or pair[1] is None else float(pair[1])),
+            }
+            for parameter, pair in chemistry_thresholds.items()
+        }
     return payload

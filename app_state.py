@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 # Bump when session key shapes change so Cloud reconnects drop stale state.
-SESSION_SCHEMA_VERSION = 3
+SESSION_SCHEMA_VERSION = 4  # 1.0.0: VE store, per-parameter thresholds, SVG text toggle
 
 # Domain key groups for targeted resets
 SESSION_PARSE_KEYS = (
@@ -44,6 +44,7 @@ SESSION_SECTION_KEYS = (
     "figure_docx_bytes",
     "batch_package_bytes",
     "_batch_package_token",
+    "_batch_zip_name",
     "_preflight_json_key",
     "_preflight_subset_json",
     "_preflight_overrides_json",
@@ -137,6 +138,7 @@ DEFAULT_SESSION: dict[str, object] = {
     "export_include_title_block": True,
     "export_include_legend": True,
     "export_include_water_table": True,
+    "export_include_screens": True,
     "export_include_qa_footer": True,
     "export_fence_only": False,
     "export_filename_pattern": "section_title",
@@ -146,6 +148,7 @@ DEFAULT_SESSION: dict[str, object] = {
     "export_viewport_ymin": None,
     "export_viewport_ymax": None,
     "export_cad_svg_layers": False,
+    "export_svg_editable_text": False,
     "export_output_dir": "",
     "batch_transect_specs": "",
     "_batch_specs_seeded_from_sections": False,

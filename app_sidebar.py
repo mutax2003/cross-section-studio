@@ -25,6 +25,8 @@ from app_common import (
 from app_identity import COPYRIGHT_SHORT, CREATED_BY
 from app_upload import (
     DESTRUCTIVE_PROMPTS,
+    USER_VE_KEY,
+    WORKBOOK_VE_KEY,
     apply_pending_project_seed,
     render_input_template_download,
     request_destructive,
@@ -42,14 +44,20 @@ from export_framing import ExportFramingConfig
 from ingestion import DATA_ENTRY_PROFILE_ID, NATIVE_PROFILE_ID, list_profiles
 from models import ConsultingTitleBlock
 from pipeline import DEFAULT_UNCERTAINTY_SPACING_M
+from render_theme import water_has_multiple_series
 from ui_output_presets import (
+    DEFAULT_VE_CHOICE,
     INTERPRETATION_LABELS,
     OUTPUT_PRESET_LABELS,
     locked_figure_summary,
     locked_groundwater_summary,
+    normalize_ve_choice,
     output_preset_short_name,
     resolve_output_preset,
     sidebar_visibility,
+    ve_choice_label,
+    ve_choice_options,
+    ve_choice_to_request,
 )
 
 
@@ -64,15 +72,14 @@ def _render_pending_destructive() -> None:
         return
     confirm_label, question = DESTRUCTIVE_PROMPTS[action]
     st.warning(question + " Download anything you need first.")
-    confirm_col, cancel_col = st.columns(2)
-    with confirm_col:
-        if st.button(confirm_label, key="confirm_destructive", type="primary", width="stretch"):
-            st.session_state.pop("_pending_destructive", None)
-            run_destructive(action)
-    with cancel_col:
-        if st.button("Cancel", key="cancel_destructive", width="stretch"):
-            st.session_state.pop("_pending_destructive", None)
-            st.rerun()
+    # Stacked full-width: side by side in the 300px sidebar the confirm
+    # label was cut to "Clear wor…".
+    if st.button(confirm_label, key="confirm_destructive", type="primary", width="stretch"):
+        st.session_state.pop("_pending_destructive", None)
+        run_destructive(action)
+    if st.button("Cancel", key="cancel_destructive", width="stretch"):
+        st.session_state.pop("_pending_destructive", None)
+        st.rerun()
 
 _OUTPUT_STYLE_HELP: dict[str, str] = {
     "section_sheet": "General-purpose sheet with an elevation axis, hole headers and a side legend. Good default.",
@@ -141,9 +148,11 @@ _EXPORT_WIDGET_KEYS: tuple[str, ...] = (
     "export_fence_only",
     "export_show_draft_watermark",
     "export_cad_svg_layers",
+    "export_svg_editable_text",
     "export_include_title_block",
     "export_include_legend",
     "export_include_water_table",
+    "export_include_screens",
     "export_include_qa_footer",
     "export_viewport_xmin",
     "export_viewport_ymin",
@@ -153,15 +162,81 @@ _EXPORT_WIDGET_KEYS: tuple[str, ...] = (
 )
 
 
+def _remember_user_ve() -> None:
+    """An explicit VE pick survives later Output style switches."""
+    st.session_state[USER_VE_KEY] = st.session_state.get("vertical_exaggeration")
+
+
+# The user's own "Include QA notes (PDF)" choice; without one each output
+# style applies its default (off for the one-sheet consulting styles).
+USER_QA_NOTES_KEY = "_user_include_qa_notes"
+
+
+def _remember_user_qa_notes() -> None:
+    st.session_state[USER_QA_NOTES_KEY] = bool(st.session_state.get("export_include_qa_footer"))
+
+
 def _keep_widget_state(*keys: str) -> None:
     """Keep values of keyed widgets that are hidden this run.
 
     Streamlit drops a widget's session value when the widget is not rendered;
     re-assigning it keeps the user's choice for when the control comes back.
+    Call it again right before the widget re-appears: a value carried over
+    from an earlier run is not sent to the browser, which then shows (and
+    sends back) the widget's default, e.g. "Include title block" off.
     """
     for key in keys:
         if key in st.session_state:
             st.session_state[key] = st.session_state[key]
+
+
+# Non-widget copy of text fields that come and go with the output style
+# (section title, title block). Streamlit may drop a hidden widget's key, and
+# a value carried over from an earlier run is not pushed to the browser when
+# the widget re-mounts (the box showed blank, then sent the blank back).
+WIDGET_STORE_KEY = "_sidebar_widget_store"
+
+
+def _widget_store() -> dict[str, object]:
+    store = st.session_state.get(WIDGET_STORE_KEY)
+    if not isinstance(store, dict):
+        store = {}
+        st.session_state[WIDGET_STORE_KEY] = store
+    return store
+
+
+def _stash_widget_values(*keys: str) -> None:
+    """Hidden this run: copy the values to the store and keep the keys alive."""
+    store = _widget_store()
+    for key in keys:
+        if key in st.session_state:
+            store[key] = st.session_state[key]
+    _keep_widget_state(*keys)
+
+
+def _bind_widget_value(key: str, default: object = "") -> object:
+    """Call right before creating a keyed widget that may have been hidden.
+
+    The live value (typed in the browser, or seeded this run) wins, then the
+    stored copy, then ``default``. Re-assigning the key in the same run, before
+    the widget exists, makes Streamlit send the value to the browser instead
+    of letting the re-mounted box start blank.
+    """
+    store = _widget_store()
+    if key in st.session_state:
+        value = st.session_state[key]
+    else:
+        value = store.get(key, default)
+    st.session_state[key] = value
+    store[key] = value
+    return value
+
+
+def _bound_text_input(label: str, *, key: str, default: str = "", **kwargs: object) -> str:
+    _bind_widget_value(key, default)
+    value = st.text_input(label, key=key, **kwargs)
+    _widget_store()[key] = value
+    return value
 
 
 def _is_filled(key: str) -> bool:
@@ -199,7 +274,8 @@ class SidebarState:
     show_legend: bool
     section_title: str
     consulting_title_block: ConsultingTitleBlock | None
-    vertical_exaggeration: float
+    # None = auto (fit page, caption prints the measured VE); else exact VE.
+    vertical_exaggeration: float | None
     transect_mode: str
     offset_warning_m: float
     max_offset_for_interpolation_m: float
@@ -266,23 +342,70 @@ def _render_export_framing_panel() -> None:
         options=list(_FILENAME_PATTERN_LABELS),
         format_func=lambda value: _FILENAME_PATTERN_LABELS.get(value, value),
         key="export_filename_pattern",
+        help="How downloaded files are named, e.g. from the section title or as project_figure_section_rev.",
     )
-    st.text_input("Revision / draft tag", key="export_revision", placeholder="Rev A or DRAFT")
-    st.number_input("Image resolution (DPI)", min_value=150, max_value=600, step=50, key="export_dpi")
-    st.toggle("Section only (no title block or legend)", key="export_fence_only")
-    st.toggle("DRAFT watermark on PNG and PDF", key="export_show_draft_watermark")
+    st.text_input(
+        "Revision / draft tag",
+        key="export_revision",
+        placeholder="Rev A or DRAFT",
+        help="Added to file names (and the title block REVISED field when blank).",
+    )
+    st.number_input(
+        "Image resolution (DPI)",
+        min_value=150,
+        max_value=600,
+        step=50,
+        key="export_dpi",
+        help="PNG resolution. 300 DPI suits reports; higher values make larger, slower files.",
+    )
+    st.toggle(
+        "Section only (no title block or legend)",
+        key="export_fence_only",
+        help="Exports just the cross-section drawing, e.g. to paste into a CAD sheet.",
+    )
+    st.toggle(
+        "DRAFT watermark on PNG and PDF",
+        key="export_show_draft_watermark",
+        help="Prints a light DRAFT watermark and adds DRAFT to file names.",
+    )
     layer_cols = st.columns(2)
     with layer_cols[0]:
-        st.toggle("Include title block", key="export_include_title_block")
-        st.toggle("Include lithology legend", key="export_include_legend")
+        st.toggle("Include title block", key="export_include_title_block", help="Project / figure details box on the sheet.")
+        st.toggle("Include lithology legend", key="export_include_legend", help="Key of soil and rock patterns shown.")
     with layer_cols[1]:
-        st.toggle("Include water table", key="export_include_water_table")
-        st.toggle("Include QA notes (PDF)", key="export_include_qa_footer")
+        st.toggle("Include water table", key="export_include_water_table", help="Groundwater lines and labels.")
+        st.toggle("Include screened intervals", key="export_include_screens", help="Well screen symbols on the boreholes (drawn only when the Screens sheet has rows).")
+        st.toggle(
+            "Include QA notes (PDF)",
+            key="export_include_qa_footer",
+            on_change=_remember_user_qa_notes,
+            help=(
+                "Adds the section notes (overlaps, gaps, crossing layers, map scale, "
+                "dropped chemistry values) to the PDF: on the summary page for Section "
+                "sheet, as an extra QA notes page for the one-sheet consulting styles "
+                "(off by default there, as those PDFs go to the client)."
+            ),
+        )
     st.text_input(
         "Save exports to folder (optional)",
         key="export_output_dir",
         placeholder=r"P:\Projects\Job\Figures",
+        help=(
+            "Full path to a folder on the computer running the app. After Prepare "
+            "deliverables, Save to project folder writes the SVG, PNG, PDF and figure "
+            "details there. Leave blank to use the download buttons only."
+        ),
     )
+
+
+_CROP_DISTANCE_HELP = (
+    "Distance along the section (m, as on the bottom axis) where the exported "
+    "drawing starts or ends. Leave blank for the full section."
+)
+_CROP_ELEVATION_HELP = (
+    "Bottom (from) or top (to) of the exported drawing, in the units of the side "
+    "axis (elevation, or depth on relative sections). Leave blank to fit."
+)
 
 
 def _render_export_layout_advanced() -> None:
@@ -290,23 +413,32 @@ def _render_export_layout_advanced() -> None:
     st.markdown("**Page margins and crop**")
     margin_cols = st.columns(2)
     with margin_cols[0]:
-        st.number_input("Top margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_top_in")
-        st.number_input("Left margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_left_in")
+        st.number_input("Top margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_top_in", help="White space around the drawing on the exported page.")
+        st.number_input("Left margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_left_in", help="White space around the drawing on the exported page.")
     with margin_cols[1]:
-        st.number_input("Bottom margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_bottom_in")
-        st.number_input("Right margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_right_in")
+        st.number_input("Bottom margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_bottom_in", help="White space around the drawing on the exported page.")
+        st.number_input("Right margin (in)", min_value=0.0, max_value=2.0, step=0.05, key="export_margin_right_in", help="White space around the drawing on the exported page.")
     with st.expander("Crop to an area (section distance / elevation)", expanded=False):
         crop_cols = st.columns(2)
         with crop_cols[0]:
-            st.text_input("Distance from", key="export_viewport_xmin", placeholder="optional")
-            st.text_input("Elevation from", key="export_viewport_ymin", placeholder="optional")
+            st.text_input("Distance from", key="export_viewport_xmin", placeholder="optional", help=_CROP_DISTANCE_HELP)
+            st.text_input("Elevation from", key="export_viewport_ymin", placeholder="optional", help=_CROP_ELEVATION_HELP)
         with crop_cols[1]:
-            st.text_input("Distance to", key="export_viewport_xmax", placeholder="optional")
-            st.text_input("Elevation to", key="export_viewport_ymax", placeholder="optional")
+            st.text_input("Distance to", key="export_viewport_xmax", placeholder="optional", help=_CROP_DISTANCE_HELP)
+            st.text_input("Elevation to", key="export_viewport_ymax", placeholder="optional", help=_CROP_ELEVATION_HELP)
     st.toggle(
         "Layered SVG for CAD",
         key="export_cad_svg_layers",
         help="Groups the SVG into named layers (geology, water, labels) for CAD editing.",
+    )
+    st.toggle(
+        "Editable text in SVG",
+        key="export_svg_editable_text",
+        help=(
+            "Keeps labels as real text in the SVG so they can be moved in Illustrator or "
+            "Inkscape. Needs the DejaVu Sans font on that computer (a substitute is used "
+            "otherwise). Off: text is drawn as outlines and looks the same everywhere."
+        ),
     )
 
 
@@ -410,10 +542,15 @@ def render_sidebar() -> SidebarState:
             if preset_config.show_water_elevation_labels is not None
             else force_gw_chrome
         )
+        parsed_for_water = st.session_state.get("parse_result")
+        several_water_series = water_has_multiple_series(
+            getattr(parsed_for_water, "water_levels", None)
+        )
         show_water_legend = (
             preset_config.show_water_legend
             if preset_config.show_water_legend is not None
-            else force_gw_chrome
+            # Several blue series are unreadable without a key, so start on.
+            else (force_gw_chrome or several_water_series)
         )
         show_dry_well_nm = (
             preset_config.show_dry_well_nm
@@ -441,10 +578,32 @@ def render_sidebar() -> SidebarState:
                 st.session_state.interpretation_mode = preset_config.interpretation_mode
             if preset_config.elevation_mode is not None:
                 st.session_state.elevation_mode = preset_config.elevation_mode
-            if preset_config.vertical_exaggeration is not None:
-                st.session_state.vertical_exaggeration = float(
+            if not visibility.vertical_exaggeration_editable:
+                # A style that fixes VE (Chemistry columns, 1x) shows its lock;
+                # the user's own choice (USER_VE_KEY) is kept for other styles.
+                st.session_state.vertical_exaggeration = normalize_ve_choice(
                     preset_config.vertical_exaggeration
                 )
+            else:
+                # The VE the user picked beats the workbook's Project VE, which
+                # beats the style's default (Auto); seeded once per workbook.
+                for candidate in (
+                    st.session_state.get(USER_VE_KEY),
+                    st.session_state.get(WORKBOOK_VE_KEY),
+                    preset_config.vertical_exaggeration,
+                    DEFAULT_VE_CHOICE,
+                ):
+                    if candidate is not None:
+                        st.session_state.vertical_exaggeration = normalize_ve_choice(candidate)
+                        break
+            user_qa_notes = st.session_state.get(USER_QA_NOTES_KEY)
+            # Consulting styles are one client sheet: no QA notes page unless
+            # the user turned it on; Section sheet / Quick preview list them.
+            st.session_state.export_include_qa_footer = (
+                bool(user_qa_notes)
+                if user_qa_notes is not None
+                else preset_config.render_layout != "consulting_section"
+            )
             st.session_state._synced_output_preset = output_preset
 
         if visibility.interpretation_editable:
@@ -488,21 +647,35 @@ def render_sidebar() -> SidebarState:
             _keep_widget_state("show_ground_surface")
             show_ground_surface = True
 
-        ve_default = float(preset_config.vertical_exaggeration or 5.0)
+        ve_default = normalize_ve_choice(
+            preset_config.vertical_exaggeration
+            if preset_config.vertical_exaggeration is not None
+            else DEFAULT_VE_CHOICE
+        )
         if "vertical_exaggeration" not in st.session_state:
             st.session_state.vertical_exaggeration = ve_default
-        if visibility.vertical_exaggeration_editable:
-            vertical_exaggeration = st.slider(
-                "Vertical exaggeration",
-                min_value=1.0,
-                max_value=20.0,
-                step=0.5,
-                key="vertical_exaggeration",
-                help="How many times the vertical scale is stretched compared with the horizontal.",
+        else:
+            # Older sessions / workbook seeds hold "5" or 5.0: keep a valid option.
+            st.session_state.vertical_exaggeration = normalize_ve_choice(
+                st.session_state.vertical_exaggeration
             )
+        if visibility.vertical_exaggeration_editable:
+            ve_choice = st.selectbox(
+                "Vertical exaggeration",
+                options=ve_choice_options(st.session_state.vertical_exaggeration),
+                format_func=ve_choice_label,
+                key="vertical_exaggeration",
+                on_change=_remember_user_ve,
+                help=(
+                    "Auto fits the section to the page and prints the vertical exaggeration "
+                    "it really ends up with. A number draws exactly that exaggeration "
+                    "(1× = true scale); the plot shrinks inside its frame to keep it."
+                ),
+            )
+            vertical_exaggeration = ve_choice_to_request(ve_choice)
         else:
             _keep_widget_state("vertical_exaggeration")
-            vertical_exaggeration = float(preset_config.vertical_exaggeration or ve_default)
+            vertical_exaggeration = ve_choice_to_request(ve_default)
 
         figure_summary = locked_figure_summary(output_preset)
         if figure_summary:
@@ -521,17 +694,23 @@ def render_sidebar() -> SidebarState:
         # One title field per style. Consulting layouts print the title block's
         # section label as the figure title, so that field is shown here as
         # "Section title" and section_title (file names, metadata) follows it.
+        title_store = _widget_store()
         if "section_title" not in st.session_state:
-            st.session_state.section_title = "Borehole Cross-Section"
+            st.session_state.section_title = title_store.get(
+                "section_title", "Borehole Cross-Section"
+            )
         if is_consulting_layout:
             if (
                 st.session_state.pop("_reset_consulting_section_label", False)
-                or "consulting_section_label" not in st.session_state
+                or (
+                    "consulting_section_label" not in st.session_state
+                    and "consulting_section_label" not in title_store
+                )
             ):
                 st.session_state.consulting_section_label = (
                     st.session_state.get("section_title") or "Borehole Cross-Section"
                 )
-            consulting_section_label = st.text_input(
+            consulting_section_label = _bound_text_input(
                 "Section title",
                 key="consulting_section_label",
                 help="Printed as the figure title and used in file names.",
@@ -540,14 +719,17 @@ def render_sidebar() -> SidebarState:
                 st.session_state.get("section_title") or "Borehole Cross-Section"
             )
             st.session_state["section_title"] = section_title
+            title_store["section_title"] = section_title
         else:
-            section_title = st.text_input(
+            section_title = _bound_text_input(
                 "Section title",
                 key="section_title",
+                default="Borehole Cross-Section",
                 help="Printed on the figure and used in file names.",
             )
             # Same value for the consulting styles' title block (one field).
             st.session_state["consulting_section_label"] = section_title
+            title_store["consulting_section_label"] = section_title
 
         # Groundwater
         if visibility.groundwater_editable:
@@ -560,14 +742,20 @@ def render_sidebar() -> SidebarState:
                 show_water_elevation_labels = st.toggle(
                     "Show water level labels",
                     value=show_water_elevation_labels,
+                    help="Prints each measured water level's elevation beside its hole.",
                 )
                 show_water_legend = st.toggle(
                     "Show groundwater legend",
                     value=show_water_legend,
+                    help="A key naming each water-level series (e.g. by date) and its line style.",
                 )
                 show_dry_well_nm = st.toggle(
                     "Show 'not measured' markers for dry wells",
                     value=show_dry_well_nm,
+                    help=(
+                        "Prints NM beside holes with no water reading (when the workbook has "
+                        "water data), so a missing level is not read as no water."
+                    ),
                 )
                 water_interpolate_across_gaps = st.toggle(
                     "Join water levels across holes with no reading",
@@ -582,6 +770,7 @@ def render_sidebar() -> SidebarState:
         # Labels and legend
         with st.expander("Labels and legend", expanded=False):
             if visibility.label_detail_editable:
+                _keep_widget_state("column_header_detail")
                 st.selectbox(
                     "Borehole label detail",
                     options=["id_only", "id_rl_td"],
@@ -594,6 +783,7 @@ def render_sidebar() -> SidebarState:
             else:
                 _keep_widget_state("column_header_detail")
             if visibility.chart_legend_editable:
+                _keep_widget_state("show_legend")
                 show_legend = st.toggle(
                     "Legend on chart",
                     key="show_legend",
@@ -621,9 +811,13 @@ def render_sidebar() -> SidebarState:
             st.toggle(
                 "Show vertical exaggeration note",
                 key="show_ve_annotation",
-                help="Prints the vertical exaggeration (e.g. 'Vertical exaggeration 5×') on the figure.",
+                help=(
+                    "Prints the vertical exaggeration on the figure: the chosen value, "
+                    "or with Auto the value measured on the page (e.g. 'V.E. ≈2.2×')."
+                ),
             )
             if visibility.parameter_text_block_editable:
+                _keep_widget_state("show_parameter_legend_text")
                 st.toggle(
                     "Show lab parameters note",
                     key="show_parameter_legend_text",
@@ -639,6 +833,7 @@ def render_sidebar() -> SidebarState:
         if has_chemistry:
             with st.expander("Chemistry", expanded=False):
                 if visibility.chemistry_marker_size_editable:
+                    _keep_widget_state("parameter_marker_size")
                     st.number_input(
                         "Chemistry dot size",
                         min_value=4.0,
@@ -669,6 +864,7 @@ def render_sidebar() -> SidebarState:
             options=list(_TRANSECT_MODE_LABELS),
             format_func=lambda value: _TRANSECT_MODE_LABELS.get(value, value),
             key="transect_definition_mode",
+            help="Pick holes in order, use a suggested line through the holes, or type map coordinates.",
         )
         _apply_pending_offset_thresholds()
         offset_warning_m = st.number_input(
@@ -684,7 +880,7 @@ def render_sidebar() -> SidebarState:
     if not visibility.title_block_shown:
         # Keep typed / Project-sheet values for when a consulting style returns
         # (file uploaders cannot be re-assigned, so logos are not kept).
-        _keep_widget_state(
+        _stash_widget_values(
             *(key for key in _TITLE_BLOCK_MAIN_KEYS + _TITLE_BLOCK_MORE_KEYS if "logo" not in key),
         )
     if visibility.title_block_shown:
@@ -698,6 +894,8 @@ def render_sidebar() -> SidebarState:
 
     # ---------------------------------------------------------------- Export
     if visibility.export_shown:
+        # Re-send values kept while a style hid this panel (see _keep_widget_state).
+        _keep_widget_state(*_EXPORT_WIDGET_KEYS)
         with st.expander("Export", expanded=False):
             _render_export_framing_panel()
     else:
@@ -725,6 +923,10 @@ def render_sidebar() -> SidebarState:
             max_value=14.0,
             step=0.5,
             key="export_font_size",
+            help=(
+                "Base size of the text on the figure. Title-block styles never go below "
+                "their 9 pt design size; larger values scale all their text up."
+            ),
         )
 
         st.markdown("**Uncertainty shading**")
@@ -735,6 +937,10 @@ def render_sidebar() -> SidebarState:
             value=float(DEFAULT_UNCERTAINTY_SPACING_M),
             step=10.0,
             disabled=borehole_only,
+            help=(
+                "Grey shading between neighbouring holes farther apart than this, where "
+                "the layers drawn between them are less certain."
+            ),
         )
         uncertainty_offset_m = st.number_input(
             "Shade as uncertain when a hole is more than this far off the line (m)",
@@ -742,12 +948,20 @@ def render_sidebar() -> SidebarState:
             step=5.0,
             key="uncertainty_offset_m",
             disabled=borehole_only,
+            help=(
+                "Grey shading between a hole and its neighbours when the hole is projected "
+                "onto the line from farther away than this."
+            ),
         )
         max_offset_for_interpolation_m = st.number_input(
             "Don't connect layers to holes more than this far off the line (m)",
             min_value=1.0,
             step=5.0,
             value=float(st.session_state.offset_warning_m),
+            help=(
+                "Holes projected from farther off the section line than this are left "
+                "out of the layers drawn between holes."
+            ),
         )
         warn_on_correlation_gaps = st.toggle(
             "Warn when layers don't match between holes",
@@ -832,7 +1046,12 @@ def _render_fill_style_editor() -> None:
     if not style_codes:
         st.info("Load a workbook to edit lithology colours.")
         return
-    style_code = st.selectbox("Lithology code", options=style_codes, key="style_editor_code")
+    style_code = st.selectbox(
+        "Lithology code",
+        options=style_codes,
+        key="style_editor_code",
+        help="Soil / rock code from your workbook whose fill you want to change.",
+    )
     current_style = get_lithology_style(style_code)
     style_color = st.color_picker("Fill colour", value=current_style.color, key="style_editor_color")
     style_hatch_options = sorted(set(USGS_LITHOLOGY_HATCHES.values()))
@@ -840,6 +1059,7 @@ def _render_fill_style_editor() -> None:
         "Hatch pattern",
         options=style_hatch_options,
         format_func=lambda hatch: hatch or "None (solid fill)",
+        help="Pattern drawn over the fill colour (template 261002 marks by default).",
         index=style_hatch_options.index(current_style.hatch)
         if current_style.hatch in style_hatch_options
         else 0,
@@ -958,6 +1178,10 @@ def _render_import_settings(*, expanded: bool = False) -> tuple[str, str | None,
             options=profile_ids,
             format_func=lambda key: "Auto-detect" if key == "auto" else profile_options[key],
             index=min(default_profile_index, len(profile_ids) - 1),
+            help=(
+                "How to read the workbook. Auto-detect recognises the template, a Collars + "
+                "Lithology workbook or a known field export; pick one only if it guessed wrong."
+            ),
         )
         default_elevation_m = st.number_input(
             "Default collar elevation (m)",
@@ -974,7 +1198,7 @@ def _render_import_settings(*, expanded: bool = False) -> tuple[str, str | None,
         st.session_state.auto_assign_unit_order = st.checkbox(
             "Number layers down each hole automatically",
             value=bool(st.session_state.get("auto_assign_unit_order", True)),
-            help="Orders layers 1, 2, 3… from the top of each hole when the workbook gives no layer order.",
+            help="When a hole repeats a code and the workbook gives no layer order, numbers layers across the whole site so matching layers line up between holes (your own unit_order values are kept).",
         )
         # Rarely needed; kept out of the way so a client-specific value is never
         # applied by default (blank = the detected format's own settings).
@@ -1001,9 +1225,18 @@ def _render_import_settings(*, expanded: bool = False) -> tuple[str, str | None,
 
 
 def _seed_title_block_defaults() -> None:
-    """Init keyed title-block widgets only when absent (keeps Project-sheet seeding)."""
+    """Init keyed title-block widgets only when absent (keeps Project-sheet seeding).
+
+    A value kept in the widget store (field hidden by another output style)
+    comes back before any blank default is applied.
+    """
+    store = _widget_store()
+    for key in _TITLE_BLOCK_MAIN_KEYS + _TITLE_BLOCK_MORE_KEYS:
+        if key not in st.session_state and key in store:
+            st.session_state[key] = store[key]
     if "consulting_map_scale" not in st.session_state:
-        st.session_state.consulting_map_scale = "1:1000"
+        # Blank = "AS SHOWN": the drawn scale bar is true to scale.
+        st.session_state.consulting_map_scale = ""
     if "consulting_notes" not in st.session_state:
         st.session_state.consulting_notes = "\n".join(_default_consulting_notes())
     for key in (
@@ -1031,10 +1264,26 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
     Figure style (one field); ``section_title`` follows it."""
     _seed_title_block_defaults()
     consulting_section_label = str(st.session_state.get("consulting_section_label") or "")
-    figure_number = st.text_input("Figure no.", key="consulting_figure_number")
-    project_number = st.text_input("Project no.", key="consulting_project_number")
-    report_date = st.text_input("Date", key="consulting_date")
-    prepared_by = st.text_input("Prepared by", key="consulting_prepared_by")
+    figure_number = _bound_text_input(
+        "Figure no.",
+        key="consulting_figure_number",
+        help="Figure number printed in the title block (e.g. 3).",
+    )
+    project_number = _bound_text_input(
+        "Project no.",
+        key="consulting_project_number",
+        help="Your project or file number, printed in the title block.",
+    )
+    report_date = _bound_text_input(
+        "Date",
+        key="consulting_date",
+        help="Issue date printed in the title block exactly as typed (e.g. 24/06/26).",
+    )
+    prepared_by = _bound_text_input(
+        "Prepared by",
+        key="consulting_prepared_by",
+        help="Consultant or firm that prepared the figure.",
+    )
     with st.expander(
         f"More title block fields ({_filled_count(_TITLE_BLOCK_MORE_KEYS)})",
         expanded=False,
@@ -1043,36 +1292,76 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
         st.caption("Section line ends (printed at each end of the cross-section)")
         transect_cols = st.columns(2)
         with transect_cols[0]:
-            transect_start_primary = st.text_input("Start letter (e.g. B)", key="consulting_start_primary")
-            transect_start_secondary = st.text_input(
+            transect_start_primary = _bound_text_input(
+                "Start letter (e.g. B)",
+                key="consulting_start_primary",
+                help="Letter printed above the first (left) end of the section.",
+            )
+            transect_start_secondary = _bound_text_input(
                 "Start direction (e.g. SOUTHWEST)",
                 key="consulting_start_secondary",
+                help="Compass direction printed under the start letter.",
             )
         with transect_cols[1]:
-            transect_end_primary = st.text_input("End letter (e.g. B')", key="consulting_end_primary")
-            transect_end_secondary = st.text_input(
+            transect_end_primary = _bound_text_input(
+                "End letter (e.g. B')",
+                key="consulting_end_primary",
+                help="Letter printed above the last (right) end of the section.",
+            )
+            transect_end_secondary = _bound_text_input(
                 "End direction (e.g. NORTHEAST)",
                 key="consulting_end_secondary",
+                help="Compass direction printed under the end letter.",
             )
-        transect_start_label = st.text_input(
-            "Start label (used if no start letter)", key="consulting_start_label"
+        transect_start_label = _bound_text_input(
+            "Start label (used if no start letter)",
+            key="consulting_start_label",
+            help="The whole start label on one line (e.g. A / NORTHWEST); used only when Start letter is blank.",
         )
-        transect_end_label = st.text_input("End label (used if no end letter)", key="consulting_end_label")
-        map_scale = st.text_input("Map scale", key="consulting_map_scale")
-        source = st.text_input("Source", key="consulting_source")
-        drawn_by = st.text_input("Drawn by", key="consulting_drawn_by")
-        revised = st.text_input("Revised", key="consulting_revised")
-        prepared_for = st.text_input("Prepared for", key="consulting_prepared_for")
+        transect_end_label = _bound_text_input(
+            "End label (used if no end letter)",
+            key="consulting_end_label",
+            help="The whole end label on one line (e.g. A' / SOUTHEAST); used only when End letter is blank.",
+        )
+        map_scale = _bound_text_input(
+            "Map scale",
+            key="consulting_map_scale",
+            placeholder="As shown (scale bar)",
+            help="Leave blank to print AS SHOWN; the scale bar is drawn true to scale. "
+            "A value you enter (e.g. 1:1000) is printed as written.",
+        )
+        source = _bound_text_input(
+            "Source",
+            key="consulting_source",
+            help="Data source citation printed in the title block (e.g. ECOVENTURE 2026).",
+        )
+        drawn_by = _bound_text_input(
+            "Drawn by", key="consulting_drawn_by", help="Drafter's initials for the title block."
+        )
+        revised = _bound_text_input(
+            "Revised",
+            key="consulting_revised",
+            help="Revision date or number; the REVISED row prints only when this is filled in.",
+        )
+        prepared_for = _bound_text_input(
+            "Prepared for",
+            key="consulting_prepared_for",
+            help="Client the figure is prepared for, printed in the title block.",
+        )
+        _bind_widget_value("consulting_notes", "\n".join(_default_consulting_notes()))
         notes_text = st.text_area("Notes", key="consulting_notes", help="One note per line.")
+        _widget_store()["consulting_notes"] = notes_text
         logo_for = st.file_uploader(
             "Client logo (PNG)",
             type=["png"],
             key="consulting_logo_for",
+            help="Optional client logo printed in the title block.",
         )
         logo_by = st.file_uploader(
             "Your company logo (PNG)",
             type=["png"],
             key="consulting_logo_by",
+            help="Optional logo of your firm printed in the title block.",
         )
         st.caption(
             "Optional workbook sheets: **Screens** (hole_id, from_depth, to_depth) and "
@@ -1087,8 +1376,8 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
                 context = _report_context_from_selection(
                     st.session_state.parse_result,
                     report_holes,
-                    vertical_exaggeration=float(
-                        st.session_state.get("vertical_exaggeration", 5.0)
+                    vertical_exaggeration=ve_choice_to_request(
+                        st.session_state.get("vertical_exaggeration", DEFAULT_VE_CHOICE)
                     ),
                     map_scale=map_scale,
                     section_title=label_for_context,
@@ -1099,7 +1388,9 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
                     "map_scale": map_scale,
                     "section_label": label_for_context,
                     "workbook_name": st.session_state.get("uploaded_name", ""),
-                    "vertical_exaggeration": 5.0,
+                    "vertical_exaggeration": ve_choice_to_request(
+                        st.session_state.get("vertical_exaggeration", DEFAULT_VE_CHOICE)
+                    ),
                 }
             st.session_state.ai_report_suggestion = (
                 _build_assistant().suggest_report_metadata(context)

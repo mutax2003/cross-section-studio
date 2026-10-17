@@ -100,6 +100,11 @@ def test_workflow_stage_progression() -> None:
         == 1
     )
     assert workflow_stage(has_upload=True, has_parse_result=True, has_profile=True) == 3
+    # An empty / unreadable upload does not tick Upload.
+    assert (
+        workflow_stage(has_upload=True, has_parse_result=False, has_profile=False, upload_failed=True)
+        == 0
+    )
 
 
 def test_legend_hatch_background_returns_css() -> None:
@@ -321,8 +326,10 @@ def test_configure_gate_labels_and_reasons_use_plain_wording() -> None:
     from app_configure import ConfigureState, override_warnings_label
 
     assert override_warnings_label(0) == "Generate even if data checks found warnings"
-    assert override_warnings_label(1).endswith("(1 warning)")
-    assert override_warnings_label(3).endswith("(3 warnings)")
+    assert override_warnings_label(1).endswith("(1 warning needs review)")
+    assert override_warnings_label(3).endswith("(3 warnings need review)")
+    assert override_warnings_label(1, 1).endswith("(1 warning needs review; 1 more is advisory)")
+    assert override_warnings_label(2, 3).endswith("(2 warnings need review; 3 more are advisory)")
     base = dict(
         selected_holes=["A", "B"],
         coordinate_text="",
@@ -350,3 +357,26 @@ def test_default_hole_sequence_takes_every_hole_of_a_small_workbook() -> None:
     many = [f"BH-{i}" for i in range(1, 24)]
     assert default_hole_sequence(many) == many[:4]
     assert default_hole_sequence(["A", "B"]) == ["A", "B"]
+
+
+def test_coverage_gaps_do_not_gate_generate():
+    from types import SimpleNamespace
+
+    from ai_quality import QualityIssue
+    from app_configure import gating_warning_count
+
+    gap = QualityIssue(code="depth_gap", message="gap", severity="warning", hole_id="BH1")
+    other = QualityIssue(code="no_lithology", message="none", severity="warning", hole_id="BH2")
+    error = QualityIssue(code="depth_overlap", message="x", severity="error", hole_id="BH1")
+    assert gating_warning_count(None) == 0
+    assert gating_warning_count(SimpleNamespace(issues=[gap, gap])) == 0
+    assert gating_warning_count(SimpleNamespace(issues=[gap, other, error])) == 1
+
+
+def test_section_notes_only_prefix_real_overlaps() -> None:
+    from app_common import _section_note_text
+
+    assert _section_note_text("Clay / Silt between BH1–BH2") == "Polygon overlap: Clay / Silt between BH1–BH2"
+    note = "Crossing correlation A–B: Clay, Sand logged in opposite order — drawn as pinch-outs"
+    assert _section_note_text(note) == note
+    assert _section_note_text("Map scale 1:1 000 doesn't fit a letter landscape page").startswith("Map scale")

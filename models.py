@@ -48,6 +48,9 @@ def _clean_text(value: object) -> str:
     return text
 
 
+_COLLAR_LIMITS = {"easting": 1e9, "northing": 1e9, "elevation": 1e5, "total_depth": 1e5}
+
+
 class Collar(BaseModel, frozen=True):
     hole_id: str
     easting: float
@@ -80,6 +83,11 @@ class Collar(BaseModel, frozen=True):
     def require_finite(cls, value: float, info) -> float:
         if not math.isfinite(value):
             raise ValueError(f"{info.field_name} must be a finite number")
+        # Real coordinates (UTM / local grids) and elevations are far inside
+        # these; larger values are typos and overflowed the section maths.
+        limit = _COLLAR_LIMITS[info.field_name]
+        if abs(value) > limit:
+            raise ValueError(f"{info.field_name} {value:,.0f} is out of range (limit ±{limit:,.0f})")
         return value
 
     @field_validator("total_depth")
@@ -365,11 +373,32 @@ class EnvironmentalReading(BaseModel, frozen=True):
     unit: str = ""
     value_label: str = ""
     label_color: str = ""  # "", green, red, black or orange (fixed hex each)
+    # Optional per-parameter threshold limits typed in the workbook (same
+    # units as ``value``): green <= green_max < orange <= orange_max < red.
+    # One filled row per parameter seeds the Configure editor.
+    green_max: float | None = None
+    orange_max: float | None = None
 
     @field_validator("hole_id", "parameter", mode="before")
     @classmethod
     def strip_text(cls, value: object) -> str:
         return _clean_text(value)
+
+    @field_validator("green_max", "orange_max", mode="before")
+    @classmethod
+    def blank_limit_is_none(cls, value: object) -> object:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("green_max", "orange_max")
+    @classmethod
+    def limit_is_non_negative(cls, value: float | None) -> float | None:
+        if value is not None and (pd.isna(value) or value < 0):
+            raise ValueError("green_max / orange_max must be >= 0 (same units as value)")
+        return value
 
     @field_validator("label_color", mode="before")
     @classmethod
@@ -440,7 +469,10 @@ class ConsultingTitleBlock(BaseModel, frozen=True):
     transect_start_secondary: str = ""
     transect_end_primary: str = ""
     transect_end_secondary: str = ""
-    map_scale: str = "1:1000"
+    # Blank = not set: the sheet fits the page and the title block prints
+    # "AS SHOWN". (A non-blank default was mistaken for a user value once the
+    # request round-tripped through JSON, which marks every field as set.)
+    map_scale: str = ""
     figure_number: str = ""
     project_number: str = ""
     source: str = ""
@@ -454,8 +486,20 @@ class ConsultingTitleBlock(BaseModel, frozen=True):
     logo_prepared_by_bytes: bytes | None = None
     screen_legend_label: str = "SCREENED INTERVAL"
     y_axis_label: str = "ELEVATION ABOVE SEA LEVEL (MASL)"
-    scale_bar_m: float = 30.0
+    # None = choose a nice length for the page (see map_scale above).
+    scale_bar_m: float | None = None
     show_gradient_legend: bool = False
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def scrub_control_characters(cls, value: object) -> object:
+        """Drop XML-illegal control characters (e.g. a soft line break pasted
+        from Word): matplotlib writes these fields verbatim into the SVG."""
+        if isinstance(value, str):
+            return _XML_ILLEGAL.sub("", value)
+        if isinstance(value, (tuple, list)):
+            return type(value)(_XML_ILLEGAL.sub("", v) if isinstance(v, str) else v for v in value)
+        return value
 
 
 class SectionFigureMetadata(BaseModel, frozen=True):
@@ -463,7 +507,8 @@ class SectionFigureMetadata(BaseModel, frozen=True):
 
     coordinate_reference: str = ""
     elevation_datum: str = ""
-    vertical_exaggeration: float = 1.0
+    # None = auto (fit page): footers print the VE measured on the drawn figure.
+    vertical_exaggeration: float | None = None
     transect_azimuth_deg: float | None = None
     hole_count: int = 0
     max_offset_m: float = 0.0

@@ -108,9 +108,12 @@ def test_chart_layout_honours_depth_below_collar_mode() -> None:
         # Both collars plot at depth 0 regardless of their RL difference.
         y_lo, y_hi = sorted(ax.get_ylim())
         assert y_lo <= 0.0 < y_hi
-        # Scale bar text stays at the visual bottom (numerically deep end).
-        bar = next(t for t in ax.texts if t.get_text().endswith(" m") and "TD" not in t.get_text())
-        assert bar.get_position()[1] > 0.5 * y_hi
+        # The scale bar hangs below the plot (visual bottom, clear of the
+        # geology), also on the inverted depth axis.
+        bar = next(a for a in ax.artists if a.get_gid() == "scale-bar")
+        figure.canvas.draw()
+        renderer = figure.canvas.get_renderer()
+        assert bar.get_window_extent(renderer).y1 <= ax.get_window_extent(renderer).y0
     finally:
         import matplotlib.pyplot as plt
 
@@ -128,4 +131,32 @@ def test_chart_collar_rl_rides_in_the_header_box() -> None:
     finally:
         import matplotlib.pyplot as plt
 
+        plt.close(figure)
+
+
+def test_chart_headers_clear_the_title_and_each_other() -> None:
+    """On a short 7-hole section the 3-line collar boxes rose into the title
+    and touched each other (live QA, quick preview)."""
+    import itertools
+
+    import matplotlib.pyplot as plt
+
+    ids = [f"BH-{i}" for i in range(7)]
+    collars = [
+        Collar(hole_id=h, easting=5.0 * i, northing=0.0, elevation=635.0, total_depth=10.0)
+        for i, h in enumerate(ids)
+    ]
+    liths = [Lithology(hole_id=h, from_depth=0.0, to_depth=10.0, lithology_code="Clay") for h in ids]
+    projected, polygons, _ = run_pipeline(collars, liths, [(0.0, 0.0), (30.0, 0.0)], render_layout="chart")
+    renderer = CrossSectionRenderer(render_profile=CHART_PROFILE, title="Borehole Cross-Section")
+    figure = renderer.render(polygons, projected, collar_depths={h: 10.0 for h in ids})
+    try:
+        figure.draw_without_rendering()
+        mpl_renderer = figure.canvas.get_renderer()
+        boxes = [t.get_window_extent(mpl_renderer) for t in renderer._header_labels]
+        title = figure.axes[0].title.get_window_extent(mpl_renderer)
+        assert len(boxes) == 7
+        assert not any(box.overlaps(title) for box in boxes)
+        assert not any(a.overlaps(b) for a, b in itertools.combinations(boxes, 2))
+    finally:
         plt.close(figure)

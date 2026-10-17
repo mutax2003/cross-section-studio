@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Iterator, Sequence
+import threading
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import get_args
 
@@ -42,8 +43,10 @@ from projection import DEFAULT_OFFSET_WARNING_M, project_boreholes, transect_azi
 from render_profiles import (
     ChemistryLabelStyle,
     LayoutMode,
+    normalise_chemistry_thresholds,
     profile_for_layout,
     profile_with_elevation_mode,
+    resolved_chemistry_thresholds,
 )
 from render_theme import filter_water_levels_for_plot
 from renderer import CrossSectionRenderer
@@ -57,6 +60,15 @@ from stratigraphy import (
 )
 
 logger = logging.getLogger(__name__)
+
+# pyplot keeps process-wide figure state (figure manager, current figure):
+# two Streamlit sessions rendering at once replaced each other's canvas with
+# a bare FigureCanvasBase ("no attribute get_renderer"). Every render → export
+# → close (and the later export of a retained figure) runs under this lock.
+_RENDER_LOCK = threading.RLock()
+
+CROSSING_CORRELATION_PREFIX = "Crossing correlation"
+FENCE_NOTE_PREFIXES = (CROSSING_CORRELATION_PREFIX, "Fence clipped")
 
 
 def _merge_optional_profile_updates(
@@ -98,6 +110,9 @@ class CrossSectionResult:
     lithology_codes: list[str]
     overlap_warnings: tuple[str, ...]
     retained_export_bundle: dict[str, object] | None = field(default=None, repr=False, compare=False)
+    # Layout QA for the exported page (e.g. a title-block map scale that does
+    # not fit and printed "AS SHOWN"); not part of legacy tuple unpacking.
+    qa_notes: tuple[str, ...] = ()
 
     def __iter__(self) -> Iterator[object]:
         """Allow legacy tuple unpacking: ``proj, polys, svg, png, pdf, codes, warns = result``."""
@@ -235,6 +250,7 @@ def compute_section_geometry(
     )
 
     correlation_summaries: list[CorrelationPairSummary] = []
+    clip_warnings: list[str] = []
     if interpretation_mode == "borehole_only":
         polygons: list[GeologicalPolygon] = []
         overlap_pairs: tuple[PolygonOverlap, ...] = ()
@@ -244,6 +260,7 @@ def compute_section_geometry(
             allow_pinch_outs=allow_pinch_outs,
             correlation_overrides=correlation_overrides,
             pair_summaries=correlation_summaries,
+            clip_warnings=clip_warnings,
         )
         overlap_pairs = (
             tuple(detect_polygon_overlaps(polygons))
@@ -268,7 +285,19 @@ def compute_section_geometry(
     if correlation_warnings and logger.isEnabledFor(logging.WARNING):
         for message in correlation_warnings:
             logger.warning(message)
-    overlap_warnings = overlap_warnings + tuple(correlation_warnings)
+    # Fence-level notes the user must see (not gated on correlation-gap
+    # warnings): layers logged in opposite order in neighbouring holes are
+    # drawn as pinch-outs, and heavy overlap clipping is reported.
+    fence_notes = [
+        f"{CROSSING_CORRELATION_PREFIX} {summary.left_hole_id}–{summary.right_hole_id}: "
+        f"{', '.join(summary.crossing_codes)} logged in opposite order — "
+        + ("drawn as pinch-outs" if allow_pinch_outs else "not drawn between these holes")
+        for summary in correlation_summaries
+        if summary.crossing_codes
+    ] + clip_warnings
+    for message in fence_notes:
+        logger.warning(message)
+    overlap_warnings = overlap_warnings + tuple(correlation_warnings) + tuple(fence_notes)
     if fail_on_overlaps and overlap_pairs:
         raise ValueError(
             f"Polygon overlap detected ({len(overlap_pairs)} pair(s)); "
@@ -305,6 +334,14 @@ def compute_section_geometry(
 
 
 
+def _check_vertical_exaggeration(vertical_exaggeration: float | None) -> None:
+    """``None`` = auto (fit page, caption prints the measured VE); else exact VE."""
+    if vertical_exaggeration is None:
+        return
+    if not math.isfinite(vertical_exaggeration) or vertical_exaggeration <= 0:
+        raise ValueError("vertical_exaggeration must be a positive finite number (or None for auto)")
+
+
 def _check_render_layout(render_layout: str) -> None:
     """Reject unknown layouts; profile_for_layout would silently fall back."""
     if render_layout not in get_args(LayoutMode):
@@ -318,7 +355,7 @@ def build_cross_section(
     lithologies: Sequence[Lithology],
     transect_points: Sequence[tuple[float, float]],
     *,
-    vertical_exaggeration: float = 1.0,
+    vertical_exaggeration: float | None = None,
     show_hatches: bool = True,
     show_legend: bool = True,
     title: str = "Borehole Cross-Section",
@@ -364,6 +401,7 @@ def build_cross_section(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
+    chemistry_thresholds: Mapping[str, tuple[float | None, float | None]] | None = None,
     chemistry_label_style: ChemistryLabelStyle | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
@@ -376,11 +414,15 @@ def build_cross_section(
     vertical_gradients: Sequence[VerticalGradient] | None = None,
     export_framing: ExportFramingConfig | None = None,
 ) -> CrossSectionResult:
-    """Project, build stratigraphy, render. Returns ``CrossSectionResult`` (also unpackable as a 7-tuple)."""
+    """Project, build stratigraphy, render. Returns ``CrossSectionResult`` (also unpackable as a 7-tuple).
+
+    ``vertical_exaggeration``: ``None`` (default) = auto — the section fills the
+    page and every VE caption prints the true VE measured after final layout;
+    a number draws exactly that VE (plot box locked, centred in its frame).
+    """
     export_formats = _normalize_export_formats(export_formats)
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
-    if not math.isfinite(vertical_exaggeration) or vertical_exaggeration <= 0:
-        raise ValueError("vertical_exaggeration must be a positive finite number")
+    _check_vertical_exaggeration(vertical_exaggeration)
     if not math.isfinite(uncertainty_spacing_m) or uncertainty_spacing_m <= 0:
         raise ValueError("uncertainty_spacing_m must be a positive finite number")
     if not math.isfinite(uncertainty_offset_m) or uncertainty_offset_m <= 0:
@@ -443,6 +485,7 @@ def build_cross_section(
         chemistry_color_mode=chemistry_color_mode,
         chemistry_threshold_green_max=chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
+        chemistry_thresholds=chemistry_thresholds,
         chemistry_label_style=chemistry_label_style,
         render_layout=render_layout,
         track_width_m=track_width_m,
@@ -461,7 +504,7 @@ def render_cross_section_from_geometry(
     geometry: SectionGeometry,
     transect_points: Sequence[tuple[float, float]],
     *,
-    vertical_exaggeration: float = 1.0,
+    vertical_exaggeration: float | None = None,
     show_hatches: bool = True,
     show_legend: bool = True,
     title: str = "Borehole Cross-Section",
@@ -499,6 +542,7 @@ def render_cross_section_from_geometry(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
+    chemistry_thresholds: Mapping[str, tuple[float | None, float | None]] | None = None,
     chemistry_label_style: ChemistryLabelStyle | None = None,
     render_layout: str = "section_sheet",
     track_width_m: float = 3.0,
@@ -519,8 +563,7 @@ def render_cross_section_from_geometry(
     """
     export_formats = _normalize_export_formats(export_formats)
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
-    if not math.isfinite(vertical_exaggeration) or vertical_exaggeration <= 0:
-        raise ValueError("vertical_exaggeration must be a positive finite number")
+    _check_vertical_exaggeration(vertical_exaggeration)
     if not math.isfinite(uncertainty_spacing_m) or uncertainty_spacing_m <= 0:
         raise ValueError("uncertainty_spacing_m must be a positive finite number")
     if not math.isfinite(uncertainty_offset_m) or uncertainty_offset_m <= 0:
@@ -586,6 +629,16 @@ def render_cross_section_from_geometry(
         ("chemistry_threshold_yellow_max", chemistry_threshold_yellow_max),
         ("chemistry_label_style", chemistry_label_style),
     )
+    if chemistry_thresholds:
+        # Per-parameter limits (parameter -> (green_max, orange_max)); the
+        # sheet-wide pair above fills any limit a parameter leaves blank.
+        profile_updates["chemistry_thresholds"] = normalise_chemistry_thresholds(
+            chemistry_thresholds
+        )
+    if show_water_legend is False:
+        # The sidebar "Show groundwater legend" switch was turned off: no
+        # per-series water key either, even with several series.
+        profile_updates["water_series_key_min_series"] = 0
     if chemistry_label_style is not None and chemistry_label_style not in get_args(ChemistryLabelStyle):
         raise ValueError(
             f"chemistry_label_style must be one of {get_args(ChemistryLabelStyle)} "
@@ -603,6 +656,32 @@ def render_cross_section_from_geometry(
     render_profile = profile_with_elevation_mode(base_profile, elevation_mode).model_copy(
         update=profile_updates
     )
+
+    if render_profile.chemistry_color_mode == "threshold" and (
+        render_profile.chemistry_threshold_green_max is None
+        or render_profile.chemistry_threshold_yellow_max is None
+    ):
+        # Threshold mode without limits used to print black values beside
+        # series-red dots; apply the Configure step's default bands instead.
+        green_max, yellow_max = resolved_chemistry_thresholds(
+            render_profile.chemistry_threshold_green_max,
+            render_profile.chemistry_threshold_yellow_max,
+        )
+        if not render_profile.chemistry_thresholds:
+            # With per-parameter limits the sheet-wide pair is only a fallback,
+            # so missing values there are expected, not a misconfiguration.
+            logger.warning(
+                "chemistry_color_mode='threshold' without both limits: using green <= %g, "
+                "orange <= %g, red above.",
+                green_max,
+                yellow_max,
+            )
+        render_profile = render_profile.model_copy(
+            update={
+                "chemistry_threshold_green_max": green_max,
+                "chemistry_threshold_yellow_max": yellow_max,
+            }
+        )
 
     effective_show_legend = show_legend
     effective_interpolate_wt = interpolate_water_table
@@ -661,50 +740,76 @@ def render_cross_section_from_geometry(
         render_profile=render_profile,
         raster_log_strips=raster_log_strips,
         consulting_title_block=effective_consulting_block,
-        screen_intervals=screen_intervals or (),
+        screen_intervals=(
+            ()
+            if export_framing is not None and not export_framing.include_screens
+            else (screen_intervals or ())
+        ),
         vertical_gradients=vertical_gradients or (),
         stick_up_by_hole=stick_up_by_hole,
         export_framing=export_framing,
     )
-    figure = renderer.render(
-        polygons,
-        projected,
-        collar_depths=collar_depths,
-        water_levels=plotted_water,
-        lithology_codes=lithology_codes,
-    )
-    try:
-        svg_bytes, png_bytes, pdf_bytes = renderer.export_figure_bytes(
-            figure,
-            export_formats,
-            polygons=polygons,
-            projected_df=projected,
+    with _RENDER_LOCK:
+        figure = renderer.render(
+            polygons,
+            projected,
             collar_depths=collar_depths,
-            water_levels=water_levels,
+            water_levels=plotted_water,
             lithology_codes=lithology_codes,
-            qa_lines=qa_lines,
         )
-    except Exception:
-        from matplotlib import pyplot as plt
+        # Chemistry values the label placement could not fit beside their hole are
+        # dropped (markers stay) and a set map scale may not fit the page; both are
+        # only final after export framing, so the export appends them to the PDF
+        # QA lines and they are read back below for the app warnings.
+        include_render_notes = not (export_framing is not None and not export_framing.include_qa_footer)
+        try:
+            svg_bytes, png_bytes, pdf_bytes = renderer.export_figure_bytes(
+                figure,
+                export_formats,
+                polygons=polygons,
+                projected_df=projected,
+                collar_depths=collar_depths,
+                water_levels=water_levels,
+                lithology_codes=lithology_codes,
+                qa_lines=qa_lines,
+                append_render_notes=include_render_notes,
+            )
+        except Exception:
+            from matplotlib import pyplot as plt
 
-        plt.close(figure)
-        raise
-    retained: dict[str, object] | None = None
-    if close_figure:
-        from matplotlib import pyplot as plt
+            plt.close(figure)
+            raise
+        # Export re-places labels for the page size: report the final drops.
+        overlap_warnings = tuple(overlap_warnings) + tuple(
+            getattr(renderer, "chemistry_label_notes", None) or ()
+        )
+        # Read after export framing: whether the map scale fits depends on the page.
+        qa_notes = tuple(renderer.map_scale_notes(figure)) + tuple(
+            getattr(renderer, "raster_notes", None) or ()
+        )
+        # Hole-ID headers that still overprint after every header fallback.
+        qa_notes = qa_notes + tuple(renderer.header_overlap_notes(figure))
+        # PNG resolution lowered to stay within the raster size cap.
+        qa_notes = qa_notes + tuple(getattr(renderer, "raster_notes", None) or ())
+        # Surface them with the other section notes the app shows after Generate.
+        overlap_warnings = tuple(overlap_warnings) + qa_notes
+        retained: dict[str, object] | None = None
+        if close_figure:
+            from matplotlib import pyplot as plt
 
-        plt.close(figure)
-    else:
-        retained = {
-            "figure": figure,
-            "renderer": renderer,
-            "polygons": polygons,
-            "projected": projected,
-            "collar_depths": collar_depths,
-            "water_levels": water_levels,
-            "lithology_codes": lithology_codes,
-            "qa_lines": qa_lines,
-        }
+            plt.close(figure)
+        else:
+            retained = {
+                "figure": figure,
+                "renderer": renderer,
+                "polygons": polygons,
+                "projected": projected,
+                "collar_depths": collar_depths,
+                "water_levels": water_levels,
+                "lithology_codes": lithology_codes,
+                "qa_lines": qa_lines,
+                "append_render_notes": include_render_notes,
+            }
     return CrossSectionResult(
         projected=projected,
         polygons=polygons,
@@ -714,4 +819,5 @@ def render_cross_section_from_geometry(
         lithology_codes=lithology_codes,
         overlap_warnings=overlap_warnings,
         retained_export_bundle=retained,
+        qa_notes=qa_notes,
     )

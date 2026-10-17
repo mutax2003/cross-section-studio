@@ -243,6 +243,38 @@ def _consulting_for_spec(
 
 
 
+def label_in_title(label: str, title: str) -> bool:
+    """True when ``label`` appears in ``title`` as a whole token.
+
+    A plain substring test treated label "A" as present in "Bay Area Site"
+    and dropped it from batch file names.
+    """
+    label = label.strip()
+    if not label:
+        return False
+    return re.search(_label_pattern(label), title) is not None
+
+
+def _label_pattern(label: str) -> str:
+    return rf"(?<![A-Za-z0-9]){re.escape(label.strip())}(?![A-Za-z0-9])"
+
+
+def _base_section_label(base_request: SectionBuildRequest) -> str:
+    """The title block's section label, unless it is just the whole title.
+
+    Consulting styles copy the whole title ("A - A' WITH CHLORIDE") into the
+    title block label; swapping that whole label named batch files "B-B'"
+    there but "B-B'_WITH_CHLORIDE" under Section sheet (no title block). The
+    "A-A'" inside the title is used instead, so every style names alike.
+    """
+    block = base_request.consulting_title_block
+    base_label = (block.section_label if block else "").strip()
+    title = base_request.section_title.strip()
+    if base_label and base_label == title and _TITLE_SECTION_LABEL_RE.search(title):
+        return ""
+    return base_label
+
+
 def _batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
     """Title for one batch transect.
 
@@ -252,19 +284,50 @@ def _batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
     title = base_request.section_title
     if not label:
         return title
-    block = base_request.consulting_title_block
-    base_label = (block.section_label if block else "").strip()
-    if base_label and base_label != label and base_label in title:
-        return title.replace(base_label, label)
-    if label in title:
+    base_label = _base_section_label(base_request)
+    if base_label and base_label != label and label_in_title(base_label, title):
+        return re.sub(_label_pattern(base_label), lambda _m: label, title)
+    if label_in_title(label, title):
         return title
     # No title block (section-sheet styles): look for an "A-A'" style label.
     match = _TITLE_SECTION_LABEL_RE.search(title)
     if match is not None and _SECTION_ENDS_RE.match(label):
         return title[: match.start()] + label + title[match.end() :]
-    if label in title:
-        return title
     return f"{title} — {label}"
+
+def batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
+    """Public alias: the title one batch sheet prints (and is named after)."""
+    return _batch_section_title(base_request, label)
+
+
+def batch_cover_title(base_request: SectionBuildRequest, labels: Sequence[str]) -> str:
+    """Binder cover / ZIP name for the whole batch, not the previewed section.
+
+    "Site X A-A'" with lines A-A', B-B', C-C' → "Site X — Cross Sections A-A', B-B', C-C'";
+    "A - A' WITH CHLORIDE" → "Cross Sections A-A', B-B', C-C' WITH CHLORIDE" (text
+    after the label stays after it, so the name still starts "Cross_Sections").
+    """
+    title = base_request.section_title.strip()
+    base_label = _base_section_label(base_request)
+    if base_label and label_in_title(base_label, title):
+        pattern = re.compile(_label_pattern(base_label))
+    else:
+        pattern = _TITLE_SECTION_LABEL_RE
+    match = pattern.search(title)
+    if match is None:
+        prefix, suffix = title, ""
+    else:
+        prefix = pattern.sub("", title[: match.start()])
+        suffix = pattern.sub("", title[match.end() :])
+    prefix = prefix.strip(" -—–:,")
+    suffix = suffix.strip(" -—–:,")
+    shown = [label for label in labels if label]
+    noun = "Cross Section" if len(shown) == 1 else "Cross Sections"
+    sections = f"{noun} {', '.join(shown)}" if shown else "Cross Sections"
+    if suffix:
+        sections = f"{sections} {suffix}"
+    return f"{prefix} — {sections}" if prefix else sections
+
 
 def prepare_batch_section_request(
     parse_result: ParseResult,
@@ -337,7 +400,7 @@ def build_one_transect_exports(
             max_offset_for_interpolation_m=request.max_offset_for_interpolation_m,
             correlation_overrides=request.correlation_overrides,
             deviation_readings=request.deviation_readings,
-            warn_on_correlation_gaps=False,
+            warn_on_correlation_gaps=request.warn_on_correlation_gaps,
         )
 
     geometry = _memo_section_geometry(geometry_key, _compute)
@@ -387,6 +450,7 @@ def build_one_transect_exports(
         chemistry_color_mode=request.chemistry_color_mode,
         chemistry_threshold_green_max=request.chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=request.chemistry_threshold_yellow_max,
+        chemistry_thresholds=request.chemistry_thresholds,
         chemistry_label_style=request.chemistry_label_style,
         render_layout=request.render_layout,
         track_width_m=request.track_width_m,
@@ -423,40 +487,51 @@ def build_multi_transect_exports(
     ]
 
 
+_LETTER_LANDSCAPE_IN = (11.0, 8.5)
+
+
+def _cover_page_pdf(title: str, subtitle: str, *, page_size_in: tuple[float, float]) -> bytes:
+    """One cover page at exactly ``page_size_in`` (no tight bbox: that cropped
+    the page to the text, a non-standard ~489 x 624 pt sheet)."""
+    buffer = BytesIO()
+    with PdfPages(buffer) as pdf:
+        cover, ax = plt.subplots(figsize=page_size_in)
+        ax.axis("off")
+        ax.text(
+            0.5,
+            0.55,
+            title,
+            ha="center",
+            va="center",
+            fontsize=18,
+            fontweight="bold",
+            wrap=True,
+            transform=ax.transAxes,
+        )
+        ax.text(0.5, 0.45, subtitle, ha="center", va="center", fontsize=12, transform=ax.transAxes)
+        pdf.savefig(cover)
+        plt.close(cover)
+    return buffer.getvalue()
+
+
 def _merge_pdfs_pypdf(section_pdfs: Sequence[bytes], *, cover_title: str) -> bytes | None:
     try:
         from pypdf import PdfReader, PdfWriter
     except ImportError:
         return None
     writer = PdfWriter()
-    cover_buf = BytesIO()
-    with PdfPages(cover_buf) as pdf:
-        cover, ax = plt.subplots(figsize=(8.5, 11.0))
-        ax.axis("off")
-        ax.text(
-            0.5,
-            0.55,
-            cover_title,
-            ha="center",
-            va="center",
-            fontsize=18,
-            fontweight="bold",
-            transform=ax.transAxes,
-        )
-        ax.text(
-            0.5,
-            0.45,
-            f"{len(section_pdfs)} section(s)",
-            ha="center",
-            va="center",
-            fontsize=12,
-            transform=ax.transAxes,
-        )
-        pdf.savefig(cover, bbox_inches="tight")
-        plt.close(cover)
-    writer.append(PdfReader(BytesIO(cover_buf.getvalue())))
-    for payload in section_pdfs:
-        writer.append(PdfReader(BytesIO(payload)))
+    readers = [PdfReader(BytesIO(payload)) for payload in section_pdfs]
+    page_size_in = _LETTER_LANDSCAPE_IN
+    if readers and readers[0].pages:
+        # Same sheet size and orientation as the section pages that follow.
+        box = readers[0].pages[0].mediabox
+        page_size_in = (float(box.width) / 72.0, float(box.height) / 72.0)
+    cover = _cover_page_pdf(
+        cover_title, f"{len(section_pdfs)} section(s)", page_size_in=page_size_in
+    )
+    writer.append(PdfReader(BytesIO(cover)))
+    for reader in readers:
+        writer.append(reader)
     out = BytesIO()
     writer.write(out)
     return out.getvalue()
@@ -473,32 +548,11 @@ def export_binder_pdf(section_pdfs: Sequence[bytes], *, cover_title: str = "Cros
     if merged is not None:
         return merged
     # Fallback without pypdf: cover page only (individual PDFs still land in the ZIP).
-    buffer = BytesIO()
-    with PdfPages(buffer) as pdf:
-        cover, ax = plt.subplots(figsize=(8.5, 11.0))
-        ax.axis("off")
-        ax.text(
-            0.5,
-            0.55,
-            cover_title,
-            ha="center",
-            va="center",
-            fontsize=18,
-            fontweight="bold",
-            transform=ax.transAxes,
-        )
-        ax.text(
-            0.5,
-            0.45,
-            f"{len(valid)} section(s) — install pypdf for full binder merge",
-            ha="center",
-            va="center",
-            fontsize=11,
-            transform=ax.transAxes,
-        )
-        pdf.savefig(cover, bbox_inches="tight")
-        plt.close(cover)
-    return buffer.getvalue()
+    return _cover_page_pdf(
+        cover_title,
+        f"{len(valid)} section(s) — install pypdf for full binder merge",
+        page_size_in=_LETTER_LANDSCAPE_IN,
+    )
 
 
 def build_batch_zip(
@@ -508,7 +562,9 @@ def build_batch_zip(
 ) -> bytes:
     """Zip multiple transect exports. Each entry is (stem, svg, png, pdf)."""
     buffer = BytesIO()
-    used: dict[str, int] = {}
+    # The binder and readme names are taken up front so no section stem can
+    # collide with them (a section labelled "report_binder").
+    used: dict[str, int] = {"report_binder": 1, "readme": 1}
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for stem, svg_bytes, png_bytes, pdf_bytes in entries:
             # Sanitize (labels may carry path separators) and uniquify — zipfile
@@ -533,5 +589,18 @@ def build_batch_zip(
                 archive.writestr(f"{safe}.pdf", pdf_bytes)
         if binder_pdf:
             archive.writestr("report_binder.pdf", binder_pdf)
+        archive.writestr("README.txt", _batch_readme(len(entries)).encode("utf-8"))
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def _batch_readme(section_count: int) -> str:
+    """Plain-text note shipped in every batch ZIP (contents and attribution)."""
+    from app_identity import COPYRIGHT_NOTICE, CREATED_BY
+
+    return (
+        f"Cross Section Studio batch export: {section_count} section line(s).\n"
+        "Each section has a PNG (reports) and PDF (print); SVG (CAD) when selected.\n"
+        "report_binder.pdf, when present, collects every section PDF behind a cover page.\n"
+        f"{CREATED_BY}. {COPYRIGHT_NOTICE}\n"
+    )

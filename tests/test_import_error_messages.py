@@ -157,6 +157,46 @@ def test_app_shows_problem_headline_and_counts_skipped_rows_as_errors() -> None:
     # The skipped-row list appears once (on Validate), not per screen.
     listed = [str(md.value) for md in at.markdown if "BH-09 is in Lithology" in str(md.value)]
     assert len(listed) == 1
-    status = [str(md.value) for md in at.markdown if str(md.value).startswith("**Needs fixes**")]
-    assert status and "**3 errors**" in status[0]
+    # Skipped rows do not block Generate, so the status does not say "Needs fixes".
+    status = [str(md.value) for md in at.markdown if str(md.value).startswith("**Rows skipped**")]
+    assert status and "**3 errors**" in status[0] and "you can still generate" in status[0]
+    assert not any(str(md.value).startswith("**Needs fixes**") for md in at.markdown)
     assert not [btn for btn in at.button if btn.label == "Load data health details"]
+
+
+def test_missing_lithology_sheet_is_named_when_collars_exists() -> None:
+    """A Collars-only workbook was told "No Collars sheet was found
+    (sheets in this file: Collars)"."""
+    from app_upload import _friendly_workbook_error
+
+    text = _friendly_workbook_error(
+        ValueError("Could not detect a supported workbook format. Sheets found: Collars, Notes")
+    )
+    assert "No **Lithology** sheet" in text and "No **Collars** sheet" not in text
+    text = _friendly_workbook_error(
+        ValueError("Could not detect a supported workbook format. Sheets found: Sheet1")
+    )
+    assert "No **Collars** sheet" in text
+
+
+def test_non_detect_values_point_to_value_label() -> None:
+    """'<10' / 'ND' in the value column were rejected with "enter a number
+    only", with no hint that value_label exists for lab non-detects."""
+    from io import BytesIO
+
+    import openpyxl
+
+    from models import DataParser
+    from workbook_template import build_input_template_bytes
+
+    book = openpyxl.load_workbook(BytesIO(build_input_template_bytes()))
+    sheet = book["Environmental"]
+    header = [cell.value for cell in sheet[1]]
+    value_col = header.index("value") + 1
+    sheet.cell(row=2, column=value_col, value="<10")
+    buffer = BytesIO()
+    book.save(buffer)
+    buffer.seek(0)
+    result = DataParser().parse_file(buffer)
+    messages = [e for e in result.errors if "'<10'" in e]
+    assert messages and "value_label" in messages[0], result.errors

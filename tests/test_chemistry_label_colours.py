@@ -312,7 +312,8 @@ def test_dot_style_dot_follows_its_label_when_moved() -> None:
         # Dot sits just left of the text, vertically centred on it.
         assert text_box.x0 - 12 <= dot_xy[0] <= text_box.x0 + 1
         assert abs(dot_xy[1] - (text_box.y0 + text_box.y1) / 2) < 3
-        if abs(ann.xyann[1]) > 14:
+        base_dx, base_dy = ann._water_base_xyann
+        if abs(ann.xyann[1] - base_dy) > 10 or abs(ann.xyann[0] - base_dx) > 10:
             moved += 1
     assert moved > 0  # the scenario really exercised the collision pass
 
@@ -340,7 +341,7 @@ def test_outlined_labels_remain_searchable_text_in_pdf() -> None:
 
 @pytest.mark.parametrize("style", ["plain", "stroke", "box", "dot"])
 def test_threshold_key_is_added_without_touching_the_collision_pass(style) -> None:
-    from matplotlib.offsetbox import AnchoredOffsetbox
+    from matplotlib.offsetbox import AnnotationBbox
 
     black, _ = _render(style)
     threshold, figure = _render(
@@ -351,10 +352,268 @@ def test_threshold_key_is_added_without_touching_the_collision_pass(style) -> No
     )
     assert getattr(black, "chemistry_threshold_key_text", None) is None
     assert threshold.chemistry_threshold_key_text.startswith("green ≤ 5 · orange 5–10")
-    keys = [a for ax in figure.axes for a in ax.artists if isinstance(a, AnchoredOffsetbox)]
-    assert len(keys) == 1
+    keys = [a for ax in figure.axes for a in ax.artists if isinstance(a, AnnotationBbox)]
+    assert len(keys) == 1 and keys[0].get_gid() == "chemistry-threshold-key"
     # The key is a fixed panel, not a value label the collision pass moves.
     assert len(threshold._water_labels) == len(black._water_labels)
     import matplotlib.pyplot as plt
 
     plt.close("all")
+
+
+def _p2_render(mode: str, *, label_colors=("", "green", "")):
+    """Consulting sheet like the P2 "Chemistry columns" style (no markers)."""
+    ids = ["BH-01", "BH-02"]
+    collars = [
+        Collar(hole_id=h, easting=i * 8.0, northing=0.0, elevation=100.0, total_depth=10.0)
+        for i, h in enumerate(ids)
+    ]
+    lith = [Lithology(hole_id=h, from_depth=0.0, to_depth=10.0, lithology_code="Sandy Clay") for h in ids]
+    readings = [
+        EnvironmentalReading(
+            hole_id=h, parameter="Chloride", value=float(120 + 50 * k + 7 * i), depth=1.0 + 3.0 * k,
+            unit="mg/kg", label_color=colour,
+        )
+        for i, h in enumerate(ids)
+        for k, colour in enumerate(label_colors)
+    ]
+    projected, polygons, _ = run_pipeline(collars, lith, [(0.0, 0.0), (8.0, 0.0)])
+    renderer = CrossSectionRenderer(
+        render_profile=CONSULTING_SECTION_PROFILE.model_copy(
+            update={
+                "show_parameter_markers": True,
+                "show_parameter_labels": True,
+                "parameter_draw_markers": False,
+                "show_track_lithology": True,
+                "chemistry_color_mode": mode,
+            }
+        ),
+        environmental_readings=readings,
+        environmental_parameters=("Chloride",),
+    )
+    renderer.render(polygons, projected, collar_depths={h: 10.0 for h in ids})
+    colours = {
+        ann.get_text(): ann.get_color().upper()
+        for kind, ann, _c in renderer._water_labels
+        if kind == "chem"
+    }
+    return renderer, colours
+
+
+def test_p2_chemistry_columns_preset_prints_values_red_with_legend_sample() -> None:
+    import matplotlib.pyplot as plt
+
+    from render_theme import CHEMISTRY_LABEL_BLACK, CHEMISTRY_LABEL_RED, chemistry_label_color
+    from ui_output_presets import OUTPUT_PRESETS
+
+    mode = OUTPUT_PRESETS["p2_chemistry_sticks"].chemistry_color_mode
+    assert mode == "red"
+    # Client figures print pure #FF0000 (4.0:1); the agreed red clears AA.
+    assert CHEMISTRY_LABEL_RED == CHEMISTRY_FIXED_COLORS["red"]
+    assert chemistry_label_color(999.0, "red") == CHEMISTRY_LABEL_RED
+    renderer, colours = _p2_render(mode)
+    assert colours["120"] == CHEMISTRY_LABEL_RED and colours["227"] == CHEMISTRY_LABEL_RED
+    # A colour picked in the workbook still wins over the preset default.
+    assert colours["170"] == CHEMISTRY_FIXED_COLORS["green"].upper()
+    assert colours["177"] == CHEMISTRY_FIXED_COLORS["green"].upper()
+    (entry,) = renderer.parameter_series_legend
+    assert entry["label"] == "CHLORIDE CONCENTRATION (mg/kg)"
+    assert entry["color"] == CHEMISTRY_LABEL_BLACK  # label text stays black
+    assert entry["sample_text"] == "120" and entry["sample_color"] == CHEMISTRY_LABEL_RED
+    # Legend panels draw the sample through the chemistry mixin helper.
+    fig, ax = plt.subplots()
+    artist = renderer._draw_parameter_legend_sample(ax, 0.1, 0.5, entry, font_size=7.0)
+    assert artist.get_text() == "120" and artist.get_color() == CHEMISTRY_LABEL_RED
+    blank = {**entry, "sample_text": ""}
+    assert renderer._draw_parameter_legend_sample(ax, 0.1, 0.5, blank, font_size=7.0) is None
+    plt.close("all")
+
+
+def test_black_default_and_threshold_modes_keep_their_colours() -> None:
+    import matplotlib.pyplot as plt
+
+    from render_theme import (
+        CHEMISTRY_LABEL_BLACK,
+        CHEMISTRY_LABEL_GREEN,
+        CHEMISTRY_LABEL_ORANGE,
+        CHEMISTRY_LABEL_RED,
+        chemistry_label_color,
+    )
+    from ui_output_presets import OUTPUT_PRESETS
+
+    for preset_id, preset in OUTPUT_PRESETS.items():
+        if preset_id != "p2_chemistry_sticks":
+            assert preset.chemistry_color_mode in (None, "black")
+    renderer, colours = _p2_render("black")
+    assert colours["120"] == CHEMISTRY_LABEL_BLACK
+    assert colours["170"] == CHEMISTRY_FIXED_COLORS["green"].upper()
+    # Black mode now shows a black sample value too (live QA: the legend
+    # entry had an empty gap where the sample sits in red mode).
+    assert renderer.parameter_series_legend[0].get("sample_color") == CHEMISTRY_LABEL_BLACK
+
+    # No limits set: the Configure defaults (green <= 100, orange <= 250)
+    # apply, so values, dots and the key agree (it used to print black).
+    threshold, colours = _p2_render("threshold")
+    assert colours["120"] == CHEMISTRY_LABEL_ORANGE
+    assert colours["220"] == CHEMISTRY_LABEL_ORANGE
+    assert threshold.chemistry_threshold_key_text is not None
+    assert "100" in threshold.chemistry_threshold_key_text
+    assert "250" in threshold.chemistry_threshold_key_text
+    assert "sample_text" not in threshold.parameter_series_legend[0]
+    bands = {"green_max": 150.0, "yellow_max": 200.0}
+    assert chemistry_label_color(120.0, "threshold", **bands) == CHEMISTRY_LABEL_GREEN
+    assert chemistry_label_color(270.0, "threshold", **bands) == CHEMISTRY_LABEL_RED
+    plt.close("all")
+
+
+def _threshold_key_figure(profile, *, page=None, font_size=None, mode="threshold"):
+    from export_framing import ExportFramingConfig
+    from models import SectionFigureMetadata
+
+    ids, projected, polygons, readings, water = _chemistry_section()
+    update = {
+        "show_parameter_markers": True,
+        "show_parameter_labels": True,
+        "chemistry_color_mode": mode,
+        "chemistry_threshold_green_max": 150.0,
+        "chemistry_threshold_yellow_max": 250.0,
+    }
+    if font_size is not None:
+        update["export_font_size"] = font_size
+    renderer = CrossSectionRenderer(
+        show_legend=True,
+        render_profile=profile.model_copy(update=update),
+        environmental_readings=readings,
+        environmental_parameters=("Chloride",),
+        disclaimer="Interpreted between boreholes.",
+        figure_metadata=SectionFigureMetadata(coordinate_reference="EPSG:26912", elevation_datum="CGVD2013"),
+        export_framing=ExportFramingConfig(page_preset=page, export_dpi=72) if page else None,
+    )
+    figure = renderer.render(polygons, projected, collar_depths={h: 12.0 for h in ids}, water_levels=water)
+    if page:
+        renderer.to_png_bytes(figure, dpi=72)
+    return renderer, figure
+
+
+def _threshold_key_artists(figure):
+    from matplotlib.offsetbox import AnnotationBbox
+
+    return [
+        a for ax in figure.axes for a in ax.artists
+        if isinstance(a, AnnotationBbox) and a.get_gid() == "chemistry-threshold-key"
+    ]
+
+
+def _assert_key_off_plot_and_clear(figure) -> None:
+    from matplotlib.text import Text
+
+    from renderer_water import _figure_renderer, _overlap_area
+
+    mpl_renderer = _figure_renderer(figure)
+    figure.draw_without_rendering()
+    (key,) = _threshold_key_artists(figure)
+    key_box = key.get_window_extent(mpl_renderer)
+    main = key.axes
+    assert key_box.y1 <= main.get_window_extent(mpl_renderer).y0  # off the plot
+    assert key_box.y1 <= main.xaxis.get_tightbbox(mpl_renderer).y0 + 1e-6  # under ticks + label
+    supx = getattr(figure, "_supxlabel", None)
+    if supx is not None and supx.get_text():
+        assert key_box.y1 <= supx.get_window_extent(mpl_renderer).y0 + 1e-6
+    page = figure.bbox
+    assert page.x0 <= key_box.x0 and key_box.x1 <= page.x1 and page.y0 <= key_box.y0
+    own = {id(t) for t in key.offsetbox.findobj(Text)}
+    for ax in figure.axes:
+        if not ax.axison:  # hidden axis furniture of panel axes is never drawn
+            own |= {id(t) for t in ax.xaxis.findobj(Text) + ax.yaxis.findobj(Text)}
+    for text in figure.findobj(Text):
+        if id(text) in own or not text.get_visible() or not text.get_text().strip():
+            continue
+        assert _overlap_area(key_box, text.get_window_extent(mpl_renderer)) <= 0, text.get_text()
+    main_box = main.get_window_extent(mpl_renderer)
+    for ax in figure.axes:
+        box = ax.get_window_extent(mpl_renderer)
+        if box.y1 < main_box.y0:  # consulting subtitle band / title block panels
+            assert _overlap_area(key_box, box) <= 0
+
+
+@pytest.mark.parametrize(
+    "profile_name,show_headers",
+    [("consulting", None), ("sheet", True), ("sheet", False), ("chart", None)],
+)
+@pytest.mark.parametrize(
+    "page,font_size",
+    [
+        (None, None),
+        ("letter_landscape", 8),
+        ("letter_portrait", None),
+        ("letter_portrait", 14),
+        ("tabloid_landscape", 14),
+    ],
+)
+def test_threshold_key_sits_below_the_distance_label_clear_of_everything(
+    profile_name, show_headers, page, font_size
+) -> None:
+    import matplotlib.pyplot as plt
+
+    from render_profiles import CHART_PROFILE
+
+    profile = {
+        "consulting": CONSULTING_SECTION_PROFILE,
+        "sheet": SECTION_SHEET_PROFILE,
+        "chart": CHART_PROFILE,
+    }[profile_name]
+    if show_headers is not None:
+        profile = profile.model_copy(update={"show_column_headers": show_headers})
+    _, figure = _threshold_key_figure(profile, page=page, font_size=font_size)
+    _assert_key_off_plot_and_clear(figure)
+    plt.close("all")
+
+
+@pytest.mark.parametrize("mode", ["black", "red"])
+def test_threshold_key_absent_in_fixed_colour_modes(mode) -> None:
+    import matplotlib.pyplot as plt
+
+    for profile in (CONSULTING_SECTION_PROFILE, SECTION_SHEET_PROFILE):
+        renderer, figure = _threshold_key_figure(profile, mode=mode)
+        assert renderer.chemistry_threshold_key_text is None
+        assert _threshold_key_artists(figure) == []
+    plt.close("all")
+
+
+def test_consulting_band_only_moves_for_the_threshold_key() -> None:
+    import matplotlib.pyplot as plt
+
+    _, black = _threshold_key_figure(CONSULTING_SECTION_PROFILE, mode="black")
+    _, keyed = _threshold_key_figure(CONSULTING_SECTION_PROFILE)
+    black_band = [ax.get_position().bounds for ax in black.axes[1:5]]
+    keyed_band = [ax.get_position().bounds for ax in keyed.axes[1:5]]
+    # Main plot and title block stay put; only the subtitle band yields room.
+    assert black.axes[0].get_position().bounds == keyed.axes[0].get_position().bounds
+    assert black_band[3] == keyed_band[3]
+    for before, after in zip(black_band[:3], keyed_band[:3], strict=True):
+        assert after[1] + after[3] < before[1] + before[3]  # band top lowered
+        assert after[3] > 0.6 * before[3]  # only slightly
+    plt.close("all")
+
+
+def test_threshold_bands_never_invert() -> None:
+    from render_profiles import resolved_chemistry_thresholds
+
+    assert resolved_chemistry_thresholds(None, 50) == (50.0, 50.0)
+    assert resolved_chemistry_thresholds(500, 100) == (100.0, 100.0)
+    assert resolved_chemistry_thresholds(None, None) == (100.0, 250.0)
+    assert resolved_chemistry_thresholds(300, None) == (300.0, 300.0)
+
+
+def test_request_rejects_infinite_vertical_exaggeration() -> None:
+    import math
+
+    import pytest
+    from pydantic import ValidationError
+
+    from section_build_request import SectionBuildRequest
+
+    base = {"transect_points": [(0.0, 0.0), (10.0, 0.0)]}
+    assert SectionBuildRequest.model_validate({**base, "vertical_exaggeration": 5.0})
+    with pytest.raises(ValidationError, match="vertical_exaggeration"):
+        SectionBuildRequest.model_validate({**base, "vertical_exaggeration": math.inf})

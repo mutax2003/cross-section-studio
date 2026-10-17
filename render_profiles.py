@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -11,9 +12,158 @@ YAxisMode = Literal["elevation_rl", "depth_below_collar"]
 WaterSymbol = Literal["circle", "triangle", "diamond"]
 ScaleBarPosition = Literal["bottom_left", "bottom_right"]
 ColumnHeaderDetail = Literal["id_only", "id_rl_td"]
-ChemistryColorMode = Literal["black", "threshold"]
-# How a value label is kept legible over hatched fills.
-ChemistryLabelStyle = Literal["plain", "box", "dot", "stroke"]
+# "black" (default) and "red" print every value in one fixed colour ("red"
+# matches the client P2 chloride figures); "threshold" bands green/orange/red.
+# A per-reading workbook label_color always wins. Blue stays for groundwater.
+ChemistryColorMode = Literal["black", "red", "threshold"]
+# How a value label is kept legible over hatched fills. "strip" (default)
+# knocks a clean background strip out of the fills beside each column, so
+# values read on white with the hatching resuming beyond them.
+ChemistryLabelStyle = Literal["strip", "plain", "box", "dot", "stroke"]
+
+
+# Threshold-mode bands when no limits are given (the Configure step's
+# defaults): green <= 100, orange 100-250, red > 250.
+DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX = 100.0
+DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX = 250.0
+
+
+def resolved_chemistry_thresholds(
+    green_max: float | None, yellow_max: float | None
+) -> tuple[float, float]:
+    """Threshold-mode limits with the Configure defaults filling any gap.
+
+    A given limit is kept; a missing orange limit never falls below the green
+    one (green 300 alone gives orange <= 300, i.e. no orange band), and green
+    never exceeds orange (orange 50 alone gives green <= 50).
+    """
+    if yellow_max is not None:
+        yellow = float(yellow_max)
+        # The bands must not invert: an orange limit alone below the default
+        # green limit pulls green down to it, and green above orange is clamped.
+        green = float(green_max) if green_max is not None else DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX
+        return min(green, yellow), yellow
+    green = float(green_max) if green_max is not None else DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX
+    return green, max(green, DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX)
+
+
+# Per-parameter threshold limits: parameter name -> (green_max, orange_max),
+# each in the parameter's own units (whatever unit the workbook gives). A
+# ``None`` limit falls back to the sheet-wide pair, then to the defaults.
+ChemistryThresholdPair = tuple[float | None, float | None]
+ChemistryThresholdMap = dict[str, ChemistryThresholdPair]
+
+
+def chemistry_parameter_key(parameter: str) -> str:
+    """Lookup key for a parameter name: trimmed, case-folded (``" Chloride "``
+    and ``"chloride"`` share one limit set)."""
+    return str(parameter or "").strip().casefold()
+
+
+def _optional_limit(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        value = float(text)
+    number = float(value)  # type: ignore[arg-type]
+    if number != number:  # NaN from a blank spreadsheet cell
+        return None
+    if number < 0:
+        raise ValueError(f"threshold limits must be >= 0 (got {number:g})")
+    return number
+
+
+def normalise_chemistry_thresholds(
+    thresholds: Mapping[str, object] | None,
+) -> ChemistryThresholdMap:
+    """Clean a per-parameter threshold mapping into ``{name: (green, orange)}``.
+
+    Keys keep their first spelling (trimmed) but collapse case-insensitively;
+    values may be ``(green, orange)`` pairs/lists or ``{"green_max": .., "orange_max": ..}``
+    (``yellow_max`` is accepted for ``orange_max``). Entries with no limit at
+    all are dropped, so an empty editor row never shadows the global pair.
+    """
+    cleaned: ChemistryThresholdMap = {}
+    seen: dict[str, str] = {}
+    for raw_name, raw_pair in (thresholds or {}).items():
+        name = str(raw_name or "").strip()
+        key = chemistry_parameter_key(name)
+        if not key:
+            continue
+        if isinstance(raw_pair, Mapping):
+            green = raw_pair.get("green_max")
+            orange = raw_pair.get("orange_max", raw_pair.get("yellow_max"))
+        else:
+            pair = tuple(raw_pair or ())  # type: ignore[arg-type]
+            green = pair[0] if len(pair) > 0 else None
+            orange = pair[1] if len(pair) > 1 else None
+        green_limit, orange_limit = _optional_limit(green), _optional_limit(orange)
+        if green_limit is None and orange_limit is None:
+            continue
+        canonical = seen.setdefault(key, name)
+        cleaned[canonical] = (green_limit, orange_limit)
+    return cleaned
+
+
+def chemistry_threshold_pair_for(
+    parameter: str,
+    thresholds: Mapping[str, ChemistryThresholdPair] | None,
+) -> ChemistryThresholdPair:
+    """The raw ``(green, orange)`` entry for ``parameter`` (case-insensitive), or ``(None, None)``."""
+    key = chemistry_parameter_key(parameter)
+    if not key or not thresholds:
+        return (None, None)
+    for name, pair in thresholds.items():
+        if chemistry_parameter_key(name) == key:
+            green, orange = (tuple(pair) + (None, None))[:2]
+            return (green, orange)
+    return (None, None)
+
+
+def resolved_chemistry_thresholds_for(
+    parameter: str,
+    thresholds: Mapping[str, ChemistryThresholdPair] | None,
+    green_max: float | None = None,
+    yellow_max: float | None = None,
+) -> tuple[float, float]:
+    """Threshold limits for one parameter.
+
+    The parameter's own entry wins limit by limit; a limit it leaves blank
+    comes from the sheet-wide pair (``green_max`` / ``yellow_max``), and
+    anything still missing from the Configure defaults, with the same
+    no-inversion rules as :func:`resolved_chemistry_thresholds`.
+    """
+    own_green, own_orange = chemistry_threshold_pair_for(parameter, thresholds)
+    green = own_green if own_green is not None else green_max
+    orange = own_orange if own_orange is not None else yellow_max
+    return resolved_chemistry_thresholds(green, orange)
+
+
+def chemistry_thresholds_from_readings(readings: Iterable[object]) -> ChemistryThresholdMap:
+    """Per-parameter limits typed in the workbook (Environmental ``green_max`` /
+    ``orange_max`` columns): the first row of each parameter that gives a limit
+    seeds it, so one filled row per parameter is enough."""
+    found: dict[str, list[float | None]] = {}
+    names: dict[str, str] = {}
+    for reading in readings:
+        name = str(getattr(reading, "parameter", "") or "").strip()
+        key = chemistry_parameter_key(name)
+        if not key:
+            continue
+        green = getattr(reading, "green_max", None)
+        orange = getattr(reading, "orange_max", None)
+        if green is None and orange is None:
+            continue
+        names.setdefault(key, name)
+        pair = found.setdefault(key, [None, None])
+        if pair[0] is None and green is not None:
+            pair[0] = float(green)
+        if pair[1] is None and orange is not None:
+            pair[1] = float(orange)
+    return {names[key]: (pair[0], pair[1]) for key, pair in found.items()}
 
 
 class CrossSectionRenderProfile(BaseModel, frozen=True):
@@ -45,6 +195,11 @@ class CrossSectionRenderProfile(BaseModel, frozen=True):
     water_interpolate_across_gaps: bool = False
     show_water_elevation_labels: bool = False
     show_water_legend: bool = False
+    # Draw a per-series GW key (marker + line + label) once a sheet has at
+    # least this many water series, even with show_water_legend off: several
+    # blue series are unreadable without one. 0 disables (consulting sheets
+    # carry the series in the title-block legend instead).
+    water_series_key_min_series: int = Field(default=0, ge=0)
     show_dry_well_nm: bool = False
     y_axis_mode: YAxisMode = "elevation_rl"
     water_symbol: WaterSymbol = "triangle"
@@ -76,7 +231,10 @@ class CrossSectionRenderProfile(BaseModel, frozen=True):
     chemistry_color_mode: ChemistryColorMode = "black"
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
-    chemistry_label_style: ChemistryLabelStyle = "plain"
+    # Per-parameter limits (parameter -> (green_max, orange_max)); the pair
+    # above is the fallback for parameters without their own entry.
+    chemistry_thresholds: ChemistryThresholdMap = Field(default_factory=dict)
+    chemistry_label_style: ChemistryLabelStyle = "strip"
     x_major_grid_m: float = 10.0
     y_axis_label: str = ""
 
@@ -128,6 +286,7 @@ SECTION_SHEET_PROFILE = CrossSectionRenderProfile(
     parameter_label_include_units=False,
     legend_ncol=2,
     chemistry_color_mode="black",
+    water_series_key_min_series=2,
 )
 
 CONSULTING_SECTION_PROFILE = CrossSectionRenderProfile(

@@ -47,6 +47,32 @@ def test_binder_merges_distinct_pdfs_when_pypdf_available() -> None:
     assert len(binder) > max(len(pdf_a), len(pdf_b))
 
 
+def test_binder_cover_matches_the_section_page_size() -> None:
+    """The cover was saved with a tight bbox: a 488.7 x 624.2 pt portrait
+    page in front of letter-landscape sections."""
+    pypdf = pytest.importorskip("pypdf")
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    def _letter_landscape(label: str) -> bytes:
+        buf = BytesIO()
+        with PdfPages(buf) as pdf:
+            fig, ax = plt.subplots(figsize=(11.0, 8.5))
+            ax.set_title(label)
+            pdf.savefig(fig)
+            plt.close(fig)
+        return buf.getvalue()
+
+    binder = export_binder_pdf(
+        [_letter_landscape("A"), _letter_landscape("B")], cover_title="Site — Cross Sections A-A', B-B'"
+    )
+    sizes = [
+        (round(float(page.mediabox.width)), round(float(page.mediabox.height)))
+        for page in pypdf.PdfReader(BytesIO(binder)).pages
+    ]
+    assert sizes == [(792, 612)] * 3
+
+
 def test_parse_batch_transect_lines() -> None:
     specs = parse_batch_transect_lines(
         "A-A' | BH-01, BH-02, BH-03\n\nB-B' | X1; X2\n"
@@ -182,7 +208,7 @@ def test_build_batch_zip_uniquifies_colliding_and_derived_stems() -> None:
     entries = [(stem, b"svg", b"png", b"pdf") for stem in ("A", "A", "A_2", "a")]
     names = _zipfile.ZipFile(io.BytesIO(build_batch_zip(entries))).namelist()
     assert len(names) == len(set(names))
-    stems = {name.rsplit(".", 1)[0] for name in names}
+    stems = {name.rsplit(".", 1)[0] for name in names if name != "README.txt"}
     assert len(stems) == 4  # every entry kept under a distinct stem
     lowered = [stem.lower() for stem in stems]
     assert len(lowered) == len(set(lowered))  # distinct even case-insensitively
@@ -269,3 +295,82 @@ def test_split_batch_lines_keeps_valid_and_lists_skipped() -> None:
     )
     assert [spec.label for spec in valid] == ["A-A'"]
     assert [status.label for status in skipped] == ["C-C'"]
+
+
+def test_batch_cover_title_names_the_whole_batch() -> None:
+    from types import SimpleNamespace
+
+    from batch_export import batch_cover_title
+
+    block = SimpleNamespace(section_label="A-A'")
+    request = SimpleNamespace(section_title="Site X A-A'", consulting_title_block=block)
+    labels = ["A-A'", "B-B'", "C-C'"]
+    assert batch_cover_title(request, labels) == "Site X — Cross Sections A-A', B-B', C-C'"
+    bare = SimpleNamespace(section_title="B-B'", consulting_title_block=None)
+    assert batch_cover_title(bare, labels) == "Cross Sections A-A', B-B', C-C'"
+    assert batch_cover_title(bare, ["A-A'"]) == "Cross Section A-A'"
+
+
+def test_single_letter_labels_survive_titles_that_contain_the_letter() -> None:
+    from types import SimpleNamespace
+
+    from batch_export import _batch_section_title, label_in_title
+
+    request = SimpleNamespace(section_title="Bay Area Site 12 Cross Section", consulting_title_block=None)
+    assert not label_in_title("A", request.section_title)
+    assert not label_in_title("1", request.section_title)
+    assert _batch_section_title(request, "A") == "Bay Area Site 12 Cross Section — A"
+    assert _batch_section_title(request, "2") == "Bay Area Site 12 Cross Section — 2"
+    block = SimpleNamespace(section_label="A")
+    swap = SimpleNamespace(section_title="Area A Section", consulting_title_block=block)
+    assert _batch_section_title(swap, "B") == "Area B Section"
+
+
+def test_batch_zip_never_reuses_the_binder_name() -> None:
+    import io
+    import zipfile
+
+    from batch_export import build_batch_zip
+
+    payload = build_batch_zip([("report_binder", b"<svg/>", b"", b"%PDF")], binder_pdf=b"%PDF")
+    names = zipfile.ZipFile(io.BytesIO(payload)).namelist()
+    assert len(names) == len(set(names))
+    assert "report_binder.pdf" in names and "report_binder_2.pdf" in names
+
+
+def test_word_export_accepts_very_long_titles() -> None:
+    from docx_export import build_figure_docx_bytes
+
+    assert build_figure_docx_bytes(png_bytes=b"", caption="c", title="A" * 300)
+
+
+def test_batch_title_swaps_every_occurrence_of_a_single_letter_label() -> None:
+    from types import SimpleNamespace
+
+    from batch_export import _batch_section_title
+
+    request = SimpleNamespace(
+        section_title="Cross Section A-A'", consulting_title_block=SimpleNamespace(section_label="A")
+    )
+    assert _batch_section_title(request, "B") == "Cross Section B-B'"
+
+
+def test_batch_names_match_across_styles_and_keep_trailing_title_text() -> None:
+    """Section sheet named the ZIP "WITH_CHLORIDE_Cross_Sections_…" and the
+    sections "B-B'_WITH_CHLORIDE", while consulting styles (title block label
+    = whole title) gave "Cross_Sections_…" and "B-B'"."""
+    from types import SimpleNamespace
+
+    from batch_export import _batch_section_title, batch_cover_title
+
+    title = "A - A' WITH CHLORIDE"
+    labels = ["A-A'", "B-B'", "C-C'"]
+    sheet = SimpleNamespace(section_title=title, consulting_title_block=None)
+    consulting = SimpleNamespace(
+        section_title=title, consulting_title_block=SimpleNamespace(section_label=title)
+    )
+    for request in (sheet, consulting):
+        assert _batch_section_title(request, "B-B'") == "B-B' WITH CHLORIDE"
+        assert batch_cover_title(request, labels) == "Cross Sections A-A', B-B', C-C' WITH CHLORIDE"
+    site = SimpleNamespace(section_title="Site X A-A' chloride", consulting_title_block=None)
+    assert batch_cover_title(site, labels) == "Site X — Cross Sections A-A', B-B', C-C' chloride"

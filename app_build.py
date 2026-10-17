@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import streamlit as st
@@ -70,7 +71,7 @@ def effective_render_options(
 def build_section_request(
     *,
     transect_points: tuple[tuple[float, float], ...],
-    vertical_exaggeration: float,
+    vertical_exaggeration: float | None,
     show_hatches: bool,
     show_legend: bool,
     section_title: str,
@@ -107,6 +108,7 @@ def build_section_request(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
+    chemistry_thresholds: Mapping[str, tuple[float | None, float | None]] | None = None,
     chemistry_label_style: ChemistryLabelStyle | None = None,
     render_layout: str,
     track_width_m: float,
@@ -157,6 +159,7 @@ def build_section_request(
         chemistry_color_mode=chemistry_color_mode,  # type: ignore[arg-type]
         chemistry_threshold_green_max=chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
+        chemistry_thresholds=dict(chemistry_thresholds or {}),
         chemistry_label_style=chemistry_label_style,
         render_layout=render_layout,  # type: ignore[arg-type]
         track_width_m=track_width_m,
@@ -178,7 +181,7 @@ def collect_section_build_request(
     selected_holes: list[str],
     coordinate_text: str,
     offset_warning_m: float,
-    vertical_exaggeration: float,
+    vertical_exaggeration: float | None,
     show_hatches: bool,
     show_legend: bool,
     section_title: str,
@@ -214,6 +217,7 @@ def collect_section_build_request(
     chemistry_color_mode: str | None = None,
     chemistry_threshold_green_max: float | None = None,
     chemistry_threshold_yellow_max: float | None = None,
+    chemistry_thresholds: Mapping[str, tuple[float | None, float | None]] | None = None,
     chemistry_label_style: ChemistryLabelStyle | None = None,
     render_layout: str,
     track_width_m: float,
@@ -292,6 +296,7 @@ def collect_section_build_request(
         chemistry_color_mode=chemistry_color_mode,  # type: ignore[arg-type]
         chemistry_threshold_green_max=chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
+        chemistry_thresholds=chemistry_thresholds,
         chemistry_label_style=chemistry_label_style,
         render_layout=effective.layout,
         track_width_m=effective.track_width_m,
@@ -389,7 +394,9 @@ def generate_cross_section(
         }
     )
     # Reuse Configure-warmed subset JSON when hole set + workbook signature match
-    # (avoids a second full ParseResult.model_dump_json on Generate).
+    # (avoids a second full ParseResult.model_dump_json on Generate). The main
+    # app passes a lithology_index, so it always dumps afresh; the reuse only
+    # serves callers without an index (batch / scripted builds).
     cached_subset_json = st.session_state.get("_preflight_subset_json")
     if (
         lithology_index is None

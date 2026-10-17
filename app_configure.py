@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 import streamlit as st
@@ -17,13 +18,22 @@ from app_common import (
     _section_facts,
     _session_correlation_overrides,
     _sidebar_heading,
+    render_full_lithology_legend,
     safe_lithology_index,
 )
 from app_services import cached_configure_preflight, cached_recommend_transects
 from app_upload import queue_session_values
 from batch_export import validate_batch_transect_lines
 from models import Collar, CorrelationOverride, ParseResult, subset_parse_result
-from render_profiles import ChemistryLabelStyle
+from render_profiles import (
+    DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX,
+    DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX,
+    ChemistryLabelStyle,
+    ChemistryThresholdMap,
+    chemistry_parameter_key,
+    chemistry_thresholds_from_readings,
+)
+from ui_output_presets import resolve_output_preset
 
 OVERRIDE_WARNINGS_LABEL = "Generate even if data checks found warnings"
 FAIL_ON_OVERLAPS_LABEL = "Stop if matched layers overlap"
@@ -42,12 +52,36 @@ OVERLAP_GATE_MESSAGE = (
 )
 
 
-def override_warnings_label(warning_count: int) -> str:
-    """Checkbox label with the current warning count next to it."""
+def override_warnings_label(warning_count: int, advisory_count: int = 0) -> str:
+    """Checkbox label with the warnings it covers.
+
+    Data health counts every warning; only ``warning_count`` of them need this
+    tick (coverage gaps are advisory), so both are named: "1 warning needs
+    review; 1 more is advisory" instead of a bare "1 warning" beside "2 warnings".
+    """
     if warning_count <= 0:
         return OVERRIDE_WARNINGS_LABEL
-    noun = "warning" if warning_count == 1 else "warnings"
-    return f"{OVERRIDE_WARNINGS_LABEL} ({warning_count} {noun})"
+    noun, verb = ("warning", "needs") if warning_count == 1 else ("warnings", "need")
+    detail = f"{warning_count} {noun} {verb} review"
+    if advisory_count > 0:
+        detail += f"; {advisory_count} more {'is' if advisory_count == 1 else 'are'} advisory"
+    return f"{OVERRIDE_WARNINGS_LABEL} ({detail})"
+
+
+# Logging gaps draw grey ("Not logged") and are flagged in Validate; real logs
+# often have no-recovery intervals, so they warn without locking Generate.
+NON_GATING_WARNING_CODES = frozenset({"depth_gap"})
+
+
+def gating_warning_count(quality_report) -> int:
+    """Warnings that need the override tick before Generate (coverage gaps excluded)."""
+    if quality_report is None:
+        return 0
+    return sum(
+        1
+        for issue in quality_report.issues
+        if issue.severity == "warning" and issue.code not in NON_GATING_WARNING_CODES
+    )
 
 
 @dataclass(frozen=True)
@@ -70,7 +104,10 @@ class ConfigureState:
     chemistry_color_mode: str = "black"
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
-    chemistry_label_style: ChemistryLabelStyle = "plain"
+    # Per-parameter limits (parameter -> (green_max, orange_max)) for the
+    # selected parameters; the pair above is the fallback.
+    chemistry_thresholds: ChemistryThresholdMap = field(default_factory=dict)
+    chemistry_label_style: ChemistryLabelStyle = "strip"
     placeholder_blocks_masl_water: bool = False
 
     @property
@@ -107,6 +144,7 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
     _sidebar_heading("Stratigraphy legend")
     legend_codes = st.session_state.section_lithology_codes or st.session_state.unique_lithology_codes
     _render_lithology_legend(legend_codes)
+    render_full_lithology_legend()
 
     _sidebar_heading("Section line")
     specs = tuple(getattr(parse_result, "section_specs", ()) or ())
@@ -145,6 +183,10 @@ def render_transect_sidebar(parse_result: ParseResult, hole_ids: list[str], tran
             "Hole sequence",
             options=hole_ids,
             key="hole_sequence_multiselect",
+            help=(
+                "Holes the section line runs through, in order from the start (left) "
+                "to the end (right). Remove a hole with its x; add one from the list."
+            ),
         )
     else:
         default_coords = "\n".join(
@@ -384,31 +426,39 @@ def render_configure_step(
             "Water levels are given as elevations, but collar elevations are missing. "
             "Add surveyed elevations or switch to depth below ground."
         )
-    warning_count = int(quality_report.warning_count) if quality_report is not None else 0
+    warning_count = gating_warning_count(quality_report)
     has_warnings = warning_count > 0
     warnings_default = not is_consulting_layout
     if "override_warnings_checkbox" not in st.session_state:
         st.session_state["override_warnings_checkbox"] = warnings_default
-    # The count sits in the label; the warnings themselves are listed in
-    # Validate on the same screen, so they are not repeated here.
-    override_warnings = st.checkbox(
-        override_warnings_label(warning_count),
-        key="override_warnings_checkbox",
-        help=(
-            "Data checks are listed under Validate. The consulting report style starts "
-            "with this off so warnings are reviewed before a client figure is made."
-        ),
-    )
     if "fail_on_overlaps_checkbox" not in st.session_state:
         st.session_state["fail_on_overlaps_checkbox"] = is_consulting_layout
-    fail_on_overlaps = st.checkbox(
-        FAIL_ON_OVERLAPS_LABEL,
-        key="fail_on_overlaps_checkbox",
-        help=(
-            "When ticked, Generate stops if the shaded layers drawn between two holes "
-            "cross over each other."
-        ),
-    )
+    if len(all_hole_ids) < 2:
+        # One hole cannot make a section: no Generate gates to offer.
+        override_warnings = bool(st.session_state.get("override_warnings_checkbox"))
+        fail_on_overlaps = bool(st.session_state.get("fail_on_overlaps_checkbox"))
+    else:
+        total_warnings = quality_report.warning_count if quality_report is not None else 0
+        # The count sits in the label; the warnings themselves are listed in
+        # Validate on the same screen, so they are not repeated here.
+        override_warnings = st.checkbox(
+            override_warnings_label(warning_count, max(0, total_warnings - warning_count)),
+            key="override_warnings_checkbox",
+            help=(
+                "Data checks are listed under Validate. Coverage gaps (nothing logged "
+                "over a depth range) are advisory and never need this tick. The consulting "
+                "report style starts with this off so warnings are reviewed before a client "
+                "figure is made."
+            ),
+        )
+        fail_on_overlaps = st.checkbox(
+            FAIL_ON_OVERLAPS_LABEL,
+            key="fail_on_overlaps_checkbox",
+            help=(
+                "When ticked, Generate stops if the shaded layers drawn between two holes "
+                "cross over each other."
+            ),
+        )
 
     environmental_parameters: tuple[str, ...] = ()
     show_parameter_labels = True
@@ -417,7 +467,8 @@ def render_configure_step(
     chemistry_color_mode: str = "black"
     chemistry_threshold_green_max: float | None = None
     chemistry_threshold_yellow_max: float | None = None
-    chemistry_label_style = "plain"
+    chemistry_thresholds: ChemistryThresholdMap = {}
+    chemistry_label_style = "strip"
     subset_ready = False
     has_overlap_warnings = False
 
@@ -515,12 +566,21 @@ def render_configure_step(
                     "Show parameter value labels",
                     key="show_parameter_labels_toggle",
                     disabled=prefer_chemistry and show_parameter_labels_default is not None,
+                    help=(
+                        "Print each chemistry value (e.g. 120 mg/L) beside its sample depth. "
+                        "Off draws the markers only. Locked by chemistry output styles."
+                    ),
                 )
                 parameter_interpolate_segments = st.toggle(
                     "Interpolate parameter between adjacent holes",
                     key="parameter_interpolate_segments_toggle",
                     disabled=(
                         prefer_chemistry and parameter_interpolate_segments_default is not None
+                    ),
+                    help=(
+                        "Join values at similar depths in neighbouring holes with schematic "
+                        "lines (not a plume contour; a footnote says so). Off keeps each "
+                        "hole's values on its own column."
                     ),
                 )
                 if prefer_chemistry:
@@ -531,20 +591,37 @@ def render_configure_step(
                             parameter_interpolate_segments_default
                         )
                 st.markdown("**Parameter label colour**")
+                mode_labels = {
+                    "black": "All black",
+                    "red": "All red (client P2 style)",
+                    "threshold": "Green / orange / red thresholds",
+                }
+                # The output style sets the starting colour (Chemistry columns
+                # prints red like the client's P2 figures); switching style
+                # resets it, otherwise the user's choice is kept.
+                output_preset = str(st.session_state.get("output_preset", "section_sheet"))
+                style_mode = resolve_output_preset(output_preset).chemistry_color_mode
+                if (
+                    "chemistry_color_mode_radio" not in st.session_state
+                    or st.session_state.get("_chem_color_mode_preset") != output_preset
+                ):
+                    st.session_state["chemistry_color_mode_radio"] = mode_labels.get(
+                        style_mode, mode_labels["black"]
+                    )
+                    st.session_state["_chem_color_mode_preset"] = output_preset
                 color_mode_choice = st.radio(
                     "Chemistry value labels",
-                    options=["All black (default)", "Green / orange / red thresholds"],
-                    index=0,
+                    options=list(mode_labels.values()),
                     key="chemistry_color_mode_radio",
                     help=(
-                        "Black labels for data presentation. Threshold mode colours each "
-                        "value green, orange, or red using site-specific limits set below."
+                        "Black or red labels for data presentation. Threshold mode colours "
+                        "each value green, orange, or red using site-specific limits set below. "
+                        "A colour given in the workbook's label_color column always wins."
                     ),
                 )
-                chemistry_color_mode = (
-                    "threshold"
-                    if color_mode_choice == "Green / orange / red thresholds"
-                    else "black"
+                chemistry_color_mode = next(
+                    (mode for mode, label in mode_labels.items() if label == color_mode_choice),
+                    "black",
                 )
                 chemistry_threshold_green_max = None
                 chemistry_threshold_yellow_max = None
@@ -558,6 +635,10 @@ def render_configure_step(
                                 value=100.0,
                                 step=1.0,
                                 key="chemistry_threshold_green_max",
+                                help=(
+                                    "Default green limit (same units as the data) for parameters "
+                                    "without their own row below."
+                                ),
                             )
                         )
                     with threshold_cols[1]:
@@ -568,16 +649,29 @@ def render_configure_step(
                                 value=250.0,
                                 step=1.0,
                                 key="chemistry_threshold_yellow_max",
+                                help=(
+                                    "Default orange limit: values above Green and up to this "
+                                    "print orange; anything higher prints red. Parameters with "
+                                    "their own row below use those limits instead."
+                                ),
                             )
                         )
                     if chemistry_threshold_yellow_max < chemistry_threshold_green_max:
                         st.warning("Orange threshold should be ≥ green threshold.")
+                    chemistry_thresholds = _render_parameter_threshold_editor(
+                        environmental_parameters,
+                        parse_result,
+                        subset_preflight,
+                        default_green=chemistry_threshold_green_max,
+                        default_orange=chemistry_threshold_yellow_max,
+                    )
                 if any(r.label_color for r in parse_result.environmental_readings):
                     st.caption(
                         "Rows with a **label_color** (green / red / black / orange) in the "
                         "Environmental sheet keep that colour; the setting above applies to the rest."
                     )
                 style_labels = {
+                    "strip": "Clear strip beside borehole (no hatching under labels)",
                     "plain": "Plain coloured text",
                     "box": "White box behind the label",
                     "dot": "Coloured dot, black text",
@@ -725,6 +819,11 @@ def render_configure_step(
                 )
 
             render_section_qa(subset_preflight, active_ids, preflight_warnings)
+    elif len(all_hole_ids) < 2:
+        st.info(
+            "This workbook has only one hole; a section needs at least two. Add at least "
+            "one more hole to the workbook (Collars and Lithology), then upload it again."
+        )
     else:
         st.info(
             "Choose at least two holes under **Section line** in the sidebar "
@@ -746,11 +845,13 @@ def render_configure_step(
     elif fail_on_overlaps and has_overlap_warnings:
         st.error(OVERLAP_GATE_MESSAGE)
 
-    _render_batch_section_lines(
-        preflight_selection,
-        known_hole_ids=all_hole_ids,
-        collapsed_for_errors=blocking,
-    )
+    if len(all_hole_ids) >= 2:
+        # A one-hole workbook cannot make any section line, let alone several.
+        _render_batch_section_lines(
+            preflight_selection,
+            known_hole_ids=all_hole_ids,
+            collapsed_for_errors=blocking,
+        )
 
     return ConfigureState(
         selected_holes=selected_holes,
@@ -772,11 +873,185 @@ def render_configure_step(
         chemistry_color_mode=chemistry_color_mode,
         chemistry_threshold_green_max=chemistry_threshold_green_max,
         chemistry_threshold_yellow_max=chemistry_threshold_yellow_max,
+        chemistry_thresholds=chemistry_thresholds,
         chemistry_label_style=chemistry_label_style,
     )
 
 
-BATCH_EXPANDER_KEY = "batch_section_lines_expander"
+# Session-state key prefix for the per-parameter threshold inputs. The key
+# carries the workbook hash and the parameter, so each parameter remembers
+# its limits for that workbook across reruns and parameter re-selection.
+CHEMISTRY_THRESHOLD_KEY_PREFIX = "chem_threshold"
+# Streamlit forgets a keyed widget's value on any run that does not draw it
+# (a parameter deselected, or the colour mode switched away), so the limits
+# are also kept here (widget key -> value) and restored when the row returns.
+CHEMISTRY_THRESHOLD_MEMORY_KEY = "_chem_threshold_memory"
+
+
+def chemistry_threshold_widget_key(parameter: str, limit: str, workbook_token: str = "") -> str:
+    """Session-state key of one per-parameter limit input (``limit`` is ``green`` / ``orange``)."""
+    return f"{CHEMISTRY_THRESHOLD_KEY_PREFIX}::{workbook_token}::{chemistry_parameter_key(parameter)}::{limit}"
+
+
+_CHLORIDE_NAME = re.compile(r"^(chloride|cl-?)\b")
+
+
+def _is_chloride_like(parameter: str) -> bool:
+    """``Chloride``, ``Cl``, ``Cl-`` or ``Chloride (Cl)``: the parameter the
+    client P2 100 / 250 mg/kg bands belong to. Chlorinated solvents (vinyl
+    chloride, trichloroethene, ...) are not chloride and keep the sheet-wide pair."""
+    return bool(_CHLORIDE_NAME.match(parameter.strip().lower()))
+
+
+def _limit_step(*limits: float) -> float:
+    """Spinner step for a parameter's limit inputs, scaled to its magnitude
+    (chloride at 100 / 250 steps by 1; benzene at 0.5 / 5 by 0.1; 0.005 by 0.001)."""
+    largest = max((float(limit) for limit in limits if limit is not None), default=0.0)
+    if largest >= 10.0:
+        return 1.0
+    if largest >= 1.0:
+        return 0.1
+    if largest >= 0.1:
+        return 0.01
+    return 0.001
+
+
+def seeded_parameter_thresholds(
+    parameter: str,
+    workbook_thresholds: ChemistryThresholdMap,
+    *,
+    default_green: float | None,
+    default_orange: float | None,
+) -> tuple[float, float]:
+    """Starting limits for a parameter's editor row.
+
+    Workbook ``green_max`` / ``orange_max`` win; chloride-like parameters
+    start on the 100 / 250 mg/kg bands the client figures use; anything else
+    starts on the sheet-wide pair (then the Configure defaults).
+    """
+    key = chemistry_parameter_key(parameter)
+    own = next(
+        (pair for name, pair in workbook_thresholds.items() if chemistry_parameter_key(name) == key),
+        (None, None),
+    )
+    if _is_chloride_like(parameter):
+        fallback_green = DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX
+        fallback_orange = DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX
+    else:
+        fallback_green = (
+            float(default_green) if default_green is not None else DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX
+        )
+        fallback_orange = (
+            float(default_orange)
+            if default_orange is not None
+            else DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX
+        )
+    green = float(own[0]) if own[0] is not None else fallback_green
+    orange = float(own[1]) if own[1] is not None else max(green, fallback_orange)
+    return green, orange
+
+
+def _parameter_units(readings, parameters: Sequence[str]) -> dict[str, str]:
+    units: dict[str, set[str]] = {chemistry_parameter_key(p): set() for p in parameters}
+    for reading in readings:
+        key = chemistry_parameter_key(reading.parameter)
+        unit = (reading.unit or "").strip()
+        if key in units and unit:
+            units[key].add(unit)
+    return {
+        parameter: " / ".join(sorted(units[chemistry_parameter_key(parameter)]))
+        for parameter in parameters
+    }
+
+
+def _render_parameter_threshold_editor(
+    parameters: Sequence[str],
+    parse_result: ParseResult,
+    subset_preflight: ParseResult,
+    *,
+    default_green: float | None,
+    default_orange: float | None,
+) -> ChemistryThresholdMap:
+    """Compact Green ≤ / Orange ≤ editor for the selected parameters only.
+
+    Each parameter is banded by its own limits in its own units (chloride
+    mg/kg and benzene mg/kg cannot share one pair). Rows are seeded from the
+    workbook's ``green_max`` / ``orange_max`` columns, else from the
+    chloride defaults or the sheet-wide pair, and remembered per workbook
+    and parameter in session state.
+    """
+    if not parameters:
+        return {}
+    workbook_thresholds = chemistry_thresholds_from_readings(parse_result.environmental_readings)
+    units = _parameter_units(subset_preflight.environmental_readings, parameters)
+    token = str(st.session_state.get("file_hash") or "")
+    memory = st.session_state.setdefault(CHEMISTRY_THRESHOLD_MEMORY_KEY, {})
+    result: ChemistryThresholdMap = {}
+    with st.expander("Per-parameter limits", expanded=True):
+        st.caption(
+            "Each parameter is coloured by its own limits (in its own units). "
+            "Rows start from the workbook's green_max / orange_max columns when given."
+        )
+        for parameter in parameters:
+            green_key = chemistry_threshold_widget_key(parameter, "green", token)
+            orange_key = chemistry_threshold_widget_key(parameter, "orange", token)
+            if green_key not in st.session_state or orange_key not in st.session_state:
+                seed_green, seed_orange = seeded_parameter_thresholds(
+                    parameter,
+                    workbook_thresholds,
+                    default_green=default_green,
+                    default_orange=default_orange,
+                )
+                # An edited value outlives the row being hidden; the seed
+                # applies only the first time the row appears for a workbook.
+                st.session_state.setdefault(green_key, memory.get(green_key, seed_green))
+                st.session_state.setdefault(orange_key, memory.get(orange_key, seed_orange))
+            # Spinner step and display precision follow the limits' size, so
+            # benzene 0.5 / 5 shows as typed rather than rounded to 2 dp.
+            step = _limit_step(
+                st.session_state.get(green_key), st.session_state.get(orange_key)
+            )
+            unit = units.get(parameter, "")
+            name_col, green_col, orange_col = st.columns([2, 1, 1])
+            with name_col:
+                st.markdown(f"**{parameter}**" + (f"  \n{unit}" if unit else ""))
+            unit_text = f" ({unit})" if unit else ""
+            with green_col:
+                green = float(
+                    st.number_input(
+                        f"Green ≤ — {parameter}",
+                        min_value=0.0,
+                        step=step,
+                        format="%g",
+                        key=green_key,
+                        label_visibility="collapsed",
+                        help=f"{parameter}: values up to this limit print green{unit_text}.",
+                    )
+                )
+            with orange_col:
+                orange = float(
+                    st.number_input(
+                        f"Orange ≤ — {parameter}",
+                        min_value=0.0,
+                        step=step,
+                        format="%g",
+                        key=orange_key,
+                        label_visibility="collapsed",
+                        help=(
+                            f"{parameter}: values above Green and up to this limit print "
+                            f"orange; higher prints red{unit_text}."
+                        ),
+                    )
+                )
+            if orange < green:
+                st.warning(f"{parameter}: orange limit should be ≥ its green limit.")
+            memory[green_key], memory[orange_key] = green, orange
+            result[parameter] = (green, orange)
+        st.caption("Columns: parameter · Green ≤ · Orange ≤ (red above orange).")
+    return result
+
+
+BATCH_OPEN_FLAG = "_batch_section_lines_open"
 _SECTION_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
@@ -813,9 +1088,11 @@ def _render_batch_section_lines(
     label = "Several section lines (batch ZIP)"
     if collapsed_for_errors:
         label += " (fix data errors first)"
-    # Keyed so the panel keeps its open/closed state across the reruns its
-    # own buttons trigger.
-    with st.expander(label, expanded=False, key=BATCH_EXPANDER_KEY, on_change="rerun"):
+    # Not keyed: a keyed expander that moves between the Configure step and
+    # the post-Generate "Setup" expander left faded ghost copies (with their
+    # text areas) in the page. Its own buttons and edits ask for it to open
+    # instead, so their reruns do not fold it away.
+    with st.expander(label, expanded=bool(st.session_state.get(BATCH_OPEN_FLAG))):
         st.caption(
             "One section line per row: name, then '|', then hole IDs in order "
             "(e.g. A-A' | MW-01, MW-02, MW-03). Prepare batch ZIP on Generate redraws "
@@ -836,6 +1113,7 @@ def _render_batch_section_lines(
         col_a, col_b, col_c = st.columns(3)
         with col_a:
             if st.button("Add current section line", key="batch_add_current"):
+                st.session_state[BATCH_OPEN_FLAG] = True
                 if preflight_selection is None:
                     st.warning("Choose a section line first.")
                 else:
@@ -852,6 +1130,7 @@ def _render_batch_section_lines(
                     st.rerun()
         with col_b:
             if st.button("Fill from suggested lines", key="batch_fill_recommended"):
+                st.session_state[BATCH_OPEN_FLAG] = True
                 parse_result = st.session_state.get("parse_result")
                 candidates = load_transect_candidates(parse_result) if parse_result is not None else []
                 if not candidates:
@@ -861,6 +1140,7 @@ def _render_batch_section_lines(
                     st.rerun()
         with col_c:
             if st.button("Load from workbook Sections", key="batch_load_sections"):
+                st.session_state[BATCH_OPEN_FLAG] = True
                 if not workbook_specs:
                     st.warning("The workbook has no Sections tab rows.")
                 else:
@@ -874,6 +1154,7 @@ def _render_batch_section_lines(
         text = st.text_area(
             "Section lines",
             key="batch_transect_specs",
+            on_change=_keep_batch_lines_open,
             placeholder="A-A' | BH-01, BH-02, BH-03\nB-B' | BH-08, BH-09, BH-10",
             height=120,
             help=(
@@ -882,6 +1163,10 @@ def _render_batch_section_lines(
             ),
         )
         _render_batch_line_status(text, known_hole_ids)
+
+
+def _keep_batch_lines_open() -> None:
+    st.session_state[BATCH_OPEN_FLAG] = True
 
 
 def _render_batch_line_status(text: str, known_hole_ids: Sequence[str]) -> None:
@@ -1074,6 +1359,10 @@ def _render_hole_sequence_order(hole_ids: list[str]) -> None:
                 sequence[index + 1], sequence[index] = sequence[index], sequence[index + 1]
                 st.session_state.hole_sequence_multiselect = sequence
                 st.rerun()
+    if len(sequence) < 2:
+        # "BH-01 → BH-01" read as a section line; one hole is not one yet.
+        st.caption("Add at least one more hole to make a section line.")
+        return
     section_label = st.session_state.get("consulting_section_label") or "A-A'"
     st.caption(f"Section {section_label}: **{sequence[0]} → {sequence[-1]}**")
 
@@ -1183,12 +1472,14 @@ def render_manual_correlation_overrides(active_ids: Sequence[str], subset: Parse
                     f"{left_id} layer",
                     options=left_units,
                     key=f"corr_left_{pair_index}",
+                    help=f"Layer (unit order) in {left_id} to join to the layer picked for {right_id}.",
                 )
             with col2:
                 right_order = st.selectbox(
                     f"{right_id} layer",
                     options=right_units,
                     key=f"corr_right_{pair_index}",
+                    help=f"Layer (unit order) in {right_id} to join to the layer picked for {left_id}; then click Link.",
                 )
             with col3:
                 if st.button("Link", key=f"corr_link_{pair_index}"):
@@ -1307,6 +1598,7 @@ def render_section_qa(
             "Your question",
             key="section_qa_question",
             placeholder="Which wells are NM? What is clay thickness at MW-01?",
+            help="Ask about the holes on this section line; answers use only their logged data.",
         )
         if st.button("Ask", key="section_qa_ask") and qa_question.strip():
             offset_map: dict[str, float] = {

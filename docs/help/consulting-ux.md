@@ -8,11 +8,11 @@ Inter-hole fills are a **rule-based fence** (linear contacts, midpoint pinch-out
 
 | Step | Studio | gINT / Strater / RockWorks analogue |
 | --- | --- | --- |
-| 1 | **Data source** — upload Excel workbook | Project database / Excel export |
+| 1 | **Data** — upload Excel workbook | Project database / Excel export |
 | 2 | **Validate** — QA metrics, lithology mapping | Data checker, import QA |
 | 3 | **Configure** — plan view, hole order, transect A–A′ | Fence line / section definition |
 | 4 | **Generate** — SVG profile (fast preview) | Section preview |
-| 5 | **Prepare deliverables** — PNG/PDF (one draw); optional Word / multi-transect ZIP | Report sheet / layout export |
+| 5 | **Prepare deliverables** — PNG/PDF (one draw); optional Word / batch ZIP | Report sheet / layout export |
 
 > **Note:** Rows 1–4 map to Streamlit’s four workflow steps (Upload → Validate → Configure → Generate). **Prepare deliverables** is a Generate-step export action, not a fifth workflow step.
 
@@ -20,27 +20,30 @@ Inter-hole fills are a **rule-based fence** (linear contacts, midpoint pinch-out
 
 - **Compact hero** — after upload, the header shrinks so the figure gets vertical room (reporting focus).
 - **Figure-first** — once a profile exists, the SVG sheet stays on top; Validate & Configure move into **Setup — Validate & Configure** (collapsed).
-- **Regenerate strip** — sticky bar under the hero when a section exists; use **Generate Cross-Section** (`Alt+Shift+G`) after changing sidebar style or transect.
+- **Status strip** — shows the figure title, Up to date / Out of date, and the **Generate section** button (`Alt+Shift+G`); use it after changing the figure style or section line.
 - **Plan mini-map** — collar scatter in Configure mirrors a plan-view pick for fence orientation.
 - **Hole order** — numbered sequence with ↑/↓ matches Strater-style hole ordering for A–A′.
-- **Export ribbon** — chips show preset, VE, hole count, transect, fresh/stale, PNG/PDF readiness.
-- **Sidebar accordion** — Data source, Section output, Advanced, AI Assist, Consulting report sheet.
+- **Export ribbon** — chips show preset, VE (`auto (fit page)` or the exact value), hole count, transect, up to date / out of date, PNG/PDF readiness.
+- **Sidebar sections** — Data, Figure style, Section line, Title block (consulting styles), Export, Advanced. Controls an output style doesn't use are hidden with a "Set by <style>" note.
 
 ## Output presets
 
 - **Section sheet (Strater-style)** — hatch legend on chart, ground surface.
 - **Consulting report (title block)** — footer title block, groundwater legend; consulting QA often **blocks export on polygon overlaps** by default — disable only after manual review.
+- **Chemistry columns (depth + lab values)** — P2-style sticks at exactly 1× VE (locked), red labels by default.
 - **Quick preview (chart)** — minimal chart for internal review.
+- With a title-block **Map scale** (e.g. `1:1000`) consulting sheets print at exactly that scale when it fits the page; otherwise the sheet is fitted, the SCALE row reads **AS SHOWN** and a section note gives the approximate printed scale (see **Help → Generate and exports**).
 
 ## Groundwater and chemistry overlays
 
 - Water table polylines and chemistry “fences” are **schematic connectors** between measured sticks — **not** a potentiometric surface or plume envelope. Figure footers append overlay disclaimers when those layers plot.
 - Optional Water column `status`: `measured` (default), `dry`, or `nm` (not measured). Prefer this over omitting rows when a well was visited but dry/NM.
-- Chemistry label colours use Configure green/yellow thresholds (defaults resemble chloride mg/L scales — retune per parameter). Turning on **interpolate chemistry between holes** draws depth-matched segments only; keep it off for P2 stick-style figures.
+- Chemistry label colours: **All black**, **All red (client P2 style)** (the default for **Chemistry columns**), or **Green / orange / red thresholds**. Limits are **per parameter, in that parameter's own units**: the **Per-parameter limits** editor lists each selected parameter with its unit and a Green ≤ / Orange ≤ pair (chloride-like parameters start on 100 / 250; others on the sheet-wide pair; a workbook `green_max` / `orange_max` on the Environmental sheet seeds the row), and each parameter remembers its limits for the workbook. The sheet-wide **Green ≤ / Orange ≤** pair is the default for parameters without their own row. Reading dots take the same colour as their values, and the threshold key prints below the distance label — one line per plotted parameter when several are shown (`Chloride: green ≤ 100 · orange 100–250 · red > 250 mg/kg` / `Benzene: green ≤ 0.5 · orange 0.5–5 · red > 5 mg/kg`). If a parameter's orange limit is not above its green one there is no orange band: its line reads `green ≤ 50 · red > 50`. A workbook `label_color` always wins. The report ZIP's metadata JSON and the Word figure table list the limits used. Turning on **interpolate chemistry between holes** draws depth-matched segments only; keep it off for P2 stick-style figures.
+- Chemistry label style (**Label readability over hatched fills**): **Clear strip beside borehole** (default — values sit on a clean white strip right of the column), **Plain coloured text**, **White box**, **Coloured dot, black text**, or **Outlined (white halo) text**. Values stay beside their own borehole in depth order; a value moved off its reading gets a thin leader. Values with no room at the page scale are left off and listed in the section notes (markers stay).
 - When water connectors plot, adjacent measured heads may show a schematic **i=Δh/Δx** label. Validate warns if \|i\| is unrealistically large.
 
 ## Keyboard shortcuts
 
 - **Alt+Shift+G** (Option+Shift+G on macOS) — Generate section (same as **File → Generate section**). Full list: **Help → Keyboard shortcuts**.
 
-See **Help → Generate and exports** for SVG-first caching, Prepare deliverables, and multi-transect ZIP.
+See **Help → Generate and exports** for SVG-first caching, Prepare deliverables, and batch ZIP.

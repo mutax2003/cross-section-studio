@@ -117,6 +117,12 @@ def _as_workbook(source: str | Path | BinaryIO | BytesIO | pd.ExcelFile) -> pd.E
     return pd.ExcelFile(source)
 
 
+def _close_owned_workbook(workbook: pd.ExcelFile | None) -> None:
+    from parsing import _close_owned_workbook as close_workbook
+
+    close_workbook(workbook)
+
+
 def _normalize_header(value: object) -> str:
     return re.sub(r"\s+", "_", str(value).strip().lower())
 
@@ -301,50 +307,54 @@ class FormatDetector:
 
     def detect(self, source: str | Path | BinaryIO | BytesIO | pd.ExcelFile) -> DetectionResult:
         workbook = _as_workbook(source)
-        sheet_names = workbook.sheet_names
-        sheet_names_lower = {_normalize_header(name): name for name in sheet_names}
+        _owned_workbook = workbook if workbook is not source else None
+        try:
+            sheet_names = workbook.sheet_names
+            sheet_names_lower = {_normalize_header(name): name for name in sheet_names}
 
-        if "data_entry" in sheet_names_lower:
-            return DetectionResult(
-                profile_id=DATA_ENTRY_PROFILE_ID,
-                label="Cross Section input template (Data Entry)",
-                confidence=1.0,
-                is_native=True,
-            )
-
-        if "collars" in sheet_names_lower and "lithology" in sheet_names_lower:
-            collars_sheet = sheet_names_lower["collars"]
-            lithology_sheet = sheet_names_lower["lithology"]
-            collar_cols = self._cached_sheet_columns(workbook, collars_sheet)
-            lith_cols = self._cached_sheet_columns(workbook, lithology_sheet)
-            collar_hits = sum(1 for col in COLLAR_COLUMNS if _resolve_column_name(collar_cols, col))
-            lith_hits = sum(1 for col in LITHOLOGY_COLUMNS if _resolve_column_name(lith_cols, col))
-            confidence = (collar_hits / len(COLLAR_COLUMNS) + lith_hits / len(LITHOLOGY_COLUMNS)) / 2
-            if confidence >= 0.8:
+            if "data_entry" in sheet_names_lower:
                 return DetectionResult(
-                    profile_id=NATIVE_PROFILE_ID,
-                    label="Native platform (Collars + Lithology)",
-                    confidence=confidence,
+                    profile_id=DATA_ENTRY_PROFILE_ID,
+                    label="Cross Section input template (Data Entry)",
+                    confidence=1.0,
                     is_native=True,
                 )
 
-        best: DetectionResult | None = None
-        for profile in list_profiles():
-            score = self._score_profile(workbook, profile)
-            if best is None or score > best.confidence:
-                best = DetectionResult(
-                    profile_id=profile.id,
-                    label=profile.label,
-                    confidence=score,
-                    is_native=False,
-                )
+            if "collars" in sheet_names_lower and "lithology" in sheet_names_lower:
+                collars_sheet = sheet_names_lower["collars"]
+                lithology_sheet = sheet_names_lower["lithology"]
+                collar_cols = self._cached_sheet_columns(workbook, collars_sheet)
+                lith_cols = self._cached_sheet_columns(workbook, lithology_sheet)
+                collar_hits = sum(1 for col in COLLAR_COLUMNS if _resolve_column_name(collar_cols, col))
+                lith_hits = sum(1 for col in LITHOLOGY_COLUMNS if _resolve_column_name(lith_cols, col))
+                confidence = (collar_hits / len(COLLAR_COLUMNS) + lith_hits / len(LITHOLOGY_COLUMNS)) / 2
+                if confidence >= 0.8:
+                    return DetectionResult(
+                        profile_id=NATIVE_PROFILE_ID,
+                        label="Native platform (Collars + Lithology)",
+                        confidence=confidence,
+                        is_native=True,
+                    )
 
-        if best is None or best.confidence < 0.5:
-            sheets_info = ", ".join(sheet_names)
-            raise ValueError(
-                f"Could not detect a supported workbook format. Sheets found: {sheets_info}"
-            )
-        return best
+            best: DetectionResult | None = None
+            for profile in list_profiles():
+                score = self._score_profile(workbook, profile)
+                if best is None or score > best.confidence:
+                    best = DetectionResult(
+                        profile_id=profile.id,
+                        label=profile.label,
+                        confidence=score,
+                        is_native=False,
+                    )
+
+            if best is None or best.confidence < 0.5:
+                sheets_info = ", ".join(sheet_names)
+                raise ValueError(
+                    f"Could not detect a supported workbook format. Sheets found: {sheets_info}"
+                )
+            return best
+        finally:
+            _close_owned_workbook(_owned_workbook)
 
     def _score_profile(self, workbook: pd.ExcelFile, profile: ImportProfile) -> float:
         sheet_names = {_normalize_header(name): name for name in workbook.sheet_names}
@@ -487,104 +497,108 @@ class FieldExportAdapter:
         workbook: pd.ExcelFile | None = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame, str | None]:
         active_workbook = workbook or _as_workbook(source)
-        sheet_key = _normalize_header(profile.lithology_sheet)
-        sheet_lookup = {_normalize_header(name): name for name in active_workbook.sheet_names}
-        if sheet_key not in sheet_lookup:
-            raise ValueError(f"Lithology sheet '{profile.lithology_sheet}' not found")
-        lithology_raw = pd.read_excel(active_workbook, sheet_name=sheet_lookup[sheet_key])
+        _owned_workbook = active_workbook if workbook is None and active_workbook is not source else None
+        try:
+            sheet_key = _normalize_header(profile.lithology_sheet)
+            sheet_lookup = {_normalize_header(name): name for name in active_workbook.sheet_names}
+            if sheet_key not in sheet_lookup:
+                raise ValueError(f"Lithology sheet '{profile.lithology_sheet}' not found")
+            lithology_raw = pd.read_excel(active_workbook, sheet_name=sheet_lookup[sheet_key])
 
-        column_map = profile.columns.copy()
-        resolved_map: dict[str, str] = {}
-        available = list(lithology_raw.columns)
-        for key, expected in column_map.items():
-            resolved = _resolve_column_name(available, expected)
-            if resolved is None:
-                raise ValueError(f"Required column '{expected}' not found on lithology sheet")
-            resolved_map[key] = resolved
+            column_map = profile.columns.copy()
+            resolved_map: dict[str, str] = {}
+            available = list(lithology_raw.columns)
+            for key, expected in column_map.items():
+                resolved = _resolve_column_name(available, expected)
+                if resolved is None:
+                    raise ValueError(f"Required column '{expected}' not found on lithology sheet")
+                resolved_map[key] = resolved
 
-        coord_rules = profile.coordinates.model_copy()
-        if target_crs:
-            coord_rules.target_crs = target_crs
-        transformer = CoordinateTransformer(coord_rules)
-        aliases = load_lithology_aliases()
-        elevation = elevation_m if elevation_m is not None else profile.defaults.elevation_m
+            coord_rules = profile.coordinates.model_copy()
+            if target_crs:
+                coord_rules.target_crs = target_crs
+            transformer = CoordinateTransformer(coord_rules)
+            aliases = load_lithology_aliases()
+            elevation = elevation_m if elevation_m is not None else profile.defaults.elevation_m
 
-        frame = lithology_raw.rename(
-            columns={resolved_map[key]: key for key in resolved_map},
-        )
-        frame = frame.copy()
-        frame["hole_id"] = frame["hole_id"].astype(str).str.strip()
-        if profile.depth_format == "interval_string":
-            depth_col = resolved_map.get("depth_interval", "depth_interval")
-            if "depth_interval" not in frame.columns and depth_col in lithology_raw.columns:
-                frame["depth_interval"] = lithology_raw[depth_col]
-            parsed_depths = [parse_depth_interval(value) for value in frame["depth_interval"]]
-            frame["from_depth"] = [item[0] for item in parsed_depths]
-            frame["to_depth"] = [item[1] for item in parsed_depths]
-        else:
-            frame["from_depth"] = pd.to_numeric(frame["from_depth"], errors="raise")
-            frame["to_depth"] = pd.to_numeric(frame["to_depth"], errors="raise")
-
-        frame["lithology_code"] = frame["lithology_code"].astype(str).str.strip().map(
-            lambda raw: normalize_lithology_code(raw, aliases),
-        )
-
-        coord_cache: dict[str, tuple[float, float]] = {}
-        for hole_id, group in frame.groupby("hole_id", sort=False):
-            row = group.iloc[0]
-            if profile.coordinates.mode == "already_projected":
-                easting = float(row["easting"])
-                northing = float(row["northing"])
+            frame = lithology_raw.rename(
+                columns={resolved_map[key]: key for key in resolved_map},
+            )
+            frame = frame.copy()
+            frame["hole_id"] = frame["hole_id"].astype(str).str.strip()
+            if profile.depth_format == "interval_string":
+                depth_col = resolved_map.get("depth_interval", "depth_interval")
+                if "depth_interval" not in frame.columns and depth_col in lithology_raw.columns:
+                    frame["depth_interval"] = lithology_raw[depth_col]
+                parsed_depths = [parse_depth_interval(value) for value in frame["depth_interval"]]
+                frame["from_depth"] = [item[0] for item in parsed_depths]
+                frame["to_depth"] = [item[1] for item in parsed_depths]
             else:
-                latitude = float(row["latitude"])
-                longitude = float(row["longitude"])
-                easting, northing = transformer.transform(latitude, longitude)
-            coord_cache[str(hole_id)] = (easting, northing)
+                frame["from_depth"] = pd.to_numeric(frame["from_depth"], errors="raise")
+                frame["to_depth"] = pd.to_numeric(frame["to_depth"], errors="raise")
 
-        max_depth_by_hole = frame.groupby("hole_id", sort=False)["to_depth"].max()
-        collar_accum = {
-            str(hole_id): {
-                "hole_id": str(hole_id),
-                "easting": coord_cache[str(hole_id)][0],
-                "northing": coord_cache[str(hole_id)][1],
-                "elevation": elevation,
-                "total_depth": float(max_depth_by_hole[hole_id]),
+            frame["lithology_code"] = frame["lithology_code"].astype(str).str.strip().map(
+                lambda raw: normalize_lithology_code(raw, aliases),
+            )
+
+            coord_cache: dict[str, tuple[float, float]] = {}
+            for hole_id, group in frame.groupby("hole_id", sort=False):
+                row = group.iloc[0]
+                if profile.coordinates.mode == "already_projected":
+                    easting = float(row["easting"])
+                    northing = float(row["northing"])
+                else:
+                    latitude = float(row["latitude"])
+                    longitude = float(row["longitude"])
+                    easting, northing = transformer.transform(latitude, longitude)
+                coord_cache[str(hole_id)] = (easting, northing)
+
+            max_depth_by_hole = frame.groupby("hole_id", sort=False)["to_depth"].max()
+            collar_accum = {
+                str(hole_id): {
+                    "hole_id": str(hole_id),
+                    "easting": coord_cache[str(hole_id)][0],
+                    "northing": coord_cache[str(hole_id)][1],
+                    "elevation": elevation,
+                    "total_depth": float(max_depth_by_hole[hole_id]),
+                }
+                for hole_id in max_depth_by_hole.index
             }
-            for hole_id in max_depth_by_hole.index
-        }
 
-        measured_rl, measured_td = _field_data_maps(active_workbook)
-        for hole_id, rl in measured_rl.items():
-            if hole_id in collar_accum:
-                collar_accum[hole_id]["elevation"] = float(rl)
-        for hole_id, td in measured_td.items():
-            if hole_id in collar_accum:
-                collar_accum[hole_id]["total_depth"] = max(
-                    float(collar_accum[hole_id]["total_depth"]),
-                    td,
-                )
+            measured_rl, measured_td = _field_data_maps(active_workbook)
+            for hole_id, rl in measured_rl.items():
+                if hole_id in collar_accum:
+                    collar_accum[hole_id]["elevation"] = float(rl)
+            for hole_id, td in measured_td.items():
+                if hole_id in collar_accum:
+                    collar_accum[hole_id]["total_depth"] = max(
+                        float(collar_accum[hole_id]["total_depth"]),
+                        td,
+                    )
 
-        collars_df = pd.DataFrame(collar_accum.values()).sort_values("hole_id")
-        for hole_id, offset in profile.coordinate_offsets_m.items():
-            if len(offset) != 2:
-                continue
-            de, dn = float(offset[0]), float(offset[1])
-            mask = collars_df["hole_id"] == hole_id
-            if mask.any():
-                collars_df.loc[mask, "easting"] = collars_df.loc[mask, "easting"] + de
-                collars_df.loc[mask, "northing"] = collars_df.loc[mask, "northing"] + dn
+            collars_df = pd.DataFrame(collar_accum.values()).sort_values("hole_id")
+            for hole_id, offset in profile.coordinate_offsets_m.items():
+                if len(offset) != 2:
+                    continue
+                de, dn = float(offset[0]), float(offset[1])
+                mask = collars_df["hole_id"] == hole_id
+                if mask.any():
+                    collars_df.loc[mask, "easting"] = collars_df.loc[mask, "easting"] + de
+                    collars_df.loc[mask, "northing"] = collars_df.loc[mask, "northing"] + dn
 
-        lithology_df = frame[["hole_id", "from_depth", "to_depth", "lithology_code"]].sort_values(
-            ["hole_id", "from_depth"],
-        )
-        collars_out = collars_df[["hole_id", "easting", "northing", "elevation", "total_depth"]].copy()
-        suggested_utm_crs: str | None = None
-        if profile.coordinates.mode == "wgs84_to_utm" and {"latitude", "longitude"}.issubset(frame.columns):
-            lats = pd.to_numeric(frame["latitude"], errors="coerce").dropna()
-            lons = pd.to_numeric(frame["longitude"], errors="coerce").dropna()
-            if not lats.empty and not lons.empty:
-                suggested_utm_crs = suggest_utm_crs(lats.tolist(), lons.tolist())
-        return collars_out, lithology_df, suggested_utm_crs
+            lithology_df = frame[["hole_id", "from_depth", "to_depth", "lithology_code"]].sort_values(
+                ["hole_id", "from_depth"],
+            )
+            collars_out = collars_df[["hole_id", "easting", "northing", "elevation", "total_depth"]].copy()
+            suggested_utm_crs: str | None = None
+            if profile.coordinates.mode == "wgs84_to_utm" and {"latitude", "longitude"}.issubset(frame.columns):
+                lats = pd.to_numeric(frame["latitude"], errors="coerce").dropna()
+                lons = pd.to_numeric(frame["longitude"], errors="coerce").dropna()
+                if not lats.empty and not lons.empty:
+                    suggested_utm_crs = suggest_utm_crs(lats.tolist(), lons.tolist())
+            return collars_out, lithology_df, suggested_utm_crs
+        finally:
+            _close_owned_workbook(_owned_workbook)
 
 
 def _native_adapt(
@@ -594,13 +608,17 @@ def _native_adapt(
     workbook: pd.ExcelFile | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, MappingProposal]:
     active_workbook = workbook or _as_workbook(source)
-    proposal = mapping_proposal or propose_workbook_mapping(active_workbook)
-    collars_df, lithology_df = read_mapped_sheets(
-        source,
-        proposal,
-        workbook=active_workbook,
-    )
-    return collars_df, lithology_df, proposal
+    _owned_workbook = active_workbook if workbook is None and active_workbook is not source else None
+    try:
+        proposal = mapping_proposal or propose_workbook_mapping(active_workbook)
+        collars_df, lithology_df = read_mapped_sheets(
+            source,
+            proposal,
+            workbook=active_workbook,
+        )
+        return collars_df, lithology_df, proposal
+    finally:
+        _close_owned_workbook(_owned_workbook)
 
 
 def _detect_optional_workbook_sheets(workbook: pd.ExcelFile) -> list[str]:
@@ -638,225 +656,229 @@ def ingest_workbook(
 ) -> tuple[ParseResult, ImportReport]:
     """Single entry point: detect format, adapt, validate, return ParseResult."""
     workbook = _as_workbook(source)
-    detection = FormatDetector().detect(workbook) if profile_id is None else None
-    resolved_profile_id = profile_id or (detection.profile_id if detection else NATIVE_PROFILE_ID)
-    confidence = detection.confidence if detection else 1.0
+    _owned_workbook = workbook if workbook is not source else None
+    try:
+        detection = FormatDetector().detect(workbook) if profile_id is None else None
+        resolved_profile_id = profile_id or (detection.profile_id if detection else NATIVE_PROFILE_ID)
+        confidence = detection.confidence if detection else 1.0
 
-    aliases = lithology_aliases or load_lithology_aliases()
-    warnings: list[str] = []
-    optional_sheets = _detect_optional_workbook_sheets(workbook)
-    mapping_proposal: MappingProposal | None = None
-    offsets_applied: dict[str, tuple[float, float]] = {}
-    suggested_utm_crs: str | None = None
-    profile_default_elevation_m: float | None = None
+        aliases = lithology_aliases or load_lithology_aliases()
+        warnings: list[str] = []
+        optional_sheets = _detect_optional_workbook_sheets(workbook)
+        mapping_proposal: MappingProposal | None = None
+        offsets_applied: dict[str, tuple[float, float]] = {}
+        suggested_utm_crs: str | None = None
+        profile_default_elevation_m: float | None = None
 
-    sheet_names_lower = {_normalize_header(name) for name in workbook.sheet_names}
-    if "field_data" in sheet_names_lower or "field data" in workbook.sheet_names:
-        if "Field Data" not in optional_sheets:
-            optional_sheets.append("Field Data")
-        if resolved_profile_id != NATIVE_PROFILE_ID:
-            measured_rl, measured_td = _field_data_maps(workbook)
-            if measured_td:
+        sheet_names_lower = {_normalize_header(name) for name in workbook.sheet_names}
+        if "field_data" in sheet_names_lower or "field data" in workbook.sheet_names:
+            if "Field Data" not in optional_sheets:
+                optional_sheets.append("Field Data")
+            if resolved_profile_id != NATIVE_PROFILE_ID:
+                measured_rl, measured_td = _field_data_maps(workbook)
+                if measured_td:
+                    warnings.append(
+                        f"Field Data sheet: applied measured total depth for {len(measured_td)} hole(s)."
+                    )
+                if measured_rl:
+                    warnings.append(
+                        f"Field Data sheet: applied collar RL for {len(measured_rl)} hole(s)."
+                    )
+                if not measured_td:
+                    warnings.append(
+                        "Field Data sheet detected — no TD column mapped; total depth inferred from lithology."
+                    )
+            # Native: OVA/EC success info is appended after parse (no future-work warning).
+
+        project_metadata: dict[str, str] = {}
+        if resolved_profile_id == DATA_ENTRY_PROFILE_ID:
+            from workbook_template import load_project_metadata
+
+            profile_label = "Cross Section input template (multi-tab)"
+            if hasattr(source, "seek"):
+                source.seek(0)
+            project_metadata = load_project_metadata(source)
+            parse_result = DataParser().parse_file(
+                source, lithology_aliases=aliases, workbook=workbook
+            )
+            if "Data Entry" not in optional_sheets:
+                optional_sheets.append("Data Entry")
+            if project_metadata and "Project" not in optional_sheets:
+                optional_sheets.append("Project")
+            if project_metadata:
                 warnings.append(
-                    f"Field Data sheet: applied measured total depth for {len(measured_td)} hole(s)."
+                    "Loaded Project / Data Entry metadata — consulting title fields will be seeded on upload."
                 )
-            if measured_rl:
+            else:
                 warnings.append(
-                    f"Field Data sheet: applied collar RL for {len(measured_rl)} hole(s)."
+                    "Loaded input template workbook — no PROJECT metadata found."
                 )
-            if not measured_td:
-                warnings.append(
-                    "Field Data sheet detected — no TD column mapped; total depth inferred from lithology."
-                )
-        # Native: OVA/EC success info is appended after parse (no future-work warning).
-
-    project_metadata: dict[str, str] = {}
-    if resolved_profile_id == DATA_ENTRY_PROFILE_ID:
-        from workbook_template import load_project_metadata
-
-        profile_label = "Cross Section input template (multi-tab)"
-        if hasattr(source, "seek"):
-            source.seek(0)
-        project_metadata = load_project_metadata(source)
-        parse_result = DataParser().parse_file(
-            source, lithology_aliases=aliases, workbook=workbook
-        )
-        if "Data Entry" not in optional_sheets:
-            optional_sheets.append("Data Entry")
-        if project_metadata and "Project" not in optional_sheets:
-            optional_sheets.append("Project")
-        if project_metadata:
-            warnings.append(
-                "Loaded Project / Data Entry metadata — consulting title fields will be seeded on upload."
+        elif resolved_profile_id == NATIVE_PROFILE_ID:
+            # Full workbook parse so optional Water / Environmental / Screens / Gradients load.
+            # Avoid pre-supplying collars_df/lithology_df (that path skips overlay sheets).
+            profile_label = "Native platform (Collars + Lithology)"
+            mapping_proposal = propose_workbook_mapping(workbook)
+            parse_result = DataParser().parse_file(
+                source, lithology_aliases=aliases, workbook=workbook
             )
         else:
-            warnings.append(
-                "Loaded input template workbook — no PROJECT metadata found."
+            profile = load_override(override_id) if override_id else load_profile(resolved_profile_id)
+            resolved_profile_id = profile.id
+            profile_label = profile.label
+            profile_default_elevation_m = profile.defaults.elevation_m
+
+            collars_df, lithology_df, suggested_from_adapt = FieldExportAdapter().adapt(
+                source,
+                profile,
+                elevation_m=elevation_m,
+                target_crs=target_crs,
+                workbook=workbook,
             )
-    elif resolved_profile_id == NATIVE_PROFILE_ID:
-        # Full workbook parse so optional Water / Environmental / Screens / Gradients load.
-        # Avoid pre-supplying collars_df/lithology_df (that path skips overlay sheets).
-        profile_label = "Native platform (Collars + Lithology)"
-        mapping_proposal = propose_workbook_mapping(workbook)
-        parse_result = DataParser().parse_file(
-            source, lithology_aliases=aliases, workbook=workbook
-        )
-    else:
-        profile = load_override(override_id) if override_id else load_profile(resolved_profile_id)
-        resolved_profile_id = profile.id
-        profile_label = profile.label
-        profile_default_elevation_m = profile.defaults.elevation_m
-
-        collars_df, lithology_df, suggested_from_adapt = FieldExportAdapter().adapt(
-            source,
-            profile,
-            elevation_m=elevation_m,
-            target_crs=target_crs,
-            workbook=workbook,
-        )
-        effective_crs = target_crs or profile.coordinates.target_crs
-        if suggested_from_adapt and target_crs is None:
-            suggested_utm_crs = suggested_from_adapt
-            warnings.append(f"Suggested target CRS from coordinates: {suggested_utm_crs}")
-        elif suggested_from_adapt and str(suggested_from_adapt).upper() != str(effective_crs).upper():
-            suggested_utm_crs = suggested_from_adapt
-            warnings.append(
-                f"Coordinates fall in {suggested_from_adapt} but were projected to "
-                f"{effective_crs} — horizontal distances may be distorted; set Target CRS "
-                "to the suggested zone."
-            )
-        for hole_id, offset in profile.coordinate_offsets_m.items():
-            if len(offset) == 2:
-                offsets_applied[hole_id] = (float(offset[0]), float(offset[1]))
-        if elevation_m is None:
-            warnings.append(
-                f"Collar elevation uses profile default ({profile.defaults.elevation_m:.1f} m) — "
-                "set sidebar elevation for absolute RL sections."
-            )
-        parse_result = DataParser().parse_file(
-            source,
-            collars_df=collars_df,
-            lithology_df=lithology_df,
-            lithology_aliases=aliases,
-            workbook=workbook,
-        )
-
-    if (
-        not project_metadata
-        and workbook is not None
-        and any(name.strip().lower() == "project" for name in workbook.sheet_names)
-    ):
-        from workbook_template import load_project_metadata
-
-        if hasattr(source, "seek"):
-            source.seek(0)
-        project_metadata = load_project_metadata(source)
-        if project_metadata and "Project" not in optional_sheets:
-            optional_sheets.append("Project")
-
-    placeholder_elevation = (
-        profile_default_elevation_m
-        if resolved_profile_id not in {NATIVE_PROFILE_ID, DATA_ENTRY_PROFILE_ID}
-        else None
-    )
-    if elevation_m is not None:
-        placeholder_elevation = None
-    cleaned_collars, stale_tags = _drop_stale_placeholder_datums(parse_result.collars)
-    if stale_tags:
-        parse_result = parse_result.model_copy(update={"collars": tuple(cleaned_collars)})
-        warnings.append(
-            f"Ignored the converter placeholder datum on {stale_tags} collar(s) whose "
-            "elevation was since edited (treated as surveyed RL)."
-        )
-    if placeholder_elevation is None and resolved_profile_id in {
-        NATIVE_PROFILE_ID,
-        DATA_ENTRY_PROFILE_ID,
-    }:
-        placeholder_elevation = _uniform_placeholder_elevation(parse_result.collars)
-        if placeholder_elevation is not None:
-            warnings.append(
-                f"Collar elevations are converter placeholders ({placeholder_elevation:.1f} m, "
-                "not surveyed RL) — set surveyed elevations for absolute RL sections."
+            effective_crs = target_crs or profile.coordinates.target_crs
+            if suggested_from_adapt and target_crs is None:
+                suggested_utm_crs = suggested_from_adapt
+                warnings.append(f"Suggested target CRS from coordinates: {suggested_utm_crs}")
+            elif suggested_from_adapt and str(suggested_from_adapt).upper() != str(effective_crs).upper():
+                suggested_utm_crs = suggested_from_adapt
+                warnings.append(
+                    f"Coordinates fall in {suggested_from_adapt} but were projected to "
+                    f"{effective_crs} — horizontal distances may be distorted; set Target CRS "
+                    "to the suggested zone."
+                )
+            for hole_id, offset in profile.coordinate_offsets_m.items():
+                if len(offset) == 2:
+                    offsets_applied[hole_id] = (float(offset[0]), float(offset[1]))
+            if elevation_m is None:
+                warnings.append(
+                    f"Collar elevation uses profile default ({profile.defaults.elevation_m:.1f} m) — "
+                    "set sidebar elevation for absolute RL sections."
+                )
+            parse_result = DataParser().parse_file(
+                source,
+                collars_df=collars_df,
+                lithology_df=lithology_df,
+                lithology_aliases=aliases,
+                workbook=workbook,
             )
 
-    had_unit_order_column = lithology_has_unit_order_column(parse_result.lithologies)
-    unit_order_auto_assigned = False
-    if auto_assign_unit_order:
-        new_lithologies, assign_messages = assign_missing_unit_orders(
+        if (
+            not project_metadata
+            and workbook is not None
+            and any(name.strip().lower() == "project" for name in workbook.sheet_names)
+        ):
+            from workbook_template import load_project_metadata
+
+            if hasattr(source, "seek"):
+                source.seek(0)
+            project_metadata = load_project_metadata(source)
+            if project_metadata and "Project" not in optional_sheets:
+                optional_sheets.append("Project")
+
+        placeholder_elevation = (
+            profile_default_elevation_m
+            if resolved_profile_id not in {NATIVE_PROFILE_ID, DATA_ENTRY_PROFILE_ID}
+            else None
+        )
+        if elevation_m is not None:
+            placeholder_elevation = None
+        cleaned_collars, stale_tags = _drop_stale_placeholder_datums(parse_result.collars)
+        if stale_tags:
+            parse_result = parse_result.model_copy(update={"collars": tuple(cleaned_collars)})
+            warnings.append(
+                f"Ignored the converter placeholder datum on {stale_tags} collar(s) whose "
+                "elevation was since edited (treated as surveyed RL)."
+            )
+        if placeholder_elevation is None and resolved_profile_id in {
+            NATIVE_PROFILE_ID,
+            DATA_ENTRY_PROFILE_ID,
+        }:
+            placeholder_elevation = _uniform_placeholder_elevation(parse_result.collars)
+            if placeholder_elevation is not None:
+                warnings.append(
+                    f"Collar elevations are converter placeholders ({placeholder_elevation:.1f} m, "
+                    "not surveyed RL) — set surveyed elevations for absolute RL sections."
+                )
+
+        had_unit_order_column = lithology_has_unit_order_column(parse_result.lithologies)
+        unit_order_auto_assigned = False
+        if auto_assign_unit_order:
+            new_lithologies, assign_messages = assign_missing_unit_orders(
+                parse_result.lithologies,
+                only_duplicate_holes=True,
+            )
+            if assign_messages:
+                unit_order_auto_assigned = True
+                warnings.extend(assign_messages)
+                parse_result = ParseResult(
+                    collars=parse_result.collars,
+                    lithologies=new_lithologies,
+                    errors=parse_result.errors,
+                    water_levels=parse_result.water_levels,
+                    screen_intervals=parse_result.screen_intervals,
+                    vertical_gradients=parse_result.vertical_gradients,
+                    deviation_readings=parse_result.deviation_readings,
+                    correlation_overrides=parse_result.correlation_overrides,
+                    faults=parse_result.faults,
+                    unconformities=parse_result.unconformities,
+                    environmental_readings=parse_result.environmental_readings,
+                    section_specs=parse_result.section_specs,
+                )
+
+        if "Field Data" in optional_sheets:
+            ova_ec_count = sum(
+                1
+                for reading in parse_result.environmental_readings
+                if reading.parameter.upper() in {"OVA", "EC"}
+            )
+            if ova_ec_count:
+                warnings.append(
+                    f"Field Data sheet: parsed {ova_ec_count} OVA/EC reading(s)."
+                )
+
+        if parse_result.section_specs:
+            warnings.append(
+                f"Sections sheet: loaded {len(parse_result.section_specs)} transect "
+                "spec(s) for Configure multi-transect batch."
+            )
+
+        qa = analyze_parsed_data(
+            parse_result.collars,
             parse_result.lithologies,
-            only_duplicate_holes=True,
-        )
-        if assign_messages:
-            unit_order_auto_assigned = True
-            warnings.extend(assign_messages)
-            parse_result = ParseResult(
-                collars=parse_result.collars,
-                lithologies=new_lithologies,
-                errors=parse_result.errors,
-                water_levels=parse_result.water_levels,
-                screen_intervals=parse_result.screen_intervals,
-                vertical_gradients=parse_result.vertical_gradients,
-                deviation_readings=parse_result.deviation_readings,
-                correlation_overrides=parse_result.correlation_overrides,
-                faults=parse_result.faults,
-                unconformities=parse_result.unconformities,
-                environmental_readings=parse_result.environmental_readings,
-                section_specs=parse_result.section_specs,
-            )
-
-    if "Field Data" in optional_sheets:
-        ova_ec_count = sum(
-            1
-            for reading in parse_result.environmental_readings
-            if reading.parameter.upper() in {"OVA", "EC"}
-        )
-        if ova_ec_count:
-            warnings.append(
-                f"Field Data sheet: parsed {ova_ec_count} OVA/EC reading(s)."
-            )
-
-    if parse_result.section_specs:
-        warnings.append(
-            f"Sections sheet: loaded {len(parse_result.section_specs)} transect "
-            "spec(s) for Configure multi-transect batch."
+            mapping_proposal=mapping_proposal,
+            aliases=aliases,
+            placeholder_elevation_m=placeholder_elevation,
         )
 
-    qa = analyze_parsed_data(
-        parse_result.collars,
-        parse_result.lithologies,
-        mapping_proposal=mapping_proposal,
-        aliases=aliases,
-        placeholder_elevation_m=placeholder_elevation,
-    )
+        uses_placeholder = (
+            placeholder_elevation is not None
+            and bool(parse_result.collars)
+            and all(abs(collar.elevation - placeholder_elevation) < 0.01 for collar in parse_result.collars)
+        )
 
-    uses_placeholder = (
-        placeholder_elevation is not None
-        and bool(parse_result.collars)
-        and all(abs(collar.elevation - placeholder_elevation) < 0.01 for collar in parse_result.collars)
-    )
-
-    report = ImportReport(
-        profile_id=resolved_profile_id,
-        profile_label=profile_label,
-        detection_confidence=confidence,
-        hole_count=len(parse_result.collars),
-        lithology_interval_count=len(parse_result.lithologies),
-        normalized_lithology_count=qa.normalized_lithology_count,
-        coordinate_offsets_applied=offsets_applied,
-        optional_sheets_detected=optional_sheets,
-        geology_sheet_counts=geology_sheet_counts(parse_result),
-        lithology_has_unit_order_column=had_unit_order_column or unit_order_auto_assigned,
-        unit_order_auto_assigned=unit_order_auto_assigned,
-        warnings=warnings,
-        mapping_proposal=mapping_proposal,
-        quality_report=qa,
-        uses_placeholder_elevation=uses_placeholder,
-        suggested_utm_crs=suggested_utm_crs,
-        profile_default_elevation_m=profile_default_elevation_m,
-        project_metadata=project_metadata,
-        section_specs=list(parse_result.section_specs),
-    )
-    return parse_result, report
+        report = ImportReport(
+            profile_id=resolved_profile_id,
+            profile_label=profile_label,
+            detection_confidence=confidence,
+            hole_count=len(parse_result.collars),
+            lithology_interval_count=len(parse_result.lithologies),
+            normalized_lithology_count=qa.normalized_lithology_count,
+            coordinate_offsets_applied=offsets_applied,
+            optional_sheets_detected=optional_sheets,
+            geology_sheet_counts=geology_sheet_counts(parse_result),
+            lithology_has_unit_order_column=had_unit_order_column or unit_order_auto_assigned,
+            unit_order_auto_assigned=unit_order_auto_assigned,
+            warnings=warnings,
+            mapping_proposal=mapping_proposal,
+            quality_report=qa,
+            uses_placeholder_elevation=uses_placeholder,
+            suggested_utm_crs=suggested_utm_crs,
+            profile_default_elevation_m=profile_default_elevation_m,
+            project_metadata=project_metadata,
+            section_specs=list(parse_result.section_specs),
+        )
+        return parse_result, report
+    finally:
+        _close_owned_workbook(_owned_workbook)
 
 
 PLACEHOLDER_DATUM_PREFIX = "Placeholder"
@@ -933,51 +955,55 @@ def export_platform_workbook(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Convert any supported workbook to canonical Collars/Lithology xlsx."""
     workbook = _as_workbook(source)
-    detection = FormatDetector().detect(workbook) if profile_id is None else None
-    resolved_profile_id = profile_id or detection.profile_id
+    _owned_workbook = workbook if workbook is not source else None
+    try:
+        detection = FormatDetector().detect(workbook) if profile_id is None else None
+        resolved_profile_id = profile_id or detection.profile_id
 
-    if resolved_profile_id == DATA_ENTRY_PROFILE_ID:
-        parse_result = DataParser().parse_file(source, workbook=workbook)
-        collars_df = pd.DataFrame(
-            [
-                {
-                    "hole_id": collar.hole_id,
-                    "easting": collar.easting,
-                    "northing": collar.northing,
-                    "elevation": collar.elevation,
-                    "total_depth": collar.total_depth,
-                }
-                for collar in parse_result.collars
-            ]
-        )
-        lithology_df = pd.DataFrame(
-            [
-                {
-                    "hole_id": item.hole_id,
-                    "from_depth": item.from_depth,
-                    "to_depth": item.to_depth,
-                    "lithology_code": item.lithology_code,
-                }
-                for item in parse_result.lithologies
-            ]
-        )
-    elif resolved_profile_id == NATIVE_PROFILE_ID:
-        collars_df, lithology_df, _ = _native_adapt(source, workbook=workbook)
-    else:
-        profile = load_override(override_id) if override_id else load_profile(resolved_profile_id)
-        collars_df, lithology_df, _ = FieldExportAdapter().adapt(
-            source,
-            profile,
-            elevation_m=elevation_m,
-            target_crs=target_crs,
-            workbook=workbook,
-        )
-        if elevation_m is None:
-            # Not a surveyed RL: tag it so a re-import still flags placeholders.
-            collars_df["elevation_datum"] = _placeholder_datum(profile.defaults.elevation_m)
+        if resolved_profile_id == DATA_ENTRY_PROFILE_ID:
+            parse_result = DataParser().parse_file(source, workbook=workbook)
+            collars_df = pd.DataFrame(
+                [
+                    {
+                        "hole_id": collar.hole_id,
+                        "easting": collar.easting,
+                        "northing": collar.northing,
+                        "elevation": collar.elevation,
+                        "total_depth": collar.total_depth,
+                    }
+                    for collar in parse_result.collars
+                ]
+            )
+            lithology_df = pd.DataFrame(
+                [
+                    {
+                        "hole_id": item.hole_id,
+                        "from_depth": item.from_depth,
+                        "to_depth": item.to_depth,
+                        "lithology_code": item.lithology_code,
+                    }
+                    for item in parse_result.lithologies
+                ]
+            )
+        elif resolved_profile_id == NATIVE_PROFILE_ID:
+            collars_df, lithology_df, _ = _native_adapt(source, workbook=workbook)
+        else:
+            profile = load_override(override_id) if override_id else load_profile(resolved_profile_id)
+            collars_df, lithology_df, _ = FieldExportAdapter().adapt(
+                source,
+                profile,
+                elevation_m=elevation_m,
+                target_crs=target_crs,
+                workbook=workbook,
+            )
+            if elevation_m is None:
+                # Not a surveyed RL: tag it so a re-import still flags placeholders.
+                collars_df["elevation_datum"] = _placeholder_datum(profile.defaults.elevation_m)
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        collars_df.to_excel(writer, sheet_name="Collars", index=False)
-        lithology_df.to_excel(writer, sheet_name="Lithology", index=False)
-    return collars_df, lithology_df
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            collars_df.to_excel(writer, sheet_name="Collars", index=False)
+            lithology_df.to_excel(writer, sheet_name="Lithology", index=False)
+        return collars_df, lithology_df
+    finally:
+        _close_owned_workbook(_owned_workbook)

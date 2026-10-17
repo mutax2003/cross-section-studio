@@ -27,6 +27,7 @@ from advantage_p2_reference.transects import ADVANTAGE_P2_TRANSECTS
 from ingestion import ingest_workbook
 from models import subset_parse_result
 from pipeline import build_cross_section
+from ui_output_presets import OUTPUT_PRESETS
 
 DEFAULT_OUTPUT_DIR = ROOT / "data" / "advantage_p2_transects"
 PARITY_OUTPUT_DIR = ROOT / "data" / "Data2" / "test_output"
@@ -93,6 +94,8 @@ def generate_transect(
         environmental_readings=parse_result.environmental_readings,
         environmental_parameters=("Chloride",),
         show_parameter_labels=True,
+        # Same label colour as the "Chemistry columns" output style (red).
+        chemistry_color_mode=OUTPUT_PRESETS["p2_chemistry_sticks"].chemistry_color_mode,
         parameter_interpolate_segments=spec.parameter_interpolate_segments,
         interpretation_mode=spec.interpretation_mode,  # type: ignore[arg-type]
         elevation_mode=spec.elevation_mode,

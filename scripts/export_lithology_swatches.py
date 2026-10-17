@@ -133,6 +133,12 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=ROOT / "dist" / "lithology_swatches")
     parser.add_argument("--zip", type=Path, default=None, help="also write all swatches to this zip")
     parser.add_argument("--code", action="append", help="export only this code (repeatable)")
+    parser.add_argument(
+        "--sheet",
+        type=Path,
+        default=None,
+        help="also write a legend sheet PNG (swatch, name, colour and pattern per row)",
+    )
     args = parser.parse_args()
     names = export_swatches(
         args.out,
@@ -142,6 +148,12 @@ def main() -> int:
         codes=resolve_codes(args.code),
     )
     print(f"Wrote {len(names)} swatch(es) at {args.width}x{args.height} px to {args.out}")
+    if args.sheet:
+        from lithology_legend_sheet import build_legend_sheet_png
+
+        args.sheet.parent.mkdir(parents=True, exist_ok=True)
+        args.sheet.write_bytes(build_legend_sheet_png(resolve_codes(args.code)))
+        print(f"Legend sheet: {args.sheet}")
     if args.zip:
         print(f"Zip: {args.zip}")
     return 0

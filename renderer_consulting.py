@@ -2,30 +2,39 @@
 
 from __future__ import annotations
 
+import functools
 import io
+import itertools
 import logging
+import math
 import re
 import textwrap
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import matplotlib as mpl
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.backends.backend_agg import RendererAgg
 from matplotlib.figure import Figure
+from matplotlib.font_manager import FontProperties
 from matplotlib.gridspec import GridSpec
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.patches import FancyArrow, Rectangle
-from matplotlib.ticker import FuncFormatter, MultipleLocator
-from matplotlib.transforms import blended_transform_factory, offset_copy
+from matplotlib.ticker import Formatter, FuncFormatter, Locator, MultipleLocator
+from matplotlib.transforms import ScaledTranslation, offset_copy
+from shapely.geometry import LineString
+from shapely.geometry import Polygon as ShapelyPolygon
 
+from export_framing import PAGE_FIGSIZE_IN
 from lithology_codes import collect_lithology_codes
 from models import ConsultingTitleBlock, VerticalGradient, WaterLevel
 from render_theme import (
     CONSULTING_COLUMN_FILL,
     CONSULTING_FIGURE_BG,
-    CONSULTING_SCALE_BAR_M,
+    CONSULTING_NM_COLOR,
     CONSULTING_SURFACE_COLOR,
     CONSULTING_WATER_COLOR,
     DEFAULT_CONSULTING_NOTES,
@@ -43,10 +52,173 @@ from render_theme import (
     primary_water_depth_by_hole,
     water_has_multiple_series,
 )
-from renderer_common import legend_swatch_hatch
+from renderer_common import (
+    MIN_LEGEND_SWATCH_HEIGHT_IN,
+    MIN_PRINT_MARGIN_IN,
+    UNLOGGED_FILL_COLOR,
+    UNLOGGED_LEGEND_LABEL,
+    add_ve_caption,
+    fit_label,
+    fitted_x_locators,
+    pinch_out_key_artist,
+    release_twins,
+    settle_figure_layout,
+    swatch_hatch_artists,
+    water_status_legend_label,
+    water_status_texts,
+)
 from stratigraphy import GeologicalPolygon
 
 logger = logging.getLogger(__name__)
+
+# Title-block legend: design / floor label sizes (pt, before the consulting
+# font scale), the absolute last-resort size, key column widths and the
+# narrowest label column (inches) a multi-column layout may use.
+_LEGEND_BASE_PT = 7.5
+_LEGEND_FLOOR_PT = 6.5
+_LEGEND_SQUEEZE_PT = 6.0
+_LEGEND_HARD_MIN_PT = 5.0
+_LEGEND_LINESPACING = 1.0
+_LEGEND_SWATCH_W_IN = 0.30
+_LEGEND_SWATCH_MIN_W_IN = 0.24
+_LEGEND_MIN_LABEL_W_IN = 0.45
+# Legend panel width (title-block axes fraction): the design width, and how
+# far it may widen (with / without a PREPARED FOR / BY panel) before units
+# are rolled up.
+_LEGEND_PANEL_DESIGN_W = 0.32
+_LEGEND_PANEL_MAX_W = 0.44
+_LEGEND_PANEL_MAX_W_NO_RIGHT = 0.52
+
+
+@dataclass
+class _LegendRow:
+    entry: tuple[str, str, dict[str, object]]
+    lines: list[str]
+    x: float  # panel-local inches from the left edge
+    y: float  # panel-local inches down from the top edge (row top)
+    full_width: bool
+
+
+@dataclass
+class _LegendLayout:
+    rows: list[_LegendRow]
+    font_pt: float
+    header_pt: float
+    line_h: float
+    swatch_h: float
+    key_w: float
+    text_gap: float
+    pad_x: float
+    pad_top: float
+    ncols: int
+    hidden_units: int = 0
+
+
+def _column_height(heights: Sequence[float], column: Sequence[int], gap: float) -> float:
+    if not column:
+        return 0.0
+    return sum(heights[i] for i in column) + gap * (len(column) - 1)
+
+
+@functools.lru_cache(maxsize=8)
+def _measuring_renderer(dpi: float) -> RendererAgg:
+    """An off-screen Agg renderer for text widths at ``dpi`` (never drawn to)."""
+    return RendererAgg(8, 8, dpi)
+
+
+def _contiguous_splits(n: int, ncols: int, *, max_rows: int | None = None):
+    """Splits of rows ``0..n-1``, in order, into exactly ``ncols`` non-empty columns.
+
+    ``max_rows`` skips splits with a column of more rows than that.
+    """
+    ncols = max(1, min(ncols, n))
+    limit = n if max_rows is None else max_rows
+
+    def rest(start: int, cols: int):
+        remaining = n - start
+        if cols == 1:
+            if remaining <= limit:
+                yield [list(range(start, n))]
+            return
+        for size in range(1, min(limit, remaining - cols + 1) + 1):
+            if remaining - size > limit * (cols - 1):
+                continue
+            head = list(range(start, start + size))
+            for tail in rest(start + size, cols - 1):
+                yield [head, *tail]
+
+    yield from rest(0, ncols)
+
+
+def _balanced_splits(n: int, ncols: int, *, keep_tail: int = 0, max_rows: int | None = None):
+    """In-order splits of rows ``0..n-1`` into ``ncols`` columns of (nearly) equal length.
+
+    Every column holds ``n // ncols`` or ``n // ncols + 1`` rows (counts differ
+    by at most one), so no column is left with a lone entry while the next
+    one runs long. Splits that keep the last ``keep_tail`` rows (the symbol
+    keys that follow the lithology units) together in one column are the only
+    ones offered when any exists. ``max_rows`` yields nothing when the longest
+    column would exceed it.
+    """
+    ncols = max(1, min(ncols, n))
+    base, extra = divmod(n, ncols)
+    if max_rows is not None and base + (1 if extra else 0) > max_rows:
+        return
+    splits = []
+    for tall in itertools.combinations(range(ncols), extra):
+        sizes = [base + (1 if column in tall else 0) for column in range(ncols)]
+        columns, start = [], 0
+        for size in sizes:
+            columns.append(list(range(start, start + size)))
+            start += size
+        splits.append(columns)
+    together = [split for split in splits if len(split[-1]) >= keep_tail]
+    yield from together or splits
+
+
+def _largest_polygon(geometry) -> ShapelyPolygon | None:
+    """The polygon of a shapely geometry (the largest piece of a collection)."""
+    if geometry is None or geometry.is_empty:
+        return None
+    if isinstance(geometry, ShapelyPolygon):
+        return geometry
+    pieces = [g for g in getattr(geometry, "geoms", ()) if isinstance(g, ShapelyPolygon)]
+    return max(pieces, key=lambda g: g.area) if pieces else None
+
+
+def _water_fill(need: Sequence[float], total: float) -> list[float]:
+    """Column widths for content ``need`` sharing ``total``.
+
+    Everything fits: each column gets its need plus an equal share of the
+    spare room. Otherwise the widest columns are capped at one common width
+    (they wrap) and the narrow ones keep their need.
+    """
+    count = len(need)
+    if count == 0:
+        return []
+    if sum(need) <= total:
+        spare = (total - sum(need)) / count
+        return [n + spare for n in need]
+    ordered = sorted(need)
+    remaining = total
+    for index, value in enumerate(ordered):
+        cap = remaining / (count - index)
+        if value >= cap:
+            return [min(n, cap) for n in need]
+        remaining -= value
+    return list(need)
+
+
+def _ellipsize(text: str, width_in: float, measure) -> str:
+    """``text`` cut with "…" to fit ``width_in`` (last-resort legend labels)."""
+    if measure(text) <= width_in:
+        return text
+    for end in range(len(text) - 1, 0, -1):
+        candidate = text[:end].rstrip(" -:(") + "…"
+        if measure(candidate) <= width_in:
+            return candidate
+    return "…"
+
 
 _MBGS_NOTE = "mbgs DENOTES METRES BELOW GROUND SURFACE."
 
@@ -56,13 +228,27 @@ def _is_masl_note(note: str) -> bool:
     return "MASL DENOTES METRES ABOVE SEA LEVEL" in note.upper()
 
 # Minimum legend column width (axes fraction) before wrapping to two columns.
-_LEGEND_MIN_COL_WIDTH = 0.14
-_LEGEND_CHAR_WIDTH = 0.0065  # approx. axes fraction per character at 7.5 pt
 
 
 _HEADER_FONT_PT = 8.0
 _HEADER_CHAR_WIDTH_IN = _HEADER_FONT_PT * 0.62 / 72.0
 
+
+
+def _end_label_reserve_fraction(
+    endpoint_lines: tuple[tuple[str, str], tuple[str, str]],
+    *,
+    font_pt: float,
+    page_height_in: float,
+) -> float:
+    """Page-height fraction for the stacked end labels above the header row."""
+    line_counts = [sum(1 for part in end if part) for end in endpoint_lines]
+    lines = max(line_counts, default=0)
+    if not lines:
+        return 0.0
+    # Bold text at linespacing 0.9 (~1.1 x font per line) plus a small gap.
+    height_in = (lines * font_pt * 1.1 + 2.0) / 72.0
+    return min(height_in / page_height_in, 0.08)
 
 def _vertical_header_reserve_fraction(
     hole_summary: pd.DataFrame,
@@ -99,6 +285,10 @@ def _vertical_header_reserve_fraction(
 # every explicit point size from here (the sidebar default of 8 clamps up to 9,
 # so the stock output is unchanged).
 _CONSULTING_BASE_FONT_PT = 9.0
+# Threshold key below DISTANCE (m): clearance above the subtitle band, and the
+# least gap the band may leave above the title block when it moves down for it.
+_THRESHOLD_KEY_BAND_PAD_PT = 3.0
+_BAND_BLOCK_MIN_GAP = 0.012
 
 # Title-block metadata values: start size, smallest one-line size, and the
 # smallest size tried when wrapping is forced.
@@ -116,13 +306,343 @@ _BAND_TITLE_HARD_MIN_PT = 6.0
 _BAND_TITLE_ROW_HEIGHT = 0.38
 
 # Notes panel: smallest notes size (pt) tried before the last note is cut
-# with "…", and the design width of the CAD block axes (letter landscape) that
-# the legend character budget was tuned on.
+# with "…".
 _NOTES_MIN_PT = 4.5
-_DESIGN_BLOCK_AXES_WIDTH_IN = 11.0 * (0.95 - 0.06)
 
 # A label that already names a (cross) section as a word is printed as-is.
 _SECTION_WORD_RE = re.compile(r"\bsection\b", re.IGNORECASE)
+
+# RL / depth axis labelling: at most this many labelled ticks per side, and
+# labels at least this many font heights apart. The client figures label every
+# 1 m on short sections (GWM) and every 2 m on the 16 m P2 depth axis; taller
+# ranges thin to the next round step (1, 2, 5, 10, 20, 50 ... true metres).
+_Y_MAX_LABELS = 15
+_Y_LABEL_SPACING_EM = 1.8
+_Y_MIN_STEP_M = 1.0
+# Hard caps on the ticks one axis asks for, whatever the range: the labelled
+# step coarsens (next 1/2/5 step) past _Y_MAX_MAJOR_TICKS, the minor step
+# past _Y_MINOR_PER_MAJOR times that.
+_Y_MAX_MAJOR_TICKS = 400
+_Y_MINOR_PER_MAJOR = 5
+
+
+def _round_step_at_least(value: float) -> float:
+    """Smallest 1/2/5 x 10^k step that is >= ``value``."""
+    exponent = 10.0 ** np.floor(np.log10(max(value, 1e-9)))
+    for mantissa in (1.0, 2.0, 5.0, 10.0):
+        if mantissa * exponent >= value * (1.0 - 1e-9):
+            return mantissa * exponent
+    return 10.0 * exponent  # pragma: no cover - loop always returns
+
+
+def true_metre_major_step(span_m: float, axis_height_pt: float, label_pt: float) -> float:
+    """Round labelled-tick step (true metres) for a ``span_m`` tall RL/depth axis.
+
+    Keeps the client's 1 m step while it fits, otherwise the next 1/2/5 step so
+    at most ``_Y_MAX_LABELS`` labels show and labels never crowd each other.
+    """
+    span_m = abs(float(span_m))
+    room = int(axis_height_pt // max(label_pt * _Y_LABEL_SPACING_EM, 1e-6)) if axis_height_pt > 0 else 0
+    max_labels = max(2, min(_Y_MAX_LABELS, room)) if room else _Y_MAX_LABELS
+    step = _Y_MIN_STEP_M
+    while np.floor(span_m / step + 1e-9) + 1 > max_labels:
+        step = _round_step_at_least(step * 1.0001)
+    return step
+
+
+def true_metre_minor_step(major_step: float) -> float:
+    """Unlabelled minor step: 0.5 m under a 1 m major, else 1 m up to 10 m majors."""
+    if major_step <= _Y_MIN_STEP_M:
+        return major_step / 2.0
+    return max(_Y_MIN_STEP_M, major_step / 10.0)
+
+
+# --- Subtitle-band scale bar -------------------------------------------------
+
+_INCHES_PER_METRE = 39.37
+# Standard engineering drawing scales: (1, 1.25, 2, 2.5, 5) x 10^n.
+_STANDARD_SCALE_MANTISSAS = (1.0, 1.25, 2.0, 2.5, 5.0)
+# A computed ratio within this of a standard scale prints as that scale.
+_STANDARD_SCALE_TOLERANCE = 0.03
+_SCALE_BAR_MAX_FRACTION = 0.80
+_SCALE_BAR_X = 0.02
+_SCALE_BAR_Y = 0.55
+_SCALE_BAR_UNITS = "Metres"
+
+
+def nice_scale_bar_length(max_m: float) -> float:
+    """Largest 1/2/5 x 10^n metres that is <= ``max_m``."""
+    max_m = float(max_m)
+    if not np.isfinite(max_m) or max_m <= 0.0:
+        return 0.0
+    exponent = 10.0 ** np.floor(np.log10(max_m))
+    for mantissa in (5.0, 2.0, 1.0):
+        if mantissa * exponent <= max_m * (1.0 + 1e-9):
+            return float(mantissa * exponent)
+    return float(exponent)  # pragma: no cover - mantissa 1 always fits
+
+
+def scale_bar_tick_step(length_m: float) -> float:
+    """Round tick step giving 3-5 equal segments of ``length_m`` (else 2, else 1)."""
+    length_m = float(length_m)
+    if length_m <= 0.0:
+        return 0.0
+    for segments in (5, 4, 3, 2):
+        step = length_m / segments
+        exponent = 10.0 ** np.floor(np.log10(step))
+        mantissa = step / exponent
+        if any(abs(mantissa - nice) < 1e-6 for nice in (1.0, 2.0, 2.5, 5.0, 10.0)):
+            return step
+    return length_m
+
+
+def nearest_standard_scale(ratio: float) -> int:
+    """Standard engineering scale denominator nearest ``ratio`` (log distance)."""
+    ratio = max(float(ratio), 1.0)
+    exponent = int(np.floor(np.log10(ratio)))
+    candidates = [
+        mantissa * 10.0**power
+        for power in (exponent - 1, exponent, exponent + 1)
+        for mantissa in _STANDARD_SCALE_MANTISSAS
+    ]
+    return int(round(min(candidates, key=lambda c: abs(np.log(c / ratio)))))
+
+
+def scale_ratio_text(ratio: float, *, snap: bool = False) -> str:
+    """Honest band text for a printed scale of 1:``ratio``.
+
+    A fitted (not map-scaled) drawing is only ever *approximately* at a round
+    ratio, so it prints "APPROX. SCALE" with three significant figures
+    (1:1278 -> "APPROX. SCALE 1:1280"; snapping it to "SCALE 1:1250" claimed
+    a scale the bar doesn't draw). An exact title-block map scale is printed
+    by the caller instead. ``snap=True`` keeps the legacy behaviour of
+    printing a standard scale within 3 % without "APPROX.".
+    """
+    ratio = float(ratio)
+    standard = nearest_standard_scale(ratio)
+    if snap and abs(standard / ratio - 1.0) <= _STANDARD_SCALE_TOLERANCE:
+        return f"SCALE 1:{standard}"
+    if ratio < 100:
+        # Very short sections: keep a decimal (1:3.3 / 1:53.6, not 1:3 / 1:54).
+        return f"APPROX. SCALE 1:{ratio:.1f}"
+    digits = int(np.floor(np.log10(ratio)))
+    rounded = int(round(ratio, -(digits - 2)))
+    return f"APPROX. SCALE 1:{rounded}"
+
+
+def parse_map_scale(text: str | None) -> float | None:
+    """Denominator of a "1:1 000"-style scale string, or None."""
+    if not text:
+        return None
+    match = re.fullmatch(r"\s*1\s*:\s*([\d\s,]+(?:\.\d+)?)\s*", str(text))
+    if not match:
+        return None
+    try:
+        value = float(re.sub(r"[\s,]", "", match.group(1)))
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+# --- Exact title-block map scale ---------------------------------------------
+#
+# A user / workbook ``map_scale`` sizes the section box so the printed
+# horizontal scale is exactly that ratio on the final export page: the axes
+# width is (x-limit span in metres) / ratio, in inches. The scale applies to
+# every metre on the x axis, the hole-label room and end padding included, so
+# the scale bar (measured through the same box) stays truthful. Exact VE then
+# sets the box height; auto VE fills the frame height and the band captions the
+# measured VE. The box is centred in its frame region, like exact VE.
+
+# Below this share of the frame width the sheet is mostly empty margin: a
+# reader is better served by the fitted section marked "AS SHOWN" (a 1:5000
+# request on a 300 m section would draw a 2.4 in strip on an 8.5 in frame).
+# 30 % still leaves a usefully readable plot on letter portrait (~2 in).
+MAP_SCALE_MIN_FRAME_FRACTION = 0.30
+# Float slack when the requested box is exactly the frame width.
+_MAP_SCALE_FIT_TOLERANCE = 1e-6
+# Section / band / title-block rows of the consulting sheet grid.
+_GRID_HEIGHT_RATIOS = (58, 12, 22)
+_GRID_HSPACE = 0.12
+
+
+def map_scale_box(
+    frame: tuple[float, float, float, float],
+    figure_size_in: tuple[float, float],
+    x_span_m: float,
+    y_span_stored: float,
+    ratio: float,
+    *,
+    exact_ve: bool,
+    min_fraction: float = MAP_SCALE_MIN_FRAME_FRACTION,
+) -> tuple[tuple[float, float, float, float], str, float]:
+    """Axes box (figure fractions) drawing ``x_span_m`` at 1:``ratio`` in ``frame``.
+
+    Returns ``(box, status, printed_ratio)``. ``status`` is ``"exact"`` when
+    the box is drawn at 1:``ratio``; ``"no_fit"`` when the section (or, with
+    exact VE, its height) is too large for the frame at that scale; and
+    ``"too_small"`` when it would fill less than ``min_fraction`` of the frame
+    width. Both fallbacks fit the frame (shrunk to the exact VE, if set) and
+    ``printed_ratio`` is the scale actually drawn. ``y_span_stored`` is the
+    y-limit span in stored (VE-multiplied) units: exact VE is aspect 1 in them.
+    """
+    fx0, fy0, fw, fh = (float(v) for v in frame)
+    fig_w, fig_h = (float(v) for v in figure_size_in)
+    frame_w = fw * fig_w
+    frame_h = fh * fig_h
+    x_span = abs(float(x_span_m))
+    y_span = abs(float(y_span_stored))
+    if min(frame_w, frame_h, x_span, float(ratio)) <= 0.0 or not np.isfinite(x_span):
+        return (fx0, fy0, fw, fh), "no_fit", float("nan")
+    aspect = y_span / x_span if exact_ve and y_span > 0.0 else None
+    need_w = x_span * _INCHES_PER_METRE / float(ratio)
+    need_h = need_w * aspect if aspect is not None else frame_h
+    # Auto VE fills the frame height but never compresses the vertical:
+    # below 1x the scale doesn't fit and the fallback is held at 1x.
+    unit_aspect = y_span / x_span if not exact_ve and y_span > 0.0 else None
+    slack = 1.0 + _MAP_SCALE_FIT_TOLERANCE
+    if unit_aspect is not None and need_w * unit_aspect > frame_h * slack:
+        status = "no_fit"
+    elif need_w > frame_w * slack or need_h > frame_h * slack:
+        status = "no_fit"
+    elif need_w < min_fraction * frame_w:
+        status = "too_small"
+    else:
+        status = "exact"
+    if status == "exact":
+        width, height = min(need_w, frame_w), min(need_h, frame_h)
+    else:
+        width, height = frame_w, frame_h
+        if aspect is not None:
+            if frame_w * aspect <= frame_h:
+                height = frame_w * aspect
+            else:
+                width = frame_h / aspect
+        elif unit_aspect is not None and frame_w * unit_aspect > frame_h:
+            width = frame_h / unit_aspect
+    x0 = fx0 + 0.5 * (frame_w - width) / fig_w
+    y0 = fy0 + 0.5 * (frame_h - height) / fig_h
+    printed = float(ratio) if status == "exact" else x_span * _INCHES_PER_METRE / width
+    return (x0, y0, width / fig_w, height / fig_h), status, printed
+
+
+def format_scale_ratio(ratio: float) -> str:
+    """``1:1000`` for an exact scale (decimals only when the ratio has them)."""
+    ratio = float(ratio)
+    return f"1:{int(round(ratio))}" if abs(ratio - round(ratio)) < 1e-6 else f"1:{ratio:g}"
+
+
+def page_description(figure_size_in: tuple[float, float]) -> str:
+    """``"letter landscape"`` for a named export page, else ``"8.0 x 6.0 in"``."""
+    size = tuple(round(float(v), 2) for v in figure_size_in)
+    for name, page in PAGE_FIGSIZE_IN.items():
+        if size == tuple(round(float(v), 2) for v in page):
+            return name.replace("_", " ")
+    return f"{size[0]:g} x {size[1]:g} in"
+
+
+class _MapScaleAspect:
+    """``Axes.apply_aspect`` replacement sizing the box to the exact map scale.
+
+    Installed on the main consulting axes instance, so every path matplotlib
+    takes to lay the axes out (draw, tight bbox, ``get_position``) and every
+    measurement here (scale bar, VE caption) sees the same box. The frame is
+    the axes' original (grid) position, which export page resizes and margin
+    fits update.
+    """
+
+    def __init__(self, ax, ratio: float, *, exact_ve: bool) -> None:
+        self.ax = ax
+        self.ratio = float(ratio)
+        self.exact_ve = bool(exact_ve)
+
+    def layout(self, xlim: tuple[float, float] | None = None) -> tuple[tuple[float, float, float, float], str, float]:
+        """Box, status and printed ratio at the current page (``xlim``: a candidate x range)."""
+        ax = self.ax
+        x0, x1 = xlim if xlim is not None else ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+        return map_scale_box(
+            tuple(ax.get_position(original=True).bounds),
+            tuple(ax.figure.get_size_inches()),
+            abs(float(x1) - float(x0)),
+            abs(float(y1) - float(y0)),
+            self.ratio,
+            exact_ve=self.exact_ve,
+        )
+
+    def __call__(self, position=None) -> None:
+        from matplotlib.axes import Axes
+        from matplotlib.transforms import Bbox
+
+        box, _status, _printed = self.layout()
+        Axes.apply_aspect(self.ax, Bbox.from_bounds(*box))
+
+
+def _scale_bar_label(value_m: float) -> str:
+    return f"{value_m:g}"
+
+
+class _TrueMetreLocator(Locator):
+    """Major/minor y ticks at round true-metre steps on a VE-exaggerated axis.
+
+    Decided at draw time from the view range and the axes height, so an export
+    page resize re-thins the labels instead of keeping the render-size choice.
+    """
+
+    def __init__(self, ve: float, label_pt: float, *, minor: bool = False) -> None:
+        self._ve = float(ve) if ve and ve > 0 else 1.0
+        self._label_pt = float(label_pt)
+        self._minor = minor
+
+    def major_step(self, vmin: float | None = None, vmax: float | None = None) -> float:
+        """Labelled step (true metres) for the range (default: the view interval)."""
+        if vmin is None or vmax is None:
+            vmin, vmax = self.axis.get_view_interval()
+        axes = self.axis.axes
+        height_pt = axes.bbox.height * 72.0 / axes.figure.dpi
+        span_m = abs(float(vmax) - float(vmin)) / self._ve
+        step = true_metre_major_step(span_m, height_pt, self._label_pt)
+        # Belt and braces: never more than _Y_MAX_MAJOR_TICKS ticks across
+        # the range, whatever the axes box reports (a 2e5 m range once asked
+        # for 2e5 one-metre ticks and the minor pass ran out of memory).
+        while span_m / step > _Y_MAX_MAJOR_TICKS:
+            step = _round_step_at_least(step * 1.0001)
+        return step
+
+    def __call__(self):
+        vmin, vmax = self.axis.get_view_interval()
+        return self.tick_values(vmin, vmax)
+
+    def tick_values(self, vmin, vmax):
+        if not (np.isfinite(vmin) and np.isfinite(vmax)) or vmin == vmax:
+            return np.array([], dtype=float)
+        low, high = sorted((vmin / self._ve, vmax / self._ve))
+        # The step for the range asked for (the view interval on every
+        # matplotlib call): a step sized to another range placed ticks every
+        # metre across a 2e5 m one.
+        step = self.major_step(vmin, vmax)
+        if self._minor:
+            step = true_metre_minor_step(step)
+            while (high - low) / step > _Y_MINOR_PER_MAJOR * _Y_MAX_MAJOR_TICKS:
+                step = _round_step_at_least(step * 1.0001)
+        first = np.ceil(low / step - 1e-9) * step
+        values = np.arange(first, high + step * 1e-6, step)
+        return self.raise_if_exceeds(np.round(values, 6) * self._ve)
+
+
+class _TrueMetreFormatter(Formatter):
+    """True-metre labels (plotted value / VE); ``suppressed`` values print blank."""
+
+    def __init__(self, ve: float) -> None:
+        self._ve = float(ve) if ve and ve > 0 else 1.0
+        self.suppressed: set[float] = set()
+
+    def __call__(self, value, pos=None):
+        true_value = round(value / self._ve, 6)
+        if true_value in self.suppressed:
+            return ""
+        text = f"{true_value:.0f}" if abs(true_value - round(true_value)) < 1e-6 else f"{true_value:g}"
+        return "0" if text == "-0" else text
 
 
 class ConsultingLayoutMixin:
@@ -195,8 +715,15 @@ class ConsultingLayoutMixin:
         top = 0.97 - _vertical_header_reserve_fraction(
             ctx.summary, page_height_in=8.5, font_pt=self._fs(_HEADER_FONT_PT)
         )
+        # End labels ("A" / "NORTHWEST") get their own band above the hole-ID
+        # headers, as on the client figures; sharing a row, the edge headers
+        # printed into them ("MW18-18NORTHWEST").
+        top -= _end_label_reserve_fraction(
+            self._transect_endpoint_lines(title_block), font_pt=self._fs(8), page_height_in=8.5
+        )
         fig.subplots_adjust(left=0.06, right=0.95, top=top, bottom=0.04)
-        grid = GridSpec(3, 1, figure=fig, height_ratios=[58, 12, 22], hspace=0.12)
+        grid = GridSpec(3, 1, figure=fig, height_ratios=list(_GRID_HEIGHT_RATIOS), hspace=_GRID_HSPACE)
+        fig._css_consulting_grid = (grid, fig.subplotpars.top - fig.subplotpars.bottom)
         ax = fig.add_subplot(grid[0, 0])
         sub_gs = grid[1, 0].subgridspec(1, 3, width_ratios=[32, 36, 32], wspace=0.14)
         ax_scale = fig.add_subplot(sub_gs[0, 0])
@@ -226,23 +753,42 @@ class ConsultingLayoutMixin:
             profile_lookup = ctx.profile_lookup
             show_nm = self.profile.show_dry_well_nm
 
-            if polygons:
+            # Units logged in a hole but drawn by no fence polygon (one-hole
+            # units when pinch-outs are off) would otherwise vanish behind the
+            # plain grey column while still listed in the legend.
+            orphan_rows, orphan_lenses = self._orphan_unit_geometry(
+                projected_df, polygons, hole_summary, track_half
+            )
+            fence_polygons = list(polygons) + orphan_lenses
+            if fence_polygons:
                 self._draw_fence_polygons(
-                    ax, polygons, style_cache, ve, alpha=self.profile.fence_alpha, collar_lookup=collar_lookup
+                    ax,
+                    fence_polygons,
+                    style_cache,
+                    ve,
+                    alpha=self.profile.fence_alpha,
+                    collar_lookup=collar_lookup,
+                    hole_x_lookup=ctx.x_by_hole,
                 )
             else:
                 self._has_pinch_out = False
             self._draw_consulting_surface(ax, hole_summary, collar_lookup)
             self._draw_well_columns(ax, hole_summary, collar_depths, collar_lookup, track_half)
-            if self.profile.show_track_lithology:
+            column_rows = projected_df if self.profile.show_track_lithology else orphan_rows
+            if not column_rows.empty:
                 self._draw_lithology_interval_rects(
                     ax,
-                    projected_df,
+                    column_rows,
                     style_cache,
                     track_half * 0.92,
                     collar_lookup,
                     zorder=9,
                     alpha=1.0,
+                )
+            if self.profile.show_track_lithology:
+                # The grey column shows through wherever the log has no row.
+                self._draw_unlogged_intervals(
+                    ax, projected_df, collar_depths, collar_lookup, track_half, draw=False
                 )
             if self.screen_intervals:
                 self._draw_screen_intervals(
@@ -295,7 +841,9 @@ class ConsultingLayoutMixin:
                 y_label = "DEPTH (mbgs)"
             ax.set_xlabel("DISTANCE (m)", fontsize=self._fs(10), labelpad=2, color=LABEL_COLOR)
             ax.set_ylabel(y_label, fontsize=self._fs(10), labelpad=6, color=LABEL_COLOR)
-            ax.set_aspect("auto")
+            # Exact VE locks the plot box (centred in its frame region); auto
+            # fills the frame and the band caption prints the measured VE.
+            self._apply_ve_aspect(ax)
             for spine in ax.spines.values():
                 spine.set_color("#374151")
                 spine.set_linewidth(1.0)
@@ -326,6 +874,12 @@ class ConsultingLayoutMixin:
                 for spine in ax_right.spines.values():
                     spine.set_color("#374151")
                     spine.set_linewidth(1.0)
+                # The right RL axis follows the (possibly box-locked) main axes.
+                self._apply_ve_aspect(ax, twins=(ax_right,))
+
+            # A user / workbook map scale sizes the box to exactly that scale
+            # on the export page (falls back to the fit above when it can't).
+            self._install_map_scale(ax, ax_right, title_block, hole_summary, track_half)
 
             if self.profile.show_report_grid:
                 x_grid = 20.0 if ctx.x_span > 200.0 else self.profile.x_major_grid_m
@@ -334,12 +888,79 @@ class ConsultingLayoutMixin:
             # RL axis labels must stay on the page before the band and title
             # block are fitted to their (margin-dependent) panels.
             fig._css_main_axes = (ax, ax_right)
+            fig._css_band_axes = ((ax_scale, ax_center, ax_notes), ax_block)
             self.fit_consulting_page_margins(fig)
 
             self._draw_subtitle_band(ax_scale, ax_center, ax_notes, title_block)
             self._draw_cad_title_block(ax_block, style_cache, lithology_codes, title_block)
             self._draw_consulting_footers(fig)
         return fig
+
+    @staticmethod
+    def _keep_band_heights(fig: Figure) -> None:
+        """Hold the band and title-block rows at their stock height when the page
+        fit lowers the plot top for a header fan lifted above the room it had
+        (``stack_hole_headers``): only the section shrinks.
+
+        Shrinking the whole grid squeezed the scale bar into its label and
+        dropped notes lines. Idempotent: computed from the stock grid height.
+        """
+        stored = getattr(fig, "_css_consulting_grid", None)
+        if not stored:
+            return
+        grid, base_height = stored
+        params = fig.subplotpars
+        height = params.top - params.bottom
+        ratios = list(_GRID_HEIGHT_RATIOS)
+        if height >= base_height - 1e-9 or height <= 0.0 or not getattr(fig, "_css_header_fan_lifted", False):
+            if fig.__dict__.pop("_css_band_heights_held", False):
+                grid.set_height_ratios(ratios)
+                grid.update(hspace=_GRID_HSPACE)
+            return
+        fig._css_band_heights_held = True
+        rows = len(ratios)
+        # Stock row heights and gap (GridSpec: cell = H / (n + hspace (n-1)),
+        # gap = hspace x mean cell).
+        cell = base_height / (rows + _GRID_HSPACE * (rows - 1))
+        gap = _GRID_HSPACE * cell
+        total = float(sum(ratios))
+        band = [cell * rows * r / total for r in ratios[1:]]
+        main = max(height - sum(band) - gap * (rows - 1), 0.25 * cell * rows * ratios[0] / total)
+        # Same absolute rows and gaps for the band and title block; the
+        # section row takes what is left.
+        grid.set_height_ratios([main, *band])
+        grid.update(hspace=gap / ((main + sum(band)) / rows))
+
+    def _reserve_threshold_key_band(self, fig: Figure) -> None:
+        """Lower the subtitle band so the threshold key under DISTANCE (m) clears it.
+
+        The key hangs below the x-axis label (threshold colour mode only). The
+        band first moves down into its gap above the title block, keeping
+        ``_BAND_BLOCK_MIN_GAP`` of it; only what is still missing comes off
+        the band's top. Measured from the grid positions each time, so it is
+        idempotent and survives ``subplots_adjust`` (which resets them) on an
+        export page resize; a sheet without the key is left untouched.
+        """
+        key = getattr(self, "_chemistry_threshold_key", None)
+        band = getattr(fig, "_css_band_axes", None)
+        if key is None or key.figure is not fig or not band:
+            return
+        band_axes, ax_block = band
+        bases = [axis.get_subplotspec().get_position(fig) for axis in band_axes]
+        for axis, base in zip(band_axes, bases, strict=True):
+            axis.set_position(base)
+        renderer = fig.canvas.get_renderer()
+        pad_px = _THRESHOLD_KEY_BAND_PAD_PT * fig.dpi / 72.0
+        key_bottom = (key.get_window_extent(renderer).y0 - pad_px) / fig.bbox.height
+        need = max(base.y1 for base in bases) - key_bottom
+        if need <= 0.0:
+            return
+        band_bottom = min(base.y0 for base in bases)
+        slack = max(0.0, band_bottom - ax_block.get_position().y1 - _BAND_BLOCK_MIN_GAP)
+        shift = min(need, slack)
+        trim = need - shift
+        for axis, base in zip(band_axes, bases, strict=True):
+            axis.set_position([base.x0, base.y0 - shift, base.width, base.height - trim])
 
     def _apply_consulting_axis_limits(
         self,
@@ -353,7 +974,16 @@ class ConsultingLayoutMixin:
         ve = self.vertical_exaggeration
         x_max = float(hole_summary["x_profile"].max())
         x_min = float(hole_summary["x_profile"].min())
-        x_pad = max(track_half, 5.0)
+        # Right margin: room for the last column and its labels, scaled to the
+        # section (a fixed 5 m left ~15% blank on a 32 m section); long
+        # sections keep the 5 m they always had.
+        span = max(x_max - x_min, 1.0)
+        x_pad = max(track_half + max(0.25 * track_half, 0.3), min(5.0, 0.06 * span))
+        # Map-scale room (more metres per point on a narrower exact box) is
+        # added by _install_map_scale only when that scale is drawn exactly.
+        label_room = self._last_hole_label_room(ax, hole_summary, span)
+        if label_room:
+            x_pad = max(x_pad, track_half + label_room)
         # The first hole sits at x = 0; an axis starting at exactly 0 cut its
         # left half off. Start slightly negative (column half width + margin)
         # and keep the tick labels non-negative.
@@ -394,6 +1024,50 @@ class ConsultingLayoutMixin:
                     y_min = min(y_min, sample_y)
                     y_max = max(y_max, sample_y)
         ax.set_ylim(y_min - y_pad, y_max + y_pad)
+        ax.figure._css_last_hole_room = {
+            "hole_summary": hole_summary,
+            "x_max": x_max,
+            "track_half": track_half,
+            "span": span,
+            "right": x_max + x_pad,
+        }
+
+    def _refresh_last_hole_label_room(self, figure: Figure) -> None:
+        """Re-size the last hole's label room for the frame on this page.
+
+        The x range is set at the render size before the y range; once both
+        are known (and after an export page resize) the room is recomputed
+        from the real frame, including the height-limited exact-VE box. The
+        room is section distance, so the scale bar, exact VE and map scale
+        stay true. Only ever widens the stock range.
+        """
+        info = getattr(figure, "_css_last_hole_room", None)
+        axes = getattr(figure, "_css_main_axes", None)
+        if not info or not axes:
+            return
+        ax = axes[0]
+        aspect = getattr(ax, "apply_aspect", None)
+        if isinstance(aspect, _MapScaleAspect):
+            if self._apply_map_scale_room(ax, aspect, info) or info.get("standalone"):
+                return
+            # The scale is not drawn exactly on this page: the box falls back
+            # to fit the frame, so size the room for that box (the map-scale
+            # room is metres at the requested ratio and widened a 30 m
+            # section to over a kilometre at 1:100000).
+        frame = ax.get_position(original=True)
+        width_in, height_in = (float(v) for v in figure.get_size_inches())
+        y0, y1 = ax.get_ylim()
+        room = self._last_hole_label_room(
+            ax,
+            info["hole_summary"],
+            info["span"],
+            frame_pt=(frame.width * width_in * 72.0, frame.height * height_in * 72.0),
+            y_span_stored=abs(float(y1) - float(y0)),
+        )
+        right = max(info["right"], info["x_max"] + info["track_half"] + room) if room else info["right"]
+        left, current = ax.get_xlim()
+        if abs(right - current) > 1e-9:
+            ax.set_xlim(left, right)
 
     def _draw_consulting_footers(self, fig: Figure) -> None:
         footer_y = 0.01
@@ -415,28 +1089,213 @@ class ConsultingLayoutMixin:
 
     def _apply_report_grid(self, ax, ax_right=None, *, consulting: bool = False, x_major_step: float | None = None) -> None:
         ve = self.vertical_exaggeration
-        y_step = max(ve, 0.5)
-        y_locator = MultipleLocator(y_step)
-        ax.yaxis.set_major_locator(y_locator)
-        if self.profile.y_axis_mode == "elevation_rl":
-            ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _pos, v=ve: f"{value / v:.0f}"))
+        if not consulting:
+            ax.xaxis.set_major_locator(
+                MultipleLocator(x_major_step if x_major_step is not None else self.profile.x_major_grid_m)
+            )
+            y_locator = MultipleLocator(max(ve, 0.5))
+            ax.yaxis.set_major_locator(y_locator)
             if ax_right is not None:
                 ax_right.yaxis.set_major_locator(y_locator)
-                ax_right.yaxis.set_major_formatter(
-                    FuncFormatter(lambda value, _pos, v=ve: f"{value / v:.0f}")
-                )
-        elif ax_right is not None:
-            ax_right.yaxis.set_major_locator(y_locator)
-        ax.xaxis.set_major_locator(MultipleLocator(x_major_step if x_major_step is not None else self.profile.x_major_grid_m))
+            ax.grid(True, which="major", color=REPORT_GRID_COLOR, alpha=REPORT_GRID_ALPHA, linewidth=0.6, zorder=0)
+            return
+        # Labelled ticks at a round true-metre step (thinned on tall sections),
+        # the finer 1 m / 0.5 m step kept as unlabelled minor ticks and grid.
+        # Same rule on both sides and in depth (mbgs) mode.
+        label_pt = self._fs(8)
+        for axis_ax in (ax, ax_right):
+            if axis_ax is None:
+                continue
+            axis_ax.yaxis.set_major_locator(_TrueMetreLocator(ve, label_pt))
+            axis_ax.yaxis.set_minor_locator(_TrueMetreLocator(ve, label_pt, minor=True))
+            axis_ax.yaxis.set_major_formatter(_TrueMetreFormatter(ve))
+            axis_ax.tick_params(axis="y", which="major", labelsize=label_pt)
         ax.grid(True, which="major", color=REPORT_GRID_COLOR, alpha=REPORT_GRID_ALPHA, linewidth=0.6, zorder=0)
-        if consulting:
-            minor_y = max(ve * 0.5, 0.25)
-            ax.yaxis.set_minor_locator(MultipleLocator(minor_y))
-            ax.xaxis.set_minor_locator(MultipleLocator(5.0))
-            ax.grid(True, which="minor", color=REPORT_GRID_COLOR, alpha=0.45, linewidth=0.35, zorder=0)
-            ax.tick_params(axis="both", which="major", labelsize=self._fs(8))
-            if ax_right is not None:
-                ax_right.tick_params(axis="y", which="major", labelsize=self._fs(8))
+        # The client 10 / 20 m step (5 m minor) while its labels fit the drawn
+        # box; a coarser 1/2/5 step on a narrow exact-VE or map-scale box.
+        fitted_x_locators(
+            ax.xaxis, x_major_step if x_major_step is not None else self.profile.x_major_grid_m
+        )
+        ax.grid(True, which="minor", color=REPORT_GRID_COLOR, alpha=0.45, linewidth=0.35, zorder=0)
+        ax.tick_params(axis="both", which="major", labelsize=label_pt)
+
+    def _suppress_header_tick_collisions(self, figure: Figure) -> None:
+        """Blank RL tick labels a hole-ID header would cover at its drawn spot.
+
+        Headers sit just above the frame, so only the topmost labels can meet
+        them; dropping that label beats stepping the header off the page.
+        Measured with each header at its base (pre-collision-pass) position.
+        """
+        axes = getattr(figure, "_css_main_axes", None)
+        headers = [
+            text
+            for text in getattr(self, "_header_labels", None) or []
+            if text.figure is figure and text.get_visible() and text.get_text().strip()
+        ]
+        if not axes:
+            return
+        formatters = []
+        for axis_ax in axes:
+            if axis_ax is None:
+                continue
+            formatter = axis_ax.yaxis.get_major_formatter()
+            if isinstance(formatter, _TrueMetreFormatter):
+                formatter.suppressed.clear()
+                formatters.append((axis_ax, formatter))
+        if not headers or not formatters:
+            return
+        renderer = figure.canvas.get_renderer()
+        settle_figure_layout(figure)
+        pad = renderer.points_to_pixels(1.0)
+        header_boxes = []
+        for text in headers:
+            current = (text.get_transform(), text.get_horizontalalignment(), text.get_rotation())
+            base = getattr(text, "_header_base", None)
+            if base is not None:
+                text.set_transform(base[0])
+                text.set_horizontalalignment(base[1])
+                text.set_rotation(base[2])
+            header_boxes.append(text.get_window_extent(renderer).padded(pad))
+            if base is not None:
+                text.set_transform(current[0])
+                text.set_horizontalalignment(current[1])
+                text.set_rotation(current[2])
+        for axis_ax, formatter in formatters:
+            low, high = sorted(axis_ax.get_ylim())
+            locs = axis_ax.yaxis.get_majorticklocs()
+            for tick, loc in zip(axis_ax.yaxis.get_major_ticks(len(locs)), locs):
+                if not low <= loc <= high:
+                    continue
+                for label in (tick.label1, tick.label2):
+                    if not label.get_visible() or not label.get_text().strip():
+                        continue
+                    box = label.get_window_extent(renderer)
+                    if any(box.overlaps(other) for other in header_boxes):
+                        formatter.suppressed.add(round(loc / formatter._ve, 6))
+        if any(formatter.suppressed for _ax, formatter in formatters):
+            settle_figure_layout(figure)
+
+    def _orphan_unit_geometry(
+        self,
+        projected_df: pd.DataFrame,
+        polygons: Sequence[GeologicalPolygon],
+        hole_summary: pd.DataFrame,
+        track_half: float,
+    ) -> tuple[pd.DataFrame, list[GeologicalPolygon]]:
+        """Logged intervals no fence polygon draws, plus short lenses for them.
+
+        Consulting columns are plain grey (no track lithology), so a unit is
+        only visible through the fence polygons. With pinch-outs off (the
+        generic consulting default) stratigraphy builds no polygon for a unit
+        logged in a single hole, which then appeared in the legend but nowhere
+        on the section. Return those intervals (drawn in the column) and a
+        short inferred pinch-out lens toward each neighbouring hole: never
+        past the first / last column (an end hole gets one lens, inward),
+        never beyond the mid-point to the neighbour, and clipped to the fence
+        envelope (under the ground line between the collars, above the hole
+        bottoms) so a lens never spills outside the drawn section.
+        """
+        empty = projected_df.iloc[0:0]
+        if (
+            projected_df.empty
+            or self.profile.show_track_lithology
+            or self.interpretation_mode not in {"interpolated", "correlation_lines"}
+        ):
+            return empty, []
+        by_code_hole: dict[tuple[str, str], list] = {}
+        for geo_polygon in polygons:
+            for hole_id in set(geo_polygon.hole_pair):
+                by_code_hole.setdefault(
+                    (str(geo_polygon.lithology_code), str(hole_id)), []
+                ).append(geo_polygon.polygon)
+
+        orphan_index: list = []
+        for index, row in projected_df.iterrows():
+            top = float(row["top_elevation"])
+            bottom = float(row["bottom_elevation"])
+            thickness = abs(top - bottom)
+            if not np.isfinite(thickness) or thickness <= 1e-9:
+                continue
+            candidates = by_code_hole.get((str(row["lithology_code"]), str(row["hole_id"])), [])
+            if candidates:
+                x = float(row["x_profile"])
+                column = LineString([(x, top), (x, bottom)])
+                covered = sum(
+                    shape.buffer(1e-3).intersection(column).length for shape in candidates
+                )
+                if covered >= 0.5 * thickness:
+                    continue
+            orphan_index.append(index)
+        if not orphan_index:
+            return empty, []
+        orphans = projected_df.loc[orphan_index]
+
+        hole_x = (
+            hole_summary.set_index(hole_summary["hole_id"].astype(str))["x_profile"].astype(float)
+            if not hole_summary.empty
+            else pd.Series(dtype=float)
+        )
+        xs_sorted = np.sort(hole_x.to_numpy(dtype=float))
+        envelope = self._fence_envelope(hole_summary)
+        lenses: list[GeologicalPolygon] = []
+        for _, row in orphans.iterrows():
+            hole_id = str(row["hole_id"])
+            x = float(hole_x.get(hole_id, row["x_profile"]))
+            top = float(row["top_elevation"])
+            bottom = float(row["bottom_elevation"])
+            mid = (top + bottom) / 2.0
+            position = int(np.searchsorted(xs_sorted, x))
+            neighbours = []
+            if position > 0:
+                neighbours.append(float(xs_sorted[position - 1]))
+            upper = position + 1 if position < len(xs_sorted) and abs(xs_sorted[position] - x) < 1e-9 else position
+            if upper < len(xs_sorted):
+                neighbours.append(float(xs_sorted[upper]))
+            for neighbour_x in neighbours:
+                spacing = neighbour_x - x
+                if abs(spacing) <= 2.0 * track_half:
+                    continue
+                # A quarter of the way to the neighbour (half way to where a
+                # pinch-out would close), but always clear of the column.
+                reach = min(0.5 * abs(spacing), max(0.25 * abs(spacing), 3.0 * track_half))
+                apex_x = x + np.sign(spacing) * reach
+                lens = ShapelyPolygon([(x, top), (x, bottom), (apex_x, mid)])
+                if envelope is not None:
+                    lens = _largest_polygon(lens.intersection(envelope))
+                    if lens is None or lens.is_empty or lens.area <= 1e-9:
+                        continue
+                lenses.append(
+                    GeologicalPolygon(
+                        lithology_code=str(row["lithology_code"]),
+                        polygon=lens,
+                        # Both ends on this hole: depth-axis plots keep its collar RL.
+                        hole_pair=(hole_id, hole_id),
+                        is_pinch_out=True,
+                    )
+                )
+        return orphans, lenses
+
+    @staticmethod
+    def _fence_envelope(hole_summary: pd.DataFrame) -> ShapelyPolygon | None:
+        """The region the fence can occupy: between the end columns, under the
+        collar-to-collar ground line and above the hole bottoms."""
+        needed = {"x_profile", "collar_elevation", "bottom_elevation"}
+        if hole_summary.empty or not needed.issubset(hole_summary.columns):
+            return None
+        rows = hole_summary.sort_values("x_profile")
+        xs = rows["x_profile"].to_numpy(dtype=float)
+        tops = rows["collar_elevation"].to_numpy(dtype=float)
+        bottoms = rows["bottom_elevation"].to_numpy(dtype=float)
+        keep = np.isfinite(xs) & np.isfinite(tops) & np.isfinite(bottoms)
+        xs, tops, bottoms = xs[keep], tops[keep], bottoms[keep]
+        if xs.size < 2 or xs[-1] - xs[0] <= 1e-9:
+            return None
+        ring = [(float(x), float(t)) for x, t in zip(xs, tops, strict=True)]
+        ring += [(float(x), float(b)) for x, b in zip(xs[::-1], bottoms[::-1], strict=True)]
+        envelope = ShapelyPolygon(ring)
+        if not envelope.is_valid:
+            envelope = envelope.buffer(0)
+        return envelope if not envelope.is_empty else None
 
     def _draw_well_columns(
         self,
@@ -546,10 +1405,11 @@ class ConsultingLayoutMixin:
     def _draw_well_id_labels(self, ax, hole_summary: pd.DataFrame) -> None:
         header_transform = ax.get_xaxis_transform()
         for row in hole_summary.itertuples(index=False):
+            hole_id = fit_label(str(row.hole_id))
             header = ax.text(
                 float(row.x_profile),
                 1.02,
-                str(row.hole_id),
+                hole_id,
                 transform=header_transform,
                 ha="center",
                 va="bottom",
@@ -559,6 +1419,7 @@ class ConsultingLayoutMixin:
                 clip_on=False,
                 zorder=10,
             )
+            header._header_hole_id = hole_id
             self._header_labels.append(header)
 
     def _transect_endpoint_lines(self, title_block: ConsultingTitleBlock) -> tuple[tuple[str, str], tuple[str, str]]:
@@ -580,14 +1441,21 @@ class ConsultingLayoutMixin:
         # Inside the plot width at the two corners; the hole-ID header pass
         # treats these as obstacles and steps the end headers aside. (In the
         # page margins a long "NORTHWEST" ran off the sheet.)
-        header_transform = blended_transform_factory(ax.transAxes, ax.figure.transFigure)
+        # A fixed distance (points) above the drawn box top, as the stock
+        # layout gives (0.992 of the page): pinned to the page top they ran
+        # into the printable margin, and stayed there when the margin fit or
+        # an exact-VE / map-scale box moved the plot down.
+        top = ax.get_position(original=True).y1
+        gap_pt = max((0.992 - top) * ax.figure.get_size_inches()[1] * 72.0, 8.0)
+        header_transform = offset_copy(ax.transAxes, fig=ax.figure, x=0.0, y=gap_pt, units="points")
+        label_y = 1.0
         start_transform = offset_copy(header_transform, fig=ax.figure, x=2.0, y=0.0, units="points")
         end_transform = offset_copy(header_transform, fig=ax.figure, x=-2.0, y=0.0, units="points")
         if start_primary or start_secondary:
             start_lines = [line for line in (start_primary, start_secondary) if line]
             ax.text(
                 0.0,
-                0.992,
+                label_y,
                 "\n".join(start_lines),
                 transform=start_transform,
                 ha="left",
@@ -603,7 +1471,7 @@ class ConsultingLayoutMixin:
             end_lines = [line for line in (end_primary, end_secondary) if line]
             ax.text(
                 1.0,
-                0.992,
+                label_y,
                 "\n".join(end_lines),
                 transform=end_transform,
                 ha="right",
@@ -615,6 +1483,251 @@ class ConsultingLayoutMixin:
                 zorder=10,
                 linespacing=0.9,
             )
+
+    @staticmethod
+    def _requested_map_scale(title_block: ConsultingTitleBlock | None) -> float | None:
+        """Denominator of a user / workbook-set ``map_scale`` (never the model default)."""
+        if title_block is None or not str(title_block.map_scale or "").strip():
+            return None
+        return parse_map_scale(title_block.map_scale)
+
+    def _install_map_scale(
+        self,
+        ax,
+        twin,
+        title_block: ConsultingTitleBlock,
+        hole_summary: pd.DataFrame,
+        track_half: float,
+    ) -> None:
+        """Size the section box to the title block's map scale (when it is set)."""
+        ratio = self._requested_map_scale(title_block)
+        if ratio is None:
+            return
+        release_twins(ax, (twin,))
+        ax.set_aspect("auto")
+        aspect = _MapScaleAspect(ax, ratio, exact_ve=not self.ve_auto)
+        ax.apply_aspect = aspect
+        ax.figure._css_map_scale_text = str(title_block.map_scale)
+        if not hole_summary.empty:
+            # Every x path (incl. the autoscaled depth axis) keeps the last
+            # hole's values inside the frame at the exact scale; the room is
+            # section distance, so the scale bar still measures it truly.
+            x_min = float(hole_summary["x_profile"].min())
+            x_max = float(hole_summary["x_profile"].max())
+            room = self._last_hole_label_room(
+                ax, hole_summary, max(x_max - x_min, 1.0), map_scale=ratio
+            )
+            left, right = ax.get_xlim()
+            info = getattr(ax.figure, "_css_last_hole_room", None)
+            if info is None:
+                info = {"x_max": x_max, "track_half": track_half, "right": right, "standalone": True}
+            info["map_room"] = room
+            ax.figure._css_last_hole_room = info
+            if right > left:
+                self._apply_map_scale_room(ax, aspect, info)
+
+    @staticmethod
+    def _apply_map_scale_room(ax, aspect: _MapScaleAspect, info: dict) -> bool:
+        """Widen x by the last hole's label room at the map scale, if drawn exactly there.
+
+        True when the scale is drawn exactly (with that room) on this page;
+        False leaves the x range at its stock right edge for the fallback box.
+        """
+        room = float(info.get("map_room") or 0.0)
+        left, current = ax.get_xlim()
+        right = float(info["right"])
+        wide = max(right, float(info["x_max"]) + float(info["track_half"]) + room) if room else right
+        exact = aspect.layout((left, wide))[1] == "exact"
+        target = wide if exact else right
+        if abs(target - current) > 1e-9:
+            ax.set_xlim(left, target)
+        return exact
+
+    @staticmethod
+    def _map_scale_layout(figure: Figure) -> tuple[str, float] | None:
+        """``(status, printed_ratio)`` of the exact map scale at the current page."""
+        axes = getattr(figure, "_css_main_axes", None)
+        aspect = getattr(axes[0], "apply_aspect", None) if axes else None
+        if not isinstance(aspect, _MapScaleAspect):
+            return None
+        _box, status, printed = aspect.layout()
+        return status, printed
+
+    def map_scale_notes(self, figure: Figure) -> tuple[str, ...]:
+        """User-facing QA note when the title block map scale could not be drawn exactly.
+
+        Read after the export page geometry is applied (the pipeline adds it to
+        the build's QA notes); empty when the scale fits or was never set.
+        """
+        layout = self._map_scale_layout(figure)
+        if layout is None or layout[0] == "exact":
+            return ()
+        status, printed = layout
+        requested = getattr(figure, "_css_map_scale_text", "")
+        page = page_description(tuple(figure.get_size_inches()))
+        # Rounded to whole units, not to a standard scale: a near miss
+        # ("1:200 doesn't fit; printed at 1:203") must not read as a match.
+        printed_text = f"approx. 1:{printed:.1f}" if printed < 10 else f"approx. 1:{printed:.0f}"
+        if status == "too_small":
+            reason = (
+                f"would leave the section under {MAP_SCALE_MIN_FRAME_FRACTION:.0%} of the "
+                f"frame width on a {page} page"
+            )
+        else:
+            reason = f"doesn't fit a {page} page"
+        return (f"Map scale {requested} {reason}; printed at {printed_text} (AS SHOWN).",)
+
+    def _title_block_scale_value(self, figure: Figure, title_block: ConsultingTitleBlock) -> str:
+        """SCALE row: the user's map scale when drawn exactly, else "AS SHOWN"."""
+        layout = self._map_scale_layout(figure)
+        if layout is not None and layout[0] == "exact":
+            return str(title_block.map_scale)
+        # Unset (model default) or not drawable here: defer to the scale bar.
+        return "AS SHOWN"
+
+    @staticmethod
+    def _main_axes_metres_per_px(figure: Figure) -> float | None:
+        axes = getattr(figure, "_css_main_axes", None)
+        if not axes:
+            return None
+        main_ax = axes[0]
+        # Exact VE shrinks the box at draw time; measure the applied box.
+        main_ax.apply_aspect()
+        lo, hi = main_ax.get_xlim()
+        width_px = main_ax.bbox.width
+        span = abs(float(hi) - float(lo))
+        if width_px <= 0.0 or span <= 0.0 or not np.isfinite(span):
+            return None
+        return span / width_px
+
+    @staticmethod
+    def _scale_bar_key(figure: Figure) -> tuple:
+        axes = getattr(figure, "_css_main_axes", None)
+        if not axes:
+            return ()
+        main_ax = axes[0]
+        return (tuple(main_ax.get_position().bounds), tuple(main_ax.get_xlim()))
+
+    def _draw_consulting_scale_bar(self, ax_scale, title_block: ConsultingTitleBlock) -> None:
+        """Scale bar drawn to the main section's true horizontal scale.
+
+        Length is a round 1/2/5 x 10^n metres (or the title block's
+        ``scale_bar_m`` when explicitly set and it fits) measured through the
+        main axes' data->display transform; the SCALE text is the ratio at the
+        current page size. A user / workbook ``map_scale`` that fits the page
+        sizes the main box to exactly that scale (``_MapScaleAspect``), so the
+        measured ratio *is* the map scale and prints without "APPROX."; when it
+        does not fit, the measured scale prints and a QA note is logged.
+        """
+        figure = ax_scale.figure
+        metres_per_px = self._main_axes_metres_per_px(figure)
+        panel_px = ax_scale.bbox.width
+        if metres_per_px is None or panel_px <= 0.0:
+            return
+        font_pt = self._fs(7)
+        bar_x, bar_y = _SCALE_BAR_X, _SCALE_BAR_Y
+        renderer = figure.canvas.get_renderer()
+
+        units = ax_scale.text(
+            0.0,
+            bar_y,
+            _SCALE_BAR_UNITS,
+            ha="left",
+            va="center",
+            fontsize=font_pt,
+            color=LABEL_COLOR,
+            transform=ax_scale.transAxes,
+        )
+        gap = 0.03
+        units_frac = units.get_window_extent(renderer).width / panel_px
+        max_frac = min(_SCALE_BAR_MAX_FRACTION, 1.0 - bar_x - gap - units_frac - 0.01)
+        max_m = max(max_frac, 0.2) * panel_px * metres_per_px
+
+        length_m = nice_scale_bar_length(max_m)
+        requested = title_block.scale_bar_m
+        if requested and 0.4 * max_m <= float(requested) <= max_m:
+            length_m = float(requested)
+        if length_m <= 0.0:
+            units.remove()
+            return
+        bar_w = length_m / metres_per_px / panel_px
+        units.set_x(bar_x + bar_w + gap)
+
+        step = scale_bar_tick_step(length_m)
+        count = int(round(length_m / step))
+        ticks = [step * i for i in range(count + 1)]
+        tick_xs = [bar_x + (tick_m / length_m) * bar_w for tick_m in ticks]
+        for tick_x in tick_xs:
+            ax_scale.plot(
+                [tick_x, tick_x],
+                [bar_y - 0.05, bar_y + 0.05],
+                color=STICK_COLOR,
+                linewidth=1.0,
+                transform=ax_scale.transAxes,
+                clip_on=False,
+            )
+        labels = [
+            ax_scale.text(
+                tick_x,
+                bar_y - 0.10,
+                _scale_bar_label(tick_m),
+                ha="center",
+                va="top",
+                fontsize=font_pt,
+                color=LABEL_COLOR,
+                transform=ax_scale.transAxes,
+            )
+            for tick_x, tick_m in zip(tick_xs, ticks)
+        ]
+        # Thin the labels (never the ends) if neighbours would touch.
+        pad_px = 2.0 * figure.dpi / 72.0
+        boxes = [label.get_window_extent(renderer) for label in labels]
+        for stride in range(1, len(labels)):
+            keep = {i for i in range(0, len(labels), stride)} | {len(labels) - 1}
+            kept = sorted(keep)
+            if all(
+                boxes[a].x1 + pad_px <= boxes[b].x0 for a, b in zip(kept, kept[1:])
+            ):
+                break
+        else:  # pragma: no cover - two end labels always fit an 80 % bar
+            kept = [0, len(labels) - 1]
+        for index, label in enumerate(labels):
+            if index not in kept:
+                label.remove()
+
+        ax_scale.plot(
+            [bar_x, bar_x + bar_w],
+            [bar_y, bar_y],
+            color=STICK_COLOR,
+            linewidth=2.5,
+            solid_capstyle="butt",
+            transform=ax_scale.transAxes,
+            clip_on=False,
+        )
+        ratio = metres_per_px * figure.dpi * _INCHES_PER_METRE
+        layout = self._map_scale_layout(figure)
+        if layout is not None and layout[0] == "exact":
+            # The box is sized to the title block's scale: print it exactly.
+            scale_text = f"SCALE {format_scale_ratio(layout[1])}"
+        else:
+            # Fitted to the frame (no map scale, or one that didn't fit): the
+            # measured ratio is only approximately round, so say so.
+            scale_text = scale_ratio_text(ratio)
+        ax_scale.text(
+            # Left-aligned with the bar so the text can't spill out of the
+            # panel's left edge (centred, it overflowed at large fonts).
+            bar_x,
+            0.12,
+            scale_text,
+            ha="left",
+            va="center",
+            fontsize=font_pt,
+            fontweight="bold",
+            color=LABEL_COLOR,
+            transform=ax_scale.transAxes,
+        )
+        for note in self.map_scale_notes(figure):
+            logger.warning("%s", note)
 
     def _draw_subtitle_band(
         self,
@@ -628,63 +1741,13 @@ class ConsultingLayoutMixin:
             panel.set_xlim(0, 1)
             panel.set_ylim(0, 1)
 
-        map_scale = title_block.map_scale or "1:1000"
-        scale_bar_m = title_block.scale_bar_m or CONSULTING_SCALE_BAR_M
         if self.profile.show_scale_bar:
-            bar_x = 0.02
-            bar_y = 0.55
-            bar_w = 0.72
-            tick_step = 10.0
-            tick_marks = tuple(np.arange(0.0, scale_bar_m + tick_step * 0.5, tick_step))
-            for tick_m in tick_marks:
-                tick_x = bar_x + (tick_m / scale_bar_m) * bar_w
-                ax_scale.plot(
-                    [tick_x, tick_x],
-                    [bar_y - 0.05, bar_y + 0.05],
-                    color=STICK_COLOR,
-                    linewidth=1.0,
-                    transform=ax_scale.transAxes,
-                    clip_on=False,
-                )
-                ax_scale.text(
-                    tick_x,
-                    bar_y - 0.10,
-                    f"{int(tick_m)}",
-                    ha="center",
-                    va="top",
-                    fontsize=self._fs(7),
-                    color=LABEL_COLOR,
-                    transform=ax_scale.transAxes,
-                )
-            ax_scale.plot(
-                [bar_x, bar_x + bar_w],
-                [bar_y, bar_y],
-                color=STICK_COLOR,
-                linewidth=2.5,
-                solid_capstyle="butt",
-                transform=ax_scale.transAxes,
-                clip_on=False,
-            )
-            ax_scale.text(
-                bar_x + bar_w + 0.03,
-                bar_y,
-                "Metres",
-                ha="left",
-                va="center",
-                fontsize=self._fs(7),
-                color=LABEL_COLOR,
-                transform=ax_scale.transAxes,
-            )
-            ax_scale.text(
-                bar_x + bar_w / 2.0,
-                0.12,
-                f"SCALE {map_scale}",
-                ha="center",
-                va="center",
-                fontsize=self._fs(7),
-                fontweight="bold",
-                color=LABEL_COLOR,
-                transform=ax_scale.transAxes,
+            # The bar's length depends on the main axes' metres per inch, which
+            # an export page resize or margin fit changes: record it for re-fit.
+            self._draw_refittable(
+                ax_scale,
+                lambda: self._draw_consulting_scale_bar(ax_scale, title_block),
+                key_extra=lambda: self._scale_bar_key(ax_scale.figure),
             )
 
         section_title = self._consulting_display_title(title_block.section_label or self.title)
@@ -719,20 +1782,19 @@ class ConsultingLayoutMixin:
         # Subtitle VE follows report chrome: on with the scale band, or when
         # show_ve_annotation is explicitly enabled. Both off = GIS paste mode.
         if self.profile.show_scale_bar or self.profile.show_ve_annotation:
-            ve_text = (
-                "NO VERTICAL EXAGGERATION"
-                if abs(float(self.vertical_exaggeration) - 1.0) < 1e-9
-                else f"{self.vertical_exaggeration:.0f}× VERTICAL EXAGGERATION"
-            )
-            ax_center.text(
+            # Chosen VE printed exactly; auto prints the VE measured from the
+            # main axes box at draw time (re-measured on export page resize).
+            add_ve_caption(
+                ax_center,
                 0.5,
                 0.18,
-                ve_text,
+                **self._ve_caption_kwargs("consulting"),
                 ha="center",
                 va="center",
                 fontsize=self._fs(8),
                 color=LABEL_COLOR,
                 transform=ax_center.transAxes,
+                fit_axes=ax_center,
             )
 
         notes = title_block.notes or DEFAULT_CONSULTING_NOTES
@@ -767,8 +1829,9 @@ class ConsultingLayoutMixin:
         note_top = 0.68 - 0.18 * (font_scale - 1.0)
         pad_px = 1.5 * ax_notes.figure.dpi / 72.0
         # The notes panel is the rightmost: notes may use the page's right
-        # margin (stock sheets do) but must stay clear of the page edge.
-        right_px = ax_notes.figure.bbox.width - 0.12 * ax_notes.figure.dpi
+        # margin (stock sheets do) but keep the printable margin.
+        margins = getattr(ax_notes.figure, "_css_page_margins_in", None) or (MIN_PRINT_MARGIN_IN,) * 4
+        right_px = ax_notes.figure.bbox.width - float(margins[1]) * ax_notes.figure.dpi
         bottom_px = ax_notes.transAxes.transform((0.0, 0.0))[1] + pad_px
 
         scales: list[float] = []
@@ -893,38 +1956,37 @@ class ConsultingLayoutMixin:
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
 
-        # Three independent panels so legend / title / prepared content stay boxed.
-        legend_box = (0.01, 0.05, 0.32, 0.90)
-        has_right = bool(title_block.prepared_for or title_block.prepared_by)
-        if has_right:
-            title_box = (0.34, 0.05, 0.31, 0.90)
-            right_box = (0.66, 0.05, 0.33, 0.90)
-            panels = (legend_box, title_box, right_box)
-        else:
-            # Give the title/meta table the remaining width when no prepared logos.
-            title_box = (0.34, 0.05, 0.65, 0.90)
-            right_box = None
-            panels = (legend_box, title_box)
-        for box in panels:
-            ax.add_patch(
-                Rectangle(
-                    (box[0], box[1]),
-                    box[2],
-                    box[3],
-                    fill=False,
-                    edgecolor="#94A3B8",
-                    linewidth=1.0,
-                    transform=ax.transAxes,
-                    clip_on=False,
-                )
-            )
+        # Three independent panels so legend / title / prepared content stay
+        # boxed. The legend panel widens (title / prepared panels give way)
+        # when the design width would hide units or shrink the key below its
+        # floor size; it follows the page, so every unit re-fits with it.
+        def boxes():
+            return self._title_block_boxes(ax, style_cache, lithology_codes, title_block)
 
+        def draw_frames() -> None:
+            for box in boxes():
+                if box is None:
+                    continue
+                ax.add_patch(
+                    Rectangle(
+                        (box[0], box[1]),
+                        box[2],
+                        box[3],
+                        fill=False,
+                        edgecolor="#94A3B8",
+                        linewidth=1.0,
+                        transform=ax.transAxes,
+                        clip_on=False,
+                    )
+                )
+
+        self._draw_refittable(ax, draw_frames)
         self._draw_refittable(ax, lambda: self._draw_legend_panel(
             ax,
             style_cache,
             lithology_codes,
             title_block,
-            panel=legend_box,
+            panel=boxes()[0],
         ))
 
         meta_rows: list[tuple[str, str]] = []
@@ -935,8 +1997,12 @@ class ConsultingLayoutMixin:
             meta_rows.append(("TITLE", self._consulting_display_title(section_label)))
         if title_block.source:
             meta_rows.append(("SOURCE", title_block.source))
-        if title_block.map_scale:
-            meta_rows.append(("SCALE", title_block.map_scale))
+        scale_row = None
+        # Always a SCALE row: the user's scale only when the section is drawn
+        # at it on this page; blank or a scale that does not fit would
+        # contradict the true-scale bar, so "AS SHOWN" defers to it.
+        scale_row = len(meta_rows)
+        meta_rows.append(("SCALE", "AS SHOWN"))
         if title_block.date:
             meta_rows.append(("DATE", title_block.date))
         if title_block.drawn_by:
@@ -945,13 +2011,93 @@ class ConsultingLayoutMixin:
             meta_rows.append(("REVISED", title_block.revised))
         if title_block.figure_number:
             meta_rows.append(("FIGURE NO.", title_block.figure_number))
-        self._draw_refittable(
-            ax, lambda: self._draw_title_block_metadata_table(ax, meta_rows, panel=title_box)
-        )
+        figure = ax.figure
 
-        if right_box is None:
+        def draw_meta() -> None:
+            rows = list(meta_rows)
+            if scale_row is not None:
+                rows[scale_row] = ("SCALE", self._title_block_scale_value(figure, title_block))
+            self._draw_title_block_metadata_table(ax, rows, panel=boxes()[1])
+
+        # The SCALE row follows the exact-scale fit, which an export page
+        # resize can change: it is part of the re-fit key.
+        self._draw_refittable(ax, draw_meta, key_extra=lambda: self._map_scale_layout(figure))
+
+        if not (title_block.prepared_for or title_block.prepared_by):
             return
-        self._draw_refittable(ax, lambda: self._draw_prepared_panel(ax, title_block, right_box))
+        self._draw_refittable(ax, lambda: self._draw_prepared_panel(ax, title_block, boxes()[2]))
+
+    def _title_block_boxes(
+        self,
+        ax,
+        style_cache: dict,
+        lithology_codes: list[str],
+        title_block: ConsultingTitleBlock,
+    ) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float], tuple | None]:
+        """(legend, title, prepared-or-None) panel boxes in title-block axes fractions."""
+        has_right = bool(title_block.prepared_for or title_block.prepared_by)
+        key = (self._refit_key(ax), has_right, tuple(lithology_codes))
+        cache = ax.__dict__.setdefault("_css_title_block_boxes", {})
+        if key in cache:
+            return cache[key]
+        bottom, height = 0.05, 0.90
+        legend_w = self._legend_panel_width(
+            ax,
+            style_cache,
+            lithology_codes,
+            title_block,
+            height=height,
+            max_width=_LEGEND_PANEL_MAX_W if has_right else _LEGEND_PANEL_MAX_W_NO_RIGHT,
+        )
+        legend_box = (0.01, bottom, legend_w, height)
+        start = 0.01 + legend_w + 0.01
+        if has_right:
+            # Title and prepared panels share the rest at the design ratio.
+            avail = 0.99 - start - 0.01
+            title_w = avail * 0.31 / 0.64
+            title_box = (start, bottom, title_w, height)
+            right_box = (start + title_w + 0.01, bottom, 0.99 - (start + title_w + 0.01), height)
+        else:
+            # Give the title/meta table the remaining width when no prepared logos.
+            title_box = (start, bottom, 0.99 - start, height)
+            right_box = None
+        cache[key] = (legend_box, title_box, right_box)
+        return cache[key]
+
+    def _legend_panel_width(
+        self,
+        ax,
+        style_cache: dict,
+        lithology_codes: list[str],
+        title_block: ConsultingTitleBlock,
+        *,
+        height: float,
+        max_width: float,
+    ) -> float:
+        """Narrowest legend panel width (axes fraction) that keys every unit at the floor size."""
+        entries, n_codes = self._legend_panel_entries(ax, style_cache, lithology_codes, title_block)
+        figure = ax.figure
+        ax_w_in = max(ax.get_position().width * figure.get_size_inches()[0], 1e-6)
+        ax_h_in = max(ax.get_position().height * figure.get_size_inches()[1], 1e-6)
+        floor_pt = min(max(_LEGEND_FLOOR_PT, self._fs(_LEGEND_FLOOR_PT)), self._fs(_LEGEND_BASE_PT))
+        best = None
+        width = _LEGEND_PANEL_DESIGN_W
+        while width <= max_width + 1e-9:
+            layout = self._legend_panel_layout(
+                figure,
+                entries,
+                n_codes,
+                panel_w_in=width * ax_w_in,
+                panel_h_in=height * ax_h_in,
+                prefer_cols=2 if (self.profile.legend_ncol >= 2 and len(entries) > 6) else 1,
+            )
+            quality = (layout.hidden_units, layout.font_pt < floor_pt - 1e-9)
+            if quality == (0, False):
+                return width
+            if best is None or quality < best[0]:
+                best = (quality, width)
+            width += 0.04
+        return best[1] if best is not None else _LEGEND_PANEL_DESIGN_W
 
     def _draw_prepared_panel(
         self,
@@ -1017,25 +2163,6 @@ class ConsultingLayoutMixin:
         )
 
     @staticmethod
-    def _legend_label_char_budget(
-        col_width_axes: float,
-        font_size: float,
-        *,
-        swatch_w: float,
-        axes_width_in: float | None = None,
-    ) -> int:
-        """Estimate how many characters fit in a legend column without bleeding sideways.
-
-        ``_LEGEND_CHAR_WIDTH`` was tuned on the letter-landscape block axes; a
-        narrower axes (letter portrait) fits proportionally fewer characters.
-        """
-        usable = max(col_width_axes - swatch_w - 0.018, 0.02)
-        char_w = _LEGEND_CHAR_WIDTH * (font_size / 7.5)
-        if axes_width_in and abs(axes_width_in - _DESIGN_BLOCK_AXES_WIDTH_IN) > 1e-3:
-            char_w *= _DESIGN_BLOCK_AXES_WIDTH_IN / axes_width_in
-        return max(8, int(usable / char_w))
-
-    @staticmethod
     def _legend_panel_clip(ax, panel: tuple[float, float, float, float]) -> Rectangle:
         left, bottom, width, height = panel
         clip_rect = Rectangle(
@@ -1048,23 +2175,14 @@ class ConsultingLayoutMixin:
         ax.add_patch(clip_rect)
         return clip_rect
 
-    def _draw_legend_panel(
+    def _legend_panel_entries(
         self,
         ax,
         style_cache: dict,
         lithology_codes: list[str],
         title_block: ConsultingTitleBlock,
-        *,
-        panel: tuple[float, float, float, float],
-    ) -> None:
-        left, bottom, width, height = panel
-        pad_x = 0.025
-        pad_y = 0.04
-        content_left = left + pad_x
-        content_top = bottom + height - pad_y
-        content_bottom = bottom + pad_y
-        swatch_w = 0.03
-
+    ) -> tuple[list[tuple[str, str, dict[str, object]]], int]:
+        """``(kind, label, style)`` rows of the title-block legend, and the lithology count."""
         entries: list[tuple[str, str, dict[str, object]]] = []
         for code in lithology_codes:
             style = self._resolve_style(code, style_cache)
@@ -1080,6 +2198,18 @@ class ConsultingLayoutMixin:
                 )
             )
         n_code_entries = len(entries)
+        if getattr(self, "_has_unlogged_intervals", False):
+            entries.append(
+                (
+                    "swatch",
+                    UNLOGGED_LEGEND_LABEL.upper(),
+                    {
+                        "facecolor": UNLOGGED_FILL_COLOR,
+                        "edgecolor": TRACK_BORDER_COLOR,
+                        "hatch": None,
+                    },
+                )
+            )
         if self.screen_intervals:
             entries.append(
                 (
@@ -1146,7 +2276,12 @@ class ConsultingLayoutMixin:
 
         draw_param_markers = self.profile.parameter_draw_markers
         for entry in self.parameter_series_legend or []:
-            kind = "line_marker" if draw_param_markers else "text"
+            if entry.get("threshold_colors"):
+                # Threshold mode: values are green / orange / red, so the
+                # key is a three-dot band sample, not the series line.
+                kind = "threshold_dots"
+            else:
+                kind = "line_marker" if draw_param_markers else "text"
             entries.append(
                 (
                     kind,
@@ -1154,81 +2289,81 @@ class ConsultingLayoutMixin:
                     {
                         "color": entry.get("color", PARAMETER_READING_COLOR),
                         "marker": entry.get("marker", "D"),
-                        "linestyle": "--",
+                        "linestyle": entry.get("linestyle", "--"),
+                        # Red P2-style sample value ("120") shown in the swatch column.
+                        "parameter_entry": entry,
                     },
                 )
             )
-        if getattr(self, "_has_pinch_out", False) and self.profile.show_pinch_out_legend:
+        status = water_status_texts(self, ax.figure)
+        if status:
+            # The grey NM / DRY water notes, keyed by a sample of their text.
             entries.append(
                 (
-                    "line",
+                    "status_text",
+                    water_status_legend_label(status, upper=True),
+                    {"color": CONSULTING_NM_COLOR, "sample": " / ".join(status)},
+                )
+            )
+        if getattr(self, "_has_pinch_out", False):
+            # Dashed-outline faded wedges are drawn: always key them (the
+            # profile flag only hid a symbol the sheet showed unexplained).
+            entries.append(
+                (
+                    "pinch_out",
                     "INFERRED PINCH-OUT",
                     {"color": LABEL_COLOR, "linestyle": "--"},
                 )
             )
 
-        # Header + entries must stay inside the legend box (never bleed into title block).
-        ncol = max(1, self.profile.legend_ncol)
-        usable_width = width - 2 * pad_x
-        col_width_single = usable_width
-        col_width_two = (usable_width - 0.02) / 2
-        # Two columns when asked for, or whenever a single stack would need
-        # more than eight rows (entries past the panel were silently dropped).
-        # Row geometry follows the font scale so enlarged labels keep their
-        # line pitch (and the capacity / "+N MORE UNITS" trim stays honest).
-        scale = self._consulting_font_scale()
-        header_h = 0.14 * scale  # "LEGEND" at 8.5 pt plus a gap above the first row
-        min_step = 0.055 * scale
-        two_col_possible = col_width_two >= _LEGEND_MIN_COL_WIDTH
-        rows_available = max(1, int((content_top - header_h - content_bottom) // min_step))
-        capacity = rows_available * (2 if two_col_possible else 1)
-        if len(entries) > capacity:
-            # Trim lithology swatches (never the water/screen/parameter keys)
-            # and say how many units are not listed.
-            overflow = len(entries) - capacity + 1
-            keep_codes = max(0, n_code_entries - overflow)
-            hidden = n_code_entries - keep_codes
-            entries = (
-                entries[:keep_codes]
-                + [("text", f"+{hidden} MORE UNITS (SEE LOG)", {"color": LABEL_COLOR})]
-                + entries[n_code_entries:]
-            )
-        use_two_cols = two_col_possible and ((ncol >= 2 and len(entries) > 6) or len(entries) > 8)
-        if use_two_cols:
-            mid = (len(entries) + 1) // 2
-            column_groups: list[list[tuple[str, str, dict[str, object]]]] = [
-                entries[:mid],
-                entries[mid:],
-            ]
-            col_gap = 0.02
-            col_width = col_width_two
-            column_layouts = [
-                (content_left, content_left + swatch_w + 0.012),
-                (
-                    content_left + col_width + col_gap,
-                    content_left + col_width + col_gap + swatch_w + 0.012,
-                ),
-            ]
-        else:
-            column_groups = [entries]
-            col_width = col_width_single
-            column_layouts = [(content_left, content_left + swatch_w + 0.012)]
+        return entries, n_code_entries
 
+    def _draw_legend_panel(
+        self,
+        ax,
+        style_cache: dict,
+        lithology_codes: list[str],
+        title_block: ConsultingTitleBlock,
+        *,
+        panel: tuple[float, float, float, float],
+    ) -> None:
+        left, bottom, width, height = panel
+        entries, n_code_entries = self._legend_panel_entries(ax, style_cache, lithology_codes, title_block)
+
+        # Header + entries must stay inside the legend box (never bleed into
+        # the title block). The layout is measured in inches with the
+        # figure's renderer: one column at the design size when it fits,
+        # else more columns and/or a smaller size (never below the floor);
+        # lithology units roll up into "+N MORE UNITS" only when even three
+        # columns at the floor cannot hold them, and symbol keys never do.
+        figure = ax.figure
+        ax_w_in = max(ax.get_position().width * figure.get_size_inches()[0], 1e-6)
+        ax_h_in = max(ax.get_position().height * figure.get_size_inches()[1], 1e-6)
+        layout = self._legend_panel_layout(
+            figure,
+            entries,
+            n_code_entries,
+            panel_w_in=width * ax_w_in,
+            panel_h_in=height * ax_h_in,
+            prefer_cols=2 if (self.profile.legend_ncol >= 2 and len(entries) > 6) else 1,
+        )
         clip_rect = self._legend_panel_clip(ax, panel)
 
-        n_rows = max(len(group) for group in column_groups)
-        step = min(
-            0.10 * scale,
-            max(min_step, (content_top - header_h - content_bottom) / max(n_rows, 1)),
-        )
-        font_size = self._fs(7.5) if step >= 0.08 * scale else self._fs(6.5)
-        swatch_h = 0.04 * scale
-        y_header = content_top
+        def to_axes(x_in: float, y_in: float) -> tuple[float, float]:
+            # Panel-local inches (origin at the panel's top-left, y down).
+            return left + x_in / ax_w_in, bottom + height - y_in / ax_h_in
+
+        def inch_transform(x_in: float, y_in: float):
+            # Swatch-local inches (origin at panel point x_in, y_in; y up) -> display.
+            ax_x, ax_y = to_axes(x_in, y_in)
+            return figure.dpi_scale_trans + ScaledTranslation(ax_x, ax_y, ax.transAxes)
+
+        header_x, header_y = to_axes(layout.pad_x, layout.pad_top)
         header = ax.text(
-            content_left,
-            y_header,
+            header_x,
+            header_y,
             "LEGEND",
-            fontsize=self._fs(8.5),
+            fontsize=layout.header_pt,
             fontweight="bold",
             color=LABEL_COLOR,
             transform=ax.transAxes,
@@ -1236,118 +2371,411 @@ class ConsultingLayoutMixin:
             clip_on=True,
         )
         header.set_clip_path(clip_rect)
-        entry_top = y_header - max(step, header_h)
-
-        for group, (col_left, col_text_x) in zip(column_groups, column_layouts, strict=True):
-            y = entry_top
-            max_label_chars = self._legend_label_char_budget(
-                col_width,
-                font_size,
-                swatch_w=swatch_w,
-                axes_width_in=ax.get_position().width * ax.figure.get_size_inches()[0],
-            )
-            for kind, label, style in group:
-                if y < content_bottom + 0.02:
-                    break
-                display = label
-                if kind == "text" and len(label) > max_label_chars:
-                    # "+N MORE UNITS (SEE LOG)": drop a word, never cut mid-word.
-                    label = label.replace(" UNITS", "")
-                    display = label
-                if len(label) > max_label_chars:
-                    paren = label.rfind("(")
-                    if paren > 0 and label.endswith(")") and len(label) - paren <= 14:
-                        prefix_budget = max_label_chars - (len(label) - paren) - 1
-                        if prefix_budget >= 8:
-                            display = label[:prefix_budget].rstrip(" -:") + "…" + label[paren:]
-                        else:
-                            display = label[: max_label_chars - 1] + "…"
-                    else:
-                        display = label[: max_label_chars - 1] + "…"
+        font_size = layout.font_pt
+        swatch_w = layout.key_w
+        swatch_h = layout.swatch_h
+        for row in layout.rows:
+            kind, _label, style = row.entry
+            key_x = row.x
+            # A wrapped key keeps its symbol beside the first line.
+            key_yc = row.y + max(swatch_h, layout.line_h) / 2.0
+            ax_key_x, ax_y = to_axes(key_x, key_yc)
+            ax_key_x1, _ = to_axes(key_x + swatch_w, key_yc)
+            if kind in {"swatch", "pinch_out"}:
+                trans = inch_transform(key_x, key_yc + swatch_h / 2.0)
                 if kind == "swatch":
                     rect = Rectangle(
-                        (col_left, y - swatch_h * 0.55),
+                        (0.0, 0.0),
                         swatch_w,
                         swatch_h,
                         facecolor=style["facecolor"],
                         edgecolor=style["edgecolor"],
                         linewidth=0.6,
-                        hatch=legend_swatch_hatch(
-                            style.get("hatch"),
-                            swatch_h * ax.get_position().height * ax.figure.get_size_inches()[1],
-                        ),
-                        transform=ax.transAxes,
+                        transform=trans,
                         clip_on=True,
                     )
                     ax.add_patch(rect)
                     rect.set_clip_path(clip_rect)
-                elif kind == "gradient":
-                    arrow = FancyArrow(
-                        col_left + 0.012,
-                        y - 0.01,
-                        0.0,
-                        0.03,
-                        width=0.006,
-                        head_width=0.016,
-                        head_length=0.01,
-                        length_includes_head=True,
-                        transform=ax.transAxes,
-                        facecolor=CONSULTING_WATER_COLOR,
-                        edgecolor=CONSULTING_WATER_COLOR,
-                        clip_on=True,
-                    )
-                    ax.add_patch(arrow)
-                    arrow.set_clip_path(clip_rect)
-                elif kind == "marker":
-                    (marker_line,) = ax.plot(
-                        [col_left, col_left + 0.03],
-                        [y, y - 0.02],
-                        marker=style.get("marker", "v"),
-                        color=style.get("color", CONSULTING_WATER_COLOR),
-                        linewidth=0,
-                        markersize=5,
-                        transform=ax.transAxes,
-                        clip_on=True,
-                    )
-                    marker_line.set_clip_path(clip_rect)
-                elif kind == "line":
-                    (line,) = ax.plot(
-                        [col_left, col_left + 0.03],
-                        [y, y],
-                        color=style.get("color", LABEL_COLOR),
-                        linewidth=1.4,
-                        linestyle=style.get("linestyle", "--"),
-                        transform=ax.transAxes,
-                        clip_on=True,
-                    )
-                    line.set_clip_path(clip_rect)
-                elif kind == "text":
-                    pass
-                else:  # line_marker
-                    (lm_line,) = ax.plot(
-                        [col_left, col_left + 0.03],
-                        [y, y],
-                        marker=style.get("marker", "D"),
-                        color=style.get("color", PARAMETER_READING_COLOR),
-                        linewidth=1.4,
-                        linestyle=style.get("linestyle", "--"),
-                        markersize=5,
-                        transform=ax.transAxes,
-                        clip_on=True,
-                    )
-                    lm_line.set_clip_path(clip_rect)
-                label_artist = ax.text(
-                    col_left if kind == "text" else col_text_x,
-                    y,
-                    display,
-                    fontsize=font_size,
-                    va="center",
-                    color=style.get("color", LABEL_COLOR) if kind == "text" else LABEL_COLOR,
+                    for mark in swatch_hatch_artists(style.get("hatch"), swatch_w, swatch_h, trans):
+                        ax.add_patch(mark)
+                else:
+                    wedge = pinch_out_key_artist(swatch_w, swatch_h, trans)
+                    ax.add_patch(wedge)
+                    wedge.set_clip_path(clip_rect)
+            elif kind == "gradient":
+                arrow_h = swatch_h / ax_h_in
+                arrow = FancyArrow(
+                    ax_key_x + 0.4 * (ax_key_x1 - ax_key_x),
+                    ax_y - arrow_h / 2.0,
+                    0.0,
+                    arrow_h,
+                    width=0.006,
+                    head_width=0.016,
+                    head_length=0.35 * arrow_h,
+                    length_includes_head=True,
+                    transform=ax.transAxes,
+                    facecolor=CONSULTING_WATER_COLOR,
+                    edgecolor=CONSULTING_WATER_COLOR,
+                    clip_on=True,
+                )
+                ax.add_patch(arrow)
+                arrow.set_clip_path(clip_rect)
+            elif kind == "marker":
+                (marker_line,) = ax.plot(
+                    [(ax_key_x + ax_key_x1) / 2.0],
+                    [ax_y],
+                    marker=style.get("marker", "v"),
+                    color=style.get("color", CONSULTING_WATER_COLOR),
+                    linewidth=0,
+                    markersize=5,
                     transform=ax.transAxes,
                     clip_on=True,
                 )
-                label_artist.set_clip_path(clip_rect)
-                y -= step
+                marker_line.set_clip_path(clip_rect)
+            elif kind == "status_text":
+                status_sample = ax.text(
+                    ax_key_x,
+                    ax_y,
+                    style["sample"],
+                    fontsize=font_size * 0.9,
+                    fontweight="bold",
+                    va="center",
+                    ha="left",
+                    color=style["color"],
+                    transform=ax.transAxes,
+                    clip_on=True,
+                    gid="water-status-legend-sample",
+                )
+                status_sample.set_clip_path(clip_rect)
+            elif kind == "line":
+                (line,) = ax.plot(
+                    [ax_key_x, ax_key_x1],
+                    [ax_y, ax_y],
+                    color=style.get("color", LABEL_COLOR),
+                    linewidth=1.4,
+                    linestyle=style.get("linestyle", "--"),
+                    transform=ax.transAxes,
+                    clip_on=True,
+                )
+                line.set_clip_path(clip_rect)
+            elif kind == "text":
+                sample = self._draw_parameter_legend_sample(
+                    ax,
+                    ax_key_x,
+                    ax_y,
+                    style.get("parameter_entry") or {},
+                    font_size=font_size,
+                    clip_path=clip_rect,
+                )
+                if sample is not None:
+                    # Label moves to the text column, beside its sample.
+                    kind = "sampled_text"
+            elif kind == "threshold_dots":
+                band_colors = list(style.get("parameter_entry", {}).get("threshold_colors", ()))
+                count = max(len(band_colors), 1)
+                dots = ax.scatter(
+                    [ax_key_x + (ax_key_x1 - ax_key_x) * (i + 0.5) / count for i in range(len(band_colors))],
+                    [ax_y] * len(band_colors),
+                    c=band_colors,
+                    marker=style.get("marker", "o"),
+                    s=14.0,
+                    linewidths=0,
+                    transform=ax.transAxes,
+                    clip_on=True,
+                    zorder=3,
+                )
+                dots.set_gid("parameter-legend-threshold-dots")
+                dots.set_clip_path(clip_rect)
+            elif kind == "line_marker":
+                linestyle = style.get("linestyle", "--")
+                if linestyle in (None, "", " ", "none", "None"):
+                    # Markers only (red / black chemistry): one marker, as
+                    # drawn, not one at each end of an invisible line.
+                    xs, ys = [(ax_key_x + ax_key_x1) / 2.0], [ax_y]
+                else:
+                    xs, ys = [ax_key_x, ax_key_x1], [ax_y, ax_y]
+                (lm_line,) = ax.plot(
+                    xs,
+                    ys,
+                    marker=style.get("marker", "D"),
+                    color=style.get("color", PARAMETER_READING_COLOR),
+                    linewidth=1.4,
+                    linestyle=linestyle,
+                    markersize=5,
+                    transform=ax.transAxes,
+                    clip_on=True,
+                )
+                lm_line.set_clip_path(clip_rect)
+            full_width = row.full_width
+            text_x = key_x if full_width else key_x + swatch_w + layout.text_gap
+            if len(row.lines) == 1:
+                text_yc = key_yc
+            else:
+                text_yc = row.y + len(row.lines) * layout.line_h / 2.0
+            ax_text_x, ax_text_y = to_axes(text_x, text_yc)
+            label_artist = ax.text(
+                ax_text_x,
+                ax_text_y,
+                "\n".join(row.lines),
+                fontsize=font_size,
+                linespacing=_LEGEND_LINESPACING,
+                va="center",
+                color=style.get("color", LABEL_COLOR) if full_width else LABEL_COLOR,
+                transform=ax.transAxes,
+                clip_on=True,
+            )
+            label_artist.set_clip_path(clip_rect)
+
+    def _legend_panel_layout(
+        self,
+        figure: Figure,
+        entries: list[tuple[str, str, dict[str, object]]],
+        n_code_entries: int,
+        *,
+        panel_w_in: float,
+        panel_h_in: float,
+        prefer_cols: int = 1,
+    ) -> _LegendLayout:
+        """Fit every legend entry into the panel (see ``_draw_legend_panel``)."""
+        # A detached Agg renderer: asking the figure for one can trigger a
+        # full draw of the half-built figure (non-Agg canvas).
+        renderer = _measuring_renderer(float(figure.dpi))
+        px_per_in = renderer.points_to_pixels(72.0)
+        # Measured once per renderer (re-fits and candidate widths re-ask).
+        widths: dict[tuple, float] = self.__dict__.setdefault("_legend_text_widths", {})
+
+        def text_w(text: str, size: float, weight: str = "normal") -> float:
+            key = (text, float(size), weight, px_per_in)
+            if key not in widths:
+                prop = FontProperties(size=size, weight=weight)
+                width, _h, _d = renderer.get_text_width_height_descent(text, prop, ismath=False)
+                widths[key] = width / px_per_in
+            return widths[key]
+
+        pad_x = 0.09
+        pad_top = 0.05
+        pad_bottom = 0.06
+        header_pt = self._fs(8.5)
+        col_gap = 0.14
+        text_gap = 0.07
+        avail_w = panel_w_in - 2 * pad_x
+        base_pt = self._fs(_LEGEND_BASE_PT)
+        floor_pt = min(max(_LEGEND_FLOOR_PT, self._fs(_LEGEND_FLOOR_PT)), base_pt)
+        sizes: list[float] = []
+        pt = base_pt
+        while pt >= floor_pt - 1e-9:
+            sizes.append(pt)
+            pt -= 0.5
+        if sizes[-1] > floor_pt + 1e-9:
+            sizes.append(floor_pt)
+        if not entries:
+            # Nothing to key (no units, no symbols): the header alone.
+            line_h = base_pt * _LEGEND_LINESPACING * 1.17 / 72.0
+            return _LegendLayout(
+                rows=[],
+                font_pt=base_pt,
+                header_pt=header_pt,
+                line_h=line_h,
+                swatch_h=max(MIN_LEGEND_SWATCH_HEIGHT_IN, min(0.13, line_h * 0.9)),
+                key_w=_LEGEND_SWATCH_W_IN,
+                text_gap=text_gap,
+                pad_x=pad_x,
+                pad_top=pad_top,
+                ncols=1,
+            )
+
+        def wrap(label: str, width_in: float, size: float, max_lines: int) -> list[str] | None:
+            words = label.split()
+            if not words:
+                return [label]
+            lines: list[str] = []
+            current = words[0]
+            for word in words[1:]:
+                trial = f"{current} {word}"
+                if text_w(trial, size) <= width_in:
+                    current = trial
+                else:
+                    lines.append(current)
+                    current = word
+            lines.append(current)
+            if len(lines) > max_lines or any(text_w(line, size) > width_in for line in lines):
+                return None
+            return lines
+
+        def is_full_width(item) -> bool:
+            kind, _label, style = item
+            if kind == "more":
+                return True
+            return kind == "text" and not (style.get("parameter_entry") or {}).get("sample_text")
+
+        def attempt(
+            items, size: float, ncols: int, *, n_codes: int, force: bool = False, balanced: bool = True
+        ):
+            line_h = size * _LEGEND_LINESPACING * 1.17 / 72.0
+            swatch_h = max(MIN_LEGEND_SWATCH_HEIGHT_IN, min(0.13, line_h * 0.9))
+            samples = [text_w(str(style["sample"]), size * 0.9, "bold") for kind, _l, style in items if kind == "status_text"]
+            samples += [
+                text_w(str((style.get("parameter_entry") or {}).get("sample_text")), size)
+                for kind, _l, style in items
+                if kind == "text" and (style.get("parameter_entry") or {}).get("sample_text")
+            ]
+            uniform_col = (avail_w - (ncols - 1) * col_gap) / ncols
+            key_w = max(
+                _LEGEND_SWATCH_W_IN if ncols == 1 else _LEGEND_SWATCH_MIN_W_IN,
+                max(samples, default=0.0) + 0.02,
+            )
+            key_span = key_w + text_gap
+            if uniform_col - key_span < _LEGEND_MIN_LABEL_W_IN and not force:
+                return None
+            max_lines = 2 if ncols == 1 else 3
+            full = [is_full_width(item) for item in items]
+            # Unwrapped label width, in label-column units (a full-width row
+            # may also use the key column).
+            natural = [
+                text_w(item[1], size) - (key_span if full[i] else 0.0) for i, item in enumerate(items)
+            ]
+            row_gap = 0.28 * line_h
+            top = pad_top + header_pt / 72.0 + max(0.045, 0.45 * line_h)
+            avail_h = panel_h_in - top - pad_bottom
+
+            def label_budget(count: int) -> float:
+                return avail_w - count * key_span - (count - 1) * col_gap
+
+            def wrapped(i: int, label_w: float) -> list[str] | None:
+                width_in = label_w + (key_span if full[i] else 0.0)
+                lines = wrap(items[i][1], width_in, size, max_lines)
+                if lines is None and force:
+                    lines = [_ellipsize(items[i][1], width_in, lambda s: text_w(s, size))]
+                return lines
+
+            # Columns sized to their content: every balanced in-order split
+            # into ``ncols`` columns (row counts within one of each other, the
+            # symbol keys kept together) is tried; each column gets its
+            # longest label's width (labels wrap only where the panel is
+            # short of room) and the split with the shortest tallest column
+            # wins. Unbalanced splits (a lone "CLAY" beside eight rows) are a
+            # last resort before any unit is hidden from the key.
+            wrap_cache: dict[tuple[int, float], list[str] | None] = {}
+
+            def lines_for(i: int, label_w: float) -> list[str] | None:
+                key = (i, int(float(label_w) * 1000.0))
+                if key not in wrap_cache:
+                    wrap_cache[key] = wrapped(i, label_w)
+                return wrap_cache[key]
+
+            # Every row is at least one line tall: a column whose one-line
+            # height already overflows can never fit (prunes the search).
+            one_line = max(swatch_h, line_h)
+            max_rows = len(items) if force else int((avail_h + row_gap + 1e-9) // (one_line + row_gap))
+            if max_rows < 1:
+                return None
+            best = None
+            if balanced:
+                splits = _balanced_splits(
+                    len(items), ncols, keep_tail=len(items) - n_codes, max_rows=max_rows
+                )
+            else:
+                splits = _contiguous_splits(len(items), ncols, max_rows=max_rows)
+            for columns in splits:
+                need = [max(max(natural[i] for i in col), 0.0) for col in columns]
+                col_label_w = _water_fill(need, label_budget(len(columns)))
+                all_lines = []
+                for c, col in enumerate(columns):
+                    for i in col:
+                        all_lines.append(lines_for(i, col_label_w[c]))
+                if any(lines is None for lines in all_lines):
+                    continue
+                heights = [max(swatch_h, len(lines) * line_h) for lines in all_lines]
+                tallest = max(_column_height(heights, col, row_gap) for col in columns)
+                score = (tallest > avail_h + 1e-6, tallest, sum(len(lines) for lines in all_lines))
+                if best is None or score < best[0]:
+                    best = (score, columns, col_label_w, all_lines, heights, tallest)
+            if best is None or (best[0][0] and not force):
+                return None
+            _score, columns, col_label_w, all_lines, heights, tallest = best
+            # Spread spare height a little (at most to a roomy row pitch).
+            longest = max(len(col) for col in columns)
+            if longest > 1 and tallest < avail_h:
+                row_gap = min(row_gap + (avail_h - tallest) / (longest - 1), 0.9 * line_h)
+            placed = []
+            x = pad_x
+            for col_index, col in enumerate(columns):
+                y = top
+                for i in col:
+                    placed.append(_LegendRow(items[i], all_lines[i], x, y, full[i]))
+                    y += heights[i] + row_gap
+                x += key_span + col_label_w[col_index] + col_gap
+            return _LegendLayout(
+                rows=placed,
+                font_pt=size,
+                header_pt=header_pt,
+                line_h=line_h,
+                swatch_h=swatch_h,
+                key_w=key_w,
+                text_gap=text_gap,
+                pad_x=pad_x,
+                pad_top=pad_top,
+                ncols=len(columns),
+            )
+
+        col_options = sorted((1, 2, 3), key=lambda c: (c < prefer_cols, c))
+        for size in sizes:
+            for ncols in col_options:
+                fitted = attempt(entries, size, ncols, n_codes=n_code_entries)
+                if fitted is not None:
+                    return fitted
+        # A slightly smaller size before any unit is hidden from the key.
+        squeeze_pt = min(_LEGEND_SQUEEZE_PT, floor_pt)
+        if squeeze_pt < floor_pt - 1e-9:
+            for ncols in col_options:
+                fitted = attempt(entries, squeeze_pt, ncols, n_codes=n_code_entries)
+                if fitted is not None:
+                    return fitted
+            floor_pt = squeeze_pt
+        # Uneven columns before any unit is hidden from the key.
+        for ncols in col_options:
+            fitted = attempt(entries, floor_pt, ncols, n_codes=n_code_entries, balanced=False)
+            if fitted is not None:
+                return fitted
+        # Too many units even in three columns at the floor size: roll up the
+        # fewest lithology units; symbol keys are never dropped.
+        codes, others = entries[:n_code_entries], entries[n_code_entries:]
+
+        def rolled_up(hidden: int):
+            items = (
+                codes[: len(codes) - hidden]
+                + [("more", f"+{hidden} MORE UNITS (SEE LOG)", {"color": LABEL_COLOR})]
+                + others
+            )
+            for balanced in (True, False):
+                for ncols in (1, 2, 3):
+                    fitted = attempt(
+                        items, floor_pt, ncols, n_codes=len(codes) - hidden, balanced=balanced
+                    )
+                    if fitted is not None:
+                        fitted.hidden_units = hidden
+                        return fitted
+            return None
+
+        # Fewest hidden units that fit (more hidden -> fewer rows: monotone).
+        low, high, found = 1, len(codes), None
+        while low <= high:
+            mid = (low + high) // 2
+            fitted = rolled_up(mid)
+            if fitted is not None:
+                found, high = fitted, mid - 1
+            else:
+                low = mid + 1
+        if found is not None:
+            return found
+        # Last resort (a tiny panel): every symbol key at the hard minimum,
+        # labels cut with "…" rather than lost.
+        more = [("more", f"+{len(codes)} MORE UNITS (SEE LOG)", {"color": LABEL_COLOR})] if codes else []
+        fitted = attempt(
+            more + others, min(_LEGEND_HARD_MIN_PT, floor_pt), 2, n_codes=0, force=True, balanced=False
+        )
+        fitted.hidden_units = len(codes)
+        return fitted
 
     def _draw_logo_image(self, ax, logo_bytes: bytes | None, position: tuple[float, float]) -> None:
         if not logo_bytes:
@@ -1532,7 +2960,7 @@ class ConsultingLayoutMixin:
     def _refit_key(ax) -> tuple:
         return (tuple(ax.figure.get_size_inches()), tuple(ax.get_position().bounds))
 
-    def _draw_refittable(self, ax, draw) -> None:
+    def _draw_refittable(self, ax, draw, *, key_extra=None) -> None:
         """Run ``draw`` (a measured, fitted drawing unit) and record it for re-fit.
 
         Fitting measures pixels at the figure's current size and margins. An
@@ -1540,6 +2968,8 @@ class ConsultingLayoutMixin:
         size) or a margin change would leave the fitted text too wide, so the
         artists ``draw`` adds are recorded and ``refit_consulting_fitted_text``
         removes and redraws them once the export page geometry is applied.
+        ``key_extra`` adds state outside ``ax`` the unit depends on (the scale
+        bar follows the main axes' position and x limits).
         """
         before = {id(child) for child in ax.get_children()}
         draw()
@@ -1547,7 +2977,8 @@ class ConsultingLayoutMixin:
         registry = getattr(ax.figure, "_css_fitted_cells", None)
         if registry is None:
             registry = ax.figure._css_fitted_cells = []
-        registry.append({"ax": ax, "draw": draw, "artists": artists, "key": self._refit_key(ax)})
+        key_fn = (lambda: (self._refit_key(ax), key_extra())) if key_extra else (lambda: self._refit_key(ax))
+        registry.append({"ax": ax, "draw": draw, "artists": artists, "key": key_fn(), "key_fn": key_fn})
 
     def refit_consulting_fitted_text(self, figure: Figure) -> None:
         """Redo every recorded fitted unit whose axes moved or resized.
@@ -1562,7 +2993,7 @@ class ConsultingLayoutMixin:
             ax = unit["ax"]
             if ax.figure is not figure:
                 continue
-            key = self._refit_key(ax)
+            key = unit["key_fn"]() if "key_fn" in unit else self._refit_key(ax)
             if unit["key"] == key:
                 continue
             for artist in unit["artists"]:
@@ -1574,6 +3005,72 @@ class ConsultingLayoutMixin:
             unit["draw"]()
             unit["artists"] = [child for child in ax.get_children() if id(child) not in before]
             unit["key"] = key
+
+    def _last_hole_label_room(
+        self,
+        ax,
+        hole_summary: pd.DataFrame,
+        span: float,
+        *,
+        map_scale: float | None = None,
+        frame_pt: tuple[float, float] | None = None,
+        y_span_stored: float | None = None,
+    ) -> float:
+        """Data-x room right of the last column for its chemistry values (0 if none).
+
+        ``frame_pt`` / ``y_span_stored`` (the plot frame in points and the
+        y-limit span in stored units) give the height-limited case: an exact
+        VE box (or auto VE held at 1x) narrower than its frame draws x at
+        ``y_span_stored / frame_h`` metres per point, so the label room in
+        metres is that times the label width (the frame-width estimate
+        alone left a 12 %-wide box no room and its values were dropped).
+
+        The last hole's values print to its right: leave room for a ~40 pt
+        label inside the frame (they were shrunk against the right frame line
+        on portrait pages). Axes width ~ 0.85 x page. More values than one
+        column holds (~11 pt per line over ~0.7 of the page height) zig-zag
+        into a second / third column.
+        """
+        if (
+            not self.profile.show_parameter_labels
+            or not self.profile.show_parameter_markers
+            or hole_summary.empty
+        ):
+            return 0.0
+        # Only readings that will actually be labelled: hidden parameters
+        # must not widen the frame.
+        active = {
+            str(name).strip()
+            for name in getattr(self, "environmental_parameters", ()) or ()
+            if str(name).strip()
+        }
+        if not active:
+            return 0.0
+        last_hole = str(hole_summary.loc[hole_summary["x_profile"].idxmax(), "hole_id"])
+        last_readings = sum(
+            1
+            for reading in getattr(self, "environmental_readings", ()) or ()
+            if str(getattr(reading, "hole_id", "")) == last_hole
+            and getattr(reading, "parameter", None) in active
+        )
+        if not last_readings:
+            return 0.0
+        width_in, height_in = (float(v) for v in ax.figure.get_size_inches())
+        axes_width_pt = 0.85 * width_in * 72.0
+        column_lines = max(0.7 * height_in * 72.0 / 11.0, 1.0)
+        columns = min(3, max(1, math.ceil(last_readings / column_lines)))
+        label_pt = 44.0 * columns
+        if frame_pt is not None and frame_pt[0] > label_pt:
+            axes_width_pt = float(frame_pt[0])
+        room = label_pt * max(span, 1.0) / max(axes_width_pt - label_pt, 1.0)
+        if not map_scale and frame_pt is not None and y_span_stored and frame_pt[1] > 0.0:
+            room = max(room, label_pt * abs(float(y_span_stored)) / float(frame_pt[1]))
+        if map_scale:
+            # At an exact map scale the box is narrower than the frame-filling
+            # estimate: the same points of label room are more metres. The
+            # room is section distance like any other, so the bar stays true.
+            room = max(room, label_pt / 72.0 * float(map_scale) / _INCHES_PER_METRE)
+        return room
 
     def fit_consulting_page_margins(self, figure: Figure) -> None:
         """Pull the side margins in when an RL axis label would leave the page.
@@ -1588,6 +3085,12 @@ class ConsultingLayoutMixin:
             return
         main_ax, twin_ax = axes
         renderer = figure.canvas.get_renderer()
+        if isinstance(getattr(main_ax, "apply_aspect", None), _MapScaleAspect):
+            # Measure the RL labels where the exact-scale box puts them.
+            main_ax.apply_aspect()
+            if twin_ax is not None and twin_ax.get_axes_locator() is not None:
+                twin_ax.apply_aspect(twin_ax.get_axes_locator()(twin_ax, renderer))
+        self._refresh_last_hole_label_room(figure)
         width_px = figure.bbox.width
         pad_px = 2.0 * figure.dpi / 72.0
         params = figure.subplotpars
@@ -1605,6 +3108,9 @@ class ConsultingLayoutMixin:
                 moved = True
         if moved:
             figure.subplots_adjust(left=left, right=right)
+        # After any margin change: subplots_adjust resets the band to its grid slot.
+        self._reserve_threshold_key_band(figure)
+        self._suppress_header_tick_collisions(figure)
 
     def _title_label_column_need(self, ax, labels: list[str]) -> float | None:
         """Axes-fraction width the bold row labels need (offset + text + pad)."""

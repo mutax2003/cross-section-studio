@@ -94,6 +94,7 @@ def _section_request_kwargs(sidebar, configure_state, selection) -> dict[str, ob
         "chemistry_color_mode": configure_state.chemistry_color_mode,
         "chemistry_threshold_green_max": configure_state.chemistry_threshold_green_max,
         "chemistry_threshold_yellow_max": configure_state.chemistry_threshold_yellow_max,
+        "chemistry_thresholds": configure_state.chemistry_thresholds,
         "chemistry_label_style": configure_state.chemistry_label_style,
         "render_layout": sidebar.render_layout,
         "track_width_m": sidebar.track_width_m,
@@ -164,7 +165,8 @@ else:
         target_crs=sidebar.target_crs,
     )
 
-    if parse_result is None and st.session_state.get("file_bytes"):
+    # ``is not None``: an empty (0-byte) upload must get the recovery row too.
+    if parse_result is None and st.session_state.get("file_bytes") is not None:
         render_workbook_recovery(key_prefix="main")
     elif parse_result is not None:
         hole_ids = list(st.session_state.hole_ids)
@@ -242,6 +244,12 @@ else:
                 consulting_title_block=sidebar.consulting_title_block,
                 can_generate=bool(configure_state and configure_state.can_generate),
                 blocked_reason=configure_state.blocked_reason if configure_state else None,
+                chemistry_color_mode=(
+                    configure_state.chemistry_color_mode if configure_state else None
+                ),
+                chemistry_thresholds=(
+                    configure_state.chemistry_thresholds if configure_state else None
+                ),
             )
         else:
             # Reserve the slot above Validate/Configure; filled below once
@@ -310,7 +318,9 @@ else:
                             "'Stop if matched layers overlap' in Configure."
                         )
                     elif configure_state.transect_selection is None:
-                        if (
+                        if len(parse_result.collars) < 2:
+                            st.caption("Add at least one more hole to the workbook to draw a section.")
+                        elif (
                             sidebar.transect_mode == "By hole sequence"
                             and len(configure_state.selected_holes) < 2
                         ):
@@ -440,6 +450,9 @@ with hero_slot:
                 getattr(st.session_state.get("quality_report"), "has_blocking_errors", False)
             ),
             has_transect=st.session_state.get("transect_selection") is not None,
+            # The workbook was read this run; no parse result means it failed.
+            upload_failed=st.session_state.get("file_bytes") is not None
+            and st.session_state.parse_result is None,
         )
     )
 

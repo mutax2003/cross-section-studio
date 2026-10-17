@@ -159,3 +159,101 @@ def test_summarize_environmental_readings() -> None:
     assert chloride.min_depth == pytest.approx(3.5)
     assert chloride.max_depth == pytest.approx(4.0)
     assert summary.holes_without_any_readings == ()
+
+
+def _issues(report, code: str) -> list:
+    return [issue for issue in report.issues if issue.code == code]
+
+
+def test_unit_order_against_depth_warning() -> None:
+    """Fuzz repro: A numbers Till 41 above Sand 5, so the fence un-matches it as a
+    crossing — QA tells the user to check the numbering."""
+    collars = [
+        Collar(hole_id="A", easting=0, northing=0, elevation=354.0, total_depth=53),
+        Collar(hole_id="B", easting=13, northing=0, elevation=280.6, total_depth=39),
+    ]
+    lithologies = [
+        Lithology(hole_id="A", from_depth=2.37, to_depth=8.13, lithology_code="Till", unit_order=41),
+        Lithology(hole_id="A", from_depth=25.0, to_depth=29.65, lithology_code="Sand", unit_order=5),
+        Lithology(hole_id="B", from_depth=0.006, to_depth=6.46, lithology_code="Sand", unit_order=2),
+        Lithology(
+            hole_id="B", from_depth=11.28, to_depth=17.46, lithology_code="Till", unit_order=29
+        ),
+    ]
+    issues = _issues(analyze_parsed_data(collars, lithologies), "unit_order_against_depth")
+    assert len(issues) == 1
+    assert issues[0].hole_id == "A"
+    assert issues[0].severity == "warning"
+    assert issues[0].message.startswith("unit_order runs against depth in A:")
+    assert issues[0].message.endswith("check numbering")
+
+
+def test_unit_order_increasing_with_depth_has_no_warning() -> None:
+    collars = [Collar(hole_id="A", easting=0, northing=0, elevation=100.0, total_depth=20.0)]
+    lithologies = [
+        Lithology(hole_id="A", from_depth=0.0, to_depth=5.0, lithology_code="Clay", unit_order=1),
+        Lithology(hole_id="A", from_depth=5.0, to_depth=8.0, lithology_code="Sand", unit_order=4),
+        Lithology(hole_id="A", from_depth=8.0, to_depth=20.0, lithology_code="Till"),
+    ]
+    report = analyze_parsed_data(collars, lithologies)
+    assert _issues(report, "unit_order_against_depth") == []
+
+
+def test_zero_thickness_interval_warning() -> None:
+    collars = [Collar(hole_id="B", easting=0, northing=0, elevation=0.0, total_depth=1268.9)]
+    lithologies = [
+        Lithology(
+            hole_id="B", from_depth=4.94525, to_depth=5.48206, lithology_code="Sand", unit_order=55
+        ),
+        Lithology(
+            hole_id="B", from_depth=5.48206, to_depth=5.48206, lithology_code="Gravel", unit_order=56
+        ),
+    ]
+    issues = _issues(analyze_parsed_data(collars, lithologies), "zero_thickness_interval")
+    assert len(issues) == 1
+    assert issues[0].severity == "warning"
+    assert "zero-thickness interval Gravel at 5.48 m" in issues[0].message
+    assert "ignored in the fence" in issues[0].message
+
+
+def test_zero_thickness_row_is_not_reported_as_an_overlap() -> None:
+    """QA: "BH-01: 1.2–3.29 m overlaps 1.2–1.2 m" for a zero-thickness row."""
+    collars = [Collar(hole_id="BH-01", easting=0, northing=0, elevation=0.0, total_depth=3.29)]
+    lithologies = [
+        Lithology(hole_id="BH-01", from_depth=0.0, to_depth=1.2, lithology_code="Sand"),
+        Lithology(hole_id="BH-01", from_depth=1.2, to_depth=3.29, lithology_code="Clay"),
+        Lithology(hole_id="BH-01", from_depth=1.2, to_depth=1.2, lithology_code="Gravel"),
+    ]
+    report = analyze_parsed_data(collars, lithologies)
+    assert _issues(report, "depth_overlap") == []
+    assert _issues(report, "depth_gap") == []
+    assert len(_issues(report, "zero_thickness_interval")) == 1
+
+
+def test_thin_but_nonzero_interval_has_no_zero_thickness_warning() -> None:
+    collars = [Collar(hole_id="B", easting=0, northing=0, elevation=0.0, total_depth=10.0)]
+    lithologies = [
+        Lithology(hole_id="B", from_depth=0.0, to_depth=5.0, lithology_code="Sand"),
+        Lithology(hole_id="B", from_depth=5.0, to_depth=5.01, lithology_code="Gravel"),
+        Lithology(hole_id="B", from_depth=5.01, to_depth=10.0, lithology_code="Clay"),
+    ]
+    report = analyze_parsed_data(collars, lithologies)
+    assert _issues(report, "zero_thickness_interval") == []
+
+
+def test_zero_thickness_row_checks_ignore_row_order() -> None:
+    from ai_quality import analyze_parsed_data
+    from models import Collar, Lithology
+
+    collar = Collar(hole_id="A", easting=0, northing=0, elevation=100, total_depth=10)
+
+    def codes(rows):
+        lith = [Lithology(hole_id="A", from_depth=a, to_depth=b, lithology_code=c, unit_order=u) for a, b, c, u in rows]
+        report = analyze_parsed_data([collar], lith)
+        return sorted(issue.code for issue in report.issues)
+
+    rows = [(0, 5, "Clay", None), (5, 10, "Till", None), (5, 5, "Silt", None)]
+    assert codes(rows) == codes([rows[0], rows[2], rows[1]])
+    assert "depth_overlap" not in codes(rows)
+    numbered = [(0, 1, "Clay", 1), (1, 2, "Sand", 5), (2, 2, "Silt", 3), (2, 10, "Till", 6)]
+    assert "unit_order_against_depth" not in codes(numbered)

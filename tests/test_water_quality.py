@@ -153,3 +153,39 @@ def test_water_level_status_field() -> None:
     assert dry.status == "dry"
     with pytest.raises(ValidationError):
         WaterLevel(hole_id="BH-01", depth=1.0, status="wet-well")
+
+
+def test_degrees_in_easting_northing_are_flagged_but_local_grids_are_not() -> None:
+    """Lat/long typed into easting/northing gave a centimetre-long section
+    with no warning."""
+    from ai_quality import analyze_parsed_data
+    from models import Collar
+
+    def codes(points):
+        collars = [
+            Collar(hole_id=f"BH-{i}", easting=e, northing=n, elevation=100.0, total_depth=10.0)
+            for i, (e, n) in enumerate(points)
+        ]
+        return {issue.code for issue in analyze_parsed_data(collars, []).issues}
+
+    assert "coordinates_in_degrees" in codes([(-79.38, 43.65), (-79.37, 43.66)])
+    assert "coordinates_in_degrees" not in codes([(0.0, 0.0), (5.0, 0.0), (32.0, 0.0)])
+    assert "coordinates_in_degrees" not in codes([(372500.0, 6494000.0), (372600.0, 6494100.0)])
+
+
+def test_hydro_status_aliases_match_the_model_normaliser() -> None:
+    """hydro_metrics.water_status must agree with WaterLevel.normalize_status for
+    every alias the model accepts (the model canonicalises first; this guards drift)."""
+    from hydro_metrics import water_status
+    from models import WaterLevel
+
+    aliases = {
+        "measured": ["measured", "meas", "m", "wet", "", None],
+        "dry": ["dry", "d", "DRY"],
+        "nm": ["nm", "n/m", "not measured", "not_measured", "ns", "not sampled", "not_sampled", "NM"],
+    }
+    for expected, spellings in aliases.items():
+        for raw in spellings:
+            level = WaterLevel(hole_id="BH1", depth=1.0, status=raw)
+            assert level.status == expected, raw
+            assert water_status(level) == expected, raw

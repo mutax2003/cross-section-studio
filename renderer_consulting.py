@@ -319,6 +319,11 @@ _SECTION_WORD_RE = re.compile(r"\bsection\b", re.IGNORECASE)
 _Y_MAX_LABELS = 15
 _Y_LABEL_SPACING_EM = 1.8
 _Y_MIN_STEP_M = 1.0
+# Hard caps on the ticks one axis asks for, whatever the range: the labelled
+# step coarsens (next 1/2/5 step) past _Y_MAX_MAJOR_TICKS, the minor step
+# past _Y_MINOR_PER_MAJOR times that.
+_Y_MAX_MAJOR_TICKS = 400
+_Y_MINOR_PER_MAJOR = 5
 
 
 def _round_step_at_least(value: float) -> float:
@@ -589,21 +594,37 @@ class _TrueMetreLocator(Locator):
         self._label_pt = float(label_pt)
         self._minor = minor
 
-    def major_step(self) -> float:
-        vmin, vmax = self.axis.get_view_interval()
+    def major_step(self, vmin: float | None = None, vmax: float | None = None) -> float:
+        """Labelled step (true metres) for the range (default: the view interval)."""
+        if vmin is None or vmax is None:
+            vmin, vmax = self.axis.get_view_interval()
         axes = self.axis.axes
         height_pt = axes.bbox.height * 72.0 / axes.figure.dpi
-        return true_metre_major_step((vmax - vmin) / self._ve, height_pt, self._label_pt)
+        span_m = abs(float(vmax) - float(vmin)) / self._ve
+        step = true_metre_major_step(span_m, height_pt, self._label_pt)
+        # Belt and braces: never more than _Y_MAX_MAJOR_TICKS ticks across
+        # the range, whatever the axes box reports (a 2e5 m range once asked
+        # for 2e5 one-metre ticks and the minor pass ran out of memory).
+        while span_m / step > _Y_MAX_MAJOR_TICKS:
+            step = _round_step_at_least(step * 1.0001)
+        return step
 
     def __call__(self):
         vmin, vmax = self.axis.get_view_interval()
         return self.tick_values(vmin, vmax)
 
     def tick_values(self, vmin, vmax):
+        if not (np.isfinite(vmin) and np.isfinite(vmax)) or vmin == vmax:
+            return np.array([], dtype=float)
         low, high = sorted((vmin / self._ve, vmax / self._ve))
-        step = self.major_step()
+        # The step for the range asked for (the view interval on every
+        # matplotlib call): a step sized to another range placed ticks every
+        # metre across a 2e5 m one.
+        step = self.major_step(vmin, vmax)
         if self._minor:
             step = true_metre_minor_step(step)
+            while (high - low) / step > _Y_MINOR_PER_MAJOR * _Y_MAX_MAJOR_TICKS:
+                step = _round_step_at_least(step * 1.0001)
         first = np.ceil(low / step - 1e-9) * step
         values = np.arange(first, high + step * 1e-6, step)
         return self.raise_if_exceeds(np.round(values, 6) * self._ve)

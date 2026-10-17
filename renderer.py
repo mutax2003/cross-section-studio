@@ -520,6 +520,7 @@ class CrossSectionRenderer(
         legend = ax.get_legend() if ax.figure is figure else None
         if legend is None:
             return
+        legend.set_loc("upper left")
         legend.set_bbox_to_anchor((1.01, 1.0), transform=ax.transAxes)
         renderer = figure.canvas.get_renderer()
         box = legend.get_window_extent(renderer)
@@ -534,6 +535,7 @@ class CrossSectionRenderer(
         candidates += [t for t in figure.texts if t.get_position()[1] >= 0.2]
         reach = None
         pad = 6.0 * figure.dpi / 72.0
+        extents = []
         for artist in candidates:
             if artist is None or not artist.get_visible():
                 continue
@@ -548,8 +550,21 @@ class CrossSectionRenderer(
             # Only text outside the plot frame (in-plot labels stop at the frame).
             if other.y0 >= frame.y0 - 0.5 and other.x1 <= frame.x1 + 0.5:
                 continue
-            if other.x0 < box.x1 and box.x0 < other.x1 + pad and other.y0 < box.y1 and box.y0 < other.y1:
-                reach = max(reach or other.x1, other.x1)
+            extents.append(other)
+
+        def reach_of(target) -> float | None:
+            hit = None
+            for other in extents:
+                if (
+                    other.x0 < target.x1
+                    and target.x0 < other.x1 + pad
+                    and other.y0 < target.y1
+                    and target.y0 < other.y1
+                ):
+                    hit = max(hit or other.x1, other.x1)
+            return hit
+
+        reach = reach_of(box)
         if reach is None or reach + pad <= box.x0:
             return
         margins = getattr(figure, "_css_page_margins_in", None) or (MIN_PRINT_MARGIN_IN,) * 4
@@ -558,16 +573,28 @@ class CrossSectionRenderer(
             x_axes = (reach + pad - frame.x0) / max(frame.width, 1.0)
             legend.set_bbox_to_anchor((x_axes, 1.0), transform=ax.transAxes)
             return
-        # No room to the right on a fixed page: hang it under the texts instead.
+        # No room to the right on a fixed page. A legend taller than a short
+        # plot box (a long section at exact VE on a portrait page) stands on
+        # the box's bottom edge and grows upward, where the page fit makes
+        # room by lowering the plot, when nothing sits beside the box there.
+        legend.set_loc("lower left")
+        legend.set_bbox_to_anchor((1.01, 0.0), transform=ax.transAxes)
+        if reach_of(legend.get_window_extent(renderer)) is None:
+            return
+        legend.set_loc("upper left")
+        # Else hang it under the texts, never past the page foot: a legend
+        # off the bottom edge is cut from the print.
         lowest = min(
-            artist.get_window_extent(renderer).y0
-            for artist in candidates
-            if artist is not None and artist.get_visible()
-            and not (isinstance(artist, Text) and not artist.get_text().strip())
-            and artist.get_window_extent(renderer).x1 > box.x0
-            and artist.get_window_extent(renderer).y0 < frame.y0
+            (other.y0 for other in extents if other.x1 > box.x0 and other.y0 < frame.y0),
+            default=frame.y0,
         )
-        y_axes = (lowest - pad - frame.y0) / max(frame.height, 1.0)
+        floor = float(margins[3]) * figure.dpi
+        supx = getattr(figure, "_supxlabel", None)
+        for text in figure.texts:
+            if text is not supx and text.get_visible() and text.get_text().strip() and text.get_position()[1] < 0.2:
+                floor = max(floor, text.get_window_extent(renderer).y1 + pad)
+        top = max(lowest - pad, floor + box.height)
+        y_axes = (top - frame.y0) / max(frame.height, 1.0)
         legend.set_bbox_to_anchor((1.01, y_axes), transform=ax.transAxes)
 
     def _settle_labels(self, figure: Figure, *, fit_page: bool = False) -> None:
@@ -1469,11 +1496,24 @@ class CrossSectionRenderer(
             )
         return keys
 
-    def _rebuild_outside_legend(self, ax, extras: list[tuple[object, str]], *, title: str | None = None) -> None:
-        """Append ``extras`` to the outside lithology legend (rebuilt once)."""
+    def _rebuild_outside_legend(
+        self,
+        ax,
+        extras: list[tuple[object, str]],
+        *,
+        title: str | None = None,
+        ncol: int | None = None,
+        fontsize: float = 8.0,
+        force: bool = False,
+    ):
+        """Append ``extras`` to the outside lithology legend (rebuilt once).
+
+        ``ncol`` / ``fontsize`` (with ``force``) rebuild it narrower when the
+        page cannot hold it. Returns the rebuilt legend (or None).
+        """
         legend = ax.get_legend()
-        if not extras or legend is None:
-            return
+        if legend is None or (not extras and not force):
+            return None
         # Rebuild from the source proxies, never ``legend.legend_handles``
         # (drawn artists): a second rebuild lost the three-dot threshold key
         # and the NM sample text.
@@ -1490,15 +1530,16 @@ class CrossSectionRenderer(
             frameon=True,
             framealpha=0.95,
             edgecolor="#CBD5E1",
-            fontsize=8,
-            title_fontsize=9,
-            ncol=legend._ncols,
+            fontsize=fontsize,
+            title_fontsize=max(fontsize + 1.0, 7.0),
+            ncol=ncol if ncol is not None else legend._ncols,
             handler_map=LEGEND_KEY_HANDLER_MAP,
             handleheight=LEGEND_SWATCH_HANDLEHEIGHT,
         )
         remember_legend_keys(rebuilt, handles, labels)
         if gid:
             rebuilt.set_gid(gid)
+        return rebuilt
 
     def fit_right_margin_for_legend(self, figure: Figure) -> None:
         """Widen the right margin so an outside lithology legend fits the page.
@@ -1517,10 +1558,32 @@ class CrossSectionRenderer(
             return
         settle_figure_layout(figure)
         renderer = figure.canvas.get_renderer()
-        legend_w = legend.get_window_extent(renderer).width / figure.bbox.width
-        # Legend starts 1% of the axes width right of the plot; keep a 1.5% page gap.
-        right = 1.0 - 0.015 - legend_w - 0.01 * ax.get_position().width
-        right = min(figure.subplotpars.right, max(0.45, right))
+        page_w = figure.bbox.width
+        # Legend starts 1% of the axes width right of the plot; keep a 1.5%
+        # page gap, or the printable margin on a fixed page.
+        gap = 0.015
+        if self._fixed_page_export():
+            gap = max(gap, float(page_margins_in(self.export_framing)[1]) * figure.dpi / page_w)
+        floor = 0.45
+
+        def right_for(current) -> float:
+            legend_w = current.get_window_extent(renderer).width / page_w
+            return 1.0 - gap - legend_w - 0.01 * ax.get_position().width
+
+        right = right_for(legend)
+        if right < floor:
+            # Wider than the page can give it beside the narrowest plot
+            # (two columns of long names on a portrait page): one column,
+            # then smaller text, before it is let past the margin.
+            for ncol, size in ((1, 8.0), (1, 7.0), (1, 6.5)):
+                rebuilt = self._rebuild_outside_legend(ax, [], ncol=ncol, fontsize=size, force=True)
+                if rebuilt is None:
+                    break
+                legend = rebuilt
+                right = right_for(legend)
+                if right >= floor:
+                    break
+        right = min(figure.subplotpars.right, max(floor, right))
         if right < figure.subplotpars.right - 1e-3:
             figure.subplots_adjust(right=right)
 

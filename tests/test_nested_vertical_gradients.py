@@ -200,8 +200,8 @@ def test_summary_without_screens_is_unchanged() -> None:
 def test_flowing_artesian_is_info_not_error() -> None:
     levels = [WaterLevel(hole_id="MW-2", depth=0.0, elevation_masl=101.4)]
     summary = summarize_water_levels(_collars(), levels, ("MW-1S", "MW-1D", "MW-2"))
-    assert "flowing artesian at MW-2 (head +0.40 m above ground) — plotted above the ground line" in summary.notes
-    assert any(w.startswith("Info: flowing artesian at MW-2") for w in summary.warnings)
+    assert "Flowing artesian at MW-2 (head +0.40 m above ground) — plotted above the ground line" in summary.notes
+    assert any(w.startswith("Info: Flowing artesian at MW-2") for w in summary.warnings)
 
 
 def test_artesian_within_stick_up_is_not_flowing() -> None:
@@ -210,7 +210,7 @@ def test_artesian_within_stick_up_is_not_flowing() -> None:
     ]
     levels = [WaterLevel(hole_id="MW-2", depth=0.5, depth_reference="btoc")]
     summary = summarize_water_levels(collars, levels, ("MW-2",))
-    assert any(note.startswith("artesian at MW-2 (head +0.40 m") for note in summary.notes)
+    assert any(note.startswith("Artesian at MW-2 (head +0.40 m") for note in summary.notes)
     assert not any("flowing" in note for note in summary.notes)
 
 

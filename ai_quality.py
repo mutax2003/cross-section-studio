@@ -1127,12 +1127,12 @@ def _artesian_notes(
         series = "" if (level.series_id or "default") == "default" else f" ({level.series_id})"
         if stick_up > 0.0 and above <= stick_up + 1e-6:
             text = (
-                f"artesian at {level.hole_id}{series} (head +{above:.2f} m above ground, "
+                f"Artesian at {level.hole_id}{series} (head +{above:.2f} m above ground, "
                 "within the casing stick-up) — plotted above the ground line"
             )
         else:
             text = (
-                f"flowing artesian at {level.hole_id}{series} (head +{above:.2f} m above "
+                f"Flowing artesian at {level.hole_id}{series} (head +{above:.2f} m above "
                 "ground) — plotted above the ground line"
             )
         if text not in seen:

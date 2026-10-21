@@ -1050,3 +1050,56 @@ def test_download_update_zip_caps_stream_without_content_length(
     with pytest.raises(ValueError, match="exceeded"):
         download_update_zip(result, timeout_s=5.0)
     assert not list(updates_dir().glob("*.zip"))
+
+
+def test_apply_accepts_pyinstaller6_layout_with_version_under_internal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PyInstaller 6 onedir keeps datas under _internal/; that VERSION satisfies the gate."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lad"))
+    monkeypatch.setattr("paths.is_frozen", lambda: True)
+    install = tmp_path / "CrossSectionStudio"
+    install.mkdir()
+    (install / "CrossSectionStudio.exe").write_bytes(b"MZ-old")
+
+    zip_path = tmp_path / "pyi6.zip"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("CrossSectionStudio.exe", b"MZ-new")
+        archive.writestr("_internal/VERSION", TEST_VERSION.encode("utf-8"))
+    zip_path.write_bytes(buf.getvalue())
+
+    apply_update_from_zip(
+        zip_path, install, expected_version=TEST_VERSION, wait_pid=0, relaunch=False
+    )
+    assert (install / "CrossSectionStudio.exe").read_bytes() == b"MZ-new"
+
+
+def test_apply_script_falls_back_to_internal_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lad"))
+    monkeypatch.setattr("paths.is_frozen", lambda: True)
+    zip_path = tmp_path / "update.zip"
+    _make_zip(zip_path)
+    install = tmp_path / "CrossSectionStudio"
+    install.mkdir()
+    script = _write_apply_script(
+        zip_path=zip_path,
+        target_install_dir=install,
+        wait_pid=0,
+        relaunch=False,
+        expected_version=TEST_VERSION,
+        expected_sha256="A" * 64,
+    )
+    body = script.read_text(encoding="utf-8-sig")
+    assert 'Join-Path (Join-Path $staging "_internal") "VERSION"' in body
+
+
+def test_build_script_puts_version_at_zip_root_and_checks_exit_codes() -> None:
+    text = (Path(__file__).resolve().parents[1] / "scripts" / "build_windows.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert 'Copy-Item -Path $VersionFile -Destination (Join-Path $OutDir "VERSION")' in text
+    assert text.count("$LASTEXITCODE -ne 0") >= 2
+    assert "UTF8Encoding($false)" in text

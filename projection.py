@@ -514,7 +514,10 @@ def _collar_orientation_rad(
     collar_rows = [reading for reading in sorted_readings if reading.depth <= 0.0]
     if collar_rows:
         top = collar_rows[-1]
-        return _deg_to_rad(top.inclination_deg), _deg_to_rad(top.azimuth_deg)
+        return (
+            _deg_to_rad(_inclination_from_vertical(top.inclination_deg)),
+            _deg_to_rad(top.azimuth_deg),
+        )
     return (
         _deg_to_rad(_collar_inclination_from_vertical(collar)),
         _deg_to_rad(collar.azimuth_deg or 0.0),
@@ -556,7 +559,7 @@ def build_minimum_curvature_survey(
     for reading in sorted_readings:
         if reading.depth <= prev_md:
             continue
-        inc = _deg_to_rad(reading.inclination_deg)
+        inc = _deg_to_rad(_inclination_from_vertical(reading.inclination_deg))
         azi = _deg_to_rad(reading.azimuth_deg)
         delta_n, delta_e, delta_tvd = _minimum_curvature_delta(
             prev_md, prev_inc, prev_azi, reading.depth, inc, azi
@@ -657,17 +660,21 @@ def densify_survey(stations: Sequence[_SurveyStation]) -> list[_SurveyStation]:
     return dense
 
 
-def _collar_inclination_from_vertical(collar: Collar) -> float:
-    """Collars-sheet inclination as degrees from vertical (0 = straight down).
+def _inclination_from_vertical(inc_deg: float | None) -> float:
+    """Inclination as degrees from vertical (0 = straight down).
 
     A negative angle is a mining-style dip (−90 = straight down, −60 = 30°
-    off vertical) and is converted, so a −90 collar stays vertical instead
-    of being drawn nearly horizontal.
+    off vertical) and is converted, so a −90 hole stays vertical instead of
+    being drawn nearly horizontal. Used for Collars and Deviations alike.
     """
-    inc = float(collar.inclination_deg or 0.0)
+    inc = float(inc_deg or 0.0)
     if -90.0 <= inc < 0.0:
         return 90.0 + inc
     return inc
+
+
+def _collar_inclination_from_vertical(collar: Collar) -> float:
+    return _inclination_from_vertical(collar.inclination_deg)
 
 
 def _collar_is_inclined(collar: Collar) -> bool:

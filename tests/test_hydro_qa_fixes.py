@@ -15,6 +15,7 @@ default kept in ``model_fields_set``, Validate gradients on along-section Δx.
 from __future__ import annotations
 
 import datetime
+import math
 from io import BytesIO
 
 import matplotlib
@@ -532,3 +533,51 @@ def test_validate_horizontal_gradient_uses_along_section_distance() -> None:
     plan = summarize_water_levels(collars, levels, ["MW-1", "MW-2"])
     assert any("Δx=64.0 m" in w for w in plan.warnings)
     assert any("plan distance between consecutive collars" in w for w in plan.warnings)
+
+
+def test_lab_flag_n_is_detected_in_qualifier_column_but_no_in_detected_column() -> None:
+    from chemistry_qc import classify_lab_qualifier
+    from parsing import _detect_flag
+
+    assert classify_lab_qualifier("N") == ("detected", False)
+    assert _detect_flag("N", "qualifier") is True
+    assert _detect_flag("N", "detected") is False
+    assert _detect_flag("no", "qualifier") is False
+
+
+def test_mining_style_dip_on_deviation_rows_is_converted() -> None:
+    from models import Collar, DeviationReading
+    from projection import build_along_hole_tvd
+
+    collar = Collar(
+        hole_id="M", easting=0.0, northing=0.0, elevation=100.0, total_depth=60.0,
+        inclination_deg=-90.0, azimuth_deg=0.0,
+    )
+    rows = [DeviationReading(hole_id="M", depth=d, inclination_deg=-90.0, azimuth_deg=0.0)
+            for d in (0.0, 50.0)]
+    tvd = build_along_hole_tvd([collar], rows).get("M")
+    assert tvd is None or abs(tvd.tvd_at(50.0) - 50.0) < 1e-6
+
+    dipping = [DeviationReading(hole_id="N", depth=d, inclination_deg=-60.0, azimuth_deg=90.0)
+               for d in (0.0, 50.0)]
+    collar_n = collar.model_copy(update={"hole_id": "N", "inclination_deg": -60.0, "azimuth_deg": 90.0})
+    got = build_along_hole_tvd([collar_n], dipping)["N"].tvd_at(40.0)
+    assert abs(got - 40.0 * math.cos(math.radians(30.0))) < 1e-6
+
+
+def test_validate_table_cells_escape_pipes() -> None:
+    from app_validate import _md_cell, _md_code_cell
+
+    assert _md_cell("BH|1") == "BH\\|1"
+    assert _md_code_cell("a`b|c") == "`a'b\\|c`"
+
+
+def test_manifest_with_bom_still_parses(tmp_path, monkeypatch) -> None:
+    import json
+
+    from app_version import fetch_release_manifest
+
+    monkeypatch.setenv("CROSS_SECTION_ALLOW_DEV_UPDATE", "1")
+    path = tmp_path / "release-manifest.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"version": "9.9.9"}).encode("utf-8"))
+    assert fetch_release_manifest(path.as_uri())["version"] == "9.9.9"

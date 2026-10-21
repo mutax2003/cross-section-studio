@@ -262,7 +262,12 @@ def _detect_flag(raw: object, column: str) -> bool | None:
     if not text:
         return None
     compact = " ".join(text.split())
-    if compact in _QUALIFIER_NON_DETECT or compact.replace(" ", "") in _QUALIFIER_NON_DETECT:
+    # In the qualifier column a bare "N" is the lab flag (tentatively
+    # identified, detected); in the detected column it means "no".
+    lab_flag_n = column == "qualifier" and compact == "n"
+    if not lab_flag_n and (
+        compact in _QUALIFIER_NON_DETECT or compact.replace(" ", "") in _QUALIFIER_NON_DETECT
+    ):
         return False
     if compact in _QUALIFIER_DETECTED:
         return True

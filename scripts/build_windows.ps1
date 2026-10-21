@@ -14,15 +14,21 @@ if (-not $Version) {
 
 Write-Host "Installing runtime and build dependencies..."
 python -m pip install -r requirements.txt -r requirements-build.txt -q
+if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed ($LASTEXITCODE)" }
 
 Write-Host "Running PyInstaller for v$Version (this may take several minutes)..."
 python -m PyInstaller cross_section_studio.spec --noconfirm --clean
+if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller failed ($LASTEXITCODE)" }
 
 $OutDir = Join-Path $Root "dist\CrossSectionStudio"
 $Exe = Join-Path $OutDir "CrossSectionStudio.exe"
 if (-not (Test-Path $Exe)) {
     Write-Error "Build failed: $Exe not found"
 }
+
+# PyInstaller 6 keeps datas under _internal/; the desktop updater (incl. builds
+# already in the field) checks VERSION at the zip root, so copy it there too.
+Copy-Item -Path $VersionFile -Destination (Join-Path $OutDir "VERSION") -Force
 
 $ZipName = "CrossSectionStudio-win64-v$Version.zip"
 $ZipPath = Join-Path $Root "dist\$ZipName"
@@ -65,7 +71,9 @@ $Manifest = [ordered]@{
     zip     = $ZipName
 }
 $ManifestPath = Join-Path $Root "dist\release-manifest.json"
-$Manifest | ConvertTo-Json -Depth 4 | Set-Content -Path $ManifestPath -Encoding utf8
+# UTF-8 without a BOM (Windows PowerShell 5.1's -Encoding utf8 adds one).
+$ManifestJson = $Manifest | ConvertTo-Json -Depth 4
+[System.IO.File]::WriteAllText($ManifestPath, $ManifestJson, (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Host ""
 Write-Host "Build complete."

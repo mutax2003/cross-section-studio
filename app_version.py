@@ -191,7 +191,7 @@ def fetch_release_manifest(
             raise ValueError(
                 f"Update manifest too large (> {MAX_UPDATE_MANIFEST_BYTES} bytes)"
             )
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
         payload = json.loads(text)
     else:
         request = urllib.request.Request(
@@ -205,7 +205,7 @@ def fetch_release_manifest(
             raise ValueError(
                 f"Update manifest too large (> {MAX_UPDATE_MANIFEST_BYTES} bytes)"
             )
-        payload = json.loads(raw.decode("utf-8"))
+        payload = json.loads(raw.decode("utf-8-sig"))  # tolerate a BOM
     if not isinstance(payload, dict):
         raise ValueError("manifest root must be a JSON object")
     return payload

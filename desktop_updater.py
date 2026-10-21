@@ -363,9 +363,15 @@ def _extract_zip_to(staging: Path, zip_path: Path) -> None:
 
 
 def _require_staging_version(staging: Path, expected_version: str) -> None:
-    """Require ``staging/VERSION`` (root only) to match ``expected_version``."""
+    """Require ``staging/VERSION`` to match ``expected_version``.
+
+    Builds put a copy at the zip root; PyInstaller 6 onedir zips without one
+    keep it under ``_internal/``, which is accepted as the fallback.
+    """
     want = _require_expected_version(expected_version)
     version_path = staging / "VERSION"
+    if not version_path.exists() and not version_path.is_symlink():
+        version_path = staging / "_internal" / "VERSION"
     if version_path.is_symlink():
         raise ValueError("Update zip VERSION must be a regular file (not a symlink)")
     if not version_path.is_file():
@@ -763,6 +769,9 @@ try {{
   }}
 
   $versionFile = Join-Path $staging "VERSION"
+  if (-not (Test-Path -LiteralPath $versionFile)) {{
+    $versionFile = Join-Path (Join-Path $staging "_internal") "VERSION"
+  }}
   if (-not (Test-Path -LiteralPath $versionFile)) {{
     throw "Update zip missing VERSION file"
   }}

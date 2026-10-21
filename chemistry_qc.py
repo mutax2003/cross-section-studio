@@ -38,7 +38,7 @@ QualifierKind = Literal["non_detect", "detected", "unknown"]
 
 QUALIFIER_NON_DETECT = frozenset(
     {"<", "nd", "n.d.", "n.d", "ndl", "u", "bdl", "not detected", "non-detect", "non detect",
-     "below detection limit", "below detection", "<rdl", "<dl", "<mdl", "no", "n", "false", "0"}
+     "below detection limit", "below detection", "<rdl", "<dl", "<mdl", "no", "false", "0"}
 )
 QUALIFIER_DETECTED = frozenset({"=", "detected", "yes", "y", "true", "1", "d"})
 # Letters of common detected-data lab flags (EPA CLP / Canadian lab reports).

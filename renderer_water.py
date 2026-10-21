@@ -17,6 +17,8 @@ from matplotlib.transforms import Bbox, offset_copy
 from hydro_metrics import (
     format_gradient_label,
     horizontal_gradients_along_profile,
+    latest_water_by_hole,
+    series_legend_date,
     water_status,
 )
 from models import WaterLevel
@@ -2470,7 +2472,8 @@ class RendererWaterMixin:
                     self._water_status_note(ax, hole_id, (float(x_profile), float(y)), "NM")
             # Draw each connect_group nest separately so shallow/deep do not join.
             for group_id, group_levels in _connect_subgroups(levels).items():
-                level_by_id = {item.hole_id: item for item in group_levels}
+                # One reading per hole: latest date wins (undated: last row).
+                level_by_id = latest_water_by_hole(group_levels)
                 xs: list[float] = []
                 water_rls: list[float] = []
                 collars: list[float] = []
@@ -2697,8 +2700,16 @@ class RendererWaterMixin:
                         if left_end is not None and right_end is not None:
                             # Its own segment: the label sits along it.
                             gradient_label._gradient_segment = (left_end, right_end)
+            caption_label = label
+            if not first.series_label:
+                # Unlabelled series from one monitoring event: name the date
+                # ("GROUNDWATER LEVEL (2026-04-02)"). Undated: unchanged.
+                legend_date = series_legend_date(levels)
+                if legend_date:
+                    base = "" if series_id == "default" else (default_label or series_id)
+                    caption_label = f"{base}, {legend_date}" if base else legend_date
             level_label_text, elevation_label_text = self._water_legend_captions(
-                series_id, label, default_label
+                series_id, caption_label, default_label
             )
             self.water_series_legend.append(
                 {

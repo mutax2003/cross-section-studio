@@ -12,11 +12,19 @@ depth. Renderer markers, labels, gradients and Validate QA all call it.
 
 from __future__ import annotations
 
+import datetime
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from models import Collar, DeviationReading, ScreenInterval, VerticalGradient, WaterLevel
+from models import (
+    Collar,
+    DeviationReading,
+    EnvironmentalReading,
+    ScreenInterval,
+    VerticalGradient,
+    WaterLevel,
+)
 
 # Warn when |Δh/Δx| exceeds this (dimensionless). Typical sand/gravel aquifers
 # are often 1e-4–1e-2; values above ~0.1 are usually data or unit errors.
@@ -65,6 +73,192 @@ def is_measured_water_level(level: WaterLevel) -> bool:
 
 
 MdToElevation = Callable[[float], float]
+
+
+# --- Monitoring-event dates -----------------------------------------------------
+#
+# Heads compared across time are not a potentiometric surface: one series
+# (and connect_group nest) should be one synoptic round. When a hole has
+# several readings in one series x nest, the LATEST date is used everywhere
+# (plot, dh/dx, nested iv, planar fit) -- ``prefer_water_reading`` is the one
+# rule; undated duplicates keep the historical "last row wins".
+
+# Readings of one series spanning more than this many days are flagged.
+DEFAULT_SYNOPTIC_WINDOW_DAYS = 7
+
+
+def reading_date(item: object) -> datetime.date | None:
+    """Optional ``date`` of a WaterLevel / EnvironmentalReading (``None`` when blank)."""
+    value = getattr(item, "date", None)
+    return value if isinstance(value, datetime.date) else None
+
+
+def prefer_water_reading(current: WaterLevel | None, candidate: WaterLevel) -> WaterLevel:
+    """Which of two readings of one hole × series × nest is used.
+
+    Later date wins; a dated reading is never displaced by an undated one; equal
+    or missing dates fall back to row order (the later row wins). Folding a
+    sequence with this rule gives the same answer for any row order whenever
+    the dates differ.
+    """
+    if current is None:
+        return candidate
+    current_date = reading_date(current)
+    candidate_date = reading_date(candidate)
+    if current_date is not None and candidate_date is not None:
+        return candidate if candidate_date >= current_date else current
+    if current_date is not None:
+        return current
+    return candidate
+
+
+def latest_water_by_hole(levels: Sequence[WaterLevel]) -> dict[str, WaterLevel]:
+    """``hole_id → reading`` for one series × nest (``prefer_water_reading``)."""
+    chosen: dict[str, WaterLevel] = {}
+    for level in levels:
+        chosen[level.hole_id] = prefer_water_reading(chosen.get(level.hole_id), level)
+    return chosen
+
+
+def date_range(
+    items: Sequence[object],
+) -> tuple[datetime.date, datetime.date] | None:
+    """(earliest, latest) ``date`` among *items*, or ``None`` when none is dated."""
+    dates = [d for d in (reading_date(item) for item in items) if d is not None]
+    if not dates:
+        return None
+    return min(dates), max(dates)
+
+
+def format_date_range(
+    span: tuple[datetime.date, datetime.date] | None, *, compact: bool = True
+) -> str:
+    """``2026-04-02`` / ``2026-04-02 to 04-04`` (compact, same year) / full ISO pair."""
+    if span is None:
+        return ""
+    start, end = span
+    if start == end:
+        return start.isoformat()
+    if compact and start.year == end.year:
+        return f"{start.isoformat()} to {end.strftime('%m-%d')}"
+    return f"{start.isoformat()} to {end.isoformat()}"
+
+
+def readings_date_qualifier(span: tuple[datetime.date, datetime.date] | None) -> str:
+    """`` (readings 2026-04-02 to 04-04)`` for QA notes; empty when undated."""
+    text = format_date_range(span)
+    return f" (readings {text})" if text else ""
+
+
+def series_legend_date(
+    levels: Sequence[WaterLevel],
+    *,
+    window_days: int = DEFAULT_SYNOPTIC_WINDOW_DAYS,
+) -> str:
+    """Date text for an unlabelled series' legend: one date or a tight range.
+
+    Empty when the series has a ``series_label``, an undated reading, or dates
+    spanning more than ``window_days`` -- the legend is then left unchanged.
+    """
+    if not levels or any(level.series_label for level in levels):
+        return ""
+    if any(reading_date(level) is None for level in levels):
+        return ""
+    span = date_range(levels)
+    if span is None or (span[1] - span[0]).days > window_days:
+        return ""
+    return format_date_range(span)
+
+
+def synoptic_date_warnings(
+    water_levels: Sequence[WaterLevel],
+    *,
+    window_days: int = DEFAULT_SYNOPTIC_WINDOW_DAYS,
+) -> tuple[list[str], list[str]]:
+    """(warnings, info) for series × nests that mix monitoring dates.
+
+    Warning: dated readings of one series / connect_group span more than
+    ``window_days``. Info: a series / nest mixes dated and undated readings.
+    Dry / NM rows count -- a round is a round.
+    """
+    groups: dict[tuple[str, str], list[WaterLevel]] = {}
+    labels: dict[str, str] = {}
+    for level in water_levels:
+        series_id = level.series_id or "default"
+        groups.setdefault((series_id, (level.connect_group or "").strip()), []).append(level)
+        if level.series_label and series_id not in labels:
+            labels[series_id] = level.series_label
+    warnings: list[str] = []
+    info: list[str] = []
+    for (series_id, group), levels in sorted(groups.items()):
+        name = labels.get(series_id) or series_id
+        nest = f" [{group}]" if group else ""
+        span = date_range(levels)
+        if span is None:
+            continue
+        days = (span[1] - span[0]).days
+        if days > window_days:
+            warnings.append(
+                f"Series '{name}'{nest} mixes readings from {span[0].isoformat()} to "
+                f"{span[1].isoformat()} ({days} days) — heads from different dates are not "
+                "one potentiometric surface; split the series by monitoring event."
+            )
+        undated = sorted({level.hole_id for level in levels if reading_date(level) is None})
+        if undated:
+            info.append(
+                f"Series '{name}'{nest} mixes dated ({format_date_range(span)}) and undated "
+                f"readings ({', '.join(undated)}) — confirm they are one monitoring event."
+            )
+    return warnings, info
+
+
+def environmental_sample_key(
+    reading: EnvironmentalReading,
+) -> tuple[str, str, float | None, float | None, float | None]:
+    """Hole / parameter / depth (point or interval) identity of a lab sample."""
+    return (
+        reading.hole_id,
+        reading.parameter.strip().casefold(),
+        reading.depth,
+        reading.from_depth,
+        reading.to_depth,
+    )
+
+
+def latest_environmental_readings(
+    readings: Sequence[EnvironmentalReading],
+) -> tuple[tuple[EnvironmentalReading, ...], tuple[str, ...]]:
+    """Keep the latest sample where one hole/parameter/depth has several dates.
+
+    Returns ``(readings to plot, notes)``. A sample point with two or more
+    distinct dates keeps only the rows at its latest date (undated rows there
+    are dropped too); undated duplicates are left as before. Notes read
+    ``"BH-2 benzene at 3 m: 3 sampling dates, latest (2026-05-01) shown"``.
+    """
+    groups: dict[tuple[str, str, float | None, float | None, float | None], list[int]] = {}
+    for index, reading in enumerate(readings):
+        groups.setdefault(environmental_sample_key(reading), []).append(index)
+    dropped: set[int] = set()
+    notes: list[str] = []
+    for indices in groups.values():
+        dates = {reading_date(readings[i]) for i in indices} - {None}
+        if len(dates) < 2:
+            continue
+        latest = max(dates)  # type: ignore[type-var]
+        dropped.update(i for i in indices if reading_date(readings[i]) != latest)
+        first = readings[indices[0]]
+        if first.depth is not None:
+            where = f" at {first.depth:g} m"
+        else:
+            where = f" at {first.from_depth:g}–{first.to_depth:g} m"
+        notes.append(
+            f"{first.hole_id} {first.parameter}{where}: {len(dates)} sampling dates, "
+            f"latest ({latest.isoformat()}) shown"
+        )
+    if not dropped:
+        return tuple(readings), tuple(notes)
+    kept = tuple(reading for i, reading in enumerate(readings) if i not in dropped)
+    return kept, tuple(notes)
 
 
 def water_depth_along_hole_bgs(level: WaterLevel, stick_up_m: float | None = None) -> float:
@@ -166,9 +360,8 @@ def horizontal_gradients_along_profile(
             continue
         filtered.append(level)
 
-    by_hole: dict[str, WaterLevel] = {}
-    for level in filtered:
-        by_hole[level.hole_id] = level  # last wins (matches plot behaviour)
+    # Latest date wins per hole (undated: last row) -- matches the plot.
+    by_hole = latest_water_by_hole(filtered)
 
     ordered_ids = [hid for hid in hole_order if hid in by_hole]
     segments: list[HorizontalGradientSegment] = []
@@ -272,6 +465,9 @@ class NestedVerticalGradient:
     z_mid_deep_masl: float
     gradient: float  # iv; > 0 downward (recharge), < 0 upward (discharge)
     plan_distance_m: float
+    # Monitoring dates of the two readings (``None`` when undated).
+    date_shallow: datetime.date | None = None
+    date_deep: datetime.date | None = None
 
     @property
     def delta_h_m(self) -> float:
@@ -415,6 +611,7 @@ class _WellPoint:
     head: float
     z_top: float
     z_bottom: float
+    date: datetime.date | None = None
 
     @property
     def z_mid(self) -> float:
@@ -450,7 +647,8 @@ def nested_vertical_gradients(
     for screen in screen_intervals:
         screens_by_hole.setdefault(screen.hole_id, []).append(screen)
 
-    # Last reading per series × hole × connect_group (matches the plot).
+    # One reading per series × hole × connect_group: latest date wins
+    # (undated: last row) -- matches the plot.
     readings: dict[tuple[str, str, str], WaterLevel] = {}
     for level in water_levels:
         if not is_measured_water_level(level):
@@ -458,7 +656,7 @@ def nested_vertical_gradients(
         if level.hole_id not in collar_rl_by_hole or level.hole_id not in screens_by_hole:
             continue
         key = (level.series_id or "default", level.hole_id, (level.connect_group or "").strip())
-        readings[key] = level
+        readings[key] = prefer_water_reading(readings.get(key), level)
 
     groups_by_hole: dict[str, set[str]] = {}
     for _series, hole_id, group in readings:
@@ -483,7 +681,7 @@ def nested_vertical_gradients(
         head = water_head_masl(level, collar_rl, stick_up_m=stick_ups.get(hole_id), md_to_elevation=md_fn)
         z_top, z_bottom = screen_elevation_range(screen, collar_rl, md_fn)
         points_by_series.setdefault(series_id, []).append(
-            _WellPoint(hole_id, group, head, z_top, z_bottom)
+            _WellPoint(hole_id, group, head, z_top, z_bottom, reading_date(level))
         )
 
     gradients: list[NestedVerticalGradient] = []
@@ -521,6 +719,8 @@ def nested_vertical_gradients(
                         z_mid_deep_masl=deep.z_mid,
                         gradient=(shallow.head - deep.head) / dz,
                         plan_distance_m=distance,
+                        date_shallow=shallow.date,
+                        date_deep=deep.date,
                     )
                 )
     return VerticalGradientAnalysis(gradients=tuple(gradients), notes=tuple(notes))
@@ -533,10 +733,12 @@ def format_vertical_gradient_note(gradient: NestedVerticalGradient) -> str:
         "up": "upward (discharge)",
     }.get(gradient.direction, "no clear vertical flow")
     series = "" if gradient.series_id == "default" else f" ({gradient.series_id})"
+    dated = [d for d in (gradient.date_shallow, gradient.date_deep) if d is not None]
+    when = readings_date_qualifier((min(dated), max(dated)) if dated else None)
     return (
         f"Vertical gradient {gradient.nest_label}{series}: iv={gradient.gradient:+.3f} "
         f"{sense} — Δh={gradient.delta_h_m:+.2f} m over Δz={gradient.delta_z_m:.2f} m "
-        "between screen mid-points"
+        f"between screen mid-points{when}"
     )
 
 
@@ -610,6 +812,7 @@ class HeadPoint:
     easting: float
     northing: float
     head_masl: float
+    date: datetime.date | None = None  # monitoring date of the reading used
 
 
 @dataclass(frozen=True)
@@ -779,7 +982,8 @@ def head_points_by_group(
     """Measured heads grouped by ``(series_id, connect_group)`` → ``(label, points)``.
 
     Same grouping as the renderer (blank connect_group = one shared nest);
-    dry / NM readings are excluded and the last reading per hole wins. Heads
+    dry / NM readings are excluded and the latest-dated reading per hole wins
+    (undated: the last row -- ``prefer_water_reading``). Heads
     come from ``water_head_masl`` (btoc stick-up; surveyed holes at TVD).
     Plan position is the collar easting/northing.
     """
@@ -793,7 +997,10 @@ def head_points_by_group(
         if not is_measured_water_level(level) or level.hole_id not in collar_by_id:
             continue
         key = (level.series_id or "default", (level.connect_group or "").strip())
-        grouped.setdefault(key, {})[level.hole_id] = level  # last wins
+        by_hole_group = grouped.setdefault(key, {})
+        by_hole_group[level.hole_id] = prefer_water_reading(
+            by_hole_group.get(level.hole_id), level
+        )
         if level.series_label and key not in labels:
             labels[key] = level.series_label
     result: dict[tuple[str, str], tuple[str, list[HeadPoint]]] = {}
@@ -812,7 +1019,13 @@ def head_points_by_group(
             if not math.isfinite(head):
                 continue
             points.append(
-                HeadPoint(hole_id, float(collar.easting), float(collar.northing), head)
+                HeadPoint(
+                    hole_id,
+                    float(collar.easting),
+                    float(collar.northing),
+                    head,
+                    reading_date(level),
+                )
             )
         result[key] = (labels.get(key, ""), points)
     return result
@@ -907,12 +1120,19 @@ def groundwater_flow_note(
     relation: SectionFlowRelation | None,
     *,
     include_series: bool = False,
+    dates: tuple[datetime.date, datetime.date] | None = None,
 ) -> str | None:
-    """One figure QA line for a usable fit; ``None`` for collinear wells."""
+    """One figure QA line for a usable fit; ``None`` for collinear wells.
+
+    ``dates`` (earliest, latest reading used) adds a short qualifier such as
+    ``readings 2026-04-02 to 04-04``; the text is unchanged without it.
+    """
     if not fit.usable:
         return None
     series = f", {fit.display_label}" if include_series else ""
-    text = f"Groundwater flow ({fit.method}, {fit.n_wells} wells{series}): "
+    when = format_date_range(dates)
+    when = f", readings {when}" if when else ""
+    text = f"Groundwater flow ({fit.method}, {fit.n_wells} wells{series}{when}): "
     if fit.flow_azimuth_deg is None:
         return text + "heads are flat — no measurable plan-view gradient."
     text += f"{format_flow_direction(fit)}, i = {fit.gradient:.2g}"
@@ -938,19 +1158,28 @@ def groundwater_flow_notes(
     *,
     deviation_readings: Sequence[DeviationReading] | None = None,
 ) -> tuple[str, ...]:
-    """Figure QA lines for every series / nest with ≥3 non-collinear wells."""
-    fits = [
-        fit
-        for fit in fit_head_planes(collars, water_levels, deviation_readings=deviation_readings)
-        if fit.usable
-    ]
-    include_series = len(fits) > 1
+    """Figure QA lines for every series / nest with ≥3 non-collinear wells.
+
+    When the readings used are dated, each line names their date range.
+    """
+    grouped = head_points_by_group(
+        collars, water_levels, deviation_readings=deviation_readings
+    )
+    fitted: list[tuple[HeadPlaneFit, tuple[datetime.date, datetime.date] | None]] = []
+    for (series_id, group), (label, points) in grouped.items():
+        fit = fit_head_plane(
+            points, series_id=series_id, connect_group=group, series_label=label
+        )
+        if fit is not None and fit.usable:
+            fitted.append((fit, date_range(points)))
+    include_series = len(fitted) > 1
     notes: list[str] = []
-    for fit in fits:
+    for fit, dates in fitted:
         note = groundwater_flow_note(
             fit,
             section_flow_relation(fit, section_azimuth_deg),
             include_series=include_series,
+            dates=dates,
         )
         if note:
             notes.append(note)

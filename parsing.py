@@ -325,8 +325,8 @@ def _row_error(sheet: str, row_num: int, exc: Exception, *, hole_id: object = No
             "use green, red, black or orange."
         )
 
-    if message.startswith(("value = ", "qualifier = ", "detected = ")):
-        # Non-detect / qualifier messages already name the cell and the fix.
+    if message.startswith(("value = ", "qualifier = ", "detected = ", "date = ")):
+        # Non-detect / qualifier / date messages already name the cell and the fix.
         return f"{where}, {message}"
 
     whole_number = "must be an integer" in lowered or "whole number" in lowered
@@ -947,6 +947,7 @@ class DataParser:
                     "connect_group",
                     "status",
                     "depth_reference",
+                    "date",
                 ):
                     if hasattr(row, col):
                         payload[col] = getattr(row, col)

@@ -22,6 +22,7 @@ from constants import (
 from export_framing import ExportFramingConfig, merge_framing_into_profile_updates
 from hydro_metrics import (
     format_vertical_gradient_note,
+    latest_environmental_readings,
     nested_vertical_gradients,
     vertical_gradient_arrow_conflicts,
 )
@@ -578,6 +579,29 @@ def build_cross_section(
     )
 
 
+def _latest_chemistry_samples(
+    readings: Sequence[EnvironmentalReading],
+    hole_ids: Sequence[str],
+    parameters: Sequence[str] | None,
+) -> tuple[tuple[EnvironmentalReading, ...], tuple[str, ...]]:
+    """Latest dated sample per hole/parameter/depth, plus QA notes for the drawn ones.
+
+    Notes are limited to holes on the section and the selected parameters;
+    without dates (or with undated duplicates only) readings pass unchanged.
+    """
+    if not readings:
+        return tuple(readings), ()
+    kept, _all_notes = latest_environmental_readings(readings)
+    active = {name.strip() for name in (parameters or ()) if name.strip()}
+    if not active:
+        return kept, ()
+    on_section = set(hole_ids)
+    _drawn, notes = latest_environmental_readings(
+        [r for r in readings if r.hole_id in on_section and r.parameter.strip() in active]
+    )
+    return kept, notes
+
+
 def vertical_gradient_qa_notes(
     geometry: SectionGeometry,
     water_levels: Sequence[WaterLevel],
@@ -710,6 +734,9 @@ def render_cross_section_from_geometry(
         tuple(selected_water_series_ids) if selected_water_series_ids else None,
         max_series=MAX_WATER_SERIES,
     )
+    environmental_readings, chemistry_date_notes = _latest_chemistry_samples(
+        environmental_readings or (), projected_hole_ids, environmental_parameters
+    )
 
     metadata = figure_metadata or SectionFigureMetadata(
         vertical_exaggeration=vertical_exaggeration,
@@ -840,7 +867,9 @@ def render_cross_section_from_geometry(
     # Plan-view flow (planar head fit) only matters when water is drawn; the
     # lines are QA text, never geometry (post-cache, outside the cache key).
     flow_notes = tuple(groundwater_flow_notes or ()) if plotted_water else ()
-    qa_lines = tuple(overlap_warnings) + flow_notes
+    if not chemistry_plotted:
+        chemistry_date_notes = ()
+    qa_lines = tuple(overlap_warnings) + flow_notes + chemistry_date_notes
     if export_framing is not None and not export_framing.include_qa_footer:
         qa_lines = ()
     # Scrub XML-1.0-illegal control characters so the SVG backend cannot emit
@@ -932,6 +961,8 @@ def render_cross_section_from_geometry(
             vertical_gradients or (),
         )
         qa_notes = qa_notes + flow_notes
+        # Several dated samples at one hole/parameter/depth: the latest is drawn.
+        qa_notes = qa_notes + chemistry_date_notes
         # Surface them with the other section notes the app shows after Generate.
         overlap_warnings = tuple(overlap_warnings) + qa_notes
         retained: dict[str, object] | None = None

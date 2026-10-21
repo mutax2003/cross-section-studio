@@ -20,14 +20,19 @@ from chemistry_qc import mixed_unit_warnings, rdl_above_guideline_notes
 from constants import CANONICAL_LITHOLOGY_CODES
 from hydro_metrics import (
     DEFAULT_NEST_DISTANCE_M,
+    DEFAULT_SYNOPTIC_WINDOW_DAYS,
     NestedVerticalGradient,
     absurd_horizontal_gradient_warnings,
     assign_screens_to_connect_groups,
     format_vertical_gradient_note,
     horizontal_gradients_along_profile,
     is_measured_water_level,
+    latest_environmental_readings,
+    latest_water_by_hole,
     nested_vertical_gradients,
+    reading_date,
     screen_elevation_range,
+    synoptic_date_warnings,
     vertical_gradient_arrow_conflicts,
     water_depth_along_hole_bgs,
     water_head_masl,
@@ -754,6 +759,7 @@ def summarize_water_levels(
     lithologies: Sequence[Lithology] | None = None,
     vertical_gradients: Sequence[VerticalGradient] | None = None,
     nest_distance_m: float = DEFAULT_NEST_DISTANCE_M,
+    synoptic_window_days: int = DEFAULT_SYNOPTIC_WINDOW_DAYS,
 ) -> WaterQualitySummary:
     """Summarize groundwater coverage for Validate UI and QA heuristics.
 
@@ -768,6 +774,11 @@ def summarize_water_levels(
     dry screens and — with ``lithologies`` — connected water lines joining
     wells screened in different units; ``vertical_gradients`` (user arrows)
     are cross-checked against the computed heads.
+
+    Monitoring dates: a series / nest whose dated readings span more than
+    ``synoptic_window_days`` is warned (not one potentiometric surface); a
+    dated + undated mix is information. Duplicate readings of one hole ×
+    series × nest use the latest date (``hydro_metrics.prefer_water_reading``).
     """
     transect_holes = tuple(hole_ids_on_transect)
     hole_set = set(transect_holes)
@@ -775,7 +786,7 @@ def summarize_water_levels(
     warnings: list[str] = []
     by_series: dict[str, list[WaterLevel]] = {}
     # Deduplicate per hole × series × connect_group nest (blank nest = shared polyline).
-    seen_keys: set[tuple[str, str, str]] = set()
+    readings_by_key: dict[tuple[str, str, str], list[WaterLevel]] = {}
     holes_with_any: set[str] = set()
     orphan_ids: set[str] = set()
     masl_on_placeholder = False
@@ -784,13 +795,7 @@ def summarize_water_levels(
         series_id = level.series_id or "default"
         connect_group = (level.connect_group or "").strip()
         key = (level.hole_id, series_id, connect_group)
-        if key in seen_keys:
-            nest_note = f", nest {connect_group}" if connect_group else ""
-            warnings.append(
-                f"{level.hole_id} ({series_id}{nest_note}): duplicate groundwater reading — "
-                "last value is used on the section"
-            )
-        seen_keys.add(key)
+        readings_by_key.setdefault(key, []).append(level)
         if level.hole_id not in hole_set:
             orphan_ids.add(level.hole_id)
             continue
@@ -817,6 +822,11 @@ def summarize_water_levels(
         ):
             masl_on_placeholder = True
 
+    warnings[0:0] = _duplicate_water_reading_warnings(readings_by_key)
+    synoptic_warnings, synoptic_info = synoptic_date_warnings(
+        water_levels, window_days=synoptic_window_days
+    )
+    warnings.extend(synoptic_warnings)
     if btoc_without_stick_up:
         warnings.append(
             "Water depths below top of casing (depth_reference = btoc) on "
@@ -903,7 +913,7 @@ def summarize_water_levels(
             )
 
     on_section = [level for levels in by_series.values() for level in levels]
-    notes: list[str] = []
+    notes: list[str] = list(synoptic_info)
     notes.extend(
         _artesian_notes(on_section, collar_by_id, stick_up_by_hole, md_to_elevation_by_hole)
     )
@@ -954,6 +964,42 @@ def summarize_water_levels(
         vertical_gradients=nested,
         notes=tuple(notes),
     )
+
+
+def _duplicate_water_reading_warnings(
+    readings_by_key: Mapping[tuple[str, str, str], Sequence[WaterLevel]],
+) -> list[str]:
+    """Duplicate readings per hole × series × nest and which one the section uses."""
+    warnings: list[str] = []
+    for (hole_id, series_id, connect_group), group in readings_by_key.items():
+        if len(group) < 2:
+            continue
+        nest_note = f", nest {connect_group}" if connect_group else ""
+        where = f"{hole_id} ({series_id}{nest_note})"
+        dates = sorted({d for d in (reading_date(level) for level in group) if d is not None})
+        if not dates:
+            warnings.extend(
+                f"{where}: duplicate groundwater reading — last value is used on the section"
+                for _ in group[1:]
+            )
+            continue
+        chosen_date = reading_date(latest_water_by_hole(group)[hole_id])
+        assert chosen_date is not None
+        if len(dates) == 1 and all(reading_date(level) is not None for level in group):
+            warnings.append(
+                f"{where}: duplicate groundwater reading — {len(group)} readings on "
+                f"{chosen_date.isoformat()}; last value is used on the section"
+            )
+            continue
+        listed = ", ".join(d.isoformat() for d in dates)
+        undated = sum(1 for level in group if reading_date(level) is None)
+        undated_note = f" (+{undated} undated)" if undated else ""
+        warnings.append(
+            f"{where}: duplicate groundwater reading — {len(group)} readings dated "
+            f"{listed}{undated_note}; the latest ({chosen_date.isoformat()}) is used on the "
+            "section, gradients and flow fit (by date, not row order)"
+        )
+    return warnings
 
 
 def _head_and_md_fn(
@@ -1207,6 +1253,9 @@ def summarize_environmental_readings(
         )
 
     on_line = [item for items in by_parameter.values() for item in items]
+    # Several dated samples at one hole/parameter/depth: the figure draws the latest.
+    _latest, date_notes = latest_environmental_readings(on_line)
+    warnings.extend(f"Info: {note}" for note in date_notes)
     warnings.extend(mixed_unit_warnings(on_line))
     if thresholds is None:
         thresholds = chemistry_thresholds_from_readings(readings)

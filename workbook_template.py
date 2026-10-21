@@ -77,6 +77,7 @@ WATER_COLUMNS = (
     "series_label",
     "connect_group",
     "depth_reference",
+    "date",
 )
 ENVIRONMENTAL_COLUMNS = (
     "hole_id",
@@ -92,6 +93,7 @@ ENVIRONMENTAL_COLUMNS = (
     "label_color",
     "green_max",
     "orange_max",
+    "date",
 )
 LABEL_COLOR_CHOICES = LABEL_COLOR_NAMES
 SCREEN_COLUMNS = ("hole_id", "from_depth", "to_depth")
@@ -246,6 +248,7 @@ def _sample_water() -> list[dict[str, object]]:
             "series_label": "June 2025",
             "connect_group": "shallow",
             "depth_reference": "bgs",
+            "date": "2025-06-12",
         },
         {
             "hole_id": "MW-02",
@@ -256,6 +259,7 @@ def _sample_water() -> list[dict[str, object]]:
             "series_label": "June 2025",
             "connect_group": "shallow",
             "depth_reference": "bgs",
+            "date": "2025-06-12",
         },
         {
             "hole_id": "MW-03",
@@ -266,6 +270,7 @@ def _sample_water() -> list[dict[str, object]]:
             "series_label": "June 2025",
             "connect_group": "shallow",
             "depth_reference": "bgs",
+            "date": "2025-06-12",
         },
         {
             "hole_id": "MW-01",
@@ -276,6 +281,7 @@ def _sample_water() -> list[dict[str, object]]:
             "series_label": "June 2025 deep",
             "connect_group": "deep",
             "depth_reference": "bgs",
+            "date": "2025-06-12",
         },
         {
             "hole_id": "MW-03",
@@ -286,6 +292,7 @@ def _sample_water() -> list[dict[str, object]]:
             "series_label": "June 2025 deep",
             "connect_group": "deep",
             "depth_reference": "bgs",
+            "date": "2025-06-12",
         },
         {
             "hole_id": "MW-02",
@@ -296,6 +303,7 @@ def _sample_water() -> list[dict[str, object]]:
             "series_label": "June 2025",
             "connect_group": "deep",
             "depth_reference": "bgs",
+            "date": "2025-06-12",
         },
     ]
 
@@ -406,6 +414,7 @@ def _column_hints() -> dict[str, dict[str, str]]:
             "series_label": "Optional legend label (e.g. June 2025)",
             "connect_group": "Optional nest id (e.g. shallow/deep) — only same group connects",
             "depth_reference": "Optional: bgs (below ground, default) or btoc (below top of casing; uses Collars.stick_up_m)",
+            "date": "Optional monitoring date (YYYY-MM-DD or an Excel date). Keep one series to one event — heads from different dates are not one surface",
         },
         ENVIRONMENTAL_SHEET: {
             "hole_id": "Must match Collars.hole_id",
@@ -420,6 +429,7 @@ def _column_hints() -> dict[str, dict[str, str]]:
             "green_max": "Optional: this parameter's green limit (values <= print green), same units as value",
             "orange_max": "Optional: this parameter's orange limit (above green, <= this prints orange; higher red)",
             "qualifier": "Optional: < (or ND) = not detected, value is the detection limit; blank = measured",
+            "date": "Optional sampling date (YYYY-MM-DD or an Excel date); several dates at one hole/parameter/depth → latest plotted",
         },
         SCREENS_SHEET: {
             "hole_id": "Must match Collars.hole_id",
@@ -483,6 +493,7 @@ def _instructions_lines() -> list[str]:
         "• value_label is optional display text on the figure (e.g. <5 mg/L); it wins over the printed value.",
         "• label_color is optional: green, red, black or orange (one fixed colour each; blue is reserved for groundwater). Blank = black, or G/O/R thresholds if set on Configure.",
         "• green_max / orange_max are optional per-parameter limits in the parameter's own units (fill one row per parameter, e.g. Chloride 100 / 250, Benzene 0.5 / 5). Configure seeds its threshold editor from them; parameters without limits use the sheet-wide defaults.",
+        "• date is optional (YYYY-MM-DD or an Excel date cell). When one hole/parameter/depth has several dated samples, the latest is plotted and the QA notes say how many dates exist.",
         "• Select parameters on Configure after upload.",
         "",
         "WATER RULES",
@@ -490,6 +501,7 @@ def _instructions_lines() -> list[str]:
         "• connect_group links shallow/deep nest readings — only the same group connects.",
         "• status: measured (default), dry, or nm. Dry/nm rows may omit depth/elevation_masl.",
         "• depth_reference: bgs (default — depth below ground) or btoc (depth below top of casing; head = collar + Collars.stick_up_m − depth). Depths are along the hole: surveyed (Deviations) holes are converted to true vertical depth.",
+        "• date (optional, YYYY-MM-DD or an Excel date): keep each series to one monitoring event. Validate warns when a series spans more than 7 days; when a hole has two readings in one series/nest, the latest date is plotted.",
         "",
         f"COMMON LITHOLOGY CODES: {lithology_list}",
         "",
@@ -500,6 +512,11 @@ def _instructions_lines() -> list[str]:
         "• Filter and freeze panes are enabled on data tabs for easier entry.",
         "• See docs/workbook-format.md for advanced sheets (Deviations, Correlations, Faults).",
     ]
+
+
+def _iso_date(value: object) -> str:
+    """Export cell for an optional monitoring date: ISO text, or blank."""
+    return value.isoformat() if hasattr(value, "isoformat") and value is not None else ""
 
 
 def _blank_rows(count: int, columns: tuple[str, ...]) -> list[dict[str, object]]:
@@ -1121,6 +1138,7 @@ def export_cleaned_workbook_bytes(
             level.depth,
             level.elevation_masl,
             getattr(level, "depth_reference", "bgs"),
+            getattr(level, "date", None),
         )
         if key in seen_water:
             continue
@@ -1146,6 +1164,7 @@ def export_cleaned_workbook_bytes(
                 "series_label": level.series_label or "",
                 "connect_group": level.connect_group or "",
                 "depth_reference": getattr(level, "depth_reference", "bgs") or "bgs",
+                "date": _iso_date(getattr(level, "date", None)),
             }
         )
     for field in ("color", "marker"):
@@ -1172,6 +1191,7 @@ def export_cleaned_workbook_bytes(
             "label_color": reading.label_color or "",
             "green_max": reading.green_max if reading.green_max is not None else "",
             "orange_max": reading.orange_max if reading.orange_max is not None else "",
+            "date": _iso_date(getattr(reading, "date", None)),
         }
         for reading in parse_result.environmental_readings
     ]

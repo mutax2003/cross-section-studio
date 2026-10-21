@@ -249,7 +249,8 @@ def _two_parameter_workbook_bytes(section_label: str = "A-A'") -> bytes:
         build_input_template_bytes,
     )
 
-    assert ("green_max", "orange_max") == ENVIRONMENTAL_COLUMNS[-2:]
+    # Limits stay just before the optional sampling ``date`` (appended last).
+    assert ("green_max", "orange_max", "date") == ENVIRONMENTAL_COLUMNS[-3:]
     book = openpyxl.load_workbook(BytesIO(build_input_template_bytes()))
 
     def replace(sheet, columns, rows):

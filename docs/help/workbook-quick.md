@@ -37,7 +37,7 @@ The first two count as warnings (fix them, or tick **Generate even if data check
 
 | Sheet | Purpose |
 |-------|---------|
-| **Water** | Groundwater markers (`depth` **or** `elevation_masl`, not both). Optional `status` (`measured` / `dry` / `nm`), series columns for multi-date snapshots, and `depth_reference`: `bgs` (default, depth below ground) or `btoc` (depth below top of casing — head = collar + Collars `stick_up_m` − depth; blank stick-up counts as 0 m and Validate warns). Depths are along the hole: surveyed holes (Deviations) plot water, screens and chemistry at true vertical depth, like the lithology; depth-mode labels show vertical depth below ground. |
+| **Water** | Groundwater markers (`depth` **or** `elevation_masl`, not both). Optional `status` (`measured` / `dry` / `nm`), series columns for multi-date snapshots, and `depth_reference`: `bgs` (default, depth below ground) or `btoc` (depth below top of casing — head = collar + Collars `stick_up_m` − depth; blank stick-up counts as 0 m and Validate warns). Depths are along the hole: surveyed holes (Deviations) plot water, screens and chemistry at true vertical depth, like the lithology; depth-mode labels show vertical depth below ground. Optional `date` (YYYY-MM-DD or an Excel date): keep one series to one monitoring event — Validate warns when a series spans more than 7 days, and duplicate readings use the latest date. |
 | **Screens** | Screen interval hatch bands (consulting layout) |
 | **Gradients** | Vertical gradient arrows (`up` / `down`) |
 | **Environmental** | Lab/screening values at depth or interval — pick parameters on **Configure** |

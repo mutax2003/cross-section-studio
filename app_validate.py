@@ -27,6 +27,14 @@ from parsing import skipped_row_hole_ids
 from ui_helpers import unique_download_bytes
 
 
+def _show_qa_message(message: str) -> None:
+    """``Info:`` lines (artesian heads, dated samples, …) as info, the rest as warnings."""
+    if message.startswith("Info: "):
+        st.info(message.removeprefix("Info: "))
+    else:
+        st.warning(message)
+
+
 def _render_fix_step_actions(
     step: Any,
     *,
@@ -237,7 +245,7 @@ def _render_validate_details(
                     + ", ".join(water_summary.holes_without_any_water)
                 )
             for message in water_summary.warnings:
-                st.warning(message)
+                _show_qa_message(message)
             _render_groundwater_flow(parse_result, section_points)
 
     if parse_result.screen_intervals:
@@ -300,7 +308,7 @@ def _render_validate_details(
                     + ", ".join(env_summary.holes_without_any_readings)
                 )
             for message in env_summary.warnings:
-                st.warning(message)
+                _show_qa_message(message)
 
     if quality_report.issues:
         st.markdown("**Fix coach**")

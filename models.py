@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import math
 import re
 from typing import Literal
@@ -25,6 +26,7 @@ WATER_OPTIONAL_COLUMNS = frozenset(
         "elevation_masl",
         "connect_group",
         "status",
+        "date",
     }
 )
 SCREEN_COLUMNS = {"hole_id", "from_depth", "to_depth"}
@@ -46,6 +48,64 @@ def _clean_text(value: object) -> str:
         # cleaned export it would execute in Excel.
         raise ValueError(f"text cannot start with '=' (formula): {text[:40]!r}")
     return text
+
+
+# Excel serial day 0 (the 1900 leap-year bug makes 1899-12-30 the practical
+# epoch for every serial after 1900-03-01).
+_EXCEL_EPOCH = datetime.date(1899, 12, 30)
+# Serials 20000–80000 cover 1954-10-03 to 2119-01-10: plausible monitoring
+# dates; anything outside is far more likely a mis-typed number.
+_EXCEL_SERIAL_RANGE = (20000.0, 80000.0)
+_ISO_DATE_RE = re.compile(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T].*)?$")
+
+
+def parse_monitoring_date(value: object) -> datetime.date | None:
+    """Monitoring-event date from a workbook cell (blank → ``None``).
+
+    Accepts Excel date cells (``datetime`` / ``pandas.Timestamp``), Excel serial
+    numbers, and ISO text (``2026-04-02``, ``2026/04/02``, ``2026-04-02 10:30``).
+    Day-first / month-first text such as ``02/04/2026`` is ambiguous and is
+    rejected with a message asking for ISO ``YYYY-MM-DD``.
+    """
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    if value is pd.NaT:
+        return None
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return None
+        return value.date()
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    if isinstance(value, bool):
+        raise ValueError(f"date = '{value}' — enter a date as YYYY-MM-DD (e.g. 2026-04-02) or leave it blank.")
+    if isinstance(value, (int, float)):
+        serial = float(value)
+        low, high = _EXCEL_SERIAL_RANGE
+        if math.isfinite(serial) and low <= serial <= high:
+            return _EXCEL_EPOCH + datetime.timedelta(days=int(serial))
+        raise ValueError(
+            f"date = '{value}' — not a date; enter it as YYYY-MM-DD (e.g. 2026-04-02), "
+            "format the cell as a date, or leave it blank."
+        )
+    text = _XML_ILLEGAL.sub("", str(value)).strip()
+    if not text or text.lower() in {"nan", "nat", "none"}:
+        return None
+    match = _ISO_DATE_RE.match(text)
+    if match:
+        try:
+            return datetime.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            pass
+    shown = text[:40]
+    raise ValueError(
+        f"date = '{shown}' — enter the monitoring date as YYYY-MM-DD (e.g. 2026-04-02), "
+        "format the cell as a date, or leave it blank."
+    )
 
 
 _COLLAR_LIMITS = {"easting": 1e9, "northing": 1e9, "elevation": 1e5, "total_depth": 1e5}
@@ -229,6 +289,14 @@ class WaterLevel(BaseModel, frozen=True):
     # Datum of ``depth``: "bgs" = metres below ground surface (default) or
     # "btoc" = metres below top of casing (head = collar + stick-up − depth).
     depth_reference: str = "bgs"
+    # Monitoring-event date (optional). Heads from different dates are not one
+    # potentiometric surface — see hydro_metrics.series_date_range.
+    date: datetime.date | None = None
+
+    @field_validator("date", mode="before")
+    @classmethod
+    def parse_date(cls, value: object) -> datetime.date | None:
+        return parse_monitoring_date(value)
 
     @field_validator("depth_reference", mode="before")
     @classmethod
@@ -421,6 +489,14 @@ class EnvironmentalReading(BaseModel, frozen=True):
     # (RDL) and the figure prints "<5". Threshold colouring treats it as
     # below that limit, never as a measured 5 (see render_theme).
     detected: bool = True
+    # Sampling date (optional). Several dated samples at one hole/parameter/
+    # depth: the latest is plotted (hydro_metrics.latest_environmental_readings).
+    date: datetime.date | None = None
+
+    @field_validator("date", mode="before")
+    @classmethod
+    def parse_date(cls, value: object) -> datetime.date | None:
+        return parse_monitoring_date(value)
 
     @field_validator("hole_id", "parameter", mode="before")
     @classmethod

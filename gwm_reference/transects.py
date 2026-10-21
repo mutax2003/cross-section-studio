@@ -81,7 +81,8 @@ GWM_TRANSECTS: dict[str, TransectSpec] = {
             "MW18-08D",
             "MW18-24",
         ),
-        profile_eastings=(0.0, 32.0, 64.0, 96.0, 128.0, 160.0),
+        # Digitized from pdf_extract Fig 3 (MW18-18 sits at 6.2 m on the client axis).
+        profile_eastings=(0.0, 46.5, 93.0, 100.5, 116.0, 139.0),
         title_block=_title_block(
             section_label="A - A' WITH GROUNDWATER LEVELS",
             figure_number="3",
@@ -131,7 +132,8 @@ GWM_TRANSECTS: dict[str, TransectSpec] = {
             "MW18-20",
             "MW18-21",
         ),
-        profile_eastings=(0.0, 180.0, 260.0, 320.0, 390.0, 570.0),
+        # Digitized from pdf_extract Fig 5 (BH18-07 sits at 4.5 m on the client axis).
+        profile_eastings=(0.0, 241.0, 270.5, 356.0, 410.5, 573.0),
         title_block=_title_block(
             section_label="C - C'",
             figure_number="5",

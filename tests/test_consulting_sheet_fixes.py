@@ -166,14 +166,15 @@ def test_long_section_label_stays_inside_title_cell(two_hole_section) -> None:
 
 def test_long_section_label_fits_wide_title_cell_on_one_line(two_hole_section) -> None:
     # Without prepared-for/by the title panel takes the remaining width and
-    # the 70-character label shrinks instead of wrapping.
+    # the 70-character label fits on one line at the design size (title cells
+    # wrap before they shrink and never print below 7 pt).
     block = ConsultingTitleBlock(section_label=LONG_LABEL, map_scale="1:1000", figure_number="3")
     _, figure = _render(two_hole_section, block)
     _title_cell_check(figure, LONG_LABEL)
     block_ax = _title_block_axes(figure)
     fragments = [t for t in block_ax.texts if "PROPERTY BOUNDARY" in t.get_text()]
     assert len(fragments) == 1
-    assert fragments[0].get_fontsize() < 7.0
+    assert fragments[0].get_fontsize() == pytest.approx(7.0)
 
 
 def test_short_section_label_keeps_base_title_size(two_hole_section) -> None:

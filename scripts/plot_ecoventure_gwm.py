@@ -75,6 +75,10 @@ def generate_transect(
         screen_intervals=subset.screen_intervals,
         water_levels=subset.water_levels,
         show_legend=False,
+        # Client sheets print nothing at boreholes without a reading (no "NM").
+        show_dry_well_nm=False,
+        # ...and join each survey line across those boreholes.
+        water_interpolate_across_gaps=True,
         show_hatches=True,
         export_formats=frozenset({"svg", "png", "pdf"}),
     )

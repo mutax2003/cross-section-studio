@@ -302,6 +302,12 @@ _TITLE_CELL_BASE_PT = 7.0
 _TITLE_CELL_FLOOR_PT = 6.0
 _TITLE_CELL_HARD_MIN_PT = 5.0
 _TITLE_CELL_LINE_SPACING = 1.1
+# Title-block value cells wrap before they shrink: a long TITLE takes a second
+# line (its row grows) at the design size, and never prints below this size
+# or with an ellipsis ("…WITH CHLORID…" / a 5 pt one-liner read as defects).
+_TITLE_VALUE_MIN_PT = 7.0
+# Most lines one value row may claim before its text is allowed to shrink.
+_TITLE_VALUE_MAX_LINES = 3
 
 # Subtitle band title: start size and the smallest sizes tried before wrapping.
 _BAND_TITLE_BASE_PT = 9.0
@@ -2863,8 +2869,14 @@ class ConsultingLayoutMixin:
         base_pt: float | None = None,
         floor_pt: float | None = None,
         hard_min_pt: float | None = None,
+        wrap_first: bool = False,
     ) -> tuple[list[str], float, float]:
         """Lines, point size and line step (axes fraction) that keep ``text`` in its cell.
+
+        ``wrap_first`` (title-block value cells) wraps at the base size before
+        any shrinking, steps down only to ``hard_min_pt`` when the wrapped
+        lines still overflow the row, and never ellipsizes: the last resort
+        keeps every line and tightens the line step instead.
 
         The value is measured with the figure's renderer at the figure's
         current size. It stays on one line at the base size when it fits;
@@ -2906,6 +2918,20 @@ class ConsultingLayoutMixin:
             def _fits(extent) -> bool:
                 return extent.x1 <= right_px and (left_px is None or extent.x0 >= left_px)
 
+            if wrap_first:
+                return self._wrap_first_cell_lines(
+                    probe,
+                    text,
+                    fits=_fits,
+                    right_px=right_px,
+                    left_px=left_px,
+                    row_px=row_px,
+                    ax_height_px=ax_height_px,
+                    base_pt=base_pt,
+                    hard_min_pt=hard_min_pt,
+                    step_pt=step_pt,
+                )
+
             pt = base_pt
             while True:
                 probe.set_fontsize(pt)
@@ -2943,6 +2969,75 @@ class ConsultingLayoutMixin:
         finally:
             probe.remove()
 
+    @staticmethod
+    def _wrap_first_cell_lines(
+        probe,
+        text: str,
+        *,
+        fits,
+        right_px: float,
+        left_px: float | None,
+        row_px: float,
+        ax_height_px: float,
+        base_pt: float,
+        hard_min_pt: float,
+        step_pt: float,
+    ) -> tuple[list[str], float, float]:
+        """Wrap-before-shrink fit for ``_fit_title_cell_text(wrap_first=True)``."""
+        pt = base_pt
+        while True:
+            probe.set_fontsize(pt)
+            probe.set_text(text)
+            extent = probe.get_window_extent()
+            line_px = extent.height * _TITLE_CELL_LINE_SPACING
+            if fits(extent):
+                return [text], pt, 0.0
+            avail_px = right_px - (extent.x0 if left_px is None else left_px)
+            chars = max(8, int(len(text) * avail_px / max(extent.width, 1.0)))
+
+            def _wrap(width: int) -> list[str]:
+                # Keep "A - A'" together: never break a line at a spaced dash.
+                glued = text.replace(" - ", "\u00a0-\u00a0")
+                return [line.replace("\u00a0", " ") for line in textwrap.wrap(glued, width=width)] or [text]
+
+            lines = _wrap(chars)
+            # Character-count wrapping is approximate: re-measure each line
+            # and tighten the width until every line fits the cell.
+            while chars > 8:
+                widest = 0.0
+                for line in lines:
+                    probe.set_text(line)
+                    widest = max(widest, probe.get_window_extent().x1)
+                if widest <= right_px:
+                    break
+                chars -= 1
+                lines = _wrap(chars)
+            probe.set_text(text)
+            if len(lines) * line_px <= row_px + 0.5 or pt - step_pt < hard_min_pt - 1e-9:
+                step = line_px if len(lines) * line_px <= row_px + 0.5 else row_px / max(len(lines), 1)
+                return lines, pt, step / ax_height_px
+            pt -= step_pt
+
+    def _title_value_line_counts(
+        self, ax, values: list[str], *, x: float, cell_right: float, max_chars: int
+    ) -> list[int]:
+        """Lines each title-block value needs at the design size (wrap first)."""
+        counts: list[int] = []
+        for value in values:
+            lines, _pt, _gap = self._fit_title_cell_text(
+                ax,
+                str(value),
+                x=x,
+                y_centre=0.5,
+                cell_right=cell_right,
+                row_height=1.0,
+                max_chars=max_chars,
+                wrap_first=True,
+                hard_min_pt=self._fs(_TITLE_VALUE_MIN_PT),
+            )
+            counts.append(max(1, min(len(lines), _TITLE_VALUE_MAX_LINES)))
+        return counts
+
     def _draw_fitted_cell_text(
         self,
         ax,
@@ -2962,6 +3057,7 @@ class ConsultingLayoutMixin:
         hard_min_pt: float | None = None,
         color: str = LABEL_COLOR,
         clip_on: bool = True,
+        wrap_first: bool = False,
     ) -> list:
         """Fit ``text`` to its cell (``_fit_title_cell_text``) and draw it.
 
@@ -2985,6 +3081,7 @@ class ConsultingLayoutMixin:
             base_pt=base_pt,
             floor_pt=floor_pt,
             hard_min_pt=hard_min_pt,
+            wrap_first=wrap_first,
         )
         if va == "center":
             text_top = y_centre + (len(wrapped) - 1) * line_gap * 0.5
@@ -3216,12 +3313,26 @@ class ConsultingLayoutMixin:
         if label_need is not None and label_need > label_col_w:
             label_col_w = min(label_need, table_width * 0.45)
         value_col_w = table_width - label_col_w
-        row_height = table_height / max(len(rows), 1)
         # Character budget from panel fraction; consulting sheets are typically wide.
         max_chars = max(28, int(value_col_w * 170 / scale))
+        value_x = table_left + label_col_w + 0.012
+        # A value too long for one line (a long TITLE) wraps at the design
+        # size and its row takes a share of the table per line, instead of the
+        # text shrinking to ~5 pt or being cut with "…".
+        weights = self._title_value_line_counts(
+            ax,
+            [value for _label, value in rows],
+            x=value_x,
+            cell_right=table_left + table_width,
+            max_chars=max_chars,
+        )
+        unit_height = table_height / max(sum(weights), 1)
 
-        for index, (label, value) in enumerate(rows):
-            row_bottom = table_bottom + (len(rows) - index - 1) * row_height
+        row_top = table_bottom + table_height
+        for (label, value), weight in zip(rows, weights, strict=True):
+            row_height = unit_height * weight
+            row_bottom = row_top - row_height
+            row_top = row_bottom
             ax.plot(
                 [table_left, table_left + table_width],
                 [row_bottom, row_bottom],
@@ -3251,7 +3362,6 @@ class ConsultingLayoutMixin:
                 fontweight="bold",
                 hard_min_pt=_TITLE_CELL_HARD_MIN_PT,
             )
-            value_x = table_left + label_col_w + 0.012
             self._draw_fitted_cell_text(
                 ax,
                 str(value),
@@ -3260,9 +3370,11 @@ class ConsultingLayoutMixin:
                 cell_right=table_left + table_width,
                 row_height=row_height,
                 max_chars=max_chars,
+                wrap_first=True,
+                hard_min_pt=self._fs(_TITLE_VALUE_MIN_PT),
             )
 
-        top_y = table_bottom + len(rows) * row_height
+        top_y = table_bottom + table_height
         for x_pos in (table_left, table_left + table_width):
             ax.plot(
                 [x_pos, x_pos],

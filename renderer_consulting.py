@@ -72,6 +72,7 @@ from renderer_common import (
     water_status_legend_label,
     water_status_texts,
 )
+from renderer_water import ARTESIAN_LEGEND_LABEL
 from stratigraphy import GeologicalPolygon
 
 logger = logging.getLogger(__name__)
@@ -2311,6 +2312,19 @@ class ConsultingLayoutMixin:
                             },
                         )
                     )
+
+        if self.profile.show_water_legend and getattr(self, "artesian_drawn", False):
+            entries.append(
+                (
+                    "line_marker",
+                    ARTESIAN_LEGEND_LABEL.upper(),
+                    {
+                        "color": getattr(self, "artesian_color", None) or CONSULTING_WATER_COLOR,
+                        "marker": "^",
+                        "linestyle": ":",
+                    },
+                )
+            )
 
         draw_param_markers = self.profile.parameter_draw_markers
         for entry in self.parameter_series_legend or []:

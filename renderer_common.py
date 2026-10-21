@@ -2187,8 +2187,114 @@ def hole_elevations_at_depths(
     return collar_rl - table.tvd_many(depth_arr)
 
 
+# A hole whose projected interval x positions spread less than this (m) is
+# drawn as one straight column at its collar x (vertical / near-vertical).
+DEVIATED_X_SPREAD_M = 0.05
+
+
+def deviated_x_steps(
+    projected_df: pd.DataFrame,
+) -> dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """``hole_id → (top_elev, bottom_elev, x_profile)`` per logged interval
+    (top first) for holes whose intervals project to different section x
+    (surveyed / inclined holes). Vertical holes are left out, so their
+    columns draw exactly as before."""
+    steps: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    if projected_df is None or projected_df.empty or "x_profile" not in projected_df:
+        return steps
+    for hole_id, group in projected_df.groupby("hole_id", sort=False):
+        xs = group["x_profile"].to_numpy(dtype=float)
+        if xs.size < 2 or float(np.ptp(xs)) < DEVIATED_X_SPREAD_M:
+            continue
+        tops = group["top_elevation"].to_numpy(dtype=float)
+        bottoms = group["bottom_elevation"].to_numpy(dtype=float)
+        order = np.argsort(-tops, kind="stable")
+        steps[str(hole_id)] = (tops[order], bottoms[order], xs[order])
+    return steps
+
+
 class RendererGeometryMixin:
     """Well extents, profile lookup, and lithology style resolution."""
+
+    # --- Surveyed (inclined) holes: column follows the projected intervals ----
+    #
+    # The lithology track of an inclined hole steps sideways with each
+    # interval's projected x. The well column, casing, screens, LNAPL band
+    # and water markers follow the same steps (piece-wise constant x per
+    # logged interval; above the first interval the first interval's x, below
+    # the last the last one's). Limits: the steps are the interval x's (not a
+    # continuous slant), and chemistry labels, EOL bars and the chart layout's
+    # sticks still sit at the collar x.
+
+    def _deviated_pieces(
+        self,
+        hole_id: str,
+        collar_rl: float,
+        y_a: float,
+        y_b: float,
+    ) -> list[tuple[float, float, float]] | None:
+        """``[(y_low, y_high, x), …]`` plot-y pieces of ``[y_a, y_b]`` on a
+        surveyed hole, or ``None`` for a vertical hole (draw at collar x)."""
+        steps = (getattr(self, "_deviated_x", None) or {}).get(str(hole_id))
+        if steps is None:
+            return None
+        tops, bottoms, xs = steps
+        collar = np.full(len(tops), float(collar_rl))
+        top_y = self._plot_y_values(tops, collar)
+        bottom_y = self._plot_y_values(bottoms, collar)
+        # Plot y may grow upward (elevation) or downward (depth mode).
+        sign = 1.0 if float(top_y[0]) >= float(bottom_y[-1]) else -1.0
+        bounds = 0.5 * (bottom_y[:-1] + top_y[1:])
+        edges = np.concatenate(([sign * np.inf], bounds, [-sign * np.inf]))
+        lo_clip, hi_clip = min(y_a, y_b), max(y_a, y_b)
+        pieces: list[tuple[float, float, float]] = []
+        for index, x in enumerate(xs):
+            lo = max(min(edges[index], edges[index + 1]), lo_clip)
+            hi = min(max(edges[index], edges[index + 1]), hi_clip)
+            if hi - lo > 1e-9:
+                pieces.append((float(lo), float(hi), float(x)))
+        return pieces
+
+    def _deviated_x_at(self, hole_id: str, collar_rl: float, y: float, default_x: float) -> float:
+        """Section x of plot height ``y`` down ``hole_id`` (``default_x`` when vertical)."""
+        pieces = self._deviated_pieces(hole_id, collar_rl, float(y) - 1e-6, float(y) + 1e-6)
+        if not pieces:
+            return float(default_x)
+        return pieces[0][2]
+
+    def _split_deviated_rects(
+        self,
+        hole_ids: Sequence[str],
+        collar_rls: np.ndarray,
+        x_centres: np.ndarray,
+        y0: np.ndarray,
+        heights: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Split each rect on a surveyed hole into its interval-x pieces.
+
+        Returns ``(x_centres, y0, heights)``; unchanged arrays when no hole is
+        surveyed (vertical holes keep their exact legacy geometry)."""
+        if not getattr(self, "_deviated_x", None):
+            return x_centres, y0, heights
+        out_x: list[float] = []
+        out_y: list[float] = []
+        out_h: list[float] = []
+        for hole_id, collar, x, y, h in zip(hole_ids, collar_rls, x_centres, y0, heights, strict=True):
+            pieces = self._deviated_pieces(str(hole_id), float(collar), float(y), float(y + h))
+            if pieces is None:
+                out_x.append(float(x))
+                out_y.append(float(y))
+                out_h.append(float(h))
+                continue
+            for lo, hi, piece_x in pieces:
+                out_x.append(piece_x)
+                out_y.append(lo)
+                out_h.append(hi - lo)
+        return (
+            np.asarray(out_x, dtype=float),
+            np.asarray(out_y, dtype=float),
+            np.asarray(out_h, dtype=float),
+        )
 
     def _hole_elevations_at_depths(
         self,
@@ -2336,6 +2442,15 @@ class RendererGeometryMixin:
         x_values = x_values[mask]
         y0 = np.minimum(top_y[mask], bottom_y[mask])
         heights = heights[mask]
+        if getattr(self, "_deviated_x", None):
+            # Surveyed holes: the column steps with the projected intervals.
+            hole_ids = hole_summary["hole_id"].astype(str).to_numpy()[mask]
+            collars = self._collar_values(
+                hole_summary["hole_id"], hole_summary["collar_elevation"], collar_lookup
+            )[mask]
+            x_values, y0, heights = self._split_deviated_rects(
+                hole_ids, collars, x_values, y0, heights
+            )
         return x_values - track_half, y0, np.full(len(x_values), track_half * 2.0), heights
 
     @staticmethod
@@ -2556,11 +2671,13 @@ class RendererGeometryMixin:
         collar_rls: list[float] = []
         top_elevs: list[float] = []
         bottom_elevs: list[float] = []
+        screen_holes: list[str] = []
         for interval in screen_intervals:
             profile = profile_lookup.get(interval.hole_id)
             if profile is None:
                 continue
             x_profile, collar_rl = profile
+            screen_holes.append(str(interval.hole_id))
             x_profiles.append(x_profile)
             collar_rls.append(collar_rl)
             # Screen depths are along the hole: surveyed holes use TVD.
@@ -2580,12 +2697,18 @@ class RendererGeometryMixin:
         mask = heights > 1e-9
         if not np.any(mask):
             return
-        x_arr = x_arr[mask] - half
+        x_arr = x_arr[mask]
         y_arr = np.minimum(top_ys[mask], bottom_ys[mask])
         h_arr = heights[mask]
+        if getattr(self, "_deviated_x", None):
+            # Surveyed holes: a screen follows the column's interval steps.
+            x_arr, y_arr, h_arr = self._split_deviated_rects(
+                np.asarray(screen_holes)[mask], collar_arr[mask], x_arr, y_arr, h_arr
+            )
+        x_arr = x_arr - half
         self._add_rect_collection(
             ax,
-            (x_arr, y_arr, np.full(int(mask.sum()), width), h_arr),
+            (x_arr, y_arr, np.full(len(x_arr), width), h_arr),
             facecolors=TRACK_FILL_COLOR,
             edgecolors=TRACK_BORDER_COLOR,
             linewidths=0.6,

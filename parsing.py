@@ -926,12 +926,10 @@ class DataParser:
                     collar = collar_by_id.get(hole_id)
                     if collar is None:
                         raise ValueError(f"unknown hole_id '{hole_id}' for elevation_masl")
-                    if elevation_masl > collar.elevation:
-                        raise ValueError(
-                            f"elevation_masl {elevation_masl} is above collar elevation "
-                            f"{collar.elevation} (artesian / above-collar water level)"
-                        )
-                    depth = collar.elevation - elevation_masl
+                    # A head above the collar is a (flowing) artesian condition,
+                    # not an error: the head keeps its elevation and Validate
+                    # reports it as information. depth stays non-negative.
+                    depth = max(0.0, collar.elevation - elevation_masl)
                 elif has_depth:
                     depth = float(depth_raw)
                 else:

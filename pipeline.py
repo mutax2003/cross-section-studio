@@ -19,6 +19,11 @@ from constants import (
     WATER_TABLE_OVERLAY_DISCLAIMER,
 )
 from export_framing import ExportFramingConfig, merge_framing_into_profile_updates
+from hydro_metrics import (
+    format_vertical_gradient_note,
+    nested_vertical_gradients,
+    vertical_gradient_arrow_conflicts,
+)
 from lithology_codes import collect_lithology_codes
 from models import (
     _XML_ILLEGAL,
@@ -106,6 +111,9 @@ class SectionGeometry:
     # screens, chemistry samples and well bottoms use the same true vertical
     # depth as the lithology. Absent holes are vertical (collar − depth).
     along_hole_tvd: dict[str, AlongHoleTVD] = field(default_factory=dict)
+    # Collar plan coordinates (easting, northing) of projected holes: pairs
+    # co-located / nested wells for the vertical-gradient QA note.
+    collar_plan_xy: dict[str, tuple[float, float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -342,6 +350,11 @@ def compute_section_geometry(
         stick_up_by_hole=stick_up_by_hole,
         correlation_summaries=tuple(correlation_summaries),
         along_hole_tvd=along_hole_tvd,
+        collar_plan_xy={
+            collar.hole_id: (float(collar.easting), float(collar.northing))
+            for collar in collars
+            if collar.hole_id in projected_hole_ids
+        },
     )
 
 
@@ -510,6 +523,49 @@ def build_cross_section(
         vertical_gradients=vertical_gradients,
         export_framing=export_framing,
     )
+
+
+def vertical_gradient_qa_notes(
+    geometry: SectionGeometry,
+    water_levels: Sequence[WaterLevel],
+    screen_intervals: Sequence[ScreenInterval],
+    vertical_gradients: Sequence[VerticalGradient] = (),
+) -> tuple[str, ...]:
+    """QA lines: computed iv per well nest + arrows contradicting the heads.
+
+    Uses the section's collars, stick-ups and hole surveys so the heads and
+    screen mid-points match the figure (``hydro_metrics`` conventions:
+    iv > 0 downward / recharge, iv < 0 upward / discharge).
+    """
+    if not water_levels or not screen_intervals:
+        return ()
+    hole_ids = geometry.projected_hole_ids
+    projected = geometry.projected
+    collar_rl = {
+        str(hole_id): float(rl)
+        for hole_id, rl in zip(projected["hole_id"], projected["collar_elevation"], strict=True)
+    }
+    md_maps = {
+        hole_id: (lambda md, _t=table, _rl=collar_rl[hole_id]: _t.elevation_at(_rl, md))
+        for hole_id, table in geometry.along_hole_tvd.items()
+        if hole_id in collar_rl
+    }
+    analysis = nested_vertical_gradients(
+        [level for level in water_levels if level.hole_id in hole_ids],
+        [screen for screen in screen_intervals if screen.hole_id in hole_ids],
+        collar_rl_by_hole=collar_rl,
+        plan_xy_by_hole=geometry.collar_plan_xy,
+        stick_up_by_hole=geometry.stick_up_by_hole,
+        md_to_elevation_by_hole=md_maps,
+    )
+    notes = [format_vertical_gradient_note(gradient) for gradient in analysis.gradients]
+    notes.extend(
+        vertical_gradient_arrow_conflicts(
+            [arrow for arrow in vertical_gradients if arrow.hole_id in hole_ids],
+            analysis.gradients,
+        )
+    )
+    return tuple(notes)
 
 
 def render_cross_section_from_geometry(
@@ -706,6 +762,9 @@ def render_cross_section_from_geometry(
     if export_framing is not None and not export_framing.include_water_table:
         effective_interpolate_wt = False
         plotted_water = ()
+    # Heads as plotted (selected series), before framing drops the water layer:
+    # the vertical-gradient QA note describes the data, not the drawing.
+    water_levels_for_gradients = tuple(plotted_water)
     overlay_notes: list[str] = []
     if plotted_water:
         overlay_notes.append(WATER_TABLE_OVERLAY_DISCLAIMER)
@@ -807,6 +866,15 @@ def render_cross_section_from_geometry(
         qa_notes = qa_notes + tuple(renderer.header_overlap_notes(figure))
         # PNG resolution lowered to stay within the raster size cap.
         qa_notes = qa_notes + tuple(getattr(renderer, "raster_notes", None) or ())
+        # Water lines clipped to the ground / left above it in an artesian zone.
+        qa_notes = qa_notes + tuple(getattr(renderer, "water_line_notes", None) or ())
+        # Nested-well vertical gradients (screen mid-points) and arrow cross-check.
+        qa_notes = qa_notes + vertical_gradient_qa_notes(
+            geometry,
+            water_levels_for_gradients,
+            screen_intervals or (),
+            vertical_gradients or (),
+        )
         # Surface them with the other section notes the app shows after Generate.
         overlap_warnings = tuple(overlap_warnings) + qa_notes
         retained: dict[str, object] | None = None

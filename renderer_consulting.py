@@ -29,6 +29,7 @@ from shapely.geometry import LineString
 from shapely.geometry import Polygon as ShapelyPolygon
 
 from export_framing import PAGE_FIGSIZE_IN
+from hydro_metrics import is_measured_water_level
 from lithology_codes import collect_lithology_codes
 from models import ConsultingTitleBlock, VerticalGradient, WaterLevel
 from render_theme import (
@@ -1002,6 +1003,19 @@ class ConsultingLayoutMixin:
                 if collar_rl is None:
                     continue
                 water_y = self._plot_y(self._water_head(level, collar_rl), collar_rl)
+                y_min = min(y_min, water_y)
+                y_max = max(y_max, water_y)
+        elif water_levels:
+            # Labels off: a (flowing) artesian head above its collar must
+            # still fit the frame, or its marker is clipped off the top.
+            for level in water_levels:
+                collar_rl = collar_lookup.get(level.hole_id)
+                if collar_rl is None or not is_measured_water_level(level):
+                    continue
+                head = self._water_head(level, collar_rl)
+                if head <= collar_rl:
+                    continue
+                water_y = self._plot_y(head, collar_rl)
                 y_min = min(y_min, water_y)
                 y_max = max(y_max, water_y)
         # Include active environmental sample depths so chloride markers are not clipped.

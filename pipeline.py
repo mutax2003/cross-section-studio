@@ -592,12 +592,17 @@ def _latest_chemistry_samples(
     if not readings:
         return tuple(readings), ()
     kept, _all_notes = latest_environmental_readings(readings)
-    active = {name.strip() for name in (parameters or ()) if name.strip()}
+    # Case-insensitive, like the sample grouping (environmental_sample_key).
+    active = {name.strip().casefold() for name in (parameters or ()) if name.strip()}
     if not active:
         return kept, ()
     on_section = set(hole_ids)
     _drawn, notes = latest_environmental_readings(
-        [r for r in readings if r.hole_id in on_section and r.parameter.strip() in active]
+        [
+            r
+            for r in readings
+            if r.hole_id in on_section and r.parameter.strip().casefold() in active
+        ]
     )
     return kept, notes
 
@@ -869,7 +874,15 @@ def render_cross_section_from_geometry(
     flow_notes = tuple(groundwater_flow_notes or ()) if plotted_water else ()
     if not chemistry_plotted:
         chemistry_date_notes = ()
-    qa_lines = tuple(overlap_warnings) + flow_notes + chemistry_date_notes
+    # Nested-well vertical gradients (screen mid-points) and arrow cross-check:
+    # data QA, so they reach the PDF QA lines as well as the app warnings.
+    gradient_notes = vertical_gradient_qa_notes(
+        geometry,
+        water_levels_for_gradients,
+        screen_intervals or (),
+        vertical_gradients or (),
+    )
+    qa_lines = tuple(overlap_warnings) + gradient_notes + flow_notes + chemistry_date_notes
     if export_framing is not None and not export_framing.include_qa_footer:
         qa_lines = ()
     # Scrub XML-1.0-illegal control characters so the SVG backend cannot emit
@@ -954,12 +967,7 @@ def render_cross_section_from_geometry(
         # Water lines clipped to the ground / left above it in an artesian zone.
         qa_notes = qa_notes + tuple(getattr(renderer, "water_line_notes", None) or ())
         # Nested-well vertical gradients (screen mid-points) and arrow cross-check.
-        qa_notes = qa_notes + vertical_gradient_qa_notes(
-            geometry,
-            water_levels_for_gradients,
-            screen_intervals or (),
-            vertical_gradients or (),
-        )
+        qa_notes = qa_notes + gradient_notes
         qa_notes = qa_notes + flow_notes
         # Several dated samples at one hole/parameter/depth: the latest is drawn.
         qa_notes = qa_notes + chemistry_date_notes

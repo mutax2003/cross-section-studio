@@ -383,6 +383,16 @@ def generate_cross_section(
 
     # Overlays live on the subset; render uses ``request.X or subset.X``.
     # Keeping them off the request shrinks request_json hash/cache/validate cost.
+    # Flow fit: the request's own surveys (scripted callers may override the
+    # workbook's) win for their holes, so the planar fit uses the same TVD as
+    # the section geometry; other wells keep the workbook Deviations sheet.
+    request_deviations = tuple(request.deviation_readings)
+    surveyed_by_request = {reading.hole_id for reading in request_deviations}
+    flow_deviations = request_deviations + tuple(
+        reading
+        for reading in parse_result.deviation_readings
+        if reading.hole_id not in surveyed_by_request
+    )
     build_request = request.model_copy(
         update={
             "transect_points": transect_points_tuple,
@@ -398,7 +408,7 @@ def generate_cross_section(
                 parse_result.collars,
                 parse_result.water_levels,
                 transect_points_tuple,
-                deviation_readings=parse_result.deviation_readings,
+                deviation_readings=flow_deviations,
                 selected_water_series_ids=request.selected_water_series_ids or None,
             ),
         }

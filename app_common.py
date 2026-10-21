@@ -707,13 +707,51 @@ def _water_and_nm(
     parse_result: ParseResult,
     hole_ids: Sequence[str],
 ) -> tuple[dict[str, dict[str, float]], list[str]]:
+    """Assistant facts: ``hole → series → depth below ground (m)`` and NM holes.
+
+    Same reading as the figure: the latest reading per hole × series × nest
+    (``latest_water_readings``); dry / NM latest readings are not numbers, so
+    those holes count as NM. Depths are true vertical below ground — ``btoc``
+    minus stick-up, surveyed holes at TVD, LNAPL wells at the corrected head
+    (``water_depth_below_ground_m``). Nested readings key ``series [nest]``.
+    """
+    from hydro_metrics import (
+        is_measured_water_level,
+        latest_water_readings,
+        water_depth_below_ground_m,
+    )
+    from projection import build_along_hole_tvd
+
     hole_set = set(hole_ids)
+    collar_by_id = {collar.hole_id: collar for collar in parse_result.collars}
+    levels = [level for level in parse_result.water_levels if level.hole_id in hole_set]
+    tvd_tables = build_along_hole_tvd(
+        [collar_by_id[hid] for hid in hole_set if hid in collar_by_id],
+        parse_result.deviation_readings,
+    )
     water: dict[str, dict[str, float]] = {}
-    for level in parse_result.water_levels:
-        if level.hole_id not in hole_set:
+    for level in latest_water_readings(levels):
+        if not is_measured_water_level(level):
             continue
         series_id = level.series_id or "default"
-        water.setdefault(level.hole_id, {})[series_id] = level.depth
+        group = (level.connect_group or "").strip()
+        key = f"{series_id} [{group}]" if group else series_id
+        collar = collar_by_id.get(level.hole_id)
+        if collar is None:
+            depth = float(level.depth)
+        else:
+            rl = float(collar.elevation)
+            table = tvd_tables.get(level.hole_id)
+            md_to_elev = (
+                (lambda md, _t=table, _rl=rl: _t.elevation_at(_rl, md)) if table else None
+            )
+            depth = round(
+                water_depth_below_ground_m(
+                    level, rl, stick_up_m=collar.stick_up_m, md_to_elevation=md_to_elev
+                ),
+                3,
+            )
+        water.setdefault(level.hole_id, {})[key] = depth
     nm_holes = [hole_id for hole_id in hole_ids if hole_id not in water]
     return water, nm_holes
 

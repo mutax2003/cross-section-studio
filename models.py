@@ -7,6 +7,7 @@ import math
 import re
 from typing import Literal
 
+import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -76,6 +77,15 @@ def parse_monitoring_date(value: object) -> datetime.date | None:
     """
     if value is None:
         return None
+    if isinstance(value, np.datetime64):
+        value = pd.Timestamp(value) if not np.isnat(value) else pd.NaT
+    elif isinstance(value, np.bool_):
+        value = bool(value)
+    elif isinstance(value, np.integer):
+        # pandas / openpyxl hand back numpy scalars for Excel serial columns.
+        value = int(value)
+    elif isinstance(value, np.floating):
+        value = float(value)
     if isinstance(value, float) and math.isnan(value):
         return None
     if value is pd.NaT:
@@ -355,12 +365,29 @@ class WaterLevel(BaseModel, frozen=True):
             )
         return float(value)
 
-    @model_validator(mode="after")
-    def default_product_density(self) -> WaterLevel:
-        if self.product_thickness_m is not None and self.product_density is None:
-            # Frozen model: set the documented default in place.
-            object.__setattr__(self, "product_density", DEFAULT_LNAPL_SPECIFIC_GRAVITY)
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def default_product_density(cls, data: object) -> object:
+        """Fill the documented SG default into the input, so it is a set field.
+
+        Done before validation (not by mutating the frozen model afterwards)
+        so ``model_fields_set`` / ``exclude_unset`` dumps keep the default.
+        """
+        if not isinstance(data, dict):
+            return data
+        thickness = cls._blank_to_none(data.get("product_thickness_m"))
+        density = cls._blank_to_none(data.get("product_density"))
+        if thickness is not None and density is None:
+            data = {**data, "product_density": DEFAULT_LNAPL_SPECIFIC_GRAVITY}
+        return data
+
+    @staticmethod
+    def _blank_to_none(value: object) -> object:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("depth_reference", mode="before")
     @classmethod
@@ -556,11 +583,22 @@ class EnvironmentalReading(BaseModel, frozen=True):
     # Sampling date (optional). Several dated samples at one hole/parameter/
     # depth: the latest is plotted (hydro_metrics.latest_environmental_readings).
     date: datetime.date | None = None
+    # Lab qualifier flag as entered (J, B, R, U ...); ``detected`` already
+    # carries the non-detect meaning. Validate warns on R (rejected) and
+    # unrecognised flags (chemistry_qc.lab_qualifier_warnings).
+    qualifier: str = ""
 
     @field_validator("date", mode="before")
     @classmethod
     def parse_date(cls, value: object) -> datetime.date | None:
         return parse_monitoring_date(value)
+
+    @field_validator("qualifier", mode="before")
+    @classmethod
+    def clean_qualifier(cls, value: object) -> str:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ""
+        return str(value).strip()
 
     @field_validator("hole_id", "parameter", mode="before")
     @classmethod

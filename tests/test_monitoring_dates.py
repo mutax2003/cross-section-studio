@@ -94,7 +94,9 @@ def test_columns_appended_at_end() -> None:
     assert ENVIRONMENTAL_COLUMNS[-1] == "date"
     water_fields = list(WaterLevel.model_fields)
     assert water_fields.index("date") == water_fields.index("depth_reference") + 1
-    assert list(EnvironmentalReading.model_fields)[-1] == "date"
+    # ``qualifier`` (lab flag kept for Validate) is appended after ``date``.
+    env_fields = list(EnvironmentalReading.model_fields)
+    assert env_fields[-2:] == ["date", "qualifier"]
 
 
 def _workbook(water_rows, env_rows=None) -> BytesIO:

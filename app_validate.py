@@ -227,6 +227,8 @@ def _render_validate_details(
             screen_intervals=parse_result.screen_intervals,
             lithologies=parse_result.lithologies,
             vertical_gradients=parse_result.vertical_gradients,
+            # Same along-section Δx as the figure when a section line exists.
+            transect_points=tuple(section_points) if len(section_points) >= 2 else None,
         )
         with st.expander("Groundwater", expanded=bool(water_summary.warnings)):
             st.caption(scope_caption)

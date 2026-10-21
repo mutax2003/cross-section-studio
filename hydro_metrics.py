@@ -121,6 +121,39 @@ def latest_water_by_hole(levels: Sequence[WaterLevel]) -> dict[str, WaterLevel]:
     return chosen
 
 
+def latest_measured_water_by_hole(levels: Sequence[WaterLevel]) -> dict[str, WaterLevel]:
+    """``hole_id → measured reading`` for one series × nest, as the figure plots it.
+
+    The latest reading is chosen over ALL statuses first (``latest_water_by_hole``);
+    a hole whose latest reading is dry / NM then has no head -- the figure draws
+    DRY / NM there, so gradients and fits must not fall back to an older
+    measured head.
+    """
+    return {
+        hole_id: level
+        for hole_id, level in latest_water_by_hole(levels).items()
+        if is_measured_water_level(level)
+    }
+
+
+def water_reading_key(level: WaterLevel) -> tuple[str, str, str]:
+    """``(series_id, connect_group, hole_id)`` identity of a groundwater reading."""
+    return (level.series_id or "default", (level.connect_group or "").strip(), level.hole_id)
+
+
+def latest_water_readings(levels: Sequence[WaterLevel]) -> tuple[WaterLevel, ...]:
+    """The readings actually used: one per hole × series × nest (any status).
+
+    Superseded readings (an older date of the same hole × series × nest) are
+    dropped; order follows the first appearance of each key.
+    """
+    chosen: dict[tuple[str, str, str], WaterLevel] = {}
+    for level in levels:
+        key = water_reading_key(level)
+        chosen[key] = prefer_water_reading(chosen.get(key), level)
+    return tuple(chosen.values())
+
+
 def date_range(
     items: Sequence[object],
 ) -> tuple[datetime.date, datetime.date] | None:
@@ -369,8 +402,6 @@ def horizontal_gradients_along_profile(
     """
     filtered: list[WaterLevel] = []
     for level in water_levels:
-        if not is_measured_water_level(level):
-            continue
         if series_id is not None and (level.series_id or "default") != series_id:
             continue
         if connect_group is not None:
@@ -381,8 +412,9 @@ def horizontal_gradients_along_profile(
             continue
         filtered.append(level)
 
-    # Latest date wins per hole (undated: last row) -- matches the plot.
-    by_hole = latest_water_by_hole(filtered)
+    # Latest date wins per hole over all statuses (undated: last row), then
+    # dry / NM holes are skipped -- matches the plot.
+    by_hole = latest_measured_water_by_hole(filtered)
 
     ordered_ids = [hid for hid in hole_order if hid in by_hole]
     segments: list[HorizontalGradientSegment] = []
@@ -668,16 +700,15 @@ def nested_vertical_gradients(
     for screen in screen_intervals:
         screens_by_hole.setdefault(screen.hole_id, []).append(screen)
 
-    # One reading per series × hole × connect_group: latest date wins
-    # (undated: last row) -- matches the plot.
+    # One reading per series × hole × connect_group: latest date wins over all
+    # statuses (undated: last row), then dry / NM are dropped -- matches the plot.
     readings: dict[tuple[str, str, str], WaterLevel] = {}
     for level in water_levels:
-        if not is_measured_water_level(level):
-            continue
         if level.hole_id not in collar_rl_by_hole or level.hole_id not in screens_by_hole:
             continue
         key = (level.series_id or "default", level.hole_id, (level.connect_group or "").strip())
         readings[key] = prefer_water_reading(readings.get(key), level)
+    readings = {key: level for key, level in readings.items() if is_measured_water_level(level)}
 
     groups_by_hole: dict[str, set[str]] = {}
     for _series, hole_id, group in readings:
@@ -1003,8 +1034,9 @@ def head_points_by_group(
     """Measured heads grouped by ``(series_id, connect_group)`` → ``(label, points)``.
 
     Same grouping as the renderer (blank connect_group = one shared nest);
-    dry / NM readings are excluded and the latest-dated reading per hole wins
-    (undated: the last row -- ``prefer_water_reading``). Heads
+    the latest-dated reading per hole wins over all statuses (undated: the
+    last row -- ``prefer_water_reading``) and holes whose latest reading is
+    dry / NM are skipped. Heads
     come from ``water_head_masl`` (btoc stick-up; surveyed holes at TVD).
     Plan position is the collar easting/northing.
     """
@@ -1015,19 +1047,22 @@ def head_points_by_group(
     grouped: dict[tuple[str, str], dict[str, WaterLevel]] = {}
     labels: dict[tuple[str, str], str] = {}
     for level in water_levels:
-        if not is_measured_water_level(level) or level.hole_id not in collar_by_id:
+        if level.hole_id not in collar_by_id:
             continue
         key = (level.series_id or "default", (level.connect_group or "").strip())
         by_hole_group = grouped.setdefault(key, {})
         by_hole_group[level.hole_id] = prefer_water_reading(
             by_hole_group.get(level.hole_id), level
         )
-        if level.series_label and key not in labels:
+        if level.series_label and key not in labels and is_measured_water_level(level):
             labels[key] = level.series_label
     result: dict[tuple[str, str], tuple[str, list[HeadPoint]]] = {}
     for key, by_hole in grouped.items():
         points: list[HeadPoint] = []
         for hole_id, level in by_hole.items():
+            # Latest reading dry / NM: no head (the figure draws DRY / NM).
+            if not is_measured_water_level(level):
+                continue
             collar = collar_by_id[hole_id]
             rl = float(collar.elevation)
             table = tvd_tables.get(hole_id)

@@ -182,7 +182,7 @@ _NON_DETECT_RE = re.compile(r"^\s*([<>]\s*[\d.]+|n\.?\s*d\.?|bdl|not detected)\s
 # optional unit: "<5", "< 5", "<RDL 5", "<RDL=0.5", "ND (0.5)", "ND<0.5",
 # "n.d. 0.5", "BDL 2", "<0.5 mg/L".
 _ND_PREFIX_RE = re.compile(
-    r"^\s*(?:<|n\.?\s*d\.?(?![a-z])|bdl(?![a-z])|not\s+detected(?![a-z])"
+    r"^\s*(?:<|n\.?\s*d\.?(?![a-z])|ndl(?![a-z])|bdl(?![a-z])|not\s+detected(?![a-z])"
     r"|below\s+detection(?:\s+limit)?(?![a-z]))",
     re.IGNORECASE,
 )
@@ -192,9 +192,12 @@ _ND_LIMIT_WORDS_RE = re.compile(
 _ND_NUMBER_RE = re.compile(r"^(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?", re.IGNORECASE)
 _ND_UNIT_RE = re.compile(r"^[a-z\u00b5\u03bc%/][a-z0-9\u00b5\u03bc%/. ]{0,14}$", re.IGNORECASE)
 
-# Optional ``qualifier`` (or ``detected``) column: lab-style flags.
+# Optional ``qualifier`` (or ``detected``) column: lab-style flags. The
+# qualifier column accepts lab flags too (``chemistry_qc.classify_lab_qualifier``:
+# U-family = non-detect; J, B, E ... = detected; R = rejected, plotted with a
+# Validate warning; unrecognised text = kept with a Validate warning).
 _QUALIFIER_NON_DETECT = frozenset(
-    {"<", "nd", "n.d.", "n.d", "u", "bdl", "not detected", "non-detect", "<rdl", "<dl",
+    {"<", "nd", "n.d.", "n.d", "ndl", "u", "bdl", "not detected", "non-detect", "<rdl", "<dl",
      "<mdl", "no", "n", "false", "0"}
 )
 _QUALIFIER_DETECTED = frozenset({"=", "detected", "yes", "y", "true", "1", "d"})
@@ -235,16 +238,27 @@ def _non_detect_value(raw: object) -> tuple[float, str] | None:
     return float(number.group(0)), tail
 
 
-def _detect_flag(raw: object, column: str) -> bool | None:
-    """``True`` detected / ``False`` non-detect from a qualifier cell; ``None`` if blank."""
+def _qualifier_text(raw: object) -> str:
+    """Cell text of a qualifier / detected cell ("" when blank)."""
     if raw is None or (isinstance(raw, float) and pd.isna(raw)):
-        return None
+        return ""
+    if isinstance(raw, bool):
+        return str(raw).casefold()
+    if isinstance(raw, (int, float)):
+        return f"{raw:g}"
+    return str(raw).strip()
+
+
+def _detect_flag(raw: object, column: str) -> bool | None:
+    """``True`` detected / ``False`` non-detect from a qualifier cell; ``None`` if blank.
+
+    The ``qualifier`` column also takes lab flags (``classify_lab_qualifier``):
+    R-qualified and unrecognised text return ``None`` (the value text decides;
+    Validate warns). The ``detected`` column stays a strict yes / no.
+    """
     if isinstance(raw, bool):
         return raw
-    if isinstance(raw, (int, float)):
-        text = f"{raw:g}"
-    else:
-        text = str(raw).strip().casefold()
+    text = _qualifier_text(raw).casefold()
     if not text:
         return None
     compact = " ".join(text.split())
@@ -252,6 +266,15 @@ def _detect_flag(raw: object, column: str) -> bool | None:
         return False
     if compact in _QUALIFIER_DETECTED:
         return True
+    if column == "qualifier":
+        from chemistry_qc import classify_lab_qualifier
+
+        kind, rejected = classify_lab_qualifier(compact)
+        if kind == "non_detect":
+            return False
+        if kind == "detected" and not rejected:
+            return True
+        return None
     raise ValueError(
         f"{column} = '{_cell_text(raw)}' — use < (or ND) for a non-detect, or leave it "
         "blank for a measured value."
@@ -266,10 +289,15 @@ def _apply_detection(payload: dict) -> None:
     unit in the value text that disagrees with the ``unit`` column.
     """
     flag: bool | None = None
+    qualifier_text = ""
     for column in ("qualifier", "detected"):
         if column not in payload:
             continue
-        column_flag = _detect_flag(payload.pop(column), column)
+        raw = payload.pop(column)
+        if column == "qualifier":
+            # Kept on the reading: Validate warns on R / unrecognised flags.
+            qualifier_text = _qualifier_text(raw)
+        column_flag = _detect_flag(raw, column)
         if column_flag is None:
             continue
         if flag is not None and flag != column_flag:
@@ -277,6 +305,8 @@ def _apply_detection(payload: dict) -> None:
                 "qualifier and detected disagree — fill one of them (< or ND for a non-detect)."
             )
         flag = column_flag
+    if qualifier_text:
+        payload["qualifier"] = qualifier_text
     non_detect = _non_detect_value(payload.get("value"))
     if non_detect is None:
         payload["detected"] = True if flag is None else flag

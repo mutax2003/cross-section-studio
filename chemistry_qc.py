@@ -12,13 +12,105 @@ converted.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
+from typing import Literal
 
 from render_profiles import (
     ChemistryThresholdPair,
     chemistry_parameter_key,
     chemistry_threshold_pair_for,
 )
+
+# --- Lab qualifier flags (Environmental ``qualifier`` column) -------------------
+#
+# Policy: a "U"-family flag (U, UJ, UB, ...), "<", ND / NDL / BDL / "not
+# detected" mark a non-detect (value = detection limit). Detected-data flags
+# (J estimated, B blank contamination, E over calibration range, D dilution,
+# N / NJ tentatively identified, P, Q, H, M, X, * ...) keep the value as
+# measured. R (rejected) is NOT dropped: the value is plotted as entered and
+# Validate warns "R-qualified (rejected) result plotted" so the user decides --
+# silently deleting a lab result is worse than flagging it. Text that is none
+# of these is kept (value treated as entered) with a Validate warning instead
+# of rejecting the whole row.
+
+QualifierKind = Literal["non_detect", "detected", "unknown"]
+
+QUALIFIER_NON_DETECT = frozenset(
+    {"<", "nd", "n.d.", "n.d", "ndl", "u", "bdl", "not detected", "non-detect", "non detect",
+     "below detection limit", "below detection", "<rdl", "<dl", "<mdl", "no", "n", "false", "0"}
+)
+QUALIFIER_DETECTED = frozenset({"=", "detected", "yes", "y", "true", "1", "d"})
+# Letters of common detected-data lab flags (EPA CLP / Canadian lab reports).
+_LAB_FLAG_LETTERS = frozenset("jbedhnpqmxr*")
+_TOKEN_NON_DETECT = frozenset({"nd", "n.d.", "ndl", "bdl", "u"})
+_TOKEN_SPLIT_RE = re.compile(r"[,;/\s]+")
+
+
+def _lab_flag_token(token: str) -> QualifierKind | None:
+    core = token.rstrip("+-")
+    if token in _TOKEN_NON_DETECT or token.startswith("<"):
+        return "non_detect"
+    if not core or len(core) > 4:
+        return None
+    if core.startswith("u") and set(core[1:]) <= _LAB_FLAG_LETTERS:
+        return "non_detect"
+    if set(core) <= _LAB_FLAG_LETTERS:
+        return "detected"
+    return None
+
+
+def classify_lab_qualifier(text: object) -> tuple[QualifierKind | None, bool]:
+    """``(kind, rejected)`` of a qualifier cell; ``(None, False)`` when blank.
+
+    ``kind`` is ``"non_detect"``, ``"detected"`` or ``"unknown"``; ``rejected``
+    is True for an R flag (``R``, ``UR``, ``J,R`` ...), see the policy above.
+    """
+    compact = " ".join(str(text or "").strip().casefold().split())
+    if not compact:
+        return None, False
+    if compact in QUALIFIER_NON_DETECT or compact.replace(" ", "") in QUALIFIER_NON_DETECT:
+        return "non_detect", False
+    if compact.startswith("<"):
+        return "non_detect", False
+    if compact in QUALIFIER_DETECTED:
+        return "detected", False
+    tokens = [token for token in _TOKEN_SPLIT_RE.split(compact) if token]
+    kinds = [_lab_flag_token(token) for token in tokens]
+    if not tokens or any(kind is None for kind in kinds):
+        return "unknown", False
+    rejected = any("r" in token.rstrip("+-") for token in tokens)
+    if "non_detect" in kinds:
+        return "non_detect", rejected
+    return "detected", rejected
+
+
+def _sample_where(reading: object) -> str:
+    hole_id = getattr(reading, "hole_id", "")
+    parameter = getattr(reading, "parameter", "")
+    depth = float(getattr(reading, "sample_depth"))
+    return f"{hole_id} {parameter} at {depth:g} m"
+
+
+def lab_qualifier_warnings(readings: Iterable[object]) -> list[str]:
+    """Validate warnings for R-qualified (rejected) and unrecognised qualifier flags."""
+    warnings: list[str] = []
+    for reading in readings:
+        text = str(getattr(reading, "qualifier", "") or "").strip()
+        if not text:
+            continue
+        kind, rejected = classify_lab_qualifier(text)
+        if rejected:
+            warnings.append(
+                f"{_sample_where(reading)}: R-qualified (rejected) result plotted "
+                f"(qualifier '{text}') — the lab rejected this value; confirm it or remove the row."
+            )
+        elif kind == "unknown":
+            warnings.append(
+                f"{_sample_where(reading)}: qualifier '{text}' not recognised — value plotted as "
+                "entered; use < / ND / U for a non-detect or a lab flag such as J."
+            )
+    return warnings
 
 
 def unit_key(unit: object) -> str:

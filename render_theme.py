@@ -295,26 +295,27 @@ def primary_water_level_by_hole(water_levels) -> dict[str, object]:
     """Map hole_id → WaterLevel for the primary GW series (last series_id in workbook order).
 
     Workbooks typically list older snapshots first; the last distinct ``series_id``
-    is treated as the current/primary series for consulting gradient anchors.
-    Dry / nm rows are excluded so arrow anchors are not placed at the depth=0 sentinel.
+    with a measured reading is treated as the current/primary series for
+    consulting gradient anchors. Within it each hole uses its latest-dated
+    reading (``hydro_metrics.latest_measured_water_by_hole`` -- the plotted
+    one); a hole whose latest reading is dry / nm gets no anchor, so arrows are
+    never placed at the depth=0 sentinel or at a superseded head.
     """
     if not water_levels:
         return {}
-    from hydro_metrics import is_measured_water_level
+    from hydro_metrics import is_measured_water_level, latest_measured_water_by_hole
 
     by_series: dict[str, list] = {}
     order: list[str] = []
     for level in water_levels:
-        if not is_measured_water_level(level):
-            continue
         series_id = getattr(level, "series_id", None) or "default"
-        if series_id not in by_series:
-            order.append(series_id)
         by_series.setdefault(series_id, []).append(level)
+        if is_measured_water_level(level) and series_id not in order:
+            order.append(series_id)
     if not order:
         return {}
     primary_series = order[-1]
-    return {level.hole_id: level for level in by_series[primary_series]}
+    return latest_measured_water_by_hole(by_series[primary_series])
 
 
 def primary_water_depth_by_hole(water_levels) -> dict[str, float]:

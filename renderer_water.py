@@ -20,6 +20,7 @@ from hydro_metrics import (
     has_lnapl,
     horizontal_gradients_along_profile,
     latest_water_by_hole,
+    latest_water_readings,
     lnapl_correction_note,
     lnapl_interval_masl,
     series_legend_date,
@@ -2735,7 +2736,8 @@ class RendererWaterMixin:
             if not first.series_label:
                 # Unlabelled series from one monitoring event: name the date
                 # ("GROUNDWATER LEVEL (2026-04-02)"). Undated: unchanged.
-                legend_date = series_legend_date(levels)
+                # Dates of the readings drawn, not superseded duplicates.
+                legend_date = series_legend_date(latest_water_readings(levels))
                 if legend_date:
                     base = "" if series_id == "default" else (default_label or series_id)
                     caption_label = f"{base}, {legend_date}" if base else legend_date

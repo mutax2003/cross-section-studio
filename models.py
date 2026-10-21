@@ -25,8 +25,15 @@ WATER_OPTIONAL_COLUMNS = frozenset(
         "elevation_masl",
         "connect_group",
         "status",
+        "product_thickness_m",
+        "product_density",
+        "depth_to_product",
     }
 )
+# LNAPL (free product) specific gravity used when a Water row gives a product
+# thickness without product_density (typical weathered gasoline / diesel).
+DEFAULT_LNAPL_SPECIFIC_GRAVITY = 0.75
+LNAPL_SPECIFIC_GRAVITY_MIN = 0.5
 SCREEN_COLUMNS = {"hole_id", "from_depth", "to_depth"}
 GRADIENT_COLUMNS = {"hole_id", "direction"}
 MAX_WATER_SERIES = 4
@@ -229,6 +236,62 @@ class WaterLevel(BaseModel, frozen=True):
     # Datum of ``depth``: "bgs" = metres below ground surface (default) or
     # "btoc" = metres below top of casing (head = collar + stick-up − depth).
     depth_reference: str = "bgs"
+    # LNAPL (free product) in the well — optional. ``depth`` (or
+    # ``elevation_masl``) stays the measured WATER level: the oil/water
+    # interface. ``product_thickness_m`` is the apparent product thickness
+    # above it (along the hole, same datum as ``depth``) and ``product_density``
+    # its specific gravity (0.5–<1.0; defaults to 0.75 when a thickness is
+    # given). Corrected head = water elevation + vertical thickness × SG
+    # (``hydro_metrics.water_head_masl``).
+    product_thickness_m: float | None = None
+    product_density: float | None = None
+
+    @field_validator("product_thickness_m", "product_density", mode="before")
+    @classmethod
+    def blank_product_value(cls, value: object) -> object:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("product_thickness_m")
+    @classmethod
+    def validate_product_thickness(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if not math.isfinite(value):
+            raise ValueError("product_thickness_m must be a finite number")
+        if value < 0:
+            raise ValueError("product_thickness_m (apparent LNAPL thickness) must be non-negative")
+        return float(value)
+
+    @field_validator("product_density")
+    @classmethod
+    def validate_product_density(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if not math.isfinite(value):
+            raise ValueError("product_density must be a finite number")
+        if value >= 1.0:
+            raise ValueError(
+                f"product_density {value:g} is not an LNAPL (specific gravity must be < 1.0) — "
+                "a product denser than water is a DNAPL, which sinks and does not float on the "
+                "water table; leave product_thickness_m / product_density blank for DNAPL"
+            )
+        if value < LNAPL_SPECIFIC_GRAVITY_MIN:
+            raise ValueError(
+                f"product_density {value:g} is below {LNAPL_SPECIFIC_GRAVITY_MIN:g} — enter the "
+                "LNAPL specific gravity (typically 0.7–0.95)"
+            )
+        return float(value)
+
+    @model_validator(mode="after")
+    def default_product_density(self) -> WaterLevel:
+        if self.product_thickness_m is not None and self.product_density is None:
+            # Frozen model: set the documented default in place.
+            object.__setattr__(self, "product_density", DEFAULT_LNAPL_SPECIFIC_GRAVITY)
+        return self
 
     @field_validator("depth_reference", mode="before")
     @classmethod

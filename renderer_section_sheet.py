@@ -127,6 +127,7 @@ class SectionSheetLayoutMixin:
                 label_dry_wells=self.profile.show_dry_well_nm,
                 label_series_gaps=self.profile.show_dry_well_nm,
                 profile_lookup=profile_lookup,
+                track_half=track_half,
             )
             if self.profile.show_water_legend and self.water_series_legend:
                 self._draw_compact_water_legend(ax)

@@ -278,6 +278,7 @@ class CrossSectionRenderer(
         self.along_hole_tvd = dict(along_hole_tvd or {})
         self.export_framing = export_framing
         self.water_series_legend: list[WaterSeriesLegendEntry] = []
+        self.lnapl_drawn = False
         self.parameter_series_legend: list[ParameterLegendEntry] = []
         self._has_pinch_out = False
         self._has_unlogged_intervals = False
@@ -363,6 +364,7 @@ class CrossSectionRenderer(
         lithology_codes: Sequence[str] | None = None,
     ) -> Figure:
         self.water_series_legend = []
+        self.lnapl_drawn = False
         self._ve_main_ax = None
         self._water_labels = []
         self._water_compact_level = 0

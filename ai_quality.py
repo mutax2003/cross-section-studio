@@ -19,13 +19,17 @@ from rapidfuzz import fuzz
 from chemistry_qc import mixed_unit_warnings, rdl_above_guideline_notes
 from constants import CANONICAL_LITHOLOGY_CODES
 from hydro_metrics import (
+    APPARENT_LNAPL_THICKNESS_WARN_M,
     DEFAULT_NEST_DISTANCE_M,
     NestedVerticalGradient,
     absurd_horizontal_gradient_warnings,
     assign_screens_to_connect_groups,
     format_vertical_gradient_note,
+    has_lnapl,
     horizontal_gradients_along_profile,
     is_measured_water_level,
+    lnapl_correction_note,
+    lnapl_thickness_m,
     nested_vertical_gradients,
     screen_elevation_range,
     vertical_gradient_arrow_conflicts,
@@ -907,6 +911,9 @@ def summarize_water_levels(
     notes.extend(
         _artesian_notes(on_section, collar_by_id, stick_up_by_hole, md_to_elevation_by_hole)
     )
+    lnapl_warnings, lnapl_notes = _lnapl_checks(on_section)
+    warnings.extend(lnapl_warnings)
+    notes.extend(lnapl_notes)
     nested: tuple[NestedVerticalGradient, ...] = ()
     screens = [s for s in (screen_intervals or ()) if s.hole_id in hole_set]
     if screens:
@@ -970,6 +977,53 @@ def _head_and_md_fn(
         md_to_elevation=md_fn,
     )
     return head, md_fn
+
+
+def _lnapl_checks(levels: Sequence[WaterLevel]) -> tuple[list[str], list[str]]:
+    """LNAPL (free product) Validate checks: ``(warnings, notes)``.
+
+    * info: the wells whose heads are corrected (thickness × SG);
+    * warning: apparent thickness > 1 m — the thickness in a well overstates
+      the mobile product thickness in the formation;
+    * warning: product recorded on a dry / NM reading (no head is plotted, so
+      the product is not shown or corrected).
+    """
+    warnings: list[str] = []
+    notes: list[str] = []
+    note = lnapl_correction_note(levels)
+    if note:
+        notes.append(note + " (head = water level + apparent thickness × SG).")
+    thick: list[str] = []
+    unmeasured: list[str] = []
+    for level in levels:
+        if not has_lnapl(level):
+            continue
+        if not is_measured_water_level(level):
+            entry = f"{level.hole_id} ({level.status})"
+            if entry not in unmeasured:
+                unmeasured.append(entry)
+            continue
+        thickness = lnapl_thickness_m(level)
+        if thickness > APPARENT_LNAPL_THICKNESS_WARN_M:
+            entry = f"{level.hole_id} ({thickness:.2f} m)"
+            if entry not in thick:
+                thick.append(entry)
+    if thick:
+        warnings.append(
+            "LNAPL apparent thickness over "
+            f"{APPARENT_LNAPL_THICKNESS_WARN_M:g} m at "
+            + ", ".join(thick)
+            + " — apparent thickness in wells overstates formation thickness; the head "
+            "correction uses it as measured (check the reading and the product density)."
+        )
+    if unmeasured:
+        warnings.append(
+            "LNAPL thickness recorded on dry / not-measured readings at "
+            + ", ".join(unmeasured)
+            + " — no head is plotted there, so the product is not shown or corrected; "
+            "check the status or the product columns."
+        )
+    return warnings, notes
 
 
 def _artesian_notes(

@@ -11,6 +11,12 @@ TRACK_BORDER_COLOR = "#111827"
 TRACK_FILL_COLOR = "#FFFFFF"
 # Horizontal hatch for screened intervals — distinct from lithology diagonals (/, \, x).
 SCREEN_INTERVAL_HATCH = "--"
+# LNAPL (free product) band in the well column, between the product top and the
+# oil/water interface: amber-brown with a cross hatch (reads in greyscale too).
+LNAPL_FILL_COLOR = "#E0A030"
+LNAPL_EDGE_COLOR = "#7A4A12"
+LNAPL_HATCH = "xxx"
+LNAPL_LEGEND_LABEL = "LNAPL (apparent thickness)"
 CONSULTING_COLUMN_FILL = "#D0D5DD"
 LABEL_COLOR = "#111827"
 GRID_COLOR = "#D1D5DB"

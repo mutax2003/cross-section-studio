@@ -16,7 +16,14 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from models import Collar, DeviationReading, ScreenInterval, VerticalGradient, WaterLevel
+from models import (
+    DEFAULT_LNAPL_SPECIFIC_GRAVITY,
+    Collar,
+    DeviationReading,
+    ScreenInterval,
+    VerticalGradient,
+    WaterLevel,
+)
 
 # Warn when |Δh/Δx| exceeds this (dimensionless). Typical sand/gravel aquifers
 # are often 1e-4–1e-2; values above ~0.1 are usually data or unit errors.
@@ -87,24 +94,42 @@ def water_head_masl(
     *,
     stick_up_m: float | None = None,
     md_to_elevation: MdToElevation | None = None,
+    lnapl_corrected: bool = True,
 ) -> float:
     """Head elevation (masl) of a water reading.
 
-    * explicit ``elevation_masl`` is returned as given;
+    * explicit ``elevation_masl`` is taken as the measured water elevation;
     * otherwise the along-hole depth below ground (``btoc`` minus stick-up) is
       converted with ``md_to_elevation`` (hole survey: collar − TVD) — vertical
       holes (``None``) use collar − depth, the legacy formula;
     * water above ground inside the casing (btoc depth < stick-up) sits
-      ``stick_up − depth`` above the collar.
+      ``stick_up − depth`` above the collar;
+    * LNAPL: a reading with ``product_thickness_m > 0`` measured the oil/water
+      interface, so the head is corrected upward by the product's vertical
+      thickness × specific gravity (``lnapl_head_correction_m``) — also for an
+      explicit ``elevation_masl``, which is the measured interface elevation,
+      not an already-corrected head. ``lnapl_corrected=False`` returns the
+      measured interface elevation (figure product band).
     """
     if level.elevation_masl is not None:
-        return float(level.elevation_masl)
-    if getattr(level, "depth_reference", "bgs") != "btoc" and md_to_elevation is None:
-        return float(collar_rl) - float(level.depth)
-    md_below_ground = water_depth_along_hole_bgs(level, stick_up_m)
-    if md_below_ground < 0.0 or md_to_elevation is None:
-        return float(collar_rl) - md_below_ground
-    return float(md_to_elevation(md_below_ground))
+        head = float(level.elevation_masl)
+    elif getattr(level, "depth_reference", "bgs") != "btoc" and md_to_elevation is None:
+        head = float(collar_rl) - float(level.depth)
+    else:
+        md_below_ground = water_depth_along_hole_bgs(level, stick_up_m)
+        if md_below_ground < 0.0 or md_to_elevation is None:
+            head = float(collar_rl) - md_below_ground
+        else:
+            head = float(md_to_elevation(md_below_ground))
+    if lnapl_corrected and has_lnapl(level):
+        head += lnapl_head_correction_m(
+            level,
+            collar_rl,
+            stick_up_m=stick_up_m,
+            md_to_elevation=md_to_elevation,
+            interface_masl=head,
+        )
+    return head
 
 
 def water_depth_below_ground_m(
@@ -118,12 +143,14 @@ def water_depth_below_ground_m(
 
     Converts ``btoc`` readings to below ground and inclined-hole depths to true
     vertical depth; a plain below-ground reading on a vertical hole returns
-    ``level.depth`` unchanged.
+    ``level.depth`` unchanged. LNAPL wells report the corrected head's depth
+    (shallower than the measured oil/water interface).
     """
     if (
         level.elevation_masl is None
         and getattr(level, "depth_reference", "bgs") != "btoc"
         and md_to_elevation is None
+        and not has_lnapl(level)
     ):
         return float(level.depth)
     head = water_head_masl(
@@ -955,3 +982,182 @@ def groundwater_flow_notes(
         if note:
             notes.append(note)
     return tuple(notes)
+
+
+# ---------------------------------------------------------------------------
+# LNAPL (free product) head correction
+#
+# Field convention: ``WaterLevel.depth`` (or ``elevation_masl``) is the measured
+# depth to WATER — the oil/water interface in the well — and
+# ``product_thickness_m`` the apparent product thickness above it, along the
+# hole on the same datum. The corrected (equivalent freshwater) head is
+#
+#     h = interface elevation + vertical product thickness × SG
+#
+# with SG = ``product_density`` (default 0.75). On a surveyed (inclined) hole
+# the vertical thickness comes from the survey; elsewhere it equals the
+# apparent thickness. Apparent thickness in a well overstates the formation
+# thickness — the figure shows it as measured.
+# ---------------------------------------------------------------------------
+
+APPARENT_LNAPL_THICKNESS_WARN_M = 1.0
+
+
+def lnapl_thickness_m(level: WaterLevel) -> float:
+    """Apparent LNAPL thickness in the well (m); 0 when none was recorded."""
+    value = getattr(level, "product_thickness_m", None)
+    if value is None:
+        return 0.0
+    value = float(value)
+    return value if math.isfinite(value) and value > 0.0 else 0.0
+
+
+def has_lnapl(level: WaterLevel) -> bool:
+    """True when the reading records measurable free product (thickness > 0)."""
+    return lnapl_thickness_m(level) > 0.0
+
+
+def lnapl_specific_gravity(level: WaterLevel) -> float:
+    """Product specific gravity (``product_density``; default 0.75)."""
+    value = getattr(level, "product_density", None)
+    return float(value) if value is not None else DEFAULT_LNAPL_SPECIFIC_GRAVITY
+
+
+def lnapl_product_top_masl(
+    level: WaterLevel,
+    collar_rl: float,
+    *,
+    stick_up_m: float | None = None,
+    md_to_elevation: MdToElevation | None = None,
+    interface_masl: float | None = None,
+) -> float | None:
+    """Elevation (masl) of the air/product interface, ``None`` without product."""
+    thickness = lnapl_thickness_m(level)
+    if thickness <= 0.0:
+        return None
+    if interface_masl is None:
+        interface_masl = water_head_masl(
+            level,
+            collar_rl,
+            stick_up_m=stick_up_m,
+            md_to_elevation=md_to_elevation,
+            lnapl_corrected=False,
+        )
+    if level.elevation_masl is not None or md_to_elevation is None:
+        return float(interface_masl) + thickness
+    md_water = water_depth_along_hole_bgs(level, stick_up_m)
+    if md_water < 0.0:
+        # Whole product column inside the (vertical) stick-up.
+        return float(interface_masl) + thickness
+    md_product = md_water - thickness
+    if md_product < 0.0:
+        # Product top inside the stick-up, above the collar.
+        return float(collar_rl) - md_product
+    return float(md_to_elevation(md_product))
+
+
+def lnapl_vertical_thickness_m(
+    level: WaterLevel,
+    collar_rl: float,
+    *,
+    stick_up_m: float | None = None,
+    md_to_elevation: MdToElevation | None = None,
+    interface_masl: float | None = None,
+) -> float:
+    """Vertical product thickness (m): the apparent thickness, or from the survey."""
+    thickness = lnapl_thickness_m(level)
+    if thickness <= 0.0:
+        return 0.0
+    if level.elevation_masl is not None or md_to_elevation is None:
+        return thickness
+    if interface_masl is None:
+        interface_masl = water_head_masl(
+            level,
+            collar_rl,
+            stick_up_m=stick_up_m,
+            md_to_elevation=md_to_elevation,
+            lnapl_corrected=False,
+        )
+    top = lnapl_product_top_masl(
+        level,
+        collar_rl,
+        stick_up_m=stick_up_m,
+        md_to_elevation=md_to_elevation,
+        interface_masl=interface_masl,
+    )
+    return max(0.0, float(top) - float(interface_masl)) if top is not None else 0.0
+
+
+def lnapl_head_correction_m(
+    level: WaterLevel,
+    collar_rl: float,
+    *,
+    stick_up_m: float | None = None,
+    md_to_elevation: MdToElevation | None = None,
+    interface_masl: float | None = None,
+) -> float:
+    """Head rise (m) from the LNAPL correction: vertical thickness × SG."""
+    vertical = lnapl_vertical_thickness_m(
+        level,
+        collar_rl,
+        stick_up_m=stick_up_m,
+        md_to_elevation=md_to_elevation,
+        interface_masl=interface_masl,
+    )
+    if vertical <= 0.0:
+        return 0.0
+    return vertical * lnapl_specific_gravity(level)
+
+
+def lnapl_interval_masl(
+    level: WaterLevel,
+    collar_rl: float,
+    *,
+    stick_up_m: float | None = None,
+    md_to_elevation: MdToElevation | None = None,
+) -> tuple[float, float] | None:
+    """``(product top, oil/water interface)`` elevations (masl) for the figure band."""
+    if not has_lnapl(level):
+        return None
+    interface = water_head_masl(
+        level,
+        collar_rl,
+        stick_up_m=stick_up_m,
+        md_to_elevation=md_to_elevation,
+        lnapl_corrected=False,
+    )
+    top = lnapl_product_top_masl(
+        level,
+        collar_rl,
+        stick_up_m=stick_up_m,
+        md_to_elevation=md_to_elevation,
+        interface_masl=interface,
+    )
+    return (float(top), float(interface)) if top is not None else None
+
+
+def format_lnapl_thickness_label(level: WaterLevel) -> str:
+    """Figure label suffix, e.g. ``"LNAPL 0.32 m"`` (apparent thickness)."""
+    return f"LNAPL {lnapl_thickness_m(level):.2f} m"
+
+
+def lnapl_correction_note(levels: Sequence[WaterLevel]) -> str | None:
+    """QA line naming the LNAPL-corrected wells, ``None`` when there are none.
+
+    "Groundwater elevations corrected for LNAPL at MW-3 (0.32 m, SG 0.75)" —
+    one entry per distinct well / thickness / SG, in reading order; dry / NM
+    readings are skipped (no head is plotted).
+    """
+    entries: list[str] = []
+    for level in levels:
+        if not has_lnapl(level) or not is_measured_water_level(level):
+            continue
+        text = (
+            f"{level.hole_id} ({lnapl_thickness_m(level):.2f} m, "
+            f"SG {lnapl_specific_gravity(level):.2f})"
+        )
+        if text not in entries:
+            entries.append(text)
+    if not entries:
+        return None
+    return "Groundwater elevations corrected for LNAPL at " + ", ".join(entries)

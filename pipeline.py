@@ -855,7 +855,8 @@ def render_cross_section_from_geometry(
         overlap_warnings = tuple(overlap_warnings) + tuple(
             getattr(renderer, "chemistry_label_notes", None) or ()
         )
-        # Read after export framing: whether the map scale fits depends on the page.
+        # Read after export framing: whether the map scale fits depends on the page;
+        # raster notes say when PNG resolution was lowered to stay within the size cap.
         qa_notes = tuple(renderer.map_scale_notes(figure)) + tuple(
             getattr(renderer, "raster_notes", None) or ()
         )
@@ -864,8 +865,6 @@ def render_cross_section_from_geometry(
         qa_notes = tuple(getattr(renderer, "chemistry_rdl_notes", None) or ()) + qa_notes
         # Hole-ID headers that still overprint after every header fallback.
         qa_notes = qa_notes + tuple(renderer.header_overlap_notes(figure))
-        # PNG resolution lowered to stay within the raster size cap.
-        qa_notes = qa_notes + tuple(getattr(renderer, "raster_notes", None) or ())
         # Water lines clipped to the ground / left above it in an artesian zone.
         qa_notes = qa_notes + tuple(getattr(renderer, "water_line_notes", None) or ())
         # Nested-well vertical gradients (screen mid-points) and arrow cross-check.

@@ -57,7 +57,8 @@ def test_p2_chemistry_sticks_preset_matches_sample_defaults() -> None:
     assert config.vertical_exaggeration == 1.0
     assert not sidebar_visibility("p2_chemistry_sticks").vertical_exaggeration_editable
     assert config.interpolate_water_table is False
-    assert config.show_water_legend is False
+    # Water drawn on a chemistry sheet is keyed (no water, no key).
+    assert config.show_water_legend is True
     assert config.prefer_chemistry is True
     assert config.parameter_interpolate_segments is False
     assert config.parameter_draw_markers is False

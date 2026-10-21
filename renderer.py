@@ -81,6 +81,7 @@ from renderer_common import (
     add_ve_caption,
     apply_ve_aspect,
     below_axes_anchor,
+    deviated_x_steps,
     fit_label,
     format_ve_caption,
     header_overlaps,
@@ -693,6 +694,8 @@ class CrossSectionRenderer(
             collar_lookup[hole_id] = cf
             x_by_hole[hole_id] = xf
         x_span = float(x_values[-1] - x_values[0]) if x_values.size >= 2 else 10.0
+        # Surveyed holes: interval x steps the column / screens / water follow.
+        self._deviated_x = deviated_x_steps(projected_df)
         return _HoleContext(
             summary=summary,
             collar_lookup=collar_lookup,

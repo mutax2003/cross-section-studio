@@ -15,7 +15,6 @@ from matplotlib.text import Annotation, Text
 from matplotlib.transforms import Bbox, offset_copy
 
 from hydro_metrics import (
-    format_gradient_label,
     format_lnapl_thickness_label,
     has_lnapl,
     horizontal_gradients_along_profile,
@@ -37,7 +36,7 @@ from render_theme import (
     WATER_COLOR,
     consulting_gw_series_style,
 )
-from renderer_common import settle_figure_layout
+from renderer_common import HatchBatchedPolyCollection, settle_figure_layout
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +222,103 @@ _SERIES_MARKER_STEP_PT = 7.5
 # Line dash per series slot on non-consulting sheets (consulting keeps its
 # solid client lines; marker shape separates series there).
 _SERIES_DASHES = ("--", "-.", ":", (0, (6, 2, 1, 2)))
+# Significant figures of an on-section i=Δh/Δx label (0.027, 0.033, 0.21).
+_GRADIENT_SIG_FIGS = 2
+# LNAPL product band: never thinner / narrower than this on the page (points)
+# so a few-cm band at the marker is not hidden under the water marker
+# (7 pt); grown about its centre only when the true size is smaller.
+_LNAPL_MIN_HEIGHT_PT = 8.0
+_LNAPL_MIN_WIDTH_PT = 20.0
+# Flowing-artesian head (above ground): dashed riser from the ground to the
+# head plus an upward triangle on the ground line.
+ARTESIAN_LEGEND_LABEL = "Flowing artesian head (above ground)"
+_ARTESIAN_MARKER = "^"
+_ARTESIAN_LINESTYLE = (0, (2.0, 1.5))
+_ARTESIAN_TOL_M = 1e-6
+
+
+def format_sig_figs(value: float, sig: int = _GRADIENT_SIG_FIGS) -> str:
+    """``value`` to ``sig`` significant figures, never in exponent form."""
+    value = float(value)
+    if value == 0.0 or not np.isfinite(value):
+        return "0" if value == 0.0 else str(value)
+    rounded = round(value, sig - 1 - int(np.floor(np.log10(abs(value)))))
+    # Rounding up may add a digit (0.0996 -> 0.10): keep sig figures.
+    decimals = max(0, sig - 1 - int(np.floor(np.log10(abs(rounded)))))
+    return f"{rounded:.{decimals}f}"
+
+
+def format_gradient_text(gradient: float, series_prefix: str = "") -> str:
+    """On-section ``i=0.027`` label (2 significant figures); several water
+    series prefix the series name (``Fall 2025 i=0.033``)."""
+    text = f"i={format_sig_figs(gradient)}"
+    return f"{series_prefix} {text}" if series_prefix else text
+
+
+def distinct_series_styles(
+    proposed: Sequence[tuple[str, str, bool, bool]],
+    candidates,
+) -> list[tuple[str, str]]:
+    """De-duplicate per-series ``(colour, marker)`` defaults.
+
+    ``proposed`` rows are ``(colour, marker, colour_fixed, marker_fixed)`` in
+    series order (``*_fixed``: set in the workbook — never changed). A series
+    whose pair repeats an earlier one moves to the first candidate slot
+    (``candidates(k) -> (colour, marker)``) with an unused pair, changing only
+    the parts the workbook left blank. The first series never changes.
+    """
+    used: set[tuple[str, str]] = set()
+    resolved: list[tuple[str, str]] = []
+    for index, (color, marker, color_fixed, marker_fixed) in enumerate(proposed):
+        pair = (str(color).lower(), str(marker))
+        if pair in used and not (color_fixed and marker_fixed):
+            for slot in range(index, index + 16):
+                cand_color, cand_marker = candidates(slot)
+                new_color = color if color_fixed else cand_color
+                new_marker = marker if marker_fixed else cand_marker
+                new_pair = (str(new_color).lower(), str(new_marker))
+                if new_pair not in used:
+                    color, marker, pair = new_color, new_marker, new_pair
+                    break
+        used.add(pair)
+        resolved.append((color, marker))
+    return resolved
+
+
+class MinSizeBandCollection(HatchBatchedPolyCollection):
+    """Rectangles in data units, grown about their centre at draw time to a
+    minimum on-page size (points) so thin bands stay visible at any VE."""
+
+    def __init__(self, boxes: np.ndarray, *, min_width_pt: float, min_height_pt: float, **kwargs) -> None:
+        self._data_boxes = np.asarray(boxes, dtype=float).reshape(-1, 4)  # x0, y0, x1, y1
+        self._min_width_pt = float(min_width_pt)
+        self._min_height_pt = float(min_height_pt)
+        super().__init__(self._box_verts(self._data_boxes), **kwargs)
+
+    @staticmethod
+    def _box_verts(boxes: np.ndarray) -> np.ndarray:
+        x0, y0, x1, y1 = boxes.T
+        return np.stack(
+            [np.column_stack([x0, y0]), np.column_stack([x1, y0]), np.column_stack([x1, y1]), np.column_stack([x0, y1])],
+            axis=1,
+        )
+
+    def draw(self, renderer) -> None:  # type: ignore[override]
+        ax = self.axes
+        if ax is not None and len(self._data_boxes):
+            to_px = ax.transData
+            lo = to_px.transform(self._data_boxes[:, :2])
+            hi = to_px.transform(self._data_boxes[:, 2:])
+            centre = 0.5 * (lo + hi)
+            half = 0.5 * np.abs(hi - lo)
+            min_half = 0.5 * renderer.points_to_pixels(np.asarray([self._min_width_pt, self._min_height_pt]))
+            half = np.maximum(half, min_half)
+            from_px = to_px.inverted()
+            boxes = np.column_stack([from_px.transform(centre - half), from_px.transform(centre + half)])
+            stale = self.stale
+            self.set_verts(self._box_verts(boxes))
+            self.stale = stale
+        super().draw(renderer)
 
 
 def _fmt_water_number(value: float, decimals: int = 2) -> str:
@@ -2372,6 +2468,8 @@ class RendererWaterMixin:
         self.water_line_notes = []
         # Whether an LNAPL product band was drawn (legend entry only then).
         self.lnapl_drawn = False
+        self.artesian_drawn = False
+        self.artesian_color = None
         if hole_summary.empty:
             return
         self._water_status_notes = {}
@@ -2448,7 +2546,21 @@ class RendererWaterMixin:
         lnapl_levels: list[tuple[float, float, WaterLevel]] = []
         # One "i=" per segment: series with equal heads produce identical text.
         gradient_drawn: set[tuple[str, str, str]] = set()
-        for series_index, (series_id, levels) in enumerate(sorted(series_groups.items())):
+        # Flowing-artesian heads drawn (legend entry only then).
+        self.artesian_drawn = False
+        self.artesian_color = None
+        # connect_group(s) each hole has readings in (any series): a hole read
+        # only in another nest (a deep well between shallow wells) is not a
+        # gap in this nest's line.
+        groups_by_hole: dict[str, set[str]] = {}
+        for series_levels in series_groups.values():
+            for level in series_levels:
+                groups_by_hole.setdefault(str(level.hole_id), set()).add(
+                    (level.connect_group or "").strip()
+                )
+        series_items = sorted(series_groups.items())
+        series_styles: list[tuple[str, str, str]] = []
+        for series_index, (series_id, levels) in enumerate(series_items):
             first = levels[0]
             default_color, default_marker, default_label = consulting_gw_series_style(
                 series_id,
@@ -2465,7 +2577,28 @@ class RendererWaterMixin:
             marker = _GW_MARKER_MAP.get(lowered, raw_marker)
             if marker not in MarkerStyle.markers:
                 marker = lowered if lowered in MarkerStyle.markers else "v"
+            series_styles.append((color, marker, default_label))
+        if multi_series:
+            # Two series must never share colour + marker (an unknown id can
+            # land on a known id's slot): later ones move to a free slot.
+            resolved = distinct_series_styles(
+                [
+                    (color, marker, bool(levels[0].color or water_color), bool(levels[0].marker))
+                    for (color, marker, _label), (_sid, levels) in zip(series_styles, series_items, strict=True)
+                ],
+                lambda slot: consulting_gw_series_style("", series_index=slot)[:2],
+            )
+            series_styles = [
+                (color, marker, label)
+                for (color, marker), (_c, _m, label) in zip(resolved, series_styles, strict=True)
+            ]
+        for series_index, (series_id, levels) in enumerate(series_items):
+            first = levels[0]
+            plotted_levels: list[WaterLevel] = []
+            color, marker, default_label = series_styles[series_index]
             label = first.series_label or default_label or series_id
+            # Several series: each i= names its series (colour alone is not enough).
+            gradient_prefix = label if multi_series else ""
             series_linestyle = "-" if self.profile.water_line_solid else "--"
             if multi_series and not consulting:
                 series_linestyle = _SERIES_DASHES[series_index % len(_SERIES_DASHES)]
@@ -2476,10 +2609,13 @@ class RendererWaterMixin:
                 for hole_id in transect_hole_ids:
                     if hole_id in level_by_hole:
                         continue
-                    if hole_id not in holes_with_any_water:
-                        if label_dry_wells or hole_id in fully_dry_nm_drawn:
-                            continue
-                        fully_dry_nm_drawn.add(hole_id)
+                    if hole_id in holes_with_any_water:
+                        # Read in another series: no row here is not "not
+                        # measured" (an nm row says that) - nothing drawn.
+                        continue
+                    if label_dry_wells or hole_id in fully_dry_nm_drawn:
+                        continue
+                    fully_dry_nm_drawn.add(hole_id)
                     profile = profile_lookup.get(hole_id)
                     if profile is None:
                         continue
@@ -2490,6 +2626,18 @@ class RendererWaterMixin:
             for group_id, group_levels in _connect_subgroups(levels).items():
                 # One reading per hole: latest date wins (undated: last row).
                 level_by_id = latest_water_by_hole(group_levels)
+                plotted_levels.extend(level_by_id.values())
+                # Holes of this nest's line, in section order: a hole read
+                # only in another connect_group is skipped (no gap), while a
+                # hole with a dry / NM row here, or no reading at all, still
+                # breaks a segments-mode line.
+                group_hole_ids = [
+                    hole_id
+                    for hole_id in transect_hole_ids
+                    if hole_id in level_by_id
+                    or not groups_by_hole.get(hole_id)
+                    or group_id in groups_by_hole[hole_id]
+                ]
                 xs: list[float] = []
                 water_rls: list[float] = []
                 collars: list[float] = []
@@ -2521,6 +2669,16 @@ class RendererWaterMixin:
                 water_arr = np.asarray(water_rls, dtype=float)
                 collar_arr = np.asarray(collars, dtype=float)
                 ys = self._plot_y_values(water_arr, collar_arr)
+                if getattr(self, "_deviated_x", None):
+                    # Surveyed holes: the marker sits on the column step at its head.
+                    xs_arr = np.asarray(
+                        [
+                            self._deviated_x_at(str(level.hole_id), float(collar), float(y), float(x))
+                            for level, collar, y, x in zip(measured_levels, collar_arr, ys, xs_arr, strict=True)
+                        ],
+                        dtype=float,
+                    )
+                marker_x = {str(level.hole_id): float(x) for level, x in zip(measured_levels, xs_arr, strict=True)}
                 y_by_level = {
                     str(level.hole_id): (float(x), float(y))
                     for level, x, y in zip(measured_levels, xs_arr, ys, strict=True)
@@ -2547,6 +2705,16 @@ class RendererWaterMixin:
                 # poked its triangle out over the axis line).
                 markers.set_clip_path(ax.patch)
                 register_marker_set(ax, markers, "water")
+                artesian = water_arr > collar_arr + _ARTESIAN_TOL_M
+                if np.any(artesian):
+                    self._draw_artesian_risers(
+                        ax,
+                        xs_arr[artesian],
+                        self._plot_y_values(collar_arr[artesian], collar_arr[artesian]),
+                        ys[artesian],
+                        color,
+                        marker_transform,
+                    )
                 lnapl_levels.extend(
                     (float(x), float(collar_rl), level)
                     for x, collar_rl, level in zip(xs_arr, collars, measured_levels, strict=True)
@@ -2616,14 +2784,14 @@ class RendererWaterMixin:
                         }
                         segments: list[np.ndarray] = []
                         for left_id, right_id in zip(
-                            transect_hole_ids, transect_hole_ids[1:], strict=False
+                            group_hole_ids, group_hole_ids[1:], strict=False
                         ):
                             if left_id not in y_by_hole or right_id not in y_by_hole:
                                 continue
                             segment = np.asarray(
                                 [
-                                    [transect_x[left_id], y_by_hole[left_id]],
-                                    [transect_x[right_id], y_by_hole[right_id]],
+                                    [marker_x.get(left_id, transect_x[left_id]), y_by_hole[left_id]],
+                                    [marker_x.get(right_id, transect_x[right_id]), y_by_hole[right_id]],
                                 ],
                                 dtype=float,
                             )
@@ -2685,7 +2853,7 @@ class RendererWaterMixin:
                         md_to_elevation_by_hole=self._md_to_elevation_by_hole(gradient_collars),
                     )
                     adjacent_pairs = set(
-                        zip(transect_hole_ids, transect_hole_ids[1:], strict=False)
+                        zip(group_hole_ids, group_hole_ids[1:], strict=False)
                     )
                     for segment in gradient_segments:
                         if (
@@ -2697,12 +2865,12 @@ class RendererWaterMixin:
                             # Segments mode draws no water line across a dry/NM
                             # gap — do not float an i= label over the open gap.
                             continue
-                        gradient_text = format_gradient_label(segment)
                         gradient_key = (
                             str(segment.left_hole_id),
                             str(segment.right_hole_id),
-                            gradient_text,
+                            format_gradient_text(segment.gradient),
                         )
+                        gradient_text = format_gradient_text(segment.gradient, gradient_prefix)
                         if gradient_key in gradient_drawn:
                             continue
                         gradient_drawn.add(gradient_key)
@@ -2735,7 +2903,9 @@ class RendererWaterMixin:
             if not first.series_label:
                 # Unlabelled series from one monitoring event: name the date
                 # ("GROUNDWATER LEVEL (2026-04-02)"). Undated: unchanged.
-                legend_date = series_legend_date(levels)
+                # Dated from the readings plotted (latest per hole and nest):
+                # a superseded duplicate does not widen the range.
+                legend_date = series_legend_date(plotted_levels or levels)
                 if legend_date:
                     base = "" if series_id == "default" else (default_label or series_id)
                     caption_label = f"{base}, {legend_date}" if base else legend_date
@@ -2757,6 +2927,57 @@ class RendererWaterMixin:
         key_min = int(getattr(self.profile, "water_series_key_min_series", 0) or 0)
         if not consulting and key_min and len(self.water_series_legend) >= key_min:
             self._draw_water_series_key(ax)
+
+    def _draw_artesian_risers(self, ax, xs, ground_ys, head_ys, color: str, transform) -> None:
+        """Flowing artesian heads: a dashed riser from the ground line up to
+        the head (the marker floats above ground otherwise) and an upward
+        triangle on the ground line; keyed only when drawn."""
+        risers = [
+            np.asarray([[float(x), float(g)], [float(x), float(h)]], dtype=float)
+            for x, g, h in zip(xs, ground_ys, head_ys, strict=True)
+        ]
+        collection = LineCollection(
+            risers,
+            colors=color,
+            linewidths=1.0,
+            linestyles=[_ARTESIAN_LINESTYLE],
+            zorder=WATER_MARKER_ZORDER - 0.05,
+            transform=transform,
+        )
+        ax.add_collection(collection)
+        flags = ax.scatter(
+            xs,
+            ground_ys,
+            marker=_ARTESIAN_MARKER,
+            c=color,
+            s=22,
+            zorder=WATER_MARKER_ZORDER - 0.02,
+            transform=transform,
+            edgecolors="white",
+            linewidths=_WATER_MARKER_EDGE_PT,
+        )
+        flags.set_gid("artesian_head")
+        collection.set_gid("artesian_riser")
+        self.artesian_drawn = True
+        if self.artesian_color is None:
+            self.artesian_color = color
+
+    def artesian_legend_proxy(self):
+        """Legend key for flowing artesian heads (``None`` when none drawn)."""
+        if not getattr(self, "artesian_drawn", False):
+            return None
+        from matplotlib.lines import Line2D
+
+        return Line2D(
+            [],
+            [],
+            color=self.artesian_color or CONSULTING_WATER_COLOR,
+            marker=_ARTESIAN_MARKER,
+            markersize=6,
+            linewidth=1.0,
+            linestyle=_ARTESIAN_LINESTYLE,
+            label=ARTESIAN_LEGEND_LABEL,
+        )
 
     def _draw_lnapl_bands(
         self,
@@ -2804,22 +3025,25 @@ class RendererWaterMixin:
             y_low.append(min(float(top_y), float(bottom_y)))
             heights.append(height)
         if x_left:
-            n_bands = len(x_left)
-            self._add_rect_collection(
-                ax,
-                (
-                    np.asarray(x_left, dtype=float),
-                    np.asarray(y_low, dtype=float),
-                    np.full(n_bands, 2.0 * half),
-                    np.asarray(heights, dtype=float),
-                ),
+            x0 = np.asarray(x_left, dtype=float)
+            y0 = np.asarray(y_low, dtype=float)
+            # A band of a few cm is a hairline at report scale and the water
+            # marker (at the corrected head, inside it) covered it: grown at
+            # draw time to a minimum page size, wider than the marker.
+            band = MinSizeBandCollection(
+                np.column_stack([x0, y0, x0 + 2.0 * half, y0 + np.asarray(heights, dtype=float)]),
+                min_width_pt=_LNAPL_MIN_WIDTH_PT,
+                min_height_pt=_LNAPL_MIN_HEIGHT_PT,
                 facecolors=LNAPL_FILL_COLOR,
                 edgecolors=LNAPL_EDGE_COLOR,
                 linewidths=0.6,
-                # Over the screen hatch (9), under the water markers (9.3).
-                zorder=9.1,
                 hatch=LNAPL_HATCH,
             )
+            # Over the column fills and screen hatch (9), under the water
+            # markers (9.3) and labels (9.5).
+            band.set_zorder(9.1)
+            band.set_gid("lnapl_band")
+            ax.add_collection(band)
             self.lnapl_drawn = True
         note = lnapl_correction_note(drawn)
         if note and note not in self.water_line_notes:
@@ -2863,6 +3087,10 @@ class RendererWaterMixin:
         if lnapl_proxy is not None:
             handles.append(lnapl_proxy)
             labels.append(LNAPL_LEGEND_LABEL)
+        artesian_proxy = self.artesian_legend_proxy()
+        if artesian_proxy is not None:
+            handles.append(artesian_proxy)
+            labels.append(ARTESIAN_LEGEND_LABEL)
         key = Legend(
             ax,
             handles,
@@ -2890,6 +3118,8 @@ class RendererWaterMixin:
             lines.append(entry["level_label"])
         if getattr(self, "lnapl_drawn", False):
             lines.append(LNAPL_LEGEND_LABEL.upper())
+        if getattr(self, "artesian_drawn", False):
+            lines.append(ARTESIAN_LEGEND_LABEL.upper())
         ax.text(
             0.01,
             0.01,

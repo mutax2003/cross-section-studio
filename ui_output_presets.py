@@ -166,7 +166,10 @@ OUTPUT_PRESETS: dict[str, OutputPresetConfig] = {
         # Client Figs 6/7: NO VERTICAL EXAGGERATION (drawn at exactly 1x).
         vertical_exaggeration=1.0,
         show_water_elevation_labels=False,
-        show_water_legend=False,
+        # Water markers / lines / i= labels drawn on a chemistry sheet must be
+        # keyed; the client P2 figures have no water, so no key appears there
+        # (the GW key lists only series actually drawn).
+        show_water_legend=True,
         show_dry_well_nm=False,
         water_interpolate_across_gaps=False,
         sample_figure_profile=True,

@@ -409,6 +409,9 @@ class ChartLayoutMixin:
         lnapl_proxy = self.lnapl_legend_proxy() if entries else None
         if lnapl_proxy is not None:
             handles.append((lnapl_proxy, lnapl_proxy.get_label()))
+        artesian_proxy = self.artesian_legend_proxy() if entries else None
+        if artesian_proxy is not None:
+            handles.append((artesian_proxy, artesian_proxy.get_label()))
         if getattr(self, "_chart_collar_markers_drawn", False):
             handles.append(
                 (

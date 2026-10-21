@@ -163,6 +163,7 @@ def _render_validate_details(
                 if import_report is not None and import_report.uses_placeholder_elevation
                 else None
             ),
+            deviation_readings=parse_result.deviation_readings,
         )
         with st.expander("Groundwater", expanded=bool(water_summary.warnings)):
             st.caption(scope_caption)

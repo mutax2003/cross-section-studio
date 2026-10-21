@@ -88,9 +88,12 @@ def test_unparseable_rejected(raw: object) -> None:
 
 
 def test_columns_appended_at_end() -> None:
-    assert WATER_COLUMNS[-1] == "date"
+    # Appended after the 1.0.0 columns (LNAPL columns follow on Water).
+    water_cols = list(WATER_COLUMNS)
+    assert water_cols.index("date") == water_cols.index("depth_reference") + 1
     assert ENVIRONMENTAL_COLUMNS[-1] == "date"
-    assert list(WaterLevel.model_fields)[-1] == "date"
+    water_fields = list(WaterLevel.model_fields)
+    assert water_fields.index("date") == water_fields.index("depth_reference") + 1
     assert list(EnvironmentalReading.model_fields)[-1] == "date"
 
 

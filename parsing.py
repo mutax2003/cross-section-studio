@@ -430,6 +430,62 @@ def skipped_row_hole_ids(errors: Sequence[str]) -> dict[str, set[str]]:
 _COLUMN_SPELLINGS = {"label_colour": "label_color", "yellow_max": "orange_max"}
 
 
+def _blank_cell(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float) and pd.isna(value):
+        return True
+    return isinstance(value, str) and not value.strip()
+
+
+def _thickness_from_depth_to_product(
+    depth_to_product: object,
+    water_depth: float | None,
+    product_thickness: object,
+) -> float | None:
+    """Apparent LNAPL thickness from an optional Water ``depth_to_product`` cell.
+
+    ``depth`` is the depth to WATER (oil/water interface) and
+    ``depth_to_product`` the depth to the air/product interface, both on the
+    same datum (bgs or btoc): thickness = depth − depth_to_product. Returns
+    ``None`` when the cell is blank (``product_thickness_m`` is then used as
+    given). A thickness given as well must agree within 5 mm.
+    """
+    if _blank_cell(depth_to_product):
+        return None
+    try:
+        dtp = float(depth_to_product)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"depth_to_product must be a number (got {depth_to_product!r})") from exc
+    if not math.isfinite(dtp) or dtp < 0:
+        raise ValueError("depth_to_product must be a finite, non-negative depth")
+    if water_depth is None:
+        raise ValueError(
+            "depth_to_product needs the water depth in depth (oil/water interface); "
+            "with elevation_masl give product_thickness_m instead"
+        )
+    if dtp > water_depth:
+        raise ValueError(
+            f"depth_to_product {dtp:g} m is below the water depth {water_depth:g} m — depth is "
+            "the depth to water (oil/water interface), depth_to_product the shallower depth to "
+            "the top of the product"
+        )
+    thickness = water_depth - dtp
+    if not _blank_cell(product_thickness):
+        try:
+            given = float(product_thickness)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"product_thickness_m must be a number (got {product_thickness!r})"
+            ) from exc
+        if abs(given - thickness) > 0.005:
+            raise ValueError(
+                f"product_thickness_m {given:g} m disagrees with depth − depth_to_product "
+                f"({thickness:.3f} m) — give one or the other"
+            )
+    return thickness
+
+
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     # Same collapse as FormatDetector, so a header it accepts cannot fail here.
     renamed = {col: re.sub(r"\s+", "_", str(col).strip().lower()) for col in df.columns}
@@ -948,9 +1004,18 @@ class DataParser:
                     "status",
                     "depth_reference",
                     "date",
+                    "product_thickness_m",
+                    "product_density",
                 ):
                     if hasattr(row, col):
                         payload[col] = getattr(row, col)
+                thickness_from_dtp = _thickness_from_depth_to_product(
+                    getattr(row, "depth_to_product", None),
+                    depth if has_depth else None,
+                    payload.get("product_thickness_m"),
+                )
+                if thickness_from_dtp is not None:
+                    payload["product_thickness_m"] = thickness_from_dtp
                 level = WaterLevel.model_validate(payload)
             except Exception as exc:
                 errors.append(_row_error("Water", row_num, exc, hole_id=getattr(row, "hole_id", None)))

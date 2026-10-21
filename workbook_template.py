@@ -78,6 +78,11 @@ WATER_COLUMNS = (
     "connect_group",
     "depth_reference",
     "date",
+    # LNAPL (free product), optional: depth stays the depth to WATER (oil/water
+    # interface); give the apparent product thickness or the depth to product.
+    "product_thickness_m",
+    "product_density",
+    "depth_to_product",
 )
 ENVIRONMENTAL_COLUMNS = (
     "hole_id",
@@ -415,6 +420,9 @@ def _column_hints() -> dict[str, dict[str, str]]:
             "connect_group": "Optional nest id (e.g. shallow/deep) — only same group connects",
             "depth_reference": "Optional: bgs (below ground, default) or btoc (below top of casing; uses Collars.stick_up_m)",
             "date": "Optional monitoring date (YYYY-MM-DD or an Excel date). Keep one series to one event — heads from different dates are not one surface",
+            "product_thickness_m": "Optional LNAPL: apparent free-product thickness in the well (m); depth = depth to WATER (oil/water interface)",
+            "product_density": "Optional LNAPL specific gravity 0.5–<1.0 (default 0.75 when a thickness is given); ≥1.0 is DNAPL — not corrected",
+            "depth_to_product": "Optional instead of product_thickness_m: depth to the product top (same datum as depth); thickness = depth − depth_to_product",
         },
         ENVIRONMENTAL_SHEET: {
             "hole_id": "Must match Collars.hole_id",
@@ -502,6 +510,7 @@ def _instructions_lines() -> list[str]:
         "• status: measured (default), dry, or nm. Dry/nm rows may omit depth/elevation_masl.",
         "• depth_reference: bgs (default — depth below ground) or btoc (depth below top of casing; head = collar + Collars.stick_up_m − depth). Depths are along the hole: surveyed (Deviations) holes are converted to true vertical depth.",
         "• date (optional, YYYY-MM-DD or an Excel date): keep each series to one monitoring event. Validate warns when a series spans more than 7 days; when a hole has two readings in one series/nest, the latest date is plotted.",
+        "• LNAPL (free product): depth (or elevation_masl) is the measured WATER level — the oil/water interface. Give product_thickness_m (apparent thickness) or depth_to_product, plus product_density (specific gravity, default 0.75). Corrected head = water elevation + thickness × SG; the figure shows a hatched product band and the corrected head.",
         "",
         f"COMMON LITHOLOGY CODES: {lithology_list}",
         "",
@@ -1139,6 +1148,8 @@ def export_cleaned_workbook_bytes(
             level.elevation_masl,
             getattr(level, "depth_reference", "bgs"),
             getattr(level, "date", None),
+            getattr(level, "product_thickness_m", None),
+            getattr(level, "product_density", None),
         )
         if key in seen_water:
             continue
@@ -1167,6 +1178,17 @@ def export_cleaned_workbook_bytes(
                 "date": _iso_date(getattr(level, "date", None)),
             }
         )
+        if any(
+            getattr(other, "product_thickness_m", None) is not None
+            for other in parse_result.water_levels
+        ):
+            # LNAPL columns only when some reading has product (round-trip).
+            thickness = getattr(level, "product_thickness_m", None)
+            density = getattr(level, "product_density", None)
+            water_rows[-1]["product_thickness_m"] = thickness if thickness is not None else ""
+            water_rows[-1]["product_density"] = (
+                density if density is not None and thickness is not None else ""
+            )
     for field in ("color", "marker"):
         if any(getattr(level, field, None) for level in parse_result.water_levels):
             kept = [level for level in parse_result.water_levels]

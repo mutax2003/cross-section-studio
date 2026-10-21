@@ -16,8 +16,12 @@ from matplotlib.transforms import Bbox, offset_copy
 
 from hydro_metrics import (
     format_gradient_label,
+    format_lnapl_thickness_label,
+    has_lnapl,
     horizontal_gradients_along_profile,
     latest_water_by_hole,
+    lnapl_correction_note,
+    lnapl_interval_masl,
     series_legend_date,
     water_status,
 )
@@ -26,6 +30,10 @@ from render_theme import (
     CONSULTING_NM_COLOR,
     CONSULTING_WATER_COLOR,
     LABEL_COLOR,
+    LNAPL_EDGE_COLOR,
+    LNAPL_FILL_COLOR,
+    LNAPL_HATCH,
+    LNAPL_LEGEND_LABEL,
     WATER_COLOR,
     consulting_gw_series_style,
 )
@@ -239,7 +247,9 @@ def _water_compact_text(annotation, level: int) -> str:
         return annotation.get_text()
     suffix = str(getattr(annotation, "_water_suffix", "") or "")
     number = _fmt_water_number(value, 1 if level >= 2 else 2)
-    return number if level >= 1 or not suffix else f"{number} {suffix}"
+    text = number if level >= 1 or not suffix else f"{number} {suffix}"
+    note = getattr(annotation, "_water_note", None)
+    return f"{text}\n{note}" if note else text
 
 
 def _apply_water_compaction(labels, level: int) -> bool:
@@ -2355,9 +2365,13 @@ class RendererWaterMixin:
         label_series_gaps: bool = False,
         water_color: str | None = None,
         profile_lookup: dict[str, tuple[float, float]] | None = None,
+        track_half: float | None = None,
     ) -> None:
-        # Section notes on the drawn water lines (ground clipping / artesian).
+        # Section notes on the drawn water lines (ground clipping / artesian)
+        # and the LNAPL head correction.
         self.water_line_notes = []
+        # Whether an LNAPL product band was drawn (legend entry only then).
+        self.lnapl_drawn = False
         if hole_summary.empty:
             return
         self._water_status_notes = {}
@@ -2430,6 +2444,8 @@ class RendererWaterMixin:
         consulting = self.profile.layout == "consulting_section"
         n_series = len(series_groups)
         multi_series = n_series >= 2
+        # (x, collar RL, reading) of measured readings with free product.
+        lnapl_levels: list[tuple[float, float, WaterLevel]] = []
         # One "i=" per segment: series with equal heads produce identical text.
         gradient_drawn: set[tuple[str, str, str]] = set()
         for series_index, (series_id, levels) in enumerate(sorted(series_groups.items())):
@@ -2531,6 +2547,11 @@ class RendererWaterMixin:
                 # poked its triangle out over the axis line).
                 markers.set_clip_path(ax.patch)
                 register_marker_set(ax, markers, "water")
+                lnapl_levels.extend(
+                    (float(x), float(collar_rl), level)
+                    for x, collar_rl, level in zip(xs_arr, collars, measured_levels, strict=True)
+                    if has_lnapl(level)
+                )
                 if label_elevations:
                     for marker_index, (x_profile, _water_rl, y, level, collar_rl) in enumerate(
                         zip(xs_arr, water_arr, ys, measured_levels, collars, strict=True)
@@ -2549,6 +2570,11 @@ class RendererWaterMixin:
                         rl_label._water_value, rl_label._water_suffix = self._water_elevation_parts(
                             level, collar_rl
                         )
+                        if has_lnapl(level):
+                            # Corrected head + the measured product thickness.
+                            rl_label._water_note = format_lnapl_thickness_label(level)
+                            rl_label.set_text(_water_compact_text(rl_label, 0))
+                            rl_label._water_base_text = rl_label.get_text()
                         # Its own marker: a marker nudged off a coincident
                         # one pulls the number to its side.
                         rl_label._water_marker = (markers, marker_index)
@@ -2726,9 +2752,92 @@ class RendererWaterMixin:
                     "elevation_label": elevation_label_text,
                 }
             )
+        if lnapl_levels:
+            self._draw_lnapl_bands(ax, lnapl_levels, track_half)
         key_min = int(getattr(self.profile, "water_series_key_min_series", 0) or 0)
         if not consulting and key_min and len(self.water_series_legend) >= key_min:
             self._draw_water_series_key(ax)
+
+    def _draw_lnapl_bands(
+        self,
+        ax,
+        lnapl_levels: Sequence[tuple[float, float, WaterLevel]],
+        track_half: float | None,
+    ) -> None:
+        """Hatched product band in the well column (product top → oil/water
+        interface) and the QA note naming the corrected wells.
+
+        The band shows the apparent (measured) thickness at the measured
+        interface; the water marker sits at the corrected head inside it.
+        """
+        if track_half is None:
+            xs = np.sort(np.asarray([item[0] for item in lnapl_levels], dtype=float))
+            track_half = self._track_half_width(xs, x_sorted=True)
+        half = float(track_half) * 0.92
+        stick_ups = getattr(self, "stick_up_by_hole", None) or {}
+        drawn: list[WaterLevel] = []
+        seen: set[tuple[str, float, float]] = set()
+        x_left: list[float] = []
+        y_low: list[float] = []
+        heights: list[float] = []
+        for x_profile, collar_rl, level in lnapl_levels:
+            interval = lnapl_interval_masl(
+                level,
+                collar_rl,
+                stick_up_m=stick_ups.get(str(level.hole_id)),
+                md_to_elevation=self._md_to_elevation(level.hole_id, collar_rl),
+            )
+            if interval is None:
+                continue
+            drawn.append(level)
+            key = (str(level.hole_id), round(interval[0], 6), round(interval[1], 6))
+            if key in seen:
+                continue  # same band from another series / nest
+            seen.add(key)
+            top_y, bottom_y = self._plot_y_values(
+                np.asarray(interval, dtype=float), np.full(2, float(collar_rl))
+            )
+            height = abs(float(top_y) - float(bottom_y))
+            if height <= 1e-9:
+                continue
+            x_left.append(float(x_profile) - half)
+            y_low.append(min(float(top_y), float(bottom_y)))
+            heights.append(height)
+        if x_left:
+            n_bands = len(x_left)
+            self._add_rect_collection(
+                ax,
+                (
+                    np.asarray(x_left, dtype=float),
+                    np.asarray(y_low, dtype=float),
+                    np.full(n_bands, 2.0 * half),
+                    np.asarray(heights, dtype=float),
+                ),
+                facecolors=LNAPL_FILL_COLOR,
+                edgecolors=LNAPL_EDGE_COLOR,
+                linewidths=0.6,
+                # Over the screen hatch (9), under the water markers (9.3).
+                zorder=9.1,
+                hatch=LNAPL_HATCH,
+            )
+            self.lnapl_drawn = True
+        note = lnapl_correction_note(drawn)
+        if note and note not in self.water_line_notes:
+            self.water_line_notes.append(note)
+
+    def lnapl_legend_proxy(self):
+        """Legend swatch for the LNAPL band (``None`` when no band was drawn)."""
+        if not getattr(self, "lnapl_drawn", False):
+            return None
+        from matplotlib.patches import Patch
+
+        return Patch(
+            facecolor=LNAPL_FILL_COLOR,
+            edgecolor=LNAPL_EDGE_COLOR,
+            hatch=LNAPL_HATCH,
+            linewidth=0.6,
+            label=LNAPL_LEGEND_LABEL,
+        )
 
     def _draw_water_series_key(self, ax) -> None:
         """Marker + line + label per GW series, as a small framed key."""
@@ -2750,6 +2859,10 @@ class RendererWaterMixin:
             for entry in self.water_series_legend
         ]
         labels = [entry["level_label"] for entry in self.water_series_legend]
+        lnapl_proxy = self.lnapl_legend_proxy()
+        if lnapl_proxy is not None:
+            handles.append(lnapl_proxy)
+            labels.append(LNAPL_LEGEND_LABEL)
         key = Legend(
             ax,
             handles,
@@ -2775,6 +2888,8 @@ class RendererWaterMixin:
         lines = []
         for entry in self.water_series_legend:
             lines.append(entry["level_label"])
+        if getattr(self, "lnapl_drawn", False):
+            lines.append(LNAPL_LEGEND_LABEL.upper())
         ax.text(
             0.01,
             0.01,

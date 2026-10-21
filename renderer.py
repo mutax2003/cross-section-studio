@@ -2053,6 +2053,7 @@ class CrossSectionRenderer(
             qa_lines = (
                 tuple(qa_lines)
                 + tuple(getattr(self, "chemistry_label_notes", None) or ())
+                + tuple(getattr(self, "chemistry_rdl_notes", None) or ())
                 + tuple(self.map_scale_notes(figure))
                 + tuple(self.header_overlap_notes(figure))
                 + tuple(self.raster_notes)

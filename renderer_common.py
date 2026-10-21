@@ -2156,8 +2156,9 @@ def water_status_texts(renderer_obj, fig) -> list[str]:
 
 
 def water_status_legend_label(parts: Sequence[str], *, upper: bool = False) -> str:
-    """``"NM / DRY — not measured / dry"`` for the status notes actually drawn."""
-    words = {"NM": "not measured", "DRY": "dry"}
+    """``"NM / DRY — not measured / dry well"`` for the status notes actually drawn."""
+    # "DRY — dry" read as a stutter; spell the key out like NM does.
+    words = {"NM": "not measured", "DRY": "dry well"}
     label = " / ".join(parts) + " — " + " / ".join(words.get(p, p.lower()) for p in parts)
     return label.upper() if upper else label
 

@@ -606,6 +606,7 @@ def _run_build_cross_section(
         vertical_gradients=request.vertical_gradients or subset.vertical_gradients,
         export_framing=request.export_framing,
         close_figure=not retain,
+        groundwater_flow_notes=request.groundwater_flow_notes,
     )
     if retain and request_key is not None:
         bundle = result.retained_export_bundle

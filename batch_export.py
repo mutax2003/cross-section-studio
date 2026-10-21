@@ -21,6 +21,7 @@ from pipeline import (
     SectionGeometry,
     compute_section_geometry,
     render_cross_section_from_geometry,
+    section_groundwater_flow_notes,
 )
 from section_build_request import SectionBuildRequest
 
@@ -366,6 +367,14 @@ def prepare_batch_section_request(
             "unconformities": subset.unconformities,
             "environmental_readings": subset.environmental_readings,
             "deviation_readings": subset.deviation_readings,
+            # Plan-view flow fits every measured well in the workbook, as on Generate.
+            "groundwater_flow_notes": section_groundwater_flow_notes(
+                parse_result.collars,
+                parse_result.water_levels,
+                tuple(points),
+                deviation_readings=parse_result.deviation_readings,
+                selected_water_series_ids=base_request.selected_water_series_ids or None,
+            ),
         }
     )
     return subset, request
@@ -461,6 +470,7 @@ def build_one_transect_exports(
         consulting_title_block=request.consulting_title_block,
         screen_intervals=request.screen_intervals or None,
         vertical_gradients=request.vertical_gradients or None,
+        groundwater_flow_notes=request.groundwater_flow_notes,
         export_framing=request.export_framing,
     )
     return spec.label, result.svg_bytes, result.png_bytes, result.pdf_bytes

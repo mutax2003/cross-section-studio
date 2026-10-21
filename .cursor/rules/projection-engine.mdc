@@ -26,7 +26,9 @@ Given transect segments `(P₁, P₂), (P₂, P₃), …`:
 ## Vertical vs deviated holes
 
 - **Vertical (default):** collar easting/northing projected once per hole; intervals use collar RL − depth
-- **Deviated:** when `DeviationReading` rows exist, build **minimum-curvature survey** (`build_minimum_curvature_survey`), interpolate interval midpoints (`interpolate_survey_many`), project mid-eastings/northings per interval (`_deviated_projection_frame`)
+- **Deviated:** when `DeviationReading` rows exist **or** the collar has a non-zero `inclination_deg` (straight inclined hole, no rows needed), build **minimum-curvature survey** (`build_minimum_curvature_survey`), densify each arc (`densify_survey`, via `hole_survey`), interpolate interval midpoints (`interpolate_survey_many`), project mid-eastings/northings per interval (`_deviated_projection_frame`). `build_along_hole_tvd` uses the same rule (`_surveyed_hole_readings`) so lithology, water, screens and chemistry agree
+- **Angle convention:** inclination from vertical (0 = straight down), azimuth clockwise from grid north. A Deviations row at depth 0 sets the collar orientation and overrides the Collars-sheet angles
+- Collar inclination blank / 0 with no rows stays on the vertical fast path (byte-identical figures)
 
 ## Output DataFrame
 

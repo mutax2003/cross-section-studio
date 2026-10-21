@@ -214,8 +214,12 @@ def test_btoc_and_inclined_heads_flow_through_water_head_masl() -> None:
     assert fit.usable
     assert fit.flow_azimuth_deg == pytest.approx(90.0, abs=1e-3)
     assert fit.gradient == pytest.approx(0.01, rel=1e-3)
-    # Without the survey C would read collar − 80 = 20 m: wrong direction.
-    (naive,) = fit_head_planes(collars, levels)
+    # The collar angle alone (no Deviations rows) is a straight inclined hole.
+    (collar_only,) = fit_head_planes(collars, levels)
+    assert collar_only.flow_azimuth_deg == pytest.approx(90.0, abs=1e-3)
+    # Treated as vertical, C would read collar − 80 = 20 m: wrong direction.
+    vertical = [*collars[:2], collars[2].model_copy(update={"inclination_deg": None})]
+    (naive,) = fit_head_planes(vertical, levels)
     assert naive.flow_azimuth_deg == pytest.approx(
         math.degrees(math.atan2(0.01, 0.2)), abs=0.5
     )

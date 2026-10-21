@@ -12,11 +12,20 @@ depth. Renderer markers, labels, gradients and Validate QA all call it.
 
 from __future__ import annotations
 
+import datetime
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from models import Collar, DeviationReading, ScreenInterval, VerticalGradient, WaterLevel
+from models import (
+    DEFAULT_LNAPL_SPECIFIC_GRAVITY,
+    Collar,
+    DeviationReading,
+    EnvironmentalReading,
+    ScreenInterval,
+    VerticalGradient,
+    WaterLevel,
+)
 
 # Warn when |Δh/Δx| exceeds this (dimensionless). Typical sand/gravel aquifers
 # are often 1e-4–1e-2; values above ~0.1 are usually data or unit errors.
@@ -67,6 +76,225 @@ def is_measured_water_level(level: WaterLevel) -> bool:
 MdToElevation = Callable[[float], float]
 
 
+# --- Monitoring-event dates -----------------------------------------------------
+#
+# Heads compared across time are not a potentiometric surface: one series
+# (and connect_group nest) should be one synoptic round. When a hole has
+# several readings in one series x nest, the LATEST date is used everywhere
+# (plot, dh/dx, nested iv, planar fit) -- ``prefer_water_reading`` is the one
+# rule; undated duplicates keep the historical "last row wins".
+
+# Readings of one series spanning more than this many days are flagged.
+DEFAULT_SYNOPTIC_WINDOW_DAYS = 7
+
+
+def reading_date(item: object) -> datetime.date | None:
+    """Optional ``date`` of a WaterLevel / EnvironmentalReading (``None`` when blank)."""
+    value = getattr(item, "date", None)
+    return value if isinstance(value, datetime.date) else None
+
+
+def prefer_water_reading(current: WaterLevel | None, candidate: WaterLevel) -> WaterLevel:
+    """Which of two readings of one hole × series × nest is used.
+
+    Later date wins; a dated reading is never displaced by an undated one; equal
+    or missing dates fall back to row order (the later row wins). Folding a
+    sequence with this rule gives the same answer for any row order whenever
+    the dates differ.
+    """
+    if current is None:
+        return candidate
+    current_date = reading_date(current)
+    candidate_date = reading_date(candidate)
+    if current_date is not None and candidate_date is not None:
+        return candidate if candidate_date >= current_date else current
+    if current_date is not None:
+        return current
+    return candidate
+
+
+def latest_water_by_hole(levels: Sequence[WaterLevel]) -> dict[str, WaterLevel]:
+    """``hole_id → reading`` for one series × nest (``prefer_water_reading``)."""
+    chosen: dict[str, WaterLevel] = {}
+    for level in levels:
+        chosen[level.hole_id] = prefer_water_reading(chosen.get(level.hole_id), level)
+    return chosen
+
+
+def latest_measured_water_by_hole(levels: Sequence[WaterLevel]) -> dict[str, WaterLevel]:
+    """``hole_id → measured reading`` for one series × nest, as the figure plots it.
+
+    The latest reading is chosen over ALL statuses first (``latest_water_by_hole``);
+    a hole whose latest reading is dry / NM then has no head -- the figure draws
+    DRY / NM there, so gradients and fits must not fall back to an older
+    measured head.
+    """
+    return {
+        hole_id: level
+        for hole_id, level in latest_water_by_hole(levels).items()
+        if is_measured_water_level(level)
+    }
+
+
+def water_reading_key(level: WaterLevel) -> tuple[str, str, str]:
+    """``(series_id, connect_group, hole_id)`` identity of a groundwater reading."""
+    return (level.series_id or "default", (level.connect_group or "").strip(), level.hole_id)
+
+
+def latest_water_readings(levels: Sequence[WaterLevel]) -> tuple[WaterLevel, ...]:
+    """The readings actually used: one per hole × series × nest (any status).
+
+    Superseded readings (an older date of the same hole × series × nest) are
+    dropped; order follows the first appearance of each key.
+    """
+    chosen: dict[tuple[str, str, str], WaterLevel] = {}
+    for level in levels:
+        key = water_reading_key(level)
+        chosen[key] = prefer_water_reading(chosen.get(key), level)
+    return tuple(chosen.values())
+
+
+def date_range(
+    items: Sequence[object],
+) -> tuple[datetime.date, datetime.date] | None:
+    """(earliest, latest) ``date`` among *items*, or ``None`` when none is dated."""
+    dates = [d for d in (reading_date(item) for item in items) if d is not None]
+    if not dates:
+        return None
+    return min(dates), max(dates)
+
+
+def format_date_range(
+    span: tuple[datetime.date, datetime.date] | None, *, compact: bool = True
+) -> str:
+    """``2026-04-02`` / ``2026-04-02 to 04-04`` (compact, same year) / full ISO pair."""
+    if span is None:
+        return ""
+    start, end = span
+    if start == end:
+        return start.isoformat()
+    if compact and start.year == end.year:
+        return f"{start.isoformat()} to {end.strftime('%m-%d')}"
+    return f"{start.isoformat()} to {end.isoformat()}"
+
+
+def readings_date_qualifier(span: tuple[datetime.date, datetime.date] | None) -> str:
+    """`` (readings 2026-04-02 to 04-04)`` for QA notes; empty when undated."""
+    text = format_date_range(span)
+    return f" (readings {text})" if text else ""
+
+
+def series_legend_date(
+    levels: Sequence[WaterLevel],
+    *,
+    window_days: int = DEFAULT_SYNOPTIC_WINDOW_DAYS,
+) -> str:
+    """Date text for an unlabelled series' legend: one date or a tight range.
+
+    Empty when the series has a ``series_label``, an undated reading, or dates
+    spanning more than ``window_days`` -- the legend is then left unchanged.
+    """
+    if not levels or any(level.series_label for level in levels):
+        return ""
+    if any(reading_date(level) is None for level in levels):
+        return ""
+    span = date_range(levels)
+    if span is None or (span[1] - span[0]).days > window_days:
+        return ""
+    return format_date_range(span)
+
+
+def synoptic_date_warnings(
+    water_levels: Sequence[WaterLevel],
+    *,
+    window_days: int = DEFAULT_SYNOPTIC_WINDOW_DAYS,
+) -> tuple[list[str], list[str]]:
+    """(warnings, info) for series × nests that mix monitoring dates.
+
+    Warning: dated readings of one series / connect_group span more than
+    ``window_days``. Info: a series / nest mixes dated and undated readings.
+    Dry / NM rows count -- a round is a round.
+    """
+    groups: dict[tuple[str, str], list[WaterLevel]] = {}
+    labels: dict[str, str] = {}
+    for level in water_levels:
+        series_id = level.series_id or "default"
+        groups.setdefault((series_id, (level.connect_group or "").strip()), []).append(level)
+        if level.series_label and series_id not in labels:
+            labels[series_id] = level.series_label
+    warnings: list[str] = []
+    info: list[str] = []
+    for (series_id, group), levels in sorted(groups.items()):
+        name = labels.get(series_id) or series_id
+        nest = f" [{group}]" if group else ""
+        span = date_range(levels)
+        if span is None:
+            continue
+        days = (span[1] - span[0]).days
+        if days > window_days:
+            warnings.append(
+                f"Series '{name}'{nest} mixes readings from {span[0].isoformat()} to "
+                f"{span[1].isoformat()} ({days} days) — heads from different dates are not "
+                "one potentiometric surface; split the series by monitoring event."
+            )
+        undated = sorted({level.hole_id for level in levels if reading_date(level) is None})
+        if undated:
+            info.append(
+                f"Series '{name}'{nest} mixes dated ({format_date_range(span)}) and undated "
+                f"readings ({', '.join(undated)}) — confirm they are one monitoring event."
+            )
+    return warnings, info
+
+
+def environmental_sample_key(
+    reading: EnvironmentalReading,
+) -> tuple[str, str, float | None, float | None, float | None]:
+    """Hole / parameter / depth (point or interval) identity of a lab sample."""
+    return (
+        reading.hole_id,
+        reading.parameter.strip().casefold(),
+        reading.depth,
+        reading.from_depth,
+        reading.to_depth,
+    )
+
+
+def latest_environmental_readings(
+    readings: Sequence[EnvironmentalReading],
+) -> tuple[tuple[EnvironmentalReading, ...], tuple[str, ...]]:
+    """Keep the latest sample where one hole/parameter/depth has several dates.
+
+    Returns ``(readings to plot, notes)``. A sample point with two or more
+    distinct dates keeps only the rows at its latest date (undated rows there
+    are dropped too); undated duplicates are left as before. Notes read
+    ``"BH-2 benzene at 3 m: 3 sampling dates, latest (2026-05-01) shown"``.
+    """
+    groups: dict[tuple[str, str, float | None, float | None, float | None], list[int]] = {}
+    for index, reading in enumerate(readings):
+        groups.setdefault(environmental_sample_key(reading), []).append(index)
+    dropped: set[int] = set()
+    notes: list[str] = []
+    for indices in groups.values():
+        dates = {reading_date(readings[i]) for i in indices} - {None}
+        if len(dates) < 2:
+            continue
+        latest = max(dates)  # type: ignore[type-var]
+        dropped.update(i for i in indices if reading_date(readings[i]) != latest)
+        first = readings[indices[0]]
+        if first.depth is not None:
+            where = f" at {first.depth:g} m"
+        else:
+            where = f" at {first.from_depth:g}–{first.to_depth:g} m"
+        notes.append(
+            f"{first.hole_id} {first.parameter}{where}: {len(dates)} sampling dates, "
+            f"latest ({latest.isoformat()}) shown"
+        )
+    if not dropped:
+        return tuple(readings), tuple(notes)
+    kept = tuple(reading for i, reading in enumerate(readings) if i not in dropped)
+    return kept, tuple(notes)
+
+
 def water_depth_along_hole_bgs(level: WaterLevel, stick_up_m: float | None = None) -> float:
     """Along-hole depth below ground (m) of a reading.
 
@@ -87,24 +315,42 @@ def water_head_masl(
     *,
     stick_up_m: float | None = None,
     md_to_elevation: MdToElevation | None = None,
+    lnapl_corrected: bool = True,
 ) -> float:
     """Head elevation (masl) of a water reading.
 
-    * explicit ``elevation_masl`` is returned as given;
+    * explicit ``elevation_masl`` is taken as the measured water elevation;
     * otherwise the along-hole depth below ground (``btoc`` minus stick-up) is
       converted with ``md_to_elevation`` (hole survey: collar − TVD) — vertical
       holes (``None``) use collar − depth, the legacy formula;
     * water above ground inside the casing (btoc depth < stick-up) sits
-      ``stick_up − depth`` above the collar.
+      ``stick_up − depth`` above the collar;
+    * LNAPL: a reading with ``product_thickness_m > 0`` measured the oil/water
+      interface, so the head is corrected upward by the product's vertical
+      thickness × specific gravity (``lnapl_head_correction_m``) — also for an
+      explicit ``elevation_masl``, which is the measured interface elevation,
+      not an already-corrected head. ``lnapl_corrected=False`` returns the
+      measured interface elevation (figure product band).
     """
     if level.elevation_masl is not None:
-        return float(level.elevation_masl)
-    if getattr(level, "depth_reference", "bgs") != "btoc" and md_to_elevation is None:
-        return float(collar_rl) - float(level.depth)
-    md_below_ground = water_depth_along_hole_bgs(level, stick_up_m)
-    if md_below_ground < 0.0 or md_to_elevation is None:
-        return float(collar_rl) - md_below_ground
-    return float(md_to_elevation(md_below_ground))
+        head = float(level.elevation_masl)
+    elif getattr(level, "depth_reference", "bgs") != "btoc" and md_to_elevation is None:
+        head = float(collar_rl) - float(level.depth)
+    else:
+        md_below_ground = water_depth_along_hole_bgs(level, stick_up_m)
+        if md_below_ground < 0.0 or md_to_elevation is None:
+            head = float(collar_rl) - md_below_ground
+        else:
+            head = float(md_to_elevation(md_below_ground))
+    if lnapl_corrected and has_lnapl(level):
+        head += lnapl_head_correction_m(
+            level,
+            collar_rl,
+            stick_up_m=stick_up_m,
+            md_to_elevation=md_to_elevation,
+            interface_masl=head,
+        )
+    return head
 
 
 def water_depth_below_ground_m(
@@ -118,12 +364,14 @@ def water_depth_below_ground_m(
 
     Converts ``btoc`` readings to below ground and inclined-hole depths to true
     vertical depth; a plain below-ground reading on a vertical hole returns
-    ``level.depth`` unchanged.
+    ``level.depth`` unchanged. LNAPL wells report the corrected head's depth
+    (shallower than the measured oil/water interface).
     """
     if (
         level.elevation_masl is None
         and getattr(level, "depth_reference", "bgs") != "btoc"
         and md_to_elevation is None
+        and not has_lnapl(level)
     ):
         return float(level.depth)
     head = water_head_masl(
@@ -154,8 +402,6 @@ def horizontal_gradients_along_profile(
     """
     filtered: list[WaterLevel] = []
     for level in water_levels:
-        if not is_measured_water_level(level):
-            continue
         if series_id is not None and (level.series_id or "default") != series_id:
             continue
         if connect_group is not None:
@@ -166,9 +412,9 @@ def horizontal_gradients_along_profile(
             continue
         filtered.append(level)
 
-    by_hole: dict[str, WaterLevel] = {}
-    for level in filtered:
-        by_hole[level.hole_id] = level  # last wins (matches plot behaviour)
+    # Latest date wins per hole over all statuses (undated: last row), then
+    # dry / NM holes are skipped -- matches the plot.
+    by_hole = latest_measured_water_by_hole(filtered)
 
     ordered_ids = [hid for hid in hole_order if hid in by_hole]
     segments: list[HorizontalGradientSegment] = []
@@ -272,6 +518,9 @@ class NestedVerticalGradient:
     z_mid_deep_masl: float
     gradient: float  # iv; > 0 downward (recharge), < 0 upward (discharge)
     plan_distance_m: float
+    # Monitoring dates of the two readings (``None`` when undated).
+    date_shallow: datetime.date | None = None
+    date_deep: datetime.date | None = None
 
     @property
     def delta_h_m(self) -> float:
@@ -415,6 +664,7 @@ class _WellPoint:
     head: float
     z_top: float
     z_bottom: float
+    date: datetime.date | None = None
 
     @property
     def z_mid(self) -> float:
@@ -450,15 +700,15 @@ def nested_vertical_gradients(
     for screen in screen_intervals:
         screens_by_hole.setdefault(screen.hole_id, []).append(screen)
 
-    # Last reading per series × hole × connect_group (matches the plot).
+    # One reading per series × hole × connect_group: latest date wins over all
+    # statuses (undated: last row), then dry / NM are dropped -- matches the plot.
     readings: dict[tuple[str, str, str], WaterLevel] = {}
     for level in water_levels:
-        if not is_measured_water_level(level):
-            continue
         if level.hole_id not in collar_rl_by_hole or level.hole_id not in screens_by_hole:
             continue
         key = (level.series_id or "default", level.hole_id, (level.connect_group or "").strip())
-        readings[key] = level
+        readings[key] = prefer_water_reading(readings.get(key), level)
+    readings = {key: level for key, level in readings.items() if is_measured_water_level(level)}
 
     groups_by_hole: dict[str, set[str]] = {}
     for _series, hole_id, group in readings:
@@ -483,7 +733,7 @@ def nested_vertical_gradients(
         head = water_head_masl(level, collar_rl, stick_up_m=stick_ups.get(hole_id), md_to_elevation=md_fn)
         z_top, z_bottom = screen_elevation_range(screen, collar_rl, md_fn)
         points_by_series.setdefault(series_id, []).append(
-            _WellPoint(hole_id, group, head, z_top, z_bottom)
+            _WellPoint(hole_id, group, head, z_top, z_bottom, reading_date(level))
         )
 
     gradients: list[NestedVerticalGradient] = []
@@ -521,6 +771,8 @@ def nested_vertical_gradients(
                         z_mid_deep_masl=deep.z_mid,
                         gradient=(shallow.head - deep.head) / dz,
                         plan_distance_m=distance,
+                        date_shallow=shallow.date,
+                        date_deep=deep.date,
                     )
                 )
     return VerticalGradientAnalysis(gradients=tuple(gradients), notes=tuple(notes))
@@ -533,10 +785,12 @@ def format_vertical_gradient_note(gradient: NestedVerticalGradient) -> str:
         "up": "upward (discharge)",
     }.get(gradient.direction, "no clear vertical flow")
     series = "" if gradient.series_id == "default" else f" ({gradient.series_id})"
+    dated = [d for d in (gradient.date_shallow, gradient.date_deep) if d is not None]
+    when = readings_date_qualifier((min(dated), max(dated)) if dated else None)
     return (
         f"Vertical gradient {gradient.nest_label}{series}: iv={gradient.gradient:+.3f} "
         f"{sense} — Δh={gradient.delta_h_m:+.2f} m over Δz={gradient.delta_z_m:.2f} m "
-        "between screen mid-points"
+        f"between screen mid-points{when}"
     )
 
 
@@ -610,6 +864,7 @@ class HeadPoint:
     easting: float
     northing: float
     head_masl: float
+    date: datetime.date | None = None  # monitoring date of the reading used
 
 
 @dataclass(frozen=True)
@@ -779,7 +1034,9 @@ def head_points_by_group(
     """Measured heads grouped by ``(series_id, connect_group)`` → ``(label, points)``.
 
     Same grouping as the renderer (blank connect_group = one shared nest);
-    dry / NM readings are excluded and the last reading per hole wins. Heads
+    the latest-dated reading per hole wins over all statuses (undated: the
+    last row -- ``prefer_water_reading``) and holes whose latest reading is
+    dry / NM are skipped. Heads
     come from ``water_head_masl`` (btoc stick-up; surveyed holes at TVD).
     Plan position is the collar easting/northing.
     """
@@ -790,16 +1047,22 @@ def head_points_by_group(
     grouped: dict[tuple[str, str], dict[str, WaterLevel]] = {}
     labels: dict[tuple[str, str], str] = {}
     for level in water_levels:
-        if not is_measured_water_level(level) or level.hole_id not in collar_by_id:
+        if level.hole_id not in collar_by_id:
             continue
         key = (level.series_id or "default", (level.connect_group or "").strip())
-        grouped.setdefault(key, {})[level.hole_id] = level  # last wins
-        if level.series_label and key not in labels:
+        by_hole_group = grouped.setdefault(key, {})
+        by_hole_group[level.hole_id] = prefer_water_reading(
+            by_hole_group.get(level.hole_id), level
+        )
+        if level.series_label and key not in labels and is_measured_water_level(level):
             labels[key] = level.series_label
     result: dict[tuple[str, str], tuple[str, list[HeadPoint]]] = {}
     for key, by_hole in grouped.items():
         points: list[HeadPoint] = []
         for hole_id, level in by_hole.items():
+            # Latest reading dry / NM: no head (the figure draws DRY / NM).
+            if not is_measured_water_level(level):
+                continue
             collar = collar_by_id[hole_id]
             rl = float(collar.elevation)
             table = tvd_tables.get(hole_id)
@@ -812,7 +1075,13 @@ def head_points_by_group(
             if not math.isfinite(head):
                 continue
             points.append(
-                HeadPoint(hole_id, float(collar.easting), float(collar.northing), head)
+                HeadPoint(
+                    hole_id,
+                    float(collar.easting),
+                    float(collar.northing),
+                    head,
+                    reading_date(level),
+                )
             )
         result[key] = (labels.get(key, ""), points)
     return result
@@ -907,12 +1176,19 @@ def groundwater_flow_note(
     relation: SectionFlowRelation | None,
     *,
     include_series: bool = False,
+    dates: tuple[datetime.date, datetime.date] | None = None,
 ) -> str | None:
-    """One figure QA line for a usable fit; ``None`` for collinear wells."""
+    """One figure QA line for a usable fit; ``None`` for collinear wells.
+
+    ``dates`` (earliest, latest reading used) adds a short qualifier such as
+    ``readings 2026-04-02 to 04-04``; the text is unchanged without it.
+    """
     if not fit.usable:
         return None
     series = f", {fit.display_label}" if include_series else ""
-    text = f"Groundwater flow ({fit.method}, {fit.n_wells} wells{series}): "
+    when = format_date_range(dates)
+    when = f", readings {when}" if when else ""
+    text = f"Groundwater flow ({fit.method}, {fit.n_wells} wells{series}{when}): "
     if fit.flow_azimuth_deg is None:
         return text + "heads are flat — no measurable plan-view gradient."
     text += f"{format_flow_direction(fit)}, i = {fit.gradient:.2g}"
@@ -938,20 +1214,208 @@ def groundwater_flow_notes(
     *,
     deviation_readings: Sequence[DeviationReading] | None = None,
 ) -> tuple[str, ...]:
-    """Figure QA lines for every series / nest with ≥3 non-collinear wells."""
-    fits = [
-        fit
-        for fit in fit_head_planes(collars, water_levels, deviation_readings=deviation_readings)
-        if fit.usable
-    ]
-    include_series = len(fits) > 1
+    """Figure QA lines for every series / nest with ≥3 non-collinear wells.
+
+    When the readings used are dated, each line names their date range.
+    """
+    grouped = head_points_by_group(
+        collars, water_levels, deviation_readings=deviation_readings
+    )
+    fitted: list[tuple[HeadPlaneFit, tuple[datetime.date, datetime.date] | None]] = []
+    for (series_id, group), (label, points) in grouped.items():
+        fit = fit_head_plane(
+            points, series_id=series_id, connect_group=group, series_label=label
+        )
+        if fit is not None and fit.usable:
+            fitted.append((fit, date_range(points)))
+    include_series = len(fitted) > 1
     notes: list[str] = []
-    for fit in fits:
+    for fit, dates in fitted:
         note = groundwater_flow_note(
             fit,
             section_flow_relation(fit, section_azimuth_deg),
             include_series=include_series,
+            dates=dates,
         )
         if note:
             notes.append(note)
     return tuple(notes)
+
+
+# ---------------------------------------------------------------------------
+# LNAPL (free product) head correction
+#
+# Field convention: ``WaterLevel.depth`` (or ``elevation_masl``) is the measured
+# depth to WATER — the oil/water interface in the well — and
+# ``product_thickness_m`` the apparent product thickness above it, along the
+# hole on the same datum. The corrected (equivalent freshwater) head is
+#
+#     h = interface elevation + vertical product thickness × SG
+#
+# with SG = ``product_density`` (default 0.75). On a surveyed (inclined) hole
+# the vertical thickness comes from the survey; elsewhere it equals the
+# apparent thickness. Apparent thickness in a well overstates the formation
+# thickness — the figure shows it as measured.
+# ---------------------------------------------------------------------------
+
+APPARENT_LNAPL_THICKNESS_WARN_M = 1.0
+
+
+def lnapl_thickness_m(level: WaterLevel) -> float:
+    """Apparent LNAPL thickness in the well (m); 0 when none was recorded."""
+    value = getattr(level, "product_thickness_m", None)
+    if value is None:
+        return 0.0
+    value = float(value)
+    return value if math.isfinite(value) and value > 0.0 else 0.0
+
+
+def has_lnapl(level: WaterLevel) -> bool:
+    """True when the reading records measurable free product (thickness > 0)."""
+    return lnapl_thickness_m(level) > 0.0
+
+
+def lnapl_specific_gravity(level: WaterLevel) -> float:
+    """Product specific gravity (``product_density``; default 0.75)."""
+    value = getattr(level, "product_density", None)
+    return float(value) if value is not None else DEFAULT_LNAPL_SPECIFIC_GRAVITY
+
+
+def lnapl_product_top_masl(
+    level: WaterLevel,
+    collar_rl: float,
+    *,
+    stick_up_m: float | None = None,
+    md_to_elevation: MdToElevation | None = None,
+    interface_masl: float | None = None,
+) -> float | None:
+    """Elevation (masl) of the air/product interface, ``None`` without product."""
+    thickness = lnapl_thickness_m(level)
+    if thickness <= 0.0:
+        return None
+    if interface_masl is None:
+        interface_masl = water_head_masl(
+            level,
+            collar_rl,
+            stick_up_m=stick_up_m,
+            md_to_elevation=md_to_elevation,
+            lnapl_corrected=False,
+        )
+    if level.elevation_masl is not None or md_to_elevation is None:
+        return float(interface_masl) + thickness
+    md_water = water_depth_along_hole_bgs(level, stick_up_m)
+    if md_water < 0.0:
+        # Whole product column inside the (vertical) stick-up.
+        return float(interface_masl) + thickness
+    md_product = md_water - thickness
+    if md_product < 0.0:
+        # Product top inside the stick-up, above the collar.
+        return float(collar_rl) - md_product
+    return float(md_to_elevation(md_product))
+
+
+def lnapl_vertical_thickness_m(
+    level: WaterLevel,
+    collar_rl: float,
+    *,
+    stick_up_m: float | None = None,
+    md_to_elevation: MdToElevation | None = None,
+    interface_masl: float | None = None,
+) -> float:
+    """Vertical product thickness (m): the apparent thickness, or from the survey."""
+    thickness = lnapl_thickness_m(level)
+    if thickness <= 0.0:
+        return 0.0
+    if level.elevation_masl is not None or md_to_elevation is None:
+        return thickness
+    if interface_masl is None:
+        interface_masl = water_head_masl(
+            level,
+            collar_rl,
+            stick_up_m=stick_up_m,
+            md_to_elevation=md_to_elevation,
+            lnapl_corrected=False,
+        )
+    top = lnapl_product_top_masl(
+        level,
+        collar_rl,
+        stick_up_m=stick_up_m,
+        md_to_elevation=md_to_elevation,
+        interface_masl=interface_masl,
+    )
+    return max(0.0, float(top) - float(interface_masl)) if top is not None else 0.0
+
+
+def lnapl_head_correction_m(
+    level: WaterLevel,
+    collar_rl: float,
+    *,
+    stick_up_m: float | None = None,
+    md_to_elevation: MdToElevation | None = None,
+    interface_masl: float | None = None,
+) -> float:
+    """Head rise (m) from the LNAPL correction: vertical thickness × SG."""
+    vertical = lnapl_vertical_thickness_m(
+        level,
+        collar_rl,
+        stick_up_m=stick_up_m,
+        md_to_elevation=md_to_elevation,
+        interface_masl=interface_masl,
+    )
+    if vertical <= 0.0:
+        return 0.0
+    return vertical * lnapl_specific_gravity(level)
+
+
+def lnapl_interval_masl(
+    level: WaterLevel,
+    collar_rl: float,
+    *,
+    stick_up_m: float | None = None,
+    md_to_elevation: MdToElevation | None = None,
+) -> tuple[float, float] | None:
+    """``(product top, oil/water interface)`` elevations (masl) for the figure band."""
+    if not has_lnapl(level):
+        return None
+    interface = water_head_masl(
+        level,
+        collar_rl,
+        stick_up_m=stick_up_m,
+        md_to_elevation=md_to_elevation,
+        lnapl_corrected=False,
+    )
+    top = lnapl_product_top_masl(
+        level,
+        collar_rl,
+        stick_up_m=stick_up_m,
+        md_to_elevation=md_to_elevation,
+        interface_masl=interface,
+    )
+    return (float(top), float(interface)) if top is not None else None
+
+
+def format_lnapl_thickness_label(level: WaterLevel) -> str:
+    """Figure label suffix, e.g. ``"LNAPL 0.32 m"`` (apparent thickness)."""
+    return f"LNAPL {lnapl_thickness_m(level):.2f} m"
+
+
+def lnapl_correction_note(levels: Sequence[WaterLevel]) -> str | None:
+    """QA line naming the LNAPL-corrected wells, ``None`` when there are none.
+
+    "Groundwater elevations corrected for LNAPL at MW-3 (0.32 m, SG 0.75)" —
+    one entry per distinct well / thickness / SG, in reading order; dry / NM
+    readings are skipped (no head is plotted).
+    """
+    entries: list[str] = []
+    for level in levels:
+        if not has_lnapl(level) or not is_measured_water_level(level):
+            continue
+        text = (
+            f"{level.hole_id} ({lnapl_thickness_m(level):.2f} m, "
+            f"SG {lnapl_specific_gravity(level):.2f})"
+        )
+        if text not in entries:
+            entries.append(text)
+    if not entries:
+        return None
+    return "Groundwater elevations corrected for LNAPL at " + ", ".join(entries)

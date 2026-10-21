@@ -16,18 +16,28 @@ from typing import BinaryIO, Literal
 import pandas as pd
 from rapidfuzz import fuzz
 
-from chemistry_qc import mixed_unit_warnings, rdl_above_guideline_notes
+from chemistry_qc import lab_qualifier_warnings, mixed_unit_warnings, rdl_above_guideline_notes
 from constants import CANONICAL_LITHOLOGY_CODES
 from hydro_metrics import (
+    APPARENT_LNAPL_THICKNESS_WARN_M,
     DEFAULT_NEST_DISTANCE_M,
+    DEFAULT_SYNOPTIC_WINDOW_DAYS,
     NestedVerticalGradient,
     absurd_horizontal_gradient_warnings,
     assign_screens_to_connect_groups,
     format_vertical_gradient_note,
+    has_lnapl,
     horizontal_gradients_along_profile,
     is_measured_water_level,
+    latest_environmental_readings,
+    latest_water_by_hole,
+    latest_water_readings,
+    lnapl_correction_note,
+    lnapl_thickness_m,
     nested_vertical_gradients,
+    reading_date,
     screen_elevation_range,
+    synoptic_date_warnings,
     vertical_gradient_arrow_conflicts,
     water_depth_along_hole_bgs,
     water_head_masl,
@@ -45,7 +55,7 @@ from models import (
     WaterLevel,
 )
 from paths import lithology_aliases_path
-from projection import TransectGeometry, build_along_hole_tvd
+from projection import TransectGeometry, build_along_hole_tvd, project_collar_to_transect
 from render_profiles import chemistry_thresholds_from_readings
 
 logger = logging.getLogger(__name__)
@@ -754,8 +764,15 @@ def summarize_water_levels(
     lithologies: Sequence[Lithology] | None = None,
     vertical_gradients: Sequence[VerticalGradient] | None = None,
     nest_distance_m: float = DEFAULT_NEST_DISTANCE_M,
+    synoptic_window_days: int = DEFAULT_SYNOPTIC_WINDOW_DAYS,
+    transect_points: Sequence[tuple[float, float]] | None = None,
 ) -> WaterQualitySummary:
     """Summarize groundwater coverage for Validate UI and QA heuristics.
+
+    Horizontal-gradient QA uses the along-section distance of the collars
+    projected onto ``transect_points`` (as the figure does); without a section
+    line it falls back to the plan distance between consecutive collars and
+    says so.
 
     Depth checks use the along-hole depth below ground (``btoc`` readings
     minus the collar stick-up). Gradient QA heads come from
@@ -768,6 +785,11 @@ def summarize_water_levels(
     dry screens and — with ``lithologies`` — connected water lines joining
     wells screened in different units; ``vertical_gradients`` (user arrows)
     are cross-checked against the computed heads.
+
+    Monitoring dates: a series / nest whose dated readings span more than
+    ``synoptic_window_days`` is warned (not one potentiometric surface); a
+    dated + undated mix is information. Duplicate readings of one hole ×
+    series × nest use the latest date (``hydro_metrics.prefer_water_reading``).
     """
     transect_holes = tuple(hole_ids_on_transect)
     hole_set = set(transect_holes)
@@ -775,7 +797,7 @@ def summarize_water_levels(
     warnings: list[str] = []
     by_series: dict[str, list[WaterLevel]] = {}
     # Deduplicate per hole × series × connect_group nest (blank nest = shared polyline).
-    seen_keys: set[tuple[str, str, str]] = set()
+    readings_by_key: dict[tuple[str, str, str], list[WaterLevel]] = {}
     holes_with_any: set[str] = set()
     orphan_ids: set[str] = set()
     masl_on_placeholder = False
@@ -784,13 +806,7 @@ def summarize_water_levels(
         series_id = level.series_id or "default"
         connect_group = (level.connect_group or "").strip()
         key = (level.hole_id, series_id, connect_group)
-        if key in seen_keys:
-            nest_note = f", nest {connect_group}" if connect_group else ""
-            warnings.append(
-                f"{level.hole_id} ({series_id}{nest_note}): duplicate groundwater reading — "
-                "last value is used on the section"
-            )
-        seen_keys.add(key)
+        readings_by_key.setdefault(key, []).append(level)
         if level.hole_id not in hole_set:
             orphan_ids.add(level.hole_id)
             continue
@@ -817,6 +833,13 @@ def summarize_water_levels(
         ):
             masl_on_placeholder = True
 
+    warnings[0:0] = _duplicate_water_reading_warnings(readings_by_key)
+    # Dates of the readings actually used (one per hole × series × nest):
+    # superseded duplicates are reported by the duplicate warning above.
+    synoptic_warnings, synoptic_info = synoptic_date_warnings(
+        latest_water_readings(water_levels), window_days=synoptic_window_days
+    )
+    warnings.extend(synoptic_warnings)
     if btoc_without_stick_up:
         warnings.append(
             "Water depths below top of casing (depth_reference = btoc) on "
@@ -856,21 +879,36 @@ def summarize_water_levels(
             + ", ".join(sorted(orphan_ids))
         )
 
-    # Schematic |Δh/Δx| QA using plan distance between consecutive transect collars.
+    # Schematic |Δh/Δx| QA on the same Δx as the figure: collars projected onto
+    # the section line (along-section x_profile). Without a section line the
+    # plan distance between consecutive collars is used, and a note says so.
     collar_xy = {c.hole_id: (float(c.easting), float(c.northing)) for c in collars}
     x_along: dict[str, float] = {}
-    cumulative = 0.0
-    prev_xy: tuple[float, float] | None = None
-    for hole_id in transect_holes:
-        xy = collar_xy.get(hole_id)
-        if xy is None:
-            continue
-        if prev_xy is not None:
-            cumulative += (
-                (xy[0] - prev_xy[0]) ** 2 + (xy[1] - prev_xy[1]) ** 2
-            ) ** 0.5
-        x_along[hole_id] = cumulative
-        prev_xy = xy
+    gradient_order: tuple[str, ...] = transect_holes
+    along_section = transect_points is not None and len(transect_points) >= 2
+    if along_section:
+        transect = Transect(points=[(float(x), float(y)) for x, y in transect_points])  # type: ignore[union-attr]
+        for hole_id in transect_holes:
+            xy = collar_xy.get(hole_id)
+            if xy is None:
+                continue
+            x_along[hole_id], _offset = project_collar_to_transect(xy[0], xy[1], transect)
+        # Left-to-right as drawn (stable for equal x).
+        gradient_order = tuple(sorted(x_along, key=lambda hid: x_along[hid]))
+    else:
+        cumulative = 0.0
+        prev_xy: tuple[float, float] | None = None
+        for hole_id in transect_holes:
+            xy = collar_xy.get(hole_id)
+            if xy is None:
+                continue
+            if prev_xy is not None:
+                cumulative += (
+                    (xy[0] - prev_xy[0]) ** 2 + (xy[1] - prev_xy[1]) ** 2
+                ) ** 0.5
+            x_along[hole_id] = cumulative
+            prev_xy = xy
+    plan_distance_gradients = False
     collar_rl = {c.hole_id: float(c.elevation) for c in collars}
     stick_up_by_hole = {c.hole_id: float(c.stick_up_m) for c in collars if c.stick_up_m}
     tvd_tables = build_along_hole_tvd(collars, deviation_readings, hole_set)
@@ -890,7 +928,7 @@ def summarize_water_levels(
                 series_label = f"{series_label} [{nest_id}]"
             segments = horizontal_gradients_along_profile(
                 nest_levels,
-                hole_order=transect_holes,
+                hole_order=gradient_order,
                 x_by_hole=x_along,
                 collar_rl_by_hole=collar_rl,
                 series_id=series_id,
@@ -898,20 +936,33 @@ def summarize_water_levels(
                 stick_up_by_hole=stick_up_by_hole,
                 md_to_elevation_by_hole=md_to_elevation_by_hole,
             )
-            warnings.extend(
-                absurd_horizontal_gradient_warnings(segments, series_label=series_label)
-            )
+            absurd = absurd_horizontal_gradient_warnings(segments, series_label=series_label)
+            warnings.extend(absurd)
+            if absurd and not along_section:
+                plan_distance_gradients = True
+    if plan_distance_gradients:
+        warnings.append(
+            "Horizontal gradients above use the plan distance between consecutive collars "
+            "(no section line drawn yet) — the figure uses the along-section distance, "
+            "which is shorter for holes off the line."
+        )
 
     on_section = [level for levels in by_series.values() for level in levels]
-    notes: list[str] = []
+    # Readings the section actually uses (latest per hole × series × nest):
+    # superseded readings must not raise artesian / screen / LNAPL findings.
+    used_on_section = list(latest_water_readings(on_section))
+    notes: list[str] = list(synoptic_info)
     notes.extend(
-        _artesian_notes(on_section, collar_by_id, stick_up_by_hole, md_to_elevation_by_hole)
+        _artesian_notes(used_on_section, collar_by_id, stick_up_by_hole, md_to_elevation_by_hole)
     )
+    lnapl_warnings, lnapl_notes = _lnapl_checks(used_on_section)
+    warnings.extend(lnapl_warnings)
+    notes.extend(lnapl_notes)
     nested: tuple[NestedVerticalGradient, ...] = ()
     screens = [s for s in (screen_intervals or ()) if s.hole_id in hole_set]
     if screens:
         screen_warnings, screen_notes = _water_vs_screen_checks(
-            on_section,
+            used_on_section,
             screens,
             collar_by_id,
             stick_up_by_hole,
@@ -922,7 +973,7 @@ def summarize_water_levels(
         if lithologies:
             warnings.extend(
                 _mixed_unit_water_line_warnings(
-                    on_section, screens, lithologies, transect_holes
+                    used_on_section, screens, lithologies, transect_holes
                 )
             )
         analysis = nested_vertical_gradients(
@@ -956,6 +1007,42 @@ def summarize_water_levels(
     )
 
 
+def _duplicate_water_reading_warnings(
+    readings_by_key: Mapping[tuple[str, str, str], Sequence[WaterLevel]],
+) -> list[str]:
+    """Duplicate readings per hole × series × nest and which one the section uses."""
+    warnings: list[str] = []
+    for (hole_id, series_id, connect_group), group in readings_by_key.items():
+        if len(group) < 2:
+            continue
+        nest_note = f", nest {connect_group}" if connect_group else ""
+        where = f"{hole_id} ({series_id}{nest_note})"
+        dates = sorted({d for d in (reading_date(level) for level in group) if d is not None})
+        if not dates:
+            warnings.extend(
+                f"{where}: duplicate groundwater reading — last value is used on the section"
+                for _ in group[1:]
+            )
+            continue
+        chosen_date = reading_date(latest_water_by_hole(group)[hole_id])
+        assert chosen_date is not None
+        if len(dates) == 1 and all(reading_date(level) is not None for level in group):
+            warnings.append(
+                f"{where}: duplicate groundwater reading — {len(group)} readings on "
+                f"{chosen_date.isoformat()}; last value is used on the section"
+            )
+            continue
+        listed = ", ".join(d.isoformat() for d in dates)
+        undated = sum(1 for level in group if reading_date(level) is None)
+        undated_note = f" (+{undated} undated)" if undated else ""
+        warnings.append(
+            f"{where}: duplicate groundwater reading — {len(group)} readings dated "
+            f"{listed}{undated_note}; the latest ({chosen_date.isoformat()}) is used on the "
+            "section, gradients and flow fit (by date, not row order)"
+        )
+    return warnings
+
+
 def _head_and_md_fn(
     level: WaterLevel,
     collar: Collar,
@@ -970,6 +1057,53 @@ def _head_and_md_fn(
         md_to_elevation=md_fn,
     )
     return head, md_fn
+
+
+def _lnapl_checks(levels: Sequence[WaterLevel]) -> tuple[list[str], list[str]]:
+    """LNAPL (free product) Validate checks: ``(warnings, notes)``.
+
+    * info: the wells whose heads are corrected (thickness × SG);
+    * warning: apparent thickness > 1 m — the thickness in a well overstates
+      the mobile product thickness in the formation;
+    * warning: product recorded on a dry / NM reading (no head is plotted, so
+      the product is not shown or corrected).
+    """
+    warnings: list[str] = []
+    notes: list[str] = []
+    note = lnapl_correction_note(levels)
+    if note:
+        notes.append(note + " (head = water level + apparent thickness × SG).")
+    thick: list[str] = []
+    unmeasured: list[str] = []
+    for level in levels:
+        if not has_lnapl(level):
+            continue
+        if not is_measured_water_level(level):
+            entry = f"{level.hole_id} ({level.status})"
+            if entry not in unmeasured:
+                unmeasured.append(entry)
+            continue
+        thickness = lnapl_thickness_m(level)
+        if thickness > APPARENT_LNAPL_THICKNESS_WARN_M:
+            entry = f"{level.hole_id} ({thickness:.2f} m)"
+            if entry not in thick:
+                thick.append(entry)
+    if thick:
+        warnings.append(
+            "LNAPL apparent thickness over "
+            f"{APPARENT_LNAPL_THICKNESS_WARN_M:g} m at "
+            + ", ".join(thick)
+            + " — apparent thickness in wells overstates formation thickness; the head "
+            "correction uses it as measured (check the reading and the product density)."
+        )
+    if unmeasured:
+        warnings.append(
+            "LNAPL thickness recorded on dry / not-measured readings at "
+            + ", ".join(unmeasured)
+            + " — no head is plotted there, so the product is not shown or corrected; "
+            "check the status or the product columns."
+        )
+    return warnings, notes
 
 
 def _artesian_notes(
@@ -993,12 +1127,12 @@ def _artesian_notes(
         series = "" if (level.series_id or "default") == "default" else f" ({level.series_id})"
         if stick_up > 0.0 and above <= stick_up + 1e-6:
             text = (
-                f"artesian at {level.hole_id}{series} (head +{above:.2f} m above ground, "
+                f"Artesian at {level.hole_id}{series} (head +{above:.2f} m above ground, "
                 "within the casing stick-up) — plotted above the ground line"
             )
         else:
             text = (
-                f"flowing artesian at {level.hole_id}{series} (head +{above:.2f} m above "
+                f"Flowing artesian at {level.hole_id}{series} (head +{above:.2f} m above "
                 "ground) — plotted above the ground line"
             )
         if text not in seen:
@@ -1207,10 +1341,15 @@ def summarize_environmental_readings(
         )
 
     on_line = [item for items in by_parameter.values() for item in items]
+    # Several dated samples at one hole/parameter/depth: the figure draws the latest.
+    latest_on_line, date_notes = latest_environmental_readings(on_line)
+    warnings.extend(f"Info: {note}" for note in date_notes)
     warnings.extend(mixed_unit_warnings(on_line))
     if thresholds is None:
         thresholds = chemistry_thresholds_from_readings(readings)
-    warnings.extend(rdl_above_guideline_notes(on_line, thresholds))
+    # Only the samples the figure draws (superseded dates are not plotted).
+    warnings.extend(rdl_above_guideline_notes(latest_on_line, thresholds))
+    warnings.extend(lab_qualifier_warnings(latest_on_line))
 
     if not readings and transect_holes:
         warnings.append("No environmental/lab readings on the selected section line.")

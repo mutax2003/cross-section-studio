@@ -252,6 +252,7 @@ class ChartLayoutMixin:
                     water_levels,
                     collar_lookup,
                     profile_lookup=profile_lookup,
+                    track_half=track_half,
                 )
             self._draw_faults(ax, collar_lookup, hole_summary=hole_summary)
             self._draw_unconformities(ax, collar_lookup, hole_summary=hole_summary)
@@ -405,6 +406,12 @@ class ChartLayoutMixin:
                         entry["level_label"],
                     )
                 )
+        lnapl_proxy = self.lnapl_legend_proxy() if entries else None
+        if lnapl_proxy is not None:
+            handles.append((lnapl_proxy, lnapl_proxy.get_label()))
+        artesian_proxy = self.artesian_legend_proxy() if entries else None
+        if artesian_proxy is not None:
+            handles.append((artesian_proxy, artesian_proxy.get_label()))
         if getattr(self, "_chart_collar_markers_drawn", False):
             handles.append(
                 (

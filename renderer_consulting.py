@@ -40,6 +40,10 @@ from render_theme import (
     CONSULTING_WATER_COLOR,
     DEFAULT_CONSULTING_NOTES,
     LABEL_COLOR,
+    LNAPL_EDGE_COLOR,
+    LNAPL_FILL_COLOR,
+    LNAPL_HATCH,
+    LNAPL_LEGEND_LABEL,
     OVERLAP_MARKER_COLOR,
     PARAMETER_READING_COLOR,
     REPORT_GRID_ALPHA,
@@ -68,6 +72,7 @@ from renderer_common import (
     water_status_legend_label,
     water_status_texts,
 )
+from renderer_water import ARTESIAN_LEGEND_LABEL
 from stratigraphy import GeologicalPolygon
 
 logger = logging.getLogger(__name__)
@@ -814,6 +819,7 @@ class ConsultingLayoutMixin:
                     # own shades (client reference: cyan vs dark blue).
                     water_color=None if multi_series else CONSULTING_WATER_COLOR,
                     profile_lookup=profile_lookup,
+                    track_half=track_half,
                 )
             if self.vertical_gradients:
                 self._draw_vertical_gradients(
@@ -2245,6 +2251,18 @@ class ConsultingLayoutMixin:
             )
         if title_block.show_gradient_legend and self.vertical_gradients:
             entries.append(("gradient", "VERTICAL GRADIENT DIRECTION", {}))
+        if getattr(self, "lnapl_drawn", False):
+            entries.append(
+                (
+                    "swatch",
+                    LNAPL_LEGEND_LABEL.upper(),
+                    {
+                        "facecolor": LNAPL_FILL_COLOR,
+                        "edgecolor": LNAPL_EDGE_COLOR,
+                        "hatch": LNAPL_HATCH,
+                    },
+                )
+            )
 
         gw_legend = self.water_series_legend or []
         compact_gw = self.profile.compact_water_legend
@@ -2294,6 +2312,19 @@ class ConsultingLayoutMixin:
                             },
                         )
                     )
+
+        if self.profile.show_water_legend and getattr(self, "artesian_drawn", False):
+            entries.append(
+                (
+                    "line_marker",
+                    ARTESIAN_LEGEND_LABEL.upper(),
+                    {
+                        "color": getattr(self, "artesian_color", None) or CONSULTING_WATER_COLOR,
+                        "marker": "^",
+                        "linestyle": ":",
+                    },
+                )
+            )
 
         draw_param_markers = self.profile.parameter_draw_markers
         for entry in self.parameter_series_legend or []:

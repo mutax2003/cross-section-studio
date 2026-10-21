@@ -81,6 +81,7 @@ from renderer_common import (
     add_ve_caption,
     apply_ve_aspect,
     below_axes_anchor,
+    deviated_x_steps,
     fit_label,
     format_ve_caption,
     header_overlaps,
@@ -278,6 +279,7 @@ class CrossSectionRenderer(
         self.along_hole_tvd = dict(along_hole_tvd or {})
         self.export_framing = export_framing
         self.water_series_legend: list[WaterSeriesLegendEntry] = []
+        self.lnapl_drawn = False
         self.parameter_series_legend: list[ParameterLegendEntry] = []
         self._has_pinch_out = False
         self._has_unlogged_intervals = False
@@ -363,6 +365,7 @@ class CrossSectionRenderer(
         lithology_codes: Sequence[str] | None = None,
     ) -> Figure:
         self.water_series_legend = []
+        self.lnapl_drawn = False
         self._ve_main_ax = None
         self._water_labels = []
         self._water_compact_level = 0
@@ -691,6 +694,8 @@ class CrossSectionRenderer(
             collar_lookup[hole_id] = cf
             x_by_hole[hole_id] = xf
         x_span = float(x_values[-1] - x_values[0]) if x_values.size >= 2 else 10.0
+        # Surveyed holes: interval x steps the column / screens / water follow.
+        self._deviated_x = deviated_x_steps(projected_df)
         return _HoleContext(
             summary=summary,
             collar_lookup=collar_lookup,
@@ -2035,7 +2040,8 @@ class CrossSectionRenderer(
         append_render_notes: bool = False,
     ) -> tuple[bytes, bytes, bytes]:
         """Export the figure; ``append_render_notes`` adds the final (post page
-        framing) chemistry-drop and map-scale notes to the PDF QA lines."""
+        framing) chemistry-drop and map-scale notes, and the render-time water
+        line notes (ground clipping, LNAPL correction), to the PDF QA lines."""
         # savefig() draws on demand; an explicit canvas.draw() here doubled render cost.
         # Prefer cheaper formats first so a later failure still leaves cheaper bytes usable.
         ordered = [fmt for fmt in ("svg", "png", "pdf") if fmt in export_formats]
@@ -2056,6 +2062,9 @@ class CrossSectionRenderer(
                 + tuple(getattr(self, "chemistry_rdl_notes", None) or ())
                 + tuple(self.map_scale_notes(figure))
                 + tuple(self.header_overlap_notes(figure))
+                # Water lines clipped at the ground and the LNAPL head
+                # correction: deliverables must say the heads were corrected.
+                + tuple(getattr(self, "water_line_notes", None) or ())
                 + tuple(self.raster_notes)
             )
         export_dpi = self._export_dpi()

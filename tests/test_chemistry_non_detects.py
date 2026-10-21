@@ -155,10 +155,15 @@ def test_detected_column_accepts_yes_no_and_booleans() -> None:
     assert [r.detected for r in result.environmental_readings] == [False, True, False]
 
 
-def test_bad_or_contradicting_qualifier_is_an_error() -> None:
+def test_unknown_qualifier_is_kept_and_contradicting_one_is_an_error() -> None:
+    # Unrecognised qualifier text no longer loses the row: the value is kept
+    # (Validate warns, see tests/test_hydro_qa_fixes.py); a contradiction is
+    # still a row error.
     result = _ingest([_env_row(5.0, qualifier="maybe"), _env_row("<5", depth=3.0, qualifier="=")])
-    assert not result.environmental_readings
-    assert any("qualifier = 'maybe'" in e for e in result.errors)
+    assert [(r.value, r.detected, r.qualifier) for r in result.environmental_readings] == [
+        (5.0, True, "maybe")
+    ]
+    assert not any("qualifier = 'maybe'" in e for e in result.errors)
     assert any("qualifier says detected" in e for e in result.errors)
 
 

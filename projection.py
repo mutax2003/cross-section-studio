@@ -421,10 +421,48 @@ class _SurveyStation:
     easting: float
     northing: float
     true_vertical_depth: float
+    # Hole direction at the station (radians; inclination from vertical, 0 =
+    # straight down; azimuth clockwise from grid north). Used to densify the
+    # minimum-curvature arc between stations.
+    inclination_rad: float = 0.0
+    azimuth_rad: float = 0.0
+
+
+# Densification of minimum-curvature arcs: sub-steps of at most this many
+# metres of MD and at most this many degrees of dogleg each, so linear
+# interpolation between stored samples stays well inside 1 cm of the arc.
+_DENSIFY_MAX_STEP_M = 2.0
+_DENSIFY_MAX_DOGLEG_DEG = 1.0
+_DENSIFY_MAX_SUBSTEPS = 2000
+# A collar inclination at or below this (degrees from vertical) keeps the hole
+# on the vertical fast path when it has no Deviations rows.
+_VERTICAL_INCLINATION_EPS_DEG = 1e-9
 
 
 def _deg_to_rad(value: float) -> float:
     return math.radians(value)
+
+
+def _dogleg_rad(inc_start_rad: float, azi_start_rad: float, inc_end_rad: float, azi_end_rad: float) -> float:
+    cos_dogleg = (
+        math.cos(inc_end_rad - inc_start_rad)
+        - math.sin(inc_start_rad) * math.sin(inc_end_rad) * (1.0 - math.cos(azi_end_rad - azi_start_rad))
+    )
+    return math.acos(max(-1.0, min(1.0, cos_dogleg)))
+
+
+def _direction_vector(inc_rad: float, azi_rad: float) -> tuple[float, float, float]:
+    """Unit tangent (north, east, down) for an inclination / azimuth pair."""
+    sin_inc = math.sin(inc_rad)
+    return sin_inc * math.cos(azi_rad), sin_inc * math.sin(azi_rad), math.cos(inc_rad)
+
+
+def _direction_angles(north: float, east: float, down: float) -> tuple[float, float]:
+    """Inverse of ``_direction_vector`` → (inclination_rad, azimuth_rad)."""
+    horizontal = math.hypot(north, east)
+    inc = math.atan2(horizontal, down)
+    azi = math.atan2(east, north) if horizontal > 1e-15 else 0.0
+    return inc, azi
 
 
 def _minimum_curvature_delta(
@@ -462,23 +500,55 @@ def _minimum_curvature_delta(
     return delta_northing, delta_easting, delta_tvd
 
 
+def _collar_orientation_rad(
+    collar: Collar,
+    sorted_readings: Sequence[DeviationReading],
+) -> tuple[float, float]:
+    """Hole direction at the collar (radians).
+
+    Precedence: a Deviations row at depth ≤ 0 (the one nearest the collar)
+    defines the collar orientation and overrides the Collars sheet
+    ``inclination_deg`` / ``azimuth_deg``; otherwise the collar angles are
+    used (blank → vertical / north).
+    """
+    collar_rows = [reading for reading in sorted_readings if reading.depth <= 0.0]
+    if collar_rows:
+        top = collar_rows[-1]
+        return _deg_to_rad(top.inclination_deg), _deg_to_rad(top.azimuth_deg)
+    return (
+        _deg_to_rad(_collar_inclination_from_vertical(collar)),
+        _deg_to_rad(collar.azimuth_deg or 0.0),
+    )
+
+
 def build_minimum_curvature_survey(
     collar: Collar,
     readings: Sequence[DeviationReading],
+    *,
+    extend_to_md: float | None = None,
 ) -> list[_SurveyStation]:
-    """Build a minimum-curvature survey path from collar and deviation readings."""
+    """Build a minimum-curvature survey path from collar and deviation readings.
+
+    Inclination is measured from vertical (0 = straight down), azimuth
+    clockwise from grid north. A reading at depth 0 sets the collar
+    orientation (it wins over the Collars sheet angles). The path is extended
+    straight along the last direction to ``max(total_depth, extend_to_md)``.
+    Returned stations are the survey stations only; ``densify_survey`` adds
+    arc points for accurate interpolation between them.
+    """
     sorted_readings = sorted(readings, key=lambda reading: reading.depth)
+    prev_inc, prev_azi = _collar_orientation_rad(collar, sorted_readings)
     stations: list[_SurveyStation] = [
         _SurveyStation(
             measured_depth=0.0,
             easting=collar.easting,
             northing=collar.northing,
             true_vertical_depth=0.0,
+            inclination_rad=prev_inc,
+            azimuth_rad=prev_azi,
         )
     ]
     prev_md = 0.0
-    prev_inc = _deg_to_rad(collar.inclination_deg or 0.0)
-    prev_azi = _deg_to_rad(collar.azimuth_deg or 0.0)
     easting = collar.easting
     northing = collar.northing
     tvd = 0.0
@@ -500,30 +570,150 @@ def build_minimum_curvature_survey(
                 easting=easting,
                 northing=northing,
                 true_vertical_depth=tvd,
+                inclination_rad=inc,
+                azimuth_rad=azi,
             )
         )
         prev_md = reading.depth
         prev_inc = inc
         prev_azi = azi
 
-    if collar.total_depth > prev_md:
+    end_md = max(collar.total_depth, extend_to_md or 0.0)
+    if end_md > prev_md:
         inc = prev_inc
         azi = prev_azi
         delta_n, delta_e, delta_tvd = _minimum_curvature_delta(
-            prev_md, inc, azi, collar.total_depth, inc, azi
+            prev_md, inc, azi, end_md, inc, azi
         )
         northing += delta_n
         easting += delta_e
         tvd += delta_tvd
         stations.append(
             _SurveyStation(
-                measured_depth=collar.total_depth,
+                measured_depth=end_md,
                 easting=easting,
                 northing=northing,
                 true_vertical_depth=tvd,
+                inclination_rad=inc,
+                azimuth_rad=azi,
             )
         )
     return stations
+
+
+def densify_survey(stations: Sequence[_SurveyStation]) -> list[_SurveyStation]:
+    """Insert points along each curved minimum-curvature segment.
+
+    Each segment between stations is a circular arc; sub-points are placed on
+    that arc (slerp of the end tangents, then the exact minimum-curvature
+    step from the segment start), so linear interpolation of the densified
+    samples is within millimetres of the true arc. Straight segments (zero
+    dogleg) are already exact under linear interpolation and are left alone.
+    """
+    if len(stations) < 2:
+        return list(stations)
+    dense: list[_SurveyStation] = [stations[0]]
+    for start, end in zip(stations[:-1], stations[1:], strict=True):
+        delta_md = end.measured_depth - start.measured_depth
+        dogleg = _dogleg_rad(start.inclination_rad, start.azimuth_rad, end.inclination_rad, end.azimuth_rad)
+        if delta_md <= 0.0 or dogleg < 1e-9:
+            dense.append(end)
+            continue
+        substeps = max(
+            math.ceil(delta_md / _DENSIFY_MAX_STEP_M),
+            math.ceil(math.degrees(dogleg) / _DENSIFY_MAX_DOGLEG_DEG),
+            1,
+        )
+        substeps = min(substeps, _DENSIFY_MAX_SUBSTEPS)
+        t_start = _direction_vector(start.inclination_rad, start.azimuth_rad)
+        t_end = _direction_vector(end.inclination_rad, end.azimuth_rad)
+        sin_dogleg = math.sin(dogleg)
+        for step in range(1, substeps):
+            fraction = step / substeps
+            if sin_dogleg > 1e-12:
+                weight_a = math.sin((1.0 - fraction) * dogleg) / sin_dogleg
+                weight_b = math.sin(fraction * dogleg) / sin_dogleg
+            else:  # antiparallel tangents (180° dogleg): degenerate, fall back to lerp
+                weight_a, weight_b = 1.0 - fraction, fraction
+            north = weight_a * t_start[0] + weight_b * t_end[0]
+            east = weight_a * t_start[1] + weight_b * t_end[1]
+            down = weight_a * t_start[2] + weight_b * t_end[2]
+            inc, azi = _direction_angles(north, east, down)
+            md = start.measured_depth + fraction * delta_md
+            delta_n, delta_e, delta_tvd = _minimum_curvature_delta(
+                start.measured_depth, start.inclination_rad, start.azimuth_rad, md, inc, azi
+            )
+            dense.append(
+                _SurveyStation(
+                    measured_depth=md,
+                    easting=start.easting + delta_e,
+                    northing=start.northing + delta_n,
+                    true_vertical_depth=start.true_vertical_depth + delta_tvd,
+                    inclination_rad=inc,
+                    azimuth_rad=azi,
+                )
+            )
+        dense.append(end)
+    return dense
+
+
+def _collar_inclination_from_vertical(collar: Collar) -> float:
+    """Collars-sheet inclination as degrees from vertical (0 = straight down).
+
+    A negative angle is a mining-style dip (−90 = straight down, −60 = 30°
+    off vertical) and is converted, so a −90 collar stays vertical instead
+    of being drawn nearly horizontal.
+    """
+    inc = float(collar.inclination_deg or 0.0)
+    if -90.0 <= inc < 0.0:
+        return 90.0 + inc
+    return inc
+
+
+def _collar_is_inclined(collar: Collar) -> bool:
+    if collar.inclination_deg is None:
+        return False
+    return abs(_collar_inclination_from_vertical(collar)) > _VERTICAL_INCLINATION_EPS_DEG
+
+
+def _surveyed_hole_readings(
+    collars: Sequence[Collar],
+    deviation_readings: Sequence[DeviationReading] | None,
+) -> dict[str, list[DeviationReading]]:
+    """Holes that need a survey path → their Deviations rows.
+
+    A hole is surveyed when it has Deviations rows, or when its Collars row
+    carries a non-zero ``inclination_deg`` (a straight inclined hole: empty
+    readings list, the collar angles drive the survey to TD). Holes with
+    inclination blank / 0 and no rows stay on the vertical fast path.
+    """
+    collar_ids = {collar.hole_id for collar in collars}
+    readings_by_hole: dict[str, list[DeviationReading]] = {}
+    for reading in deviation_readings or ():
+        if reading.hole_id in collar_ids:
+            readings_by_hole.setdefault(reading.hole_id, []).append(reading)
+    for collar in collars:
+        if collar.hole_id not in readings_by_hole and _collar_is_inclined(collar):
+            inc = _collar_inclination_from_vertical(collar)
+            if not 0.0 <= inc <= 90.0:
+                logger.warning(
+                    "Hole '%s' collar inclination %.1f° is outside 0–90° "
+                    "(0 = vertical down); check the angle convention",
+                    collar.hole_id,
+                    inc,
+                )
+            readings_by_hole[collar.hole_id] = []
+    return readings_by_hole
+
+
+def hole_survey(
+    collar: Collar,
+    readings: Sequence[DeviationReading],
+    *,
+    extend_to_md: float | None = None,
+) -> list[_SurveyStation]:
+    """Densified minimum-curvature path for one hole (projection + TVD tables)."""
+    return densify_survey(build_minimum_curvature_survey(collar, readings, extend_to_md=extend_to_md))
 
 
 def _survey_station_arrays(
@@ -657,24 +847,19 @@ def build_along_hole_tvd(
 ) -> dict[str, AlongHoleTVD]:
     """Per-hole MD→TVD tables for surveyed holes (same rule as ``project_boreholes``).
 
-    Holes without deviation readings are omitted: callers treat them as
+    Surveyed = Deviations rows, or a non-zero collar ``inclination_deg``
+    (straight inclined hole). Other holes are omitted: callers treat them as
     vertical (elevation = collar − depth, bit-for-bit the legacy formula).
+    Samples are densified along each minimum-curvature arc so linear
+    interpolation tracks the arc to well under 1 cm.
     """
-    if not deviation_readings:
-        return {}
     wanted = set(hole_ids) if hole_ids is not None else None
     collar_by_id = {collar.hole_id: collar for collar in collars}
-    readings_by_hole: dict[str, list[DeviationReading]] = {}
-    for reading in deviation_readings:
-        readings_by_hole.setdefault(reading.hole_id, []).append(reading)
     tables: dict[str, AlongHoleTVD] = {}
-    for hole_id, readings in readings_by_hole.items():
+    for hole_id, readings in _surveyed_hole_readings(collars, deviation_readings).items():
         if wanted is not None and hole_id not in wanted:
             continue
-        collar = collar_by_id.get(hole_id)
-        if collar is None or not readings:
-            continue
-        stations = build_minimum_curvature_survey(collar, readings)
+        stations = hole_survey(collar_by_id[hole_id], readings)
         tables[hole_id] = AlongHoleTVD(
             measured_depths=tuple(float(station.measured_depth) for station in stations),
             true_vertical_depths=tuple(float(station.true_vertical_depth) for station in stations),
@@ -696,15 +881,18 @@ def project_boreholes(
     collar_by_id = {collar.hole_id: collar for collar in collars}
     geometry = _TransectGeometry.from_transect(transect)
 
-    readings_by_hole: dict[str, list[DeviationReading]] = {}
-    if deviation_readings:
-        for reading in deviation_readings:
-            readings_by_hole.setdefault(reading.hole_id, []).append(reading)
-
+    readings_by_hole = _surveyed_hole_readings(collars, deviation_readings)
+    deepest_by_hole: dict[str, float] = {}
+    for lithology in lithologies:
+        if lithology.hole_id in readings_by_hole:
+            deepest_by_hole[lithology.hole_id] = max(
+                deepest_by_hole.get(lithology.hole_id, 0.0), float(lithology.to_depth)
+            )
     surveys_by_hole = {
-        hole_id: build_minimum_curvature_survey(collar_by_id[hole_id], readings)
+        hole_id: hole_survey(
+            collar_by_id[hole_id], readings, extend_to_md=deepest_by_hole.get(hole_id)
+        )
         for hole_id, readings in readings_by_hole.items()
-        if hole_id in collar_by_id and readings
     }
 
     vertical_lithologies: list[Lithology] = []

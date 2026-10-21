@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import datetime
 import math
 import re
 from typing import Literal
 
+import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -25,8 +27,16 @@ WATER_OPTIONAL_COLUMNS = frozenset(
         "elevation_masl",
         "connect_group",
         "status",
+        "date",
+        "product_thickness_m",
+        "product_density",
+        "depth_to_product",
     }
 )
+# LNAPL (free product) specific gravity used when a Water row gives a product
+# thickness without product_density (typical weathered gasoline / diesel).
+DEFAULT_LNAPL_SPECIFIC_GRAVITY = 0.75
+LNAPL_SPECIFIC_GRAVITY_MIN = 0.5
 SCREEN_COLUMNS = {"hole_id", "from_depth", "to_depth"}
 GRADIENT_COLUMNS = {"hole_id", "direction"}
 MAX_WATER_SERIES = 4
@@ -46,6 +56,73 @@ def _clean_text(value: object) -> str:
         # cleaned export it would execute in Excel.
         raise ValueError(f"text cannot start with '=' (formula): {text[:40]!r}")
     return text
+
+
+# Excel serial day 0 (the 1900 leap-year bug makes 1899-12-30 the practical
+# epoch for every serial after 1900-03-01).
+_EXCEL_EPOCH = datetime.date(1899, 12, 30)
+# Serials 20000–80000 cover 1954-10-03 to 2119-01-10: plausible monitoring
+# dates; anything outside is far more likely a mis-typed number.
+_EXCEL_SERIAL_RANGE = (20000.0, 80000.0)
+_ISO_DATE_RE = re.compile(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T].*)?$")
+
+
+def parse_monitoring_date(value: object) -> datetime.date | None:
+    """Monitoring-event date from a workbook cell (blank → ``None``).
+
+    Accepts Excel date cells (``datetime`` / ``pandas.Timestamp``), Excel serial
+    numbers, and ISO text (``2026-04-02``, ``2026/04/02``, ``2026-04-02 10:30``).
+    Day-first / month-first text such as ``02/04/2026`` is ambiguous and is
+    rejected with a message asking for ISO ``YYYY-MM-DD``.
+    """
+    if value is None:
+        return None
+    if isinstance(value, np.datetime64):
+        value = pd.Timestamp(value) if not np.isnat(value) else pd.NaT
+    elif isinstance(value, np.bool_):
+        value = bool(value)
+    elif isinstance(value, np.integer):
+        # pandas / openpyxl hand back numpy scalars for Excel serial columns.
+        value = int(value)
+    elif isinstance(value, np.floating):
+        value = float(value)
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    if value is pd.NaT:
+        return None
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return None
+        return value.date()
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    if isinstance(value, bool):
+        raise ValueError(f"date = '{value}' — enter a date as YYYY-MM-DD (e.g. 2026-04-02) or leave it blank.")
+    if isinstance(value, (int, float)):
+        serial = float(value)
+        low, high = _EXCEL_SERIAL_RANGE
+        if math.isfinite(serial) and low <= serial <= high:
+            return _EXCEL_EPOCH + datetime.timedelta(days=int(serial))
+        raise ValueError(
+            f"date = '{value}' — not a date; enter it as YYYY-MM-DD (e.g. 2026-04-02), "
+            "format the cell as a date, or leave it blank."
+        )
+    text = _XML_ILLEGAL.sub("", str(value)).strip()
+    if not text or text.lower() in {"nan", "nat", "none"}:
+        return None
+    match = _ISO_DATE_RE.match(text)
+    if match:
+        try:
+            return datetime.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            pass
+    shown = text[:40]
+    raise ValueError(
+        f"date = '{shown}' — enter the monitoring date as YYYY-MM-DD (e.g. 2026-04-02), "
+        "format the cell as a date, or leave it blank."
+    )
 
 
 _COLLAR_LIMITS = {"easting": 1e9, "northing": 1e9, "elevation": 1e5, "total_depth": 1e5}
@@ -229,6 +306,88 @@ class WaterLevel(BaseModel, frozen=True):
     # Datum of ``depth``: "bgs" = metres below ground surface (default) or
     # "btoc" = metres below top of casing (head = collar + stick-up − depth).
     depth_reference: str = "bgs"
+    # Monitoring-event date (optional). Heads from different dates are not one
+    # potentiometric surface — see hydro_metrics.series_date_range.
+    date: datetime.date | None = None
+
+    @field_validator("date", mode="before")
+    @classmethod
+    def parse_date(cls, value: object) -> datetime.date | None:
+        return parse_monitoring_date(value)
+
+    # LNAPL (free product) in the well — optional. ``depth`` (or
+    # ``elevation_masl``) stays the measured WATER level: the oil/water
+    # interface. ``product_thickness_m`` is the apparent product thickness
+    # above it (along the hole, same datum as ``depth``) and ``product_density``
+    # its specific gravity (0.5–<1.0; defaults to 0.75 when a thickness is
+    # given). Corrected head = water elevation + vertical thickness × SG
+    # (``hydro_metrics.water_head_masl``).
+    product_thickness_m: float | None = None
+    product_density: float | None = None
+
+    @field_validator("product_thickness_m", "product_density", mode="before")
+    @classmethod
+    def blank_product_value(cls, value: object) -> object:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("product_thickness_m")
+    @classmethod
+    def validate_product_thickness(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if not math.isfinite(value):
+            raise ValueError("product_thickness_m must be a finite number")
+        if value < 0:
+            raise ValueError("product_thickness_m (apparent LNAPL thickness) must be non-negative")
+        return float(value)
+
+    @field_validator("product_density")
+    @classmethod
+    def validate_product_density(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if not math.isfinite(value):
+            raise ValueError("product_density must be a finite number")
+        if value >= 1.0:
+            raise ValueError(
+                f"product_density {value:g} is not an LNAPL (specific gravity must be < 1.0) — "
+                "a product denser than water is a DNAPL, which sinks and does not float on the "
+                "water table; leave product_thickness_m / product_density blank for DNAPL"
+            )
+        if value < LNAPL_SPECIFIC_GRAVITY_MIN:
+            raise ValueError(
+                f"product_density {value:g} is below {LNAPL_SPECIFIC_GRAVITY_MIN:g} — enter the "
+                "LNAPL specific gravity (typically 0.7–0.95)"
+            )
+        return float(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_product_density(cls, data: object) -> object:
+        """Fill the documented SG default into the input, so it is a set field.
+
+        Done before validation (not by mutating the frozen model afterwards)
+        so ``model_fields_set`` / ``exclude_unset`` dumps keep the default.
+        """
+        if not isinstance(data, dict):
+            return data
+        thickness = cls._blank_to_none(data.get("product_thickness_m"))
+        density = cls._blank_to_none(data.get("product_density"))
+        if thickness is not None and density is None:
+            data = {**data, "product_density": DEFAULT_LNAPL_SPECIFIC_GRAVITY}
+        return data
+
+    @staticmethod
+    def _blank_to_none(value: object) -> object:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("depth_reference", mode="before")
     @classmethod
@@ -421,6 +580,25 @@ class EnvironmentalReading(BaseModel, frozen=True):
     # (RDL) and the figure prints "<5". Threshold colouring treats it as
     # below that limit, never as a measured 5 (see render_theme).
     detected: bool = True
+    # Sampling date (optional). Several dated samples at one hole/parameter/
+    # depth: the latest is plotted (hydro_metrics.latest_environmental_readings).
+    date: datetime.date | None = None
+    # Lab qualifier flag as entered (J, B, R, U ...); ``detected`` already
+    # carries the non-detect meaning. Validate warns on R (rejected) and
+    # unrecognised flags (chemistry_qc.lab_qualifier_warnings).
+    qualifier: str = ""
+
+    @field_validator("date", mode="before")
+    @classmethod
+    def parse_date(cls, value: object) -> datetime.date | None:
+        return parse_monitoring_date(value)
+
+    @field_validator("qualifier", mode="before")
+    @classmethod
+    def clean_qualifier(cls, value: object) -> str:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ""
+        return str(value).strip()
 
     @field_validator("hole_id", "parameter", mode="before")
     @classmethod

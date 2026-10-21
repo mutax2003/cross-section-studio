@@ -27,6 +27,14 @@ from parsing import skipped_row_hole_ids
 from ui_helpers import unique_download_bytes
 
 
+def _show_qa_message(message: str) -> None:
+    """``Info:`` lines (artesian heads, dated samples, …) as info, the rest as warnings."""
+    if message.startswith("Info: "):
+        st.info(message.removeprefix("Info: "))
+    else:
+        st.warning(message)
+
+
 def _render_fix_step_actions(
     step: Any,
     *,
@@ -156,28 +164,32 @@ def _render_groundwater_flow(
         return
     section_az = transect_azimuth_deg(list(section_points)) if len(section_points) >= 2 else None
     st.markdown("**Plan-view flow** (planar head fit, all measured wells — screening only)")
-    st.markdown("| Series | Wells used | Flow | i | R² | Max residual | Section line |")
-    st.markdown("| --- | --- | --- | ---: | ---: | ---: | --- |")
+    # One markdown call per table: split calls render the rows as raw text.
+    rows = [
+        "| Series | Wells used | Flow | i | R² | Max residual | Section line |",
+        "| --- | --- | --- | ---: | ---: | ---: | --- |",
+    ]
     messages: list[str] = []
     for fit in fits:
         relation = section_flow_relation(fit, section_az)
         if relation is not None:
             section_text = f"{relation.classification} ({relation.angle_deg:.0f}°)"
         elif section_az is None:
-            section_text = "no section line"
+            section_text = "set on Configure"
         else:
             section_text = "—"
         usable = fit.usable
         r2 = f"{fit.r_squared:.2f}" if fit.r_squared is not None else (
             "exact" if usable and fit.method == "3-point" else "—"
         )
-        st.markdown(
+        rows.append(
             f"| `{escape(fit.display_label)}` | {escape(', '.join(fit.hole_ids))} | "
             f"{format_flow_direction(fit)} | "
             f"{f'{fit.gradient:.2g}' if usable else '—'} | {r2} | "
             f"{f'{fit.max_abs_residual_m:.2f} m' if usable else '—'} | {section_text} |"
         )
         messages.extend(head_plane_fit_warnings(fit, relation))
+    st.markdown("\n".join(rows))
     if section_az is not None and len(section_points) > 2:
         st.caption(
             f"Section bearing {section_az:.0f}° uses the polyline's overall start → end direction."
@@ -219,25 +231,27 @@ def _render_validate_details(
             screen_intervals=parse_result.screen_intervals,
             lithologies=parse_result.lithologies,
             vertical_gradients=parse_result.vertical_gradients,
+            # Same along-section Δx as the figure when a section line exists.
+            transect_points=tuple(section_points) if len(section_points) >= 2 else None,
         )
         with st.expander("Groundwater", expanded=bool(water_summary.warnings)):
             st.caption(scope_caption)
             if water_summary.series:
-                st.markdown(f"| Series | Label | Holes | {missing_col} |")
-                st.markdown("| --- | --- | ---: | --- |")
+                rows = [f"| Series | Label | Holes | {missing_col} |", "| --- | --- | ---: | --- |"]
                 for series in water_summary.series:
                     missing = ", ".join(series.missing_hole_ids) if series.missing_hole_ids else "—"
-                    st.markdown(
+                    rows.append(
                         f"| `{series.series_id}` | {series.series_label or '—'} | "
                         f"{series.hole_count} | {missing} |"
                     )
+                st.markdown("\n".join(rows))
             if water_summary.holes_without_any_water:
                 st.warning(
                     "No water reading: "
                     + ", ".join(water_summary.holes_without_any_water)
                 )
             for message in water_summary.warnings:
-                st.warning(message)
+                _show_qa_message(message)
             _render_groundwater_flow(parse_result, section_points)
 
     if parse_result.screen_intervals:
@@ -282,8 +296,10 @@ def _render_validate_details(
                     + ", ".join(orphan_env_ids)
                 )
             if env_summary.parameters:
-                st.markdown(f"| Parameter | Holes | Depth range (m) | {missing_col} |")
-                st.markdown("| --- | ---: | --- | --- |")
+                rows = [
+                    f"| Parameter | Holes | Depth range (m) | {missing_col} |",
+                    "| --- | ---: | --- | --- |",
+                ]
                 for param in env_summary.parameters:
                     depth_range = (
                         f"{param.min_depth:.1f}–{param.max_depth:.1f}"
@@ -291,16 +307,17 @@ def _render_validate_details(
                         else "—"
                     )
                     missing = ", ".join(param.missing_hole_ids) if param.missing_hole_ids else "—"
-                    st.markdown(
+                    rows.append(
                         f"| `{param.parameter}` | {param.hole_count} | {depth_range} | {missing} |"
                     )
+                st.markdown("\n".join(rows))
             if env_summary.holes_without_any_readings:
                 st.warning(
                     "No environmental reading: "
                     + ", ".join(env_summary.holes_without_any_readings)
                 )
             for message in env_summary.warnings:
-                st.warning(message)
+                _show_qa_message(message)
 
     if quality_report.issues:
         st.markdown("**Fix coach**")
@@ -392,7 +409,7 @@ def _render_validate_details(
                     )
                 )
             for warning in import_report.warnings:
-                st.warning(warning)
+                _show_qa_message(warning)
 
     if mapping_proposal is not None:
         with st.expander("Column mapping proposal", expanded=False):

@@ -45,7 +45,10 @@ COS30 = math.cos(math.radians(30.0))
 POINTS = [(-20.0, 0.0), (120.0, 0.0)]
 
 
-def _collars(*, stick_up_b: float | None = None) -> list[Collar]:
+def _collars(*, stick_up_b: float | None = None, inclined_b: bool = True) -> list[Collar]:
+    # A non-zero collar inclination makes B a straight inclined hole even
+    # without Deviations rows; ``inclined_b=False`` gives a vertical B.
+    angle = 30.0 if inclined_b else None
     return [
         Collar(hole_id="A", easting=0.0, northing=0.0, elevation=100.0, total_depth=30.0),
         Collar(
@@ -54,7 +57,7 @@ def _collars(*, stick_up_b: float | None = None) -> list[Collar]:
             northing=0.0,
             elevation=102.0,
             total_depth=40.0,
-            inclination_deg=30.0,
+            inclination_deg=angle,
             azimuth_deg=0.0,
             stick_up_m=stick_up_b,
         ),
@@ -161,8 +164,11 @@ def test_geometry_carries_tvd_tables_only_for_surveyed_holes() -> None:
         _collars(), _lithologies(), POINTS, deviation_readings=_deviations()
     )
     assert set(geometry.along_hole_tvd) == {"B"}
-    vertical = compute_section_geometry(_collars(), _lithologies(), POINTS)
+    vertical = compute_section_geometry(_collars(inclined_b=False), _lithologies(), POINTS)
     assert vertical.along_hole_tvd == {}
+    # Collar inclination alone (no Deviations rows) is a straight inclined hole.
+    collar_only = compute_section_geometry(_collars(), _lithologies(), POINTS)
+    assert set(collar_only.along_hole_tvd) == {"B"}
 
 
 # --- inclined hole: everything at survey TVD --------------------------------------
@@ -240,7 +246,7 @@ def test_btoc_reading_adds_stick_up() -> None:
 def test_btoc_reading_renders_with_stick_up() -> None:
     water = [WaterLevel(hole_id="B", depth=6.0, depth_reference="top of casing")]
     _geometry, _renderer, figure = _render(
-        collars=_collars(stick_up_b=0.8), deviations=[], water=water
+        collars=_collars(stick_up_b=0.8, inclined_b=False), deviations=[], water=water
     )
     try:
         assert _marker_offsets(figure, "water")[:, 1].tolist() == pytest.approx([102.0 + 0.8 - 6.0])
@@ -315,7 +321,10 @@ def test_labels_in_elevation_and_depth_modes() -> None:
 def test_depth_mode_label_converts_btoc_to_below_ground() -> None:
     water = [WaterLevel(hole_id="B", depth=6.0, depth_reference="btoc")]
     _g, renderer, figure = _render(
-        collars=_collars(stick_up_b=0.8), deviations=[], water=water, elevation_mode="relative"
+        collars=_collars(stick_up_b=0.8, inclined_b=False),
+        deviations=[],
+        water=water,
+        elevation_mode="relative",
     )
     try:
         assert _rl_label_values(renderer) == pytest.approx([5.2])
@@ -366,10 +375,13 @@ def test_validate_gradient_qa_uses_survey_heads() -> None:
         DeviationReading(hole_id="B", depth=depth, inclination_deg=60.0, azimuth_deg=0.0)
         for depth in (10.0, 60.0)
     ]
-    collars[1] = collars[1].model_copy(update={"inclination_deg": 60.0, "azimuth_deg": 0.0})
     levels = [WaterLevel(hole_id="A", depth=5.0), WaterLevel(hole_id="B", depth=10.0)]
     # Vertical: heads 95 vs 90 → |i| = 0.25 (warn). Survey: 100 − 10·cos60 = 95 → i = 0.
     vertical = summarize_water_levels(collars, levels, ("A", "B"))
+    collars[1] = collars[1].model_copy(update={"inclination_deg": 60.0, "azimuth_deg": 0.0})
+    # Collar angle alone already puts B on its survey path.
+    collar_only = summarize_water_levels(collars, levels, ("A", "B"))
+    assert not any("Horizontal hydraulic gradient" in w for w in collar_only.warnings)
     assert any("Horizontal hydraulic gradient" in w for w in vertical.warnings)
     surveyed = summarize_water_levels(collars, levels, ("A", "B"), deviation_readings=deviations)
     assert not any("Horizontal hydraulic gradient" in w for w in surveyed.warnings)
@@ -392,7 +404,11 @@ def test_vertical_holes_keep_legacy_arithmetic() -> None:
         EnvironmentalReading(hole_id="A", parameter="Chloride", value=5.0, depth=12.7),
     ]
     geometry, renderer, figure = _render(
-        deviations=[], water=water, screens=screens, chemistry=chemistry
+        collars=_collars(inclined_b=False),
+        deviations=[],
+        water=water,
+        screens=screens,
+        chemistry=chemistry,
     )
     try:
         assert renderer.along_hole_tvd == {}

@@ -707,11 +707,11 @@ def ingest_workbook(
                 optional_sheets.append("Project")
             if project_metadata:
                 warnings.append(
-                    "Loaded Project / Data Entry metadata — consulting title fields will be seeded on upload."
+                    "Info: Loaded Project / Data Entry metadata — consulting title fields will be seeded on upload."
                 )
             else:
                 warnings.append(
-                    "Loaded input template workbook — no PROJECT metadata found."
+                    "Info: Loaded input template workbook — no PROJECT metadata found."
                 )
         elif resolved_profile_id == NATIVE_PROFILE_ID:
             # Full workbook parse so optional Water / Environmental / Screens / Gradients load.
@@ -837,7 +837,7 @@ def ingest_workbook(
 
         if parse_result.section_specs:
             warnings.append(
-                f"Sections sheet: loaded {len(parse_result.section_specs)} transect "
+                f"Info: Sections sheet: loaded {len(parse_result.section_specs)} transect "
                 "spec(s) for Configure multi-transect batch."
             )
 

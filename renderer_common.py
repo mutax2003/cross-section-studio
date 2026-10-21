@@ -798,9 +798,134 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robu
     """Make overlapping hole headers readable (see ``_stack_hole_headers``)."""
     try:
         fig._css_extent_cache = {}
+        section_ends = _section_end_labels(fig)
+        _restore_section_end_labels(section_ends)
         _stack_hole_headers(fig, headers, max_tiers=max_tiers, robust=robust)
+        _clear_section_ends_of_leaders(fig, section_ends, headers)
     finally:
         fig.__dict__.pop("_css_extent_cache", None)
+
+
+# Clearance (points) between a section-end label and a header leader.
+_SECTION_END_LEADER_GAP_PT = 3.0
+
+
+def _section_end_labels(fig) -> list:
+    """Section-end labels ("A / NORTHWEST", "A' / SOUTHEAST") tagged by the layout."""
+    return [
+        text
+        for ax in fig.axes
+        for text in ax.texts
+        if getattr(text, "_css_section_end", None) in ("start", "end") and text.get_visible()
+    ]
+
+
+def _restore_section_end_labels(labels) -> None:
+    """Undo a previous leader-clearing step (re-runs start from the drawn position)."""
+    for text in labels:
+        base = getattr(text, "_css_section_end_base", None)
+        if base is None:
+            text._css_section_end_base = text.get_transform()
+        else:
+            text.set_transform(base)
+        text.set_bbox(None)
+
+
+def _leader_segments_px(fig) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """Display-space end points of the header leaders drawn by the stacking pass."""
+    from matplotlib.text import Annotation
+
+    px_per_pt = fig.dpi / 72.0
+    segments = []
+    for leader in getattr(fig, "_css_header_leaders", None) or []:
+        try:
+            if isinstance(leader, Annotation):
+                start = leader.xycoords.transform(leader.xy)
+                dx, dy = leader.xyann
+                end = (start[0] + dx * px_per_pt, start[1] + dy * px_per_pt)
+            else:
+                points = leader.get_transform().transform(leader.get_xydata())
+                start, end = points[0], points[-1]
+        except Exception:  # pragma: no cover - defensive (unknown leader artist)
+            continue
+        segments.append(((float(start[0]), float(start[1])), (float(end[0]), float(end[1]))))
+    return segments
+
+
+def _segment_x_span(segment, y0: float, y1: float) -> tuple[float, float] | None:
+    """x range a leader segment covers between display heights ``y0``..``y1``."""
+    (xa, ya), (xb, yb) = segment
+    lo, hi = sorted((ya, yb))
+    if hi < y0 or lo > y1:
+        return None
+    if abs(yb - ya) < 1e-9:
+        return min(xa, xb), max(xa, xb)
+
+    def x_at(y: float) -> float:
+        return xa + (xb - xa) * (y - ya) / (yb - ya)
+
+    ys = (max(lo, y0), min(hi, y1))
+    xs = [x_at(y) for y in ys]
+    return min(xs), max(xs)
+
+
+def _clear_section_ends_of_leaders(fig, labels, headers) -> None:
+    """Keep the section-end labels clear of the hole-header leaders.
+
+    Rotated / fanned headers rise above the end labels, and the end hole's
+    leader then ran through "A' SOUTHEAST" (QA round 7). The label steps
+    inward (start right, end left) past every leader it touches; when that
+    would land on a header or past the middle of the frame, it keeps its
+    place on an opaque white ground that interrupts the leader instead.
+    """
+    from matplotlib.transforms import offset_copy
+
+    if not labels:
+        return
+    segments = _leader_segments_px(fig)
+    if not segments:
+        return
+    renderer = fig.canvas.get_renderer()
+    px_per_pt = fig.dpi / 72.0
+    gap = _SECTION_END_LEADER_GAP_PT * px_per_pt
+    header_boxes = [
+        _header_extent(t, renderer) for t in headers if t.figure is fig and t.get_visible() and t.get_text().strip()
+    ]
+    for text in labels:
+        side = text._css_section_end
+        box = text.get_window_extent(renderer)
+        frame = text.axes.bbox if text.axes is not None else fig.bbox
+        shift = 0.0
+        for _attempt in range(len(segments) + 1):
+            moved = box.translated(shift, 0.0)
+            hits = [
+                span
+                for span in (_segment_x_span(seg, moved.y0 - gap, moved.y1 + gap) for seg in segments)
+                if span is not None and span[1] > moved.x0 - gap and span[0] < moved.x1 + gap
+            ]
+            if not hits:
+                break
+            if side == "start":
+                shift += max(span[1] for span in hits) + gap - moved.x0
+            else:
+                shift += min(span[0] for span in hits) - gap - moved.x1
+        else:  # pragma: no cover - defensive (leaders everywhere)
+            shift = None
+        if not shift:
+            continue
+        moved = box.translated(shift, 0.0) if shift is not None else None
+        middle = 0.5 * (frame.x0 + frame.x1)
+        blocked = (
+            moved is None
+            or (side == "start" and moved.x1 > middle)
+            or (side == "end" and moved.x0 < middle)
+            or any(moved.overlaps(other) for other in header_boxes)
+        )
+        if blocked:
+            text.set_bbox({"facecolor": "white", "edgecolor": "none", "pad": 1.0})
+            text.set_zorder(max(text.get_zorder(), 11))
+            continue
+        text.set_transform(offset_copy(text._css_section_end_base, fig=fig, x=shift / px_per_pt, y=0.0, units="points"))
 
 
 def _stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robust: bool = False) -> None:

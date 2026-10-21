@@ -1486,7 +1486,7 @@ class ConsultingLayoutMixin:
         end_transform = offset_copy(header_transform, fig=ax.figure, x=-2.0, y=0.0, units="points")
         if start_primary or start_secondary:
             start_lines = [line for line in (start_primary, start_secondary) if line]
-            ax.text(
+            start_label = ax.text(
                 0.0,
                 label_y,
                 "\n".join(start_lines),
@@ -1500,9 +1500,11 @@ class ConsultingLayoutMixin:
                 zorder=10,
                 linespacing=0.9,
             )
+            # The header pass steps it clear of the hole-header leaders.
+            start_label._css_section_end = "start"
         if end_primary or end_secondary:
             end_lines = [line for line in (end_primary, end_secondary) if line]
-            ax.text(
+            end_label = ax.text(
                 1.0,
                 label_y,
                 "\n".join(end_lines),
@@ -1516,6 +1518,7 @@ class ConsultingLayoutMixin:
                 zorder=10,
                 linespacing=0.9,
             )
+            end_label._css_section_end = "end"
 
     @staticmethod
     def _requested_map_scale(title_block: ConsultingTitleBlock | None) -> float | None:

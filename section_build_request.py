@@ -98,6 +98,10 @@ class SectionBuildRequest(BaseModel, frozen=True):
     screen_intervals: tuple[ScreenInterval, ...] = ()
     vertical_gradients: tuple[VerticalGradient, ...] = ()
     export_framing: ExportFramingConfig | None = None
+    # QA text only (plan-view flow from a planar head fit over every workbook
+    # well, see ``pipeline.section_groundwater_flow_notes``) — never geometry,
+    # so it stays out of ``geometry_cache_payload``.
+    groundwater_flow_notes: tuple[str, ...] = ()
 
     @field_validator("chemistry_thresholds", mode="before")
     @classmethod

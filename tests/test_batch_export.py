@@ -374,3 +374,30 @@ def test_batch_names_match_across_styles_and_keep_trailing_title_text() -> None:
         assert batch_cover_title(request, labels) == "Cross Sections A-A', B-B', C-C' WITH CHLORIDE"
     site = SimpleNamespace(section_title="Site X A-A' chloride", consulting_title_block=None)
     assert batch_cover_title(site, labels) == "Site X — Cross Sections A-A', B-B', C-C' chloride"
+
+
+def test_batch_sections_carry_the_workbook_wide_flow_note() -> None:
+    """Each batch section gets the plan-view flow note fitted on every well."""
+    from batch_export import BatchTransectSpec, prepare_batch_section_request
+    from models import Collar, Lithology, ParseResult, WaterLevel
+
+    collars = [
+        Collar(hole_id=h, easting=e, northing=n, elevation=100.0, total_depth=20.0)
+        for h, e, n in (("A", 0.0, 0.0), ("B", 100.0, 0.0), ("C", 0.0, 100.0), ("D", 100.0, 100.0))
+    ]
+    lithologies = [
+        Lithology(hole_id=c.hole_id, from_depth=0.0, to_depth=20.0, lithology_code="SA")
+        for c in collars
+    ]
+    # Head falls toward the east: flow toward 90°.
+    water = [
+        WaterLevel(hole_id=c.hole_id, depth=2.0 + 0.01 * c.easting) for c in collars
+    ]
+    parse_result = ParseResult(
+        collars=collars, lithologies=lithologies, water_levels=water, errors=[]
+    )
+    base = SectionBuildRequest(transect_points=((0.0, 0.0), (100.0, 0.0)))
+    spec = BatchTransectSpec(label="A-B", hole_ids=("A", "B"))
+    _, request = prepare_batch_section_request(parse_result, base, spec)
+    assert request.groundwater_flow_notes
+    assert "4 wells" in " ".join(request.groundwater_flow_notes)

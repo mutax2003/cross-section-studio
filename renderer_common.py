@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -18,7 +18,8 @@ from shapely.geometry import Polygon as ShapelyPolygon
 
 import hatch_patterns
 from constants import HATCH_LINE_COLOR, POLYGON_EDGE_COLOR, get_lithology_style
-from models import ScreenInterval
+from hydro_metrics import water_depth_below_ground_m, water_head_masl
+from models import ScreenInterval, WaterLevel
 from render_theme import (
     CONSULTING_COLUMN_FILL,
     PINCH_OUT_ALPHA,
@@ -1244,8 +1245,12 @@ def unlogged_intervals(
     projected_df: pd.DataFrame,
     collar_depths: dict[str, float] | None = None,
     collar_lookup: dict[str, float] | None = None,
+    along_hole_tvd: Mapping[str, object] | None = None,
 ) -> pd.DataFrame:
     """Return the unlogged depth ranges of each hole as elevation intervals.
+
+    ``along_hole_tvd`` (surveyed holes) converts the total depth to true
+    vertical depth; other holes use collar − total depth.
 
     Covers gaps between logged rows, a logged top below the collar, and a
     total depth (``collar_depths``) below the deepest logged row. Columns:
@@ -1285,7 +1290,9 @@ def unlogged_intervals(
             reached = min(reached, float(bottom))
         td = collar_depths.get(hole)
         if td is not None and np.isfinite(td):
-            td_elevation = collar - float(td)
+            td_elevation = float(
+                hole_elevations_at_depths(along_hole_tvd, hole, [float(td)], collar)[0]
+            )
             if reached - td_elevation > tol:
                 rows.append((hole, x_profile, collar, reached, td_elevation))
     return pd.DataFrame(rows, columns=columns)
@@ -2155,8 +2162,85 @@ def water_status_legend_label(parts: Sequence[str], *, upper: bool = False) -> s
     return label.upper() if upper else label
 
 
+def _along_hole_tvd_table(along_hole_tvd: Mapping[str, object] | None, hole_id: str):
+    if not along_hole_tvd:
+        return None
+    return along_hole_tvd.get(str(hole_id))
+
+
+def hole_elevations_at_depths(
+    along_hole_tvd: Mapping[str, object] | None,
+    hole_id: str,
+    depths: Sequence[float] | np.ndarray,
+    collar_rl: float | np.ndarray,
+) -> np.ndarray:
+    """Elevations (masl) of measured depths down ``hole_id``.
+
+    Surveyed holes use their MD→TVD table (``projection.AlongHoleTVD``);
+    vertical holes keep the exact legacy ``collar − depth``.
+    """
+    depth_arr = np.asarray(depths, dtype=float)
+    table = _along_hole_tvd_table(along_hole_tvd, hole_id)
+    if table is None:
+        return collar_rl - depth_arr
+    return collar_rl - table.tvd_many(depth_arr)
+
+
 class RendererGeometryMixin:
     """Well extents, profile lookup, and lithology style resolution."""
+
+    def _hole_elevations_at_depths(
+        self,
+        hole_id: str,
+        depths: Sequence[float] | np.ndarray,
+        collar_rl: float | np.ndarray,
+    ) -> np.ndarray:
+        return hole_elevations_at_depths(
+            getattr(self, "along_hole_tvd", None), hole_id, depths, collar_rl
+        )
+
+    def _hole_elevation_at_depth(self, hole_id: str, depth: float, collar_rl: float) -> float:
+        table = _along_hole_tvd_table(getattr(self, "along_hole_tvd", None), hole_id)
+        if table is None:
+            return collar_rl - depth
+        return float(collar_rl) - table.tvd_at(float(depth))
+
+    def _md_to_elevation(self, hole_id: str, collar_rl: float) -> Callable[[float], float] | None:
+        """``md → elevation`` for a surveyed hole, ``None`` for a vertical one."""
+        table = _along_hole_tvd_table(getattr(self, "along_hole_tvd", None), hole_id)
+        if table is None:
+            return None
+        collar = float(collar_rl)
+        return lambda md: collar - table.tvd_at(float(md))
+
+    def _md_to_elevation_by_hole(
+        self, collar_rl_by_hole: Mapping[str, float]
+    ) -> dict[str, Callable[[float], float]]:
+        return {
+            hole_id: fn
+            for hole_id, collar_rl in collar_rl_by_hole.items()
+            if (fn := self._md_to_elevation(hole_id, collar_rl)) is not None
+        }
+
+    def _water_head(self, level: WaterLevel, collar_rl: float) -> float:
+        """Head (masl) via ``hydro_metrics.water_head_masl`` with stick-up and survey."""
+        stick_ups = getattr(self, "stick_up_by_hole", None) or {}
+        return water_head_masl(
+            level,
+            collar_rl,
+            stick_up_m=stick_ups.get(str(level.hole_id)),
+            md_to_elevation=self._md_to_elevation(level.hole_id, collar_rl),
+        )
+
+    def _water_depth_below_ground(self, level: WaterLevel, collar_rl: float) -> float:
+        """Vertical depth of the head below ground (the "mbgs" label value)."""
+        stick_ups = getattr(self, "stick_up_by_hole", None) or {}
+        return water_depth_below_ground_m(
+            level,
+            collar_rl,
+            stick_up_m=stick_ups.get(str(level.hole_id)),
+            md_to_elevation=self._md_to_elevation(level.hole_id, collar_rl),
+        )
 
     def _collar_values(self, hole_ids: pd.Series, fallback: pd.Series, collar_lookup: dict[str, float]) -> np.ndarray:
         mapped = hole_ids.astype(str).map(collar_lookup)
@@ -2211,7 +2295,15 @@ class RendererGeometryMixin:
             dtype=float,
             count=len(hole_ids),
         )
-        bottom_elev = np.where(np.isfinite(td_values), collars - td_values, row_bottoms)
+        td_elev = collars - td_values
+        tvd_tables = getattr(self, "along_hole_tvd", None) or {}
+        for index, hole_id in enumerate(hole_ids):
+            # Surveyed holes end at the true vertical depth of TD.
+            if str(hole_id) in tvd_tables and np.isfinite(td_values[index]):
+                td_elev[index] = self._hole_elevation_at_depth(
+                    str(hole_id), float(td_values[index]), float(collars[index])
+                )
+        bottom_elev = np.where(np.isfinite(td_values), td_elev, row_bottoms)
         stick_ups = getattr(self, "stick_up_by_hole", None) or {}
         top_elev = np.asarray(
             [
@@ -2414,7 +2506,12 @@ class RendererGeometryMixin:
         With ``draw=False`` only the legend flag is set (consulting columns are
         already grey underneath the logged intervals).
         """
-        gaps = unlogged_intervals(projected_df, collar_depths, collar_lookup)
+        gaps = unlogged_intervals(
+            projected_df,
+            collar_depths,
+            collar_lookup,
+            getattr(self, "along_hole_tvd", None),
+        )
         found = not gaps.empty
         self._has_unlogged_intervals = bool(getattr(self, "_has_unlogged_intervals", False) or found)
         if not found or not draw:
@@ -2456,8 +2553,8 @@ class RendererGeometryMixin:
         width = track_half * 1.84
         x_profiles: list[float] = []
         collar_rls: list[float] = []
-        from_depths: list[float] = []
-        to_depths: list[float] = []
+        top_elevs: list[float] = []
+        bottom_elevs: list[float] = []
         for interval in screen_intervals:
             profile = profile_lookup.get(interval.hole_id)
             if profile is None:
@@ -2465,16 +2562,19 @@ class RendererGeometryMixin:
             x_profile, collar_rl = profile
             x_profiles.append(x_profile)
             collar_rls.append(collar_rl)
-            from_depths.append(interval.from_depth)
-            to_depths.append(interval.to_depth)
+            # Screen depths are along the hole: surveyed holes use TVD.
+            top_elevs.append(
+                self._hole_elevation_at_depth(interval.hole_id, interval.from_depth, collar_rl)
+            )
+            bottom_elevs.append(
+                self._hole_elevation_at_depth(interval.hole_id, interval.to_depth, collar_rl)
+            )
         if not x_profiles:
             return
         x_arr = np.asarray(x_profiles, dtype=float)
         collar_arr = np.asarray(collar_rls, dtype=float)
-        from_arr = np.asarray(from_depths, dtype=float)
-        to_arr = np.asarray(to_depths, dtype=float)
-        top_ys = self._plot_y_values(collar_arr - from_arr, collar_arr)
-        bottom_ys = self._plot_y_values(collar_arr - to_arr, collar_arr)
+        top_ys = self._plot_y_values(np.asarray(top_elevs, dtype=float), collar_arr)
+        bottom_ys = self._plot_y_values(np.asarray(bottom_elevs, dtype=float), collar_arr)
         heights = np.abs(top_ys - bottom_ys)
         mask = heights > 1e-9
         if not np.any(mask):

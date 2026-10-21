@@ -6,8 +6,9 @@ import io
 import logging
 import os
 import textwrap
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import matplotlib as mpl
 
@@ -99,6 +100,9 @@ from renderer_consulting import ConsultingLayoutMixin
 from renderer_section_sheet import SectionSheetLayoutMixin
 from renderer_water import RendererWaterMixin, WaterSeriesLegendEntry, resolve_header_collisions
 from stratigraphy import GeologicalPolygon, PolygonOverlap
+
+if TYPE_CHECKING:
+    from projection import AlongHoleTVD
 
 # Salted element ids (with no <dc:date>) make identical inputs give identical SVG.
 mpl.rcParams["svg.hashsalt"] = "cross-section-studio"
@@ -232,6 +236,7 @@ class CrossSectionRenderer(
         screen_intervals: Sequence[ScreenInterval] = (),
         vertical_gradients: Sequence[VerticalGradient] = (),
         stick_up_by_hole: dict[str, float] | None = None,
+        along_hole_tvd: Mapping[str, AlongHoleTVD] | None = None,
         export_framing: ExportFramingConfig | None = None,
     ) -> None:
         # ``None`` = auto (fit page): data are stored at true scale (factor 1)
@@ -269,6 +274,8 @@ class CrossSectionRenderer(
         self.screen_intervals = tuple(screen_intervals)
         self.vertical_gradients = tuple(vertical_gradients)
         self.stick_up_by_hole = dict(stick_up_by_hole or {})
+        # Surveyed holes: measured depth → TVD (from pipeline geometry).
+        self.along_hole_tvd = dict(along_hole_tvd or {})
         self.export_framing = export_framing
         self.water_series_legend: list[WaterSeriesLegendEntry] = []
         self.parameter_series_legend: list[ParameterLegendEntry] = []
@@ -717,7 +724,7 @@ class CrossSectionRenderer(
     ) -> np.ndarray:
         collar_rl = float(profile_lookup[hole_id][1])
         depth_arr = np.asarray(depths, dtype=float)
-        elevations = collar_rl - depth_arr
+        elevations = self._hole_elevations_at_depths(hole_id, depth_arr, collar_rl)
         collars = np.full(depth_arr.shape, collar_rl, dtype=float)
         return self._plot_y_values(elevations, collars)
 
@@ -1050,7 +1057,16 @@ class CrossSectionRenderer(
             collar_lookup,
         )
         td_numeric = td_values[mask].to_numpy(dtype=float)
-        ys = self._plot_y_values(collars - td_numeric, collars)
+        td_elev = collars - td_numeric
+        tvd_tables = getattr(self, "along_hole_tvd", None) or {}
+        if tvd_tables:
+            # End-of-log bar at the true vertical depth of a surveyed hole's TD.
+            for index, hole_id in enumerate(hole_ids[mask]):
+                if hole_id in tvd_tables:
+                    td_elev[index] = self._hole_elevation_at_depth(
+                        hole_id, float(td_numeric[index]), float(collars[index])
+                    )
+        ys = self._plot_y_values(td_elev, collars)
         width = track_half_width * 1.15
         segments = np.stack(
             [
@@ -2037,6 +2053,7 @@ class CrossSectionRenderer(
             qa_lines = (
                 tuple(qa_lines)
                 + tuple(getattr(self, "chemistry_label_notes", None) or ())
+                + tuple(getattr(self, "chemistry_rdl_notes", None) or ())
                 + tuple(self.map_scale_notes(figure))
                 + tuple(self.header_overlap_notes(figure))
                 + tuple(self.raster_notes)

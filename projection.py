@@ -612,6 +612,76 @@ def interpolate_survey_at_depth(
     return float(easting[0]), float(northing[0]), float(tvd[0])
 
 
+@dataclass(frozen=True)
+class AlongHoleTVD:
+    """Sampled measured depth → true vertical depth (m below collar) for one hole.
+
+    Built once from the minimum-curvature survey (the same stations the
+    lithology projection uses) and stored as plain float tuples so section
+    geometry stays picklable / cache-safe. Elevation of a measured depth is
+    ``collar_rl − tvd_at(md)``. Depths beyond the last station extrapolate
+    along the last survey segment; depths above the collar (md < 0) are
+    treated as vertical.
+    """
+
+    measured_depths: tuple[float, ...]
+    true_vertical_depths: tuple[float, ...]
+
+    def tvd_many(self, depths: Sequence[float] | np.ndarray) -> np.ndarray:
+        md = np.asarray(self.measured_depths, dtype=float)
+        tvd = np.asarray(self.true_vertical_depths, dtype=float)
+        depth_array = np.asarray(depths, dtype=float)
+        if md.size < 2:
+            return depth_array.copy()
+        result = np.interp(depth_array, md, tvd)
+        span = md[-1] - md[-2]
+        if span > 0.0:
+            slope = (tvd[-1] - tvd[-2]) / span
+            beyond = depth_array > md[-1]
+            result = np.where(beyond, tvd[-1] + (depth_array - md[-1]) * slope, result)
+        above = depth_array < md[0]
+        return np.where(above, tvd[0] + (depth_array - md[0]), result)
+
+    def tvd_at(self, depth: float) -> float:
+        return float(self.tvd_many(np.asarray([depth], dtype=float))[0])
+
+    def elevation_at(self, collar_rl: float, depth: float) -> float:
+        """Elevation (masl) of measured depth ``depth`` for a collar at ``collar_rl``."""
+        return float(collar_rl) - self.tvd_at(depth)
+
+
+def build_along_hole_tvd(
+    collars: Sequence[Collar],
+    deviation_readings: Sequence[DeviationReading] | None,
+    hole_ids: Sequence[str] | frozenset[str] | set[str] | None = None,
+) -> dict[str, AlongHoleTVD]:
+    """Per-hole MD→TVD tables for surveyed holes (same rule as ``project_boreholes``).
+
+    Holes without deviation readings are omitted: callers treat them as
+    vertical (elevation = collar − depth, bit-for-bit the legacy formula).
+    """
+    if not deviation_readings:
+        return {}
+    wanted = set(hole_ids) if hole_ids is not None else None
+    collar_by_id = {collar.hole_id: collar for collar in collars}
+    readings_by_hole: dict[str, list[DeviationReading]] = {}
+    for reading in deviation_readings:
+        readings_by_hole.setdefault(reading.hole_id, []).append(reading)
+    tables: dict[str, AlongHoleTVD] = {}
+    for hole_id, readings in readings_by_hole.items():
+        if wanted is not None and hole_id not in wanted:
+            continue
+        collar = collar_by_id.get(hole_id)
+        if collar is None or not readings:
+            continue
+        stations = build_minimum_curvature_survey(collar, readings)
+        tables[hole_id] = AlongHoleTVD(
+            measured_depths=tuple(float(station.measured_depth) for station in stations),
+            true_vertical_depths=tuple(float(station.true_vertical_depth) for station in stations),
+        )
+    return tables
+
+
 def project_boreholes(
     collars: Sequence[Collar],
     lithologies: Sequence[Lithology],

@@ -725,7 +725,8 @@ def test_water_sheet_rejects_depth_and_masl_together(tmp_path: Path) -> None:
     assert any("not both" in error for error in result.errors)
 
 
-def test_water_sheet_rejects_artesian_elevation_masl(tmp_path: Path) -> None:
+def test_water_sheet_accepts_artesian_elevation_masl(tmp_path: Path) -> None:
+    """A head above the collar is flowing-artesian information, not a row error."""
     workbook = tmp_path / "water_artesian.xlsx"
     collars = [
         {
@@ -750,9 +751,11 @@ def test_water_sheet_rejects_artesian_elevation_masl(tmp_path: Path) -> None:
         pd.DataFrame(lithology).to_excel(writer, sheet_name="Lithology", index=False)
         pd.DataFrame(water).to_excel(writer, sheet_name="Water", index=False)
     result = DataParser().parse_file(workbook)
-    assert len(result.water_levels) == 0
-    assert any("artesian" in error.lower() or "above-collar" in error.lower() for error in result.errors)
-    assert any("Water row" in error for error in result.errors)
+    assert not any("Water row" in error for error in result.errors)
+    assert len(result.water_levels) == 1
+    level = result.water_levels[0]
+    assert level.elevation_masl == 101.5
+    assert level.depth == 0.0
 
 
 def test_environmental_sheet_accepts_depth_column(tmp_path: Path) -> None:

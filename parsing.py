@@ -173,8 +173,134 @@ def _row_where(sheet: str, row_num: int, hole_id: object) -> str:
     return where
 
 
-# Lab results reported as text: "<10", "< 0.5", ">1000", "ND", "n.d.", "BDL".
+# Lab results reported as text. Non-detects ("<10", "ND (0.5)") are accepted by
+# _apply_detection below; what still reaches the row error is ">1000"-style text.
 _NON_DETECT_RE = re.compile(r"^\s*([<>]\s*[\d.]+|n\.?\s*d\.?|bdl|not detected)\s*$", re.IGNORECASE)
+
+# Non-detect text the Environmental ``value`` accepts: a "<" or ND-style word,
+# optional limit words, then the reporting detection limit (RDL) and an
+# optional unit: "<5", "< 5", "<RDL 5", "<RDL=0.5", "ND (0.5)", "ND<0.5",
+# "n.d. 0.5", "BDL 2", "<0.5 mg/L".
+_ND_PREFIX_RE = re.compile(
+    r"^\s*(?:<|n\.?\s*d\.?(?![a-z])|bdl(?![a-z])|not\s+detected(?![a-z])"
+    r"|below\s+detection(?:\s+limit)?(?![a-z]))",
+    re.IGNORECASE,
+)
+_ND_LIMIT_WORDS_RE = re.compile(
+    r"^(?:[\s<(=:,]|(?:rdl|mdl|edl|dl|lod|loq|rl|pql)(?![a-z]))*", re.IGNORECASE
+)
+_ND_NUMBER_RE = re.compile(r"^(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?", re.IGNORECASE)
+_ND_UNIT_RE = re.compile(r"^[a-z\u00b5\u03bc%/][a-z0-9\u00b5\u03bc%/. ]{0,14}$", re.IGNORECASE)
+
+# Optional ``qualifier`` (or ``detected``) column: lab-style flags.
+_QUALIFIER_NON_DETECT = frozenset(
+    {"<", "nd", "n.d.", "n.d", "u", "bdl", "not detected", "non-detect", "<rdl", "<dl",
+     "<mdl", "no", "n", "false", "0"}
+)
+_QUALIFIER_DETECTED = frozenset({"=", "detected", "yes", "y", "true", "1", "d"})
+
+
+def _non_detect_value(raw: object) -> tuple[float, str] | None:
+    """``(detection limit, unit text)`` for non-detect text such as ``"<5"``.
+
+    ``None`` when *raw* is not non-detect text (numbers, ``">1000"``, junk);
+    ``ValueError`` for a non-detect without a usable limit (bare ``"ND"``).
+    """
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    prefix = _ND_PREFIX_RE.match(text)
+    if not prefix:
+        return None
+    rest = text[prefix.end():]
+    rest = rest[_ND_LIMIT_WORDS_RE.match(rest).end():]  # type: ignore[union-attr]
+    shown = _cell_text(text)
+    if not rest.strip():
+        raise ValueError(
+            f"value = '{shown}' — a non-detect needs its detection limit: enter it as "
+            "'<0.5' (or 0.5 in value with < in the qualifier column)."
+        )
+    number = _ND_NUMBER_RE.match(rest)
+    if not number:
+        raise ValueError(
+            f"value = '{shown}' — write a non-detect as '<' and the detection limit, "
+            "e.g. <0.5 (use a dot for decimals)."
+        )
+    tail = rest[number.end():].strip().rstrip(")").strip()
+    if tail and not _ND_UNIT_RE.match(tail):
+        raise ValueError(
+            f"value = '{shown}' — write a non-detect as '<' and the detection limit, "
+            "e.g. <0.5 (use a dot for decimals)."
+        )
+    return float(number.group(0)), tail
+
+
+def _detect_flag(raw: object, column: str) -> bool | None:
+    """``True`` detected / ``False`` non-detect from a qualifier cell; ``None`` if blank."""
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return None
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        text = f"{raw:g}"
+    else:
+        text = str(raw).strip().casefold()
+    if not text:
+        return None
+    compact = " ".join(text.split())
+    if compact in _QUALIFIER_NON_DETECT or compact.replace(" ", "") in _QUALIFIER_NON_DETECT:
+        return False
+    if compact in _QUALIFIER_DETECTED:
+        return True
+    raise ValueError(
+        f"{column} = '{_cell_text(raw)}' — use < (or ND) for a non-detect, or leave it "
+        "blank for a measured value."
+    )
+
+
+def _apply_detection(payload: dict) -> None:
+    """Fold non-detect text in ``value`` and the qualifier column into ``value`` + ``detected``.
+
+    ``value`` keeps the detection limit as a number; ``detected`` is False for a
+    non-detect. A qualifier that contradicts the value text is an error, as is a
+    unit in the value text that disagrees with the ``unit`` column.
+    """
+    flag: bool | None = None
+    for column in ("qualifier", "detected"):
+        if column not in payload:
+            continue
+        column_flag = _detect_flag(payload.pop(column), column)
+        if column_flag is None:
+            continue
+        if flag is not None and flag != column_flag:
+            raise ValueError(
+                "qualifier and detected disagree — fill one of them (< or ND for a non-detect)."
+            )
+        flag = column_flag
+    non_detect = _non_detect_value(payload.get("value"))
+    if non_detect is None:
+        payload["detected"] = True if flag is None else flag
+        return
+    shown = _cell_text(payload.get("value"))
+    if flag is True:
+        raise ValueError(
+            f"value = '{shown}' is a non-detect but the qualifier says detected — "
+            "clear the qualifier or enter the measured number."
+        )
+    limit, unit_text = non_detect
+    payload["value"] = limit
+    payload["detected"] = False
+    if unit_text:
+        from chemistry_qc import unit_key
+
+        unit = str(payload.get("unit") or "").strip()
+        if not unit:
+            payload["unit"] = unit_text
+        elif unit_key(unit) != unit_key(unit_text):
+            raise ValueError(
+                f"value = '{shown}' is in {unit_text} but unit = '{unit}' — use one unit "
+                "(values are not converted)."
+            )
 
 
 def _row_error(sheet: str, row_num: int, exc: Exception, *, hole_id: object = None) -> str:
@@ -198,6 +324,10 @@ def _row_error(sheet: str, row_num: int, exc: Exception, *, hole_id: object = No
             f"{where}, label_color = 'blue' — blue is reserved for groundwater; "
             "use green, red, black or orange."
         )
+
+    if message.startswith(("value = ", "qualifier = ", "detected = ")):
+        # Non-detect / qualifier messages already name the cell and the fix.
+        return f"{where}, {message}"
 
     whole_number = "must be an integer" in lowered or "whole number" in lowered
     if field and (
@@ -796,12 +926,10 @@ class DataParser:
                     collar = collar_by_id.get(hole_id)
                     if collar is None:
                         raise ValueError(f"unknown hole_id '{hole_id}' for elevation_masl")
-                    if elevation_masl > collar.elevation:
-                        raise ValueError(
-                            f"elevation_masl {elevation_masl} is above collar elevation "
-                            f"{collar.elevation} (artesian / above-collar water level)"
-                        )
-                    depth = collar.elevation - elevation_masl
+                    # A head above the collar is a (flowing) artesian condition,
+                    # not an error: the head keeps its elevation and Validate
+                    # reports it as information. depth stays non-negative.
+                    depth = max(0.0, collar.elevation - elevation_masl)
                 elif has_depth:
                     depth = float(depth_raw)
                 else:
@@ -811,7 +939,15 @@ class DataParser:
                     "depth": depth,
                     "elevation_masl": elevation_masl,
                 }
-                for col in ("series_id", "series_label", "color", "marker", "connect_group", "status"):
+                for col in (
+                    "series_id",
+                    "series_label",
+                    "color",
+                    "marker",
+                    "connect_group",
+                    "status",
+                    "depth_reference",
+                ):
                     if hasattr(row, col):
                         payload[col] = getattr(row, col)
                 level = WaterLevel.model_validate(payload)
@@ -996,6 +1132,9 @@ class DataParser:
                     raise ValueError("value is required")
                 if payload.get("value_label") in ("", None) or pd.isna(payload.get("value_label")):
                     payload["value_label"] = ""
+                # "<5" / "ND (5)" in value, or a qualifier column: value keeps the
+                # detection limit, detected=False.
+                _apply_detection(payload)
                 reading = EnvironmentalReading.model_validate(payload)
             except Exception as exc:
                 errors.append(_row_error("Environmental", row_num, exc, hole_id=getattr(row, "hole_id", None)))

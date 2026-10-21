@@ -17,7 +17,6 @@ from matplotlib.transforms import Bbox, offset_copy
 from hydro_metrics import (
     format_gradient_label,
     horizontal_gradients_along_profile,
-    water_head_masl,
     water_status,
 )
 from models import WaterLevel
@@ -1468,19 +1467,124 @@ def _connect_subgroups(
     return subgroups
 
 
+# Plot-unit tolerance for "above the ground line" (heads equal to the collar
+# RL are on the ground, not above it).
+_GROUND_CLIP_TOL = 1e-6
+
+
+def _ground_profile(
+    profile_lookup: dict[str, tuple[float, float]], plot_y_values
+) -> tuple[np.ndarray, np.ndarray]:
+    """Ground polyline (plot coords) through every collar, x ascending.
+
+    Coincident collars (nested wells) keep the highest RL, so a line is never
+    clipped below a collar it passes.
+    """
+    by_x: dict[float, float] = {}
+    for x, rl in profile_lookup.values():
+        by_x[float(x)] = max(float(rl), by_x.get(float(x), float("-inf")))
+    xs = np.asarray(sorted(by_x), dtype=float)
+    rls = np.asarray([by_x[x] for x in xs], dtype=float)
+    return xs, np.asarray(plot_y_values(rls, rls), dtype=float)
+
+
+def clip_water_line_to_ground(
+    anchor_x: np.ndarray,
+    anchor_y: np.ndarray,
+    ground_x: np.ndarray,
+    ground_y: np.ndarray,
+) -> tuple[np.ndarray | None, list[int], list[int]]:
+    """Clip a straight-segment water line to the ground polyline.
+
+    ``anchor_*`` are the heads joined by straight segments (x ascending).
+    Between two heads the line is replaced by ``min(line, ground)`` — with the
+    ground vertices and line/ground crossings inserted so the clip is exact —
+    unless both heads are above ground (an artesian zone: left as drawn).
+
+    Returns ``(xy, clipped_spans, artesian_spans)``: ``xy`` is the clipped
+    ``(N, 2)`` polyline or ``None`` when nothing was clipped (draw the
+    original, unchanged); spans are indices ``i`` of anchor pairs ``(i, i+1)``
+    where the straight line rose above ground.
+    """
+    anchor_x = np.asarray(anchor_x, dtype=float)
+    anchor_y = np.asarray(anchor_y, dtype=float)
+    if anchor_x.size < 2 or ground_x.size < 2:
+        return None, [], []
+    ground_at_anchor = np.interp(anchor_x, ground_x, ground_y)
+    above_anchor = anchor_y > ground_at_anchor + _GROUND_CLIP_TOL
+    clipped: list[int] = []
+    artesian: list[int] = []
+    pieces: list[np.ndarray] = []
+    for index in range(anchor_x.size - 1):
+        x0, x1 = float(anchor_x[index]), float(anchor_x[index + 1])
+        y0, y1 = float(anchor_y[index]), float(anchor_y[index + 1])
+        straight = np.asarray([[x0, y0], [x1, y1]], dtype=float)
+        if x1 - x0 <= 1e-12:
+            pieces.append(straight)
+            continue
+        inner = ground_x[(ground_x > x0) & (ground_x < x1)]
+        xs = np.concatenate(([x0], inner, [x1]))
+        line = y0 + (y1 - y0) * (xs - x0) / (x1 - x0)
+        diff = line - np.interp(xs, ground_x, ground_y)
+        if not np.any(diff > _GROUND_CLIP_TOL):
+            pieces.append(straight)
+            continue
+        if above_anchor[index] and above_anchor[index + 1]:
+            artesian.append(index)
+            pieces.append(straight)
+            continue
+        clipped.append(index)
+        cross = np.flatnonzero(diff[:-1] * diff[1:] < 0.0)
+        if cross.size:
+            share = diff[cross] / (diff[cross] - diff[cross + 1])
+            xs = np.sort(np.concatenate((xs, xs[cross] + (xs[cross + 1] - xs[cross]) * share)))
+            line = y0 + (y1 - y0) * (xs - x0) / (x1 - x0)
+        ys = np.minimum(line, np.interp(xs, ground_x, ground_y))
+        pieces.append(np.column_stack((xs, ys)))
+    if not clipped:
+        return None, clipped, artesian
+    joined = [pieces[0]] + [piece[1:] if np.allclose(piece[0], prev[-1]) else piece
+                            for prev, piece in zip(pieces, pieces[1:], strict=False)]
+    return np.vstack(joined), clipped, artesian
+
+
 class RendererWaterMixin:
     """Water-table markers, polylines, and compact GW legend."""
+
+    def _note_water_line_clip(
+        self,
+        line_name: str,
+        clipped_pairs: Sequence[tuple[str, str]],
+        artesian_pairs: Sequence[tuple[str, str]],
+    ) -> None:
+        """Section QA notes for water-line spans clipped to / left above the ground."""
+        notes = getattr(self, "water_line_notes", None)
+        if notes is None:
+            notes = self.water_line_notes = []
+        series = "" if line_name == "default" else f" ({line_name})"
+        for left_id, right_id in clipped_pairs:
+            text = (
+                f"Groundwater line {left_id}–{right_id}{series}: clipped to the ground surface "
+                "where the straight line between the heads rose above ground"
+            )
+            if text not in notes:
+                notes.append(text)
+        for left_id, right_id in artesian_pairs:
+            text = (
+                f"Groundwater line {left_id}–{right_id}{series}: drawn above the ground "
+                "surface — both heads are above ground (flowing artesian zone)"
+            )
+            if text not in notes:
+                notes.append(text)
 
     def _water_elevation_parts(self, level: WaterLevel, collar_rl: float) -> tuple[float, str]:
         """``(value, unit suffix)`` of a water number: RL (masl) in elevation
         mode, depth (mbgs) in relative mode; consulting sheets print no unit."""
         if self.profile.y_axis_mode == "depth_below_collar":
-            return float(level.depth), "mbgs"
-        water_rl = (
-            float(level.elevation_masl)
-            if level.elevation_masl is not None
-            else collar_rl - level.depth
-        )
+            # Vertical depth below ground: btoc readings lose the stick-up,
+            # inclined holes report true vertical depth.
+            return self._water_depth_below_ground(level, collar_rl), "mbgs"
+        water_rl = self._water_head(level, collar_rl)
         if self.profile.layout == "consulting_section":
             return float(water_rl), ""
         return float(water_rl), "m"
@@ -2250,6 +2354,8 @@ class RendererWaterMixin:
         water_color: str | None = None,
         profile_lookup: dict[str, tuple[float, float]] | None = None,
     ) -> None:
+        # Section notes on the drawn water lines (ground clipping / artesian).
+        self.water_line_notes = []
         if hole_summary.empty:
             return
         self._water_status_notes = {}
@@ -2266,6 +2372,14 @@ class RendererWaterMixin:
             _register_ground_line(
                 ax, [x for x, _rl in ground], self._plot_y_values(ground_rl, ground_rl)
             )
+        # Straight lines between heads may rise above a topographic low between
+        # wells (creek valley): they are clipped to the ground in elevation
+        # mode (depth mode has no common ground line to clip against).
+        clip_ground = (
+            _ground_profile(profile_lookup, self._plot_y_values)
+            if len(profile_lookup) >= 2 and self.profile.y_axis_mode != "depth_below_collar"
+            else None
+        )
         series_groups = _group_water_levels(water_levels, profile_lookup)
         holes_with_any_water = {
             level.hole_id for levels in series_groups.values() for level in levels
@@ -2280,7 +2394,17 @@ class RendererWaterMixin:
             if dry_lookup:
                 dry_x = np.fromiter((p[0] for p in dry_lookup.values()), dtype=float, count=len(dry_lookup))
                 dry_collars = np.fromiter((p[1] for p in dry_lookup.values()), dtype=float, count=len(dry_lookup))
-                dry_y = self._plot_y_values(dry_collars - 1.0, dry_collars)
+                dry_elev = dry_collars - 1.0
+                if getattr(self, "along_hole_tvd", None):
+                    # Note anchors 1 m down the hole (true vertical on surveyed holes).
+                    dry_elev = np.asarray(
+                        [
+                            self._hole_elevation_at_depth(str(hole_id), 1.0, float(collar))
+                            for hole_id, collar in zip(dry_lookup.keys(), dry_collars, strict=True)
+                        ],
+                        dtype=float,
+                    )
+                dry_y = self._plot_y_values(dry_elev, dry_collars)
                 for hole_id, x_profile, y in zip(dry_lookup.keys(), dry_x, dry_y, strict=True):
                     fully_dry_nm_drawn.add(str(hole_id))
                     self._water_status_note(ax, str(hole_id), (float(x_profile), float(y)), "NM")
@@ -2342,7 +2466,7 @@ class RendererWaterMixin:
                     if profile is None:
                         continue
                     x_profile, collar_rl = profile
-                    y = self._plot_y(collar_rl - 1.0, collar_rl)
+                    y = self._plot_y(self._hole_elevation_at_depth(hole_id, 1.0, collar_rl), collar_rl)
                     self._water_status_note(ax, hole_id, (float(x_profile), float(y)), "NM")
             # Draw each connect_group nest separately so shallow/deep do not join.
             for group_id, group_levels in _connect_subgroups(levels).items():
@@ -2361,13 +2485,15 @@ class RendererWaterMixin:
                     x_profile, collar_rl = profile
                     status = water_status(level)
                     if status in {"dry", "nm"}:
-                        y_nm = self._plot_y(collar_rl - 1.0, collar_rl)
+                        y_nm = self._plot_y(
+                            self._hole_elevation_at_depth(hole_id, 1.0, collar_rl), collar_rl
+                        )
                         self._water_status_note(
                             ax, hole_id, (float(x_profile), float(y_nm)), "NM" if status == "nm" else "DRY"
                         )
                         continue
                     xs.append(x_profile)
-                    water_rls.append(water_head_masl(level, collar_rl))
+                    water_rls.append(self._water_head(level, collar_rl))
                     collars.append(collar_rl)
                     measured_levels.append(level)
                 if not xs:
@@ -2425,9 +2551,26 @@ class RendererWaterMixin:
                         rl_label._water_marker = (markers, marker_index)
                 if len(xs_arr) >= 2 and interpolate:
                     gw_linestyle = series_linestyle
+                    line_name = series_id if not group_id else f"{series_id} [{group_id}]"
+                    clipped_xy = None
+                    if clip_ground is not None and not (use_segments and not across_gaps):
+                        clipped_xy, clipped_spans, artesian_spans = clip_water_line_to_ground(
+                            xs_arr, ys, *clip_ground
+                        )
+                        hole_pairs = [
+                            (str(left.hole_id), str(right.hole_id))
+                            for left, right in zip(measured_levels, measured_levels[1:], strict=False)
+                        ]
+                        self._note_water_line_clip(
+                            line_name,
+                            [hole_pairs[i] for i in clipped_spans],
+                            [hole_pairs[i] for i in artesian_spans],
+                        )
                     if across_gaps:
                         x_dense = np.linspace(float(xs_arr.min()), float(xs_arr.max()), 100)
                         y_dense = np.interp(x_dense, xs_arr, ys)
+                        if clipped_xy is not None:
+                            x_dense, y_dense = clipped_xy[:, 0], clipped_xy[:, 1]
                         ax.plot(
                             x_dense,
                             y_dense,
@@ -2448,15 +2591,26 @@ class RendererWaterMixin:
                         ):
                             if left_id not in y_by_hole or right_id not in y_by_hole:
                                 continue
-                            segments.append(
-                                np.asarray(
-                                    [
-                                        [transect_x[left_id], y_by_hole[left_id]],
-                                        [transect_x[right_id], y_by_hole[right_id]],
-                                    ],
-                                    dtype=float,
-                                )
+                            segment = np.asarray(
+                                [
+                                    [transect_x[left_id], y_by_hole[left_id]],
+                                    [transect_x[right_id], y_by_hole[right_id]],
+                                ],
+                                dtype=float,
                             )
+                            if clip_ground is not None and segment[1, 0] > segment[0, 0]:
+                                seg_xy, seg_clipped, seg_artesian = clip_water_line_to_ground(
+                                    segment[:, 0], segment[:, 1], *clip_ground
+                                )
+                                pair = (str(left_id), str(right_id))
+                                self._note_water_line_clip(
+                                    line_name,
+                                    [pair] if seg_clipped else [],
+                                    [pair] if seg_artesian else [],
+                                )
+                                if seg_xy is not None:
+                                    segment = seg_xy
+                            segments.append(segment)
                         if segments:
                             collection = LineCollection(
                                 segments,
@@ -2471,9 +2625,12 @@ class RendererWaterMixin:
                             for segment in segments:
                                 _register_water_line(ax, segment[:, 0], segment[:, 1])
                     else:
+                        line_x, line_y = xs_arr, ys
+                        if clipped_xy is not None:
+                            line_x, line_y = clipped_xy[:, 0], clipped_xy[:, 1]
                         plotted = ax.plot(
-                            xs_arr,
-                            ys,
+                            line_x,
+                            line_y,
                             color=color,
                             linewidth=2.0,
                             linestyle=gw_linestyle,
@@ -2481,19 +2638,22 @@ class RendererWaterMixin:
                         )
                         if self._cad_svg_layers_enabled() and plotted:
                             self._set_cad_gid(plotted[0], "water")
-                        _register_water_line(ax, xs_arr, ys)
+                        _register_water_line(ax, line_x, line_y)
                     # Schematic horizontal i = Δh/Δx between adjacent measured heads.
+                    gradient_collars = {
+                        hid: float(profile_lookup[hid][1])
+                        for hid in transect_hole_ids
+                        if hid in profile_lookup
+                    }
                     gradient_segments = horizontal_gradients_along_profile(
                         measured_levels,
                         hole_order=transect_hole_ids,
                         x_by_hole=transect_x,
-                        collar_rl_by_hole={
-                            hid: float(profile_lookup[hid][1])
-                            for hid in transect_hole_ids
-                            if hid in profile_lookup
-                        },
+                        collar_rl_by_hole=gradient_collars,
                         series_id=series_id,
                         connect_group=group_id,
+                        stick_up_by_hole=getattr(self, "stick_up_by_hole", None),
+                        md_to_elevation_by_hole=self._md_to_elevation_by_hole(gradient_collars),
                     )
                     adjacent_pairs = set(
                         zip(transect_hole_ids, transect_hole_ids[1:], strict=False)

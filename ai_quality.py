@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
@@ -16,24 +16,37 @@ from typing import BinaryIO, Literal
 import pandas as pd
 from rapidfuzz import fuzz
 
+from chemistry_qc import mixed_unit_warnings, rdl_above_guideline_notes
 from constants import CANONICAL_LITHOLOGY_CODES
 from hydro_metrics import (
+    DEFAULT_NEST_DISTANCE_M,
+    NestedVerticalGradient,
     absurd_horizontal_gradient_warnings,
+    assign_screens_to_connect_groups,
+    format_vertical_gradient_note,
     horizontal_gradients_along_profile,
     is_measured_water_level,
+    nested_vertical_gradients,
+    screen_elevation_range,
+    vertical_gradient_arrow_conflicts,
+    water_depth_along_hole_bgs,
+    water_head_masl,
 )
 from models import (
     COLLAR_COLUMNS,
     LITHOLOGY_COLUMNS,
     Collar,
+    DeviationReading,
     EnvironmentalReading,
     Lithology,
     ScreenInterval,
     Transect,
+    VerticalGradient,
     WaterLevel,
 )
 from paths import lithology_aliases_path
-from projection import TransectGeometry
+from projection import TransectGeometry, build_along_hole_tvd
+from render_profiles import chemistry_thresholds_from_readings
 
 logger = logging.getLogger(__name__)
 MAPPING_CONFIDENCE_THRESHOLD = 0.8
@@ -681,6 +694,12 @@ class WaterQualitySummary:
     holes_without_any_water: tuple[str, ...]
     warnings: tuple[str, ...]
     total_levels: int
+    # Nested / co-located well vertical gradients (needs ``screen_intervals``).
+    vertical_gradients: tuple[NestedVerticalGradient, ...] = ()
+    # Informational lines (artesian heads, dry screens, computed iv). Each one
+    # is also in ``warnings`` (prefixed ``Info:``) so the existing Validate
+    # list shows it; a UI may render ``notes`` with a softer style instead.
+    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -730,8 +749,26 @@ def summarize_water_levels(
     hole_ids_on_transect: Sequence[str],
     *,
     placeholder_elevation_m: float | None = None,
+    deviation_readings: Sequence[DeviationReading] | None = None,
+    screen_intervals: Sequence[ScreenInterval] | None = None,
+    lithologies: Sequence[Lithology] | None = None,
+    vertical_gradients: Sequence[VerticalGradient] | None = None,
+    nest_distance_m: float = DEFAULT_NEST_DISTANCE_M,
 ) -> WaterQualitySummary:
-    """Summarize groundwater coverage for Validate UI and QA heuristics."""
+    """Summarize groundwater coverage for Validate UI and QA heuristics.
+
+    Depth checks use the along-hole depth below ground (``btoc`` readings
+    minus the collar stick-up). Gradient QA heads come from
+    ``hydro_metrics.water_head_masl`` — with ``deviation_readings`` surveyed
+    holes use true vertical depth, as on the section.
+
+    Heads above ground are flowing-artesian *information*, not errors. With
+    ``screen_intervals`` it also reports nested-well vertical gradients
+    (``hydro_metrics.nested_vertical_gradients``), readings below the screens,
+    dry screens and — with ``lithologies`` — connected water lines joining
+    wells screened in different units; ``vertical_gradients`` (user arrows)
+    are cross-checked against the computed heads.
+    """
     transect_holes = tuple(hole_ids_on_transect)
     hole_set = set(transect_holes)
     collar_by_id = {collar.hole_id: collar for collar in collars}
@@ -742,6 +779,7 @@ def summarize_water_levels(
     holes_with_any: set[str] = set()
     orphan_ids: set[str] = set()
     masl_on_placeholder = False
+    btoc_without_stick_up: set[str] = set()
     for level in water_levels:
         series_id = level.series_id or "default"
         connect_group = (level.connect_group or "").strip()
@@ -761,10 +799,15 @@ def summarize_water_levels(
         collar = collar_by_id.get(level.hole_id)
         if collar is None:
             continue
-        if is_measured_water_level(level) and level.depth > collar.total_depth:
+        is_btoc = getattr(level, "depth_reference", "bgs") == "btoc"
+        if is_btoc and level.elevation_masl is None and not collar.stick_up_m:
+            btoc_without_stick_up.add(level.hole_id)
+        depth_bgs = water_depth_along_hole_bgs(level, collar.stick_up_m)
+        if is_measured_water_level(level) and depth_bgs > collar.total_depth:
+            datum = f" ({level.depth:.2f} m below top of casing)" if is_btoc else ""
             warnings.append(
-                f"{level.hole_id} ({series_id}): water depth {level.depth:.2f} m exceeds total depth "
-                f"{collar.total_depth:.2f} m"
+                f"{level.hole_id} ({series_id}): water depth {depth_bgs:.2f} m below ground{datum} "
+                f"exceeds total depth {collar.total_depth:.2f} m"
             )
         if (
             not masl_on_placeholder
@@ -774,6 +817,13 @@ def summarize_water_levels(
         ):
             masl_on_placeholder = True
 
+    if btoc_without_stick_up:
+        warnings.append(
+            "Water depths below top of casing (depth_reference = btoc) on "
+            + ", ".join(sorted(btoc_without_stick_up))
+            + " but Collars.stick_up_m is blank — stick-up taken as 0 m (heads may be "
+            "too low); enter the casing stick-up."
+        )
     if masl_on_placeholder:
         warnings.append(
             "Water elevation_masl was converted using placeholder collar RL — "
@@ -822,6 +872,13 @@ def summarize_water_levels(
         x_along[hole_id] = cumulative
         prev_xy = xy
     collar_rl = {c.hole_id: float(c.elevation) for c in collars}
+    stick_up_by_hole = {c.hole_id: float(c.stick_up_m) for c in collars if c.stick_up_m}
+    tvd_tables = build_along_hole_tvd(collars, deviation_readings, hole_set)
+    md_to_elevation_by_hole = {
+        hole_id: (lambda md, _t=table, _rl=collar_rl[hole_id]: _t.elevation_at(_rl, md))
+        for hole_id, table in tvd_tables.items()
+        if hole_id in collar_rl
+    }
     for series_id, levels in by_series.items():
         label = next((level.series_label for level in levels if level.series_label), series_id)
         by_nest: dict[str, list[WaterLevel]] = {}
@@ -838,17 +895,249 @@ def summarize_water_levels(
                 collar_rl_by_hole=collar_rl,
                 series_id=series_id,
                 connect_group=nest_id,
+                stick_up_by_hole=stick_up_by_hole,
+                md_to_elevation_by_hole=md_to_elevation_by_hole,
             )
             warnings.extend(
                 absurd_horizontal_gradient_warnings(segments, series_label=series_label)
             )
+
+    on_section = [level for levels in by_series.values() for level in levels]
+    notes: list[str] = []
+    notes.extend(
+        _artesian_notes(on_section, collar_by_id, stick_up_by_hole, md_to_elevation_by_hole)
+    )
+    nested: tuple[NestedVerticalGradient, ...] = ()
+    screens = [s for s in (screen_intervals or ()) if s.hole_id in hole_set]
+    if screens:
+        screen_warnings, screen_notes = _water_vs_screen_checks(
+            on_section,
+            screens,
+            collar_by_id,
+            stick_up_by_hole,
+            md_to_elevation_by_hole,
+        )
+        warnings.extend(screen_warnings)
+        notes.extend(screen_notes)
+        if lithologies:
+            warnings.extend(
+                _mixed_unit_water_line_warnings(
+                    on_section, screens, lithologies, transect_holes
+                )
+            )
+        analysis = nested_vertical_gradients(
+            on_section,
+            screens,
+            collar_rl_by_hole=collar_rl,
+            plan_xy_by_hole=collar_xy,
+            stick_up_by_hole=stick_up_by_hole,
+            md_to_elevation_by_hole=md_to_elevation_by_hole,
+            nest_distance_m=nest_distance_m,
+        )
+        nested = analysis.gradients
+        warnings.extend(analysis.notes)
+        notes.extend(format_vertical_gradient_note(gradient) for gradient in nested)
+        if vertical_gradients:
+            warnings.extend(
+                vertical_gradient_arrow_conflicts(
+                    [arrow for arrow in vertical_gradients if arrow.hole_id in hole_set],
+                    nested,
+                )
+            )
+    warnings.extend(f"Info: {note}" for note in notes)
 
     return WaterQualitySummary(
         series=tuple(series_summaries),
         holes_without_any_water=holes_without_any,
         warnings=tuple(warnings),
         total_levels=sum(len(levels) for levels in by_series.values()),
+        vertical_gradients=nested,
+        notes=tuple(notes),
     )
+
+
+def _head_and_md_fn(
+    level: WaterLevel,
+    collar: Collar,
+    stick_up_by_hole: Mapping[str, float],
+    md_to_elevation_by_hole: Mapping[str, object],
+):
+    md_fn = md_to_elevation_by_hole.get(level.hole_id)
+    head = water_head_masl(
+        level,
+        float(collar.elevation),
+        stick_up_m=stick_up_by_hole.get(level.hole_id),
+        md_to_elevation=md_fn,
+    )
+    return head, md_fn
+
+
+def _artesian_notes(
+    levels: Sequence[WaterLevel],
+    collar_by_id: Mapping[str, Collar],
+    stick_up_by_hole: Mapping[str, float],
+    md_to_elevation_by_hole: Mapping[str, object],
+) -> list[str]:
+    """Heads above ground: flowing artesian (above top of casing) or artesian in the casing."""
+    notes: list[str] = []
+    seen: set[str] = set()
+    for level in levels:
+        collar = collar_by_id.get(level.hole_id)
+        if collar is None or not is_measured_water_level(level):
+            continue
+        head, _md_fn = _head_and_md_fn(level, collar, stick_up_by_hole, md_to_elevation_by_hole)
+        above = head - float(collar.elevation)
+        if above <= 1e-6:
+            continue
+        stick_up = float(stick_up_by_hole.get(level.hole_id) or 0.0)
+        series = "" if (level.series_id or "default") == "default" else f" ({level.series_id})"
+        if stick_up > 0.0 and above <= stick_up + 1e-6:
+            text = (
+                f"artesian at {level.hole_id}{series} (head +{above:.2f} m above ground, "
+                "within the casing stick-up) — plotted above the ground line"
+            )
+        else:
+            text = (
+                f"flowing artesian at {level.hole_id}{series} (head +{above:.2f} m above "
+                "ground) — plotted above the ground line"
+            )
+        if text not in seen:
+            seen.add(text)
+            notes.append(text)
+    return notes
+
+
+def _water_vs_screen_checks(
+    levels: Sequence[WaterLevel],
+    screens: Sequence[ScreenInterval],
+    collar_by_id: Mapping[str, Collar],
+    stick_up_by_hole: Mapping[str, float],
+    md_to_elevation_by_hole: Mapping[str, object],
+) -> tuple[list[str], list[str]]:
+    """Reading below every screen (warning) and individual dry screens (info)."""
+    warnings: list[str] = []
+    notes: list[str] = []
+    screens_by_hole: dict[str, list[ScreenInterval]] = {}
+    for screen in screens:
+        screens_by_hole.setdefault(screen.hole_id, []).append(screen)
+    top_head_by_hole: dict[str, float] = {}
+    for level in levels:
+        collar = collar_by_id.get(level.hole_id)
+        hole_screens = screens_by_hole.get(level.hole_id)
+        if collar is None or not hole_screens or not is_measured_water_level(level):
+            continue
+        head, md_fn = _head_and_md_fn(level, collar, stick_up_by_hole, md_to_elevation_by_hole)
+        ranges = [screen_elevation_range(s, float(collar.elevation), md_fn) for s in hole_screens]
+        lowest_bottom = min(bottom for _top, bottom in ranges)
+        if head < lowest_bottom - 1e-6:
+            series = "" if (level.series_id or "default") == "default" else f" ({level.series_id})"
+            warnings.append(
+                f"{level.hole_id}{series}: water level {head:.2f} masl is below the bottom of the "
+                f"screen(s) ({lowest_bottom:.2f} masl) — reading below screen — well may be dry "
+                "or reading unreliable"
+            )
+            continue
+        top_head_by_hole[level.hole_id] = max(head, top_head_by_hole.get(level.hole_id, head))
+    for hole_id, head in top_head_by_hole.items():
+        collar = collar_by_id[hole_id]
+        md_fn = md_to_elevation_by_hole.get(hole_id)
+        for screen in sorted(screens_by_hole[hole_id], key=lambda s: s.from_depth):
+            _top, bottom = screen_elevation_range(screen, float(collar.elevation), md_fn)
+            if bottom > head + 1e-6:
+                notes.append(
+                    f"{hole_id}: screen {screen.from_depth:.2f}–{screen.to_depth:.2f} m is "
+                    f"entirely above the water level ({head:.2f} masl) — dry screen"
+                )
+    return warnings, notes
+
+
+def _logged_unit_at_depth(
+    intervals: Sequence[Lithology], depth: float
+) -> Lithology | None:
+    for interval in intervals:
+        if interval.from_depth - 1e-9 <= depth < interval.to_depth + 1e-9:
+            return interval
+    return None
+
+
+def _unit_label(interval: Lithology) -> str:
+    code = str(interval.lithology_code).strip()
+    return f"{code} (unit {interval.unit_order})" if interval.unit_order is not None else code
+
+
+def _same_unit(left: Lithology, right: Lithology) -> bool:
+    if left.unit_order is not None and right.unit_order is not None:
+        return left.unit_order == right.unit_order
+    return str(left.lithology_code).strip().upper() == str(right.lithology_code).strip().upper()
+
+
+def _mixed_unit_water_line_warnings(
+    levels: Sequence[WaterLevel],
+    screens: Sequence[ScreenInterval],
+    lithologies: Sequence[Lithology],
+    transect_holes: Sequence[str],
+) -> list[str]:
+    """Connected water lines (same series + connect_group) joining wells screened in different units.
+
+    Conservative: both wells need a screen whose mid-point (along-hole depth)
+    falls in a logged interval; a hole whose screens sit in several units is
+    resolved by its connect_group (shallow/deep naming) or skipped. Units
+    compare by ``unit_order`` when both rows carry one, else by lithology code.
+    """
+    screens_by_hole: dict[str, list[ScreenInterval]] = {}
+    for screen in screens:
+        screens_by_hole.setdefault(screen.hole_id, []).append(screen)
+    lith_by_hole: dict[str, list[Lithology]] = {}
+    for interval in lithologies:
+        lith_by_hole.setdefault(interval.hole_id, []).append(interval)
+    groups_by_hole: dict[str, set[str]] = {}
+    for level in levels:
+        groups_by_hole.setdefault(level.hole_id, set()).add((level.connect_group or "").strip())
+
+    def unit_for(hole_id: str, group: str) -> Lithology | None:
+        hole_screens = screens_by_hole.get(hole_id)
+        intervals = lith_by_hole.get(hole_id)
+        if not hole_screens or not intervals:
+            return None
+        mapping, _note = assign_screens_to_connect_groups(
+            hole_id, hole_screens, sorted(groups_by_hole.get(hole_id, {group}))
+        )
+        candidates = [mapping[group]] if group in mapping else list(hole_screens)
+        units = [
+            _logged_unit_at_depth(intervals, 0.5 * (s.from_depth + s.to_depth)) for s in candidates
+        ]
+        if not units or any(unit is None for unit in units):
+            return None
+        first = units[0]
+        if any(not _same_unit(first, unit) for unit in units[1:]):
+            return None  # screens in several units, nothing tells which one reads
+        return first
+
+    order = {hole_id: index for index, hole_id in enumerate(transect_holes)}
+    lines: dict[tuple[str, str], dict[str, WaterLevel]] = {}
+    for level in levels:
+        if not is_measured_water_level(level) or level.hole_id not in order:
+            continue
+        key = (level.series_id or "default", (level.connect_group or "").strip())
+        lines.setdefault(key, {})[level.hole_id] = level
+    warnings: list[str] = []
+    for (series_id, group), by_hole in sorted(lines.items()):
+        ordered = sorted(by_hole, key=lambda hole_id: order[hole_id])
+        for left_id, right_id in zip(ordered, ordered[1:], strict=False):
+            left_unit = unit_for(left_id, group)
+            right_unit = unit_for(right_id, group)
+            if left_unit is None or right_unit is None or _same_unit(left_unit, right_unit):
+                continue
+            nest = f" [{group}]" if group else ""
+            series = "" if series_id == "default" else f" ({series_id}{nest})"
+            if not series and nest:
+                series = f" ({nest.strip()})"
+            warnings.append(
+                f"{left_id}–{right_id}{series}: water line joins wells screened in different "
+                f"units ({_unit_label(left_unit)} vs {_unit_label(right_unit)}) — heads may "
+                "belong to different aquifers; set connect_group to separate them"
+            )
+    return warnings
 
 
 @dataclass(frozen=True)
@@ -873,8 +1162,15 @@ def summarize_environmental_readings(
     collars: Sequence[Collar],
     readings: Sequence[EnvironmentalReading],
     hole_ids_on_transect: Sequence[str],
+    *,
+    thresholds: Mapping[str, tuple[float | None, float | None]] | None = None,
 ) -> EnvironmentalQualitySummary:
-    """Summarize lab/parameter coverage for Validate UI."""
+    """Summarize lab/parameter coverage for Validate UI.
+
+    Also warns about non-detects whose detection limit is above the
+    parameter's green limit (``thresholds``; default: the workbook
+    ``green_max`` values) and parameters reported in more than one unit.
+    """
     transect_holes = tuple(hole_ids_on_transect)
     hole_set = set(transect_holes)
     collar_by_id = {collar.hole_id: collar for collar in collars}
@@ -909,6 +1205,12 @@ def summarize_environmental_readings(
                 max_depth=max(depths),
             )
         )
+
+    on_line = [item for items in by_parameter.values() for item in items]
+    warnings.extend(mixed_unit_warnings(on_line))
+    if thresholds is None:
+        thresholds = chemistry_thresholds_from_readings(readings)
+    warnings.extend(rdl_above_guideline_notes(on_line, thresholds))
 
     if not readings and transect_holes:
         warnings.append("No environmental/lab readings on the selected section line.")

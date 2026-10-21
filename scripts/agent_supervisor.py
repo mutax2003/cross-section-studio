@@ -222,6 +222,7 @@ def module_boundary_warnings(modules: Sequence[str]) -> list[str]:
         "section_build_request.py",
         "transect_planner.py",
         "ai_quality.py",
+        "chemistry_qc.py",
         "renderer_water.py",
         "renderer_chemistry.py",
         "hatch_patterns.py",

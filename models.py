@@ -185,6 +185,37 @@ class Lithology(BaseModel, frozen=True):
         return self
 
 
+_WATER_DEPTH_REFERENCE_ALIASES: dict[str, str] = {
+    "bgs": "bgs",
+    "mbgs": "bgs",
+    "bgl": "bgs",
+    "mbgl": "bgs",
+    "ground": "bgs",
+    "ground surface": "bgs",
+    "btoc": "btoc",
+    "mbtoc": "btoc",
+    "toc": "btoc",
+    "top of casing": "btoc",
+}
+
+
+def normalize_water_depth_reference(value: object) -> str:
+    """Map a Water ``depth_reference`` cell to ``bgs`` (default) or ``btoc``."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "bgs"
+    text = " ".join(_clean_text(value).lower().replace("_", " ").split())
+    if not text:
+        return "bgs"
+    resolved = _WATER_DEPTH_REFERENCE_ALIASES.get(text) or _WATER_DEPTH_REFERENCE_ALIASES.get(
+        text.replace(" ", "")
+    )
+    if resolved is None:
+        raise ValueError(
+            f"depth_reference must be bgs (below ground) or btoc (below top of casing); got {value!r}"
+        )
+    return resolved
+
+
 class WaterLevel(BaseModel, frozen=True):
     hole_id: str
     depth: float
@@ -195,6 +226,14 @@ class WaterLevel(BaseModel, frozen=True):
     marker: str | None = None
     connect_group: str = ""
     status: str = "measured"
+    # Datum of ``depth``: "bgs" = metres below ground surface (default) or
+    # "btoc" = metres below top of casing (head = collar + stick-up − depth).
+    depth_reference: str = "bgs"
+
+    @field_validator("depth_reference", mode="before")
+    @classmethod
+    def normalize_depth_reference(cls, value: object) -> str:
+        return normalize_water_depth_reference(value)
 
     @field_validator("hole_id", mode="before")
     @classmethod
@@ -378,6 +417,10 @@ class EnvironmentalReading(BaseModel, frozen=True):
     # One filled row per parameter seeds the Configure editor.
     green_max: float | None = None
     orange_max: float | None = None
+    # Lab non-detect ("<5"): ``value`` holds the reporting detection limit
+    # (RDL) and the figure prints "<5". Threshold colouring treats it as
+    # below that limit, never as a measured 5 (see render_theme).
+    detected: bool = True
 
     @field_validator("hole_id", "parameter", mode="before")
     @classmethod
@@ -437,11 +480,17 @@ class EnvironmentalReading(BaseModel, frozen=True):
         return (self.from_depth + self.to_depth) / 2.0
 
     @property
+    def value_text(self) -> str:
+        """Compact number for the figure: ``"12.2"``, or ``"<5"`` for a non-detect."""
+        prefix = "" if self.detected else "<"
+        return f"{prefix}{self.value:g}"
+
+    @property
     def display_label(self) -> str:
         if self.value_label:
             return self.value_label
         unit_suffix = f" {self.unit}" if self.unit else ""
-        return f"{self.value:g}{unit_suffix}"
+        return f"{self.value_text}{unit_suffix}"
 
 
 class RasterLogStrip(BaseModel, frozen=True):

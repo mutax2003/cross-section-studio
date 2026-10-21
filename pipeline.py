@@ -39,7 +39,13 @@ from models import (
     VerticalGradient,
     WaterLevel,
 )
-from projection import DEFAULT_OFFSET_WARNING_M, project_boreholes, transect_azimuth_deg
+from projection import (
+    DEFAULT_OFFSET_WARNING_M,
+    AlongHoleTVD,
+    build_along_hole_tvd,
+    project_boreholes,
+    transect_azimuth_deg,
+)
 from render_profiles import (
     ChemistryLabelStyle,
     LayoutMode,
@@ -96,6 +102,10 @@ class SectionGeometry:
     projected_hole_ids: frozenset[str]
     stick_up_by_hole: dict[str, float] = field(default_factory=dict)
     correlation_summaries: tuple[CorrelationPairSummary, ...] = ()
+    # Surveyed (deviated) holes only: sampled MD→TVD tables so water heads,
+    # screens, chemistry samples and well bottoms use the same true vertical
+    # depth as the lithology. Absent holes are vertical (collar − depth).
+    along_hole_tvd: dict[str, AlongHoleTVD] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -316,6 +326,7 @@ def compute_section_geometry(
         for collar in collars
         if collar.hole_id in projected_hole_ids and collar.stick_up_m
     }
+    along_hole_tvd = build_along_hole_tvd(collars, deviation_readings, projected_hole_ids)
     x_span = float(projected["x_profile"].max() - projected["x_profile"].min()) if not projected.empty else 1.0
     max_offset = float(projected["offset_distance"].max()) if not projected.empty else 0.0
     return SectionGeometry(
@@ -330,6 +341,7 @@ def compute_section_geometry(
         projected_hole_ids=projected_hole_ids,
         stick_up_by_hole=stick_up_by_hole,
         correlation_summaries=tuple(correlation_summaries),
+        along_hole_tvd=along_hole_tvd,
     )
 
 
@@ -747,6 +759,7 @@ def render_cross_section_from_geometry(
         ),
         vertical_gradients=vertical_gradients or (),
         stick_up_by_hole=stick_up_by_hole,
+        along_hole_tvd=geometry.along_hole_tvd,
         export_framing=export_framing,
     )
     with _RENDER_LOCK:

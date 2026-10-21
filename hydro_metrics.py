@@ -2,11 +2,17 @@
 
 Horizontal hydraulic gradient between adjacent measured water levels along the
 profile is a schematic annotation (Δh/Δx), not a calibrated flow model.
+
+``water_head_masl`` is the single source of truth for a groundwater head: it
+honours the reading's depth datum (below ground or below top of casing, using
+the collar stick-up) and converts the along-hole depth to an elevation with the
+hole's survey (``md_to_elevation``) so inclined holes plot at true vertical
+depth. Renderer markers, labels, gradients and Validate QA all call it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from models import WaterLevel
@@ -57,11 +63,72 @@ def is_measured_water_level(level: WaterLevel) -> bool:
     return water_status(level) == "measured"
 
 
-def water_head_masl(level: WaterLevel, collar_rl: float) -> float:
-    """Head elevation (masl): prefer stored elevation_masl, else collar − depth."""
+MdToElevation = Callable[[float], float]
+
+
+def water_depth_along_hole_bgs(level: WaterLevel, stick_up_m: float | None = None) -> float:
+    """Along-hole depth below ground (m) of a reading.
+
+    ``btoc`` readings subtract the casing stick-up (missing stick-up counts as
+    0 — Validate warns). Negative = water inside the stick-up, above ground.
+    The stick-up is taken as measured along the hole axis (vertical for the
+    usual near-vertical well casing).
+    """
+    depth = float(level.depth)
+    if getattr(level, "depth_reference", "bgs") == "btoc":
+        return depth - float(stick_up_m or 0.0)
+    return depth
+
+
+def water_head_masl(
+    level: WaterLevel,
+    collar_rl: float,
+    *,
+    stick_up_m: float | None = None,
+    md_to_elevation: MdToElevation | None = None,
+) -> float:
+    """Head elevation (masl) of a water reading.
+
+    * explicit ``elevation_masl`` is returned as given;
+    * otherwise the along-hole depth below ground (``btoc`` minus stick-up) is
+      converted with ``md_to_elevation`` (hole survey: collar − TVD) — vertical
+      holes (``None``) use collar − depth, the legacy formula;
+    * water above ground inside the casing (btoc depth < stick-up) sits
+      ``stick_up − depth`` above the collar.
+    """
     if level.elevation_masl is not None:
         return float(level.elevation_masl)
-    return float(collar_rl) - float(level.depth)
+    if getattr(level, "depth_reference", "bgs") != "btoc" and md_to_elevation is None:
+        return float(collar_rl) - float(level.depth)
+    md_below_ground = water_depth_along_hole_bgs(level, stick_up_m)
+    if md_below_ground < 0.0 or md_to_elevation is None:
+        return float(collar_rl) - md_below_ground
+    return float(md_to_elevation(md_below_ground))
+
+
+def water_depth_below_ground_m(
+    level: WaterLevel,
+    collar_rl: float,
+    *,
+    stick_up_m: float | None = None,
+    md_to_elevation: MdToElevation | None = None,
+) -> float:
+    """Vertical depth of the head below ground surface (m) — the "mbgs" label value.
+
+    Converts ``btoc`` readings to below ground and inclined-hole depths to true
+    vertical depth; a plain below-ground reading on a vertical hole returns
+    ``level.depth`` unchanged.
+    """
+    if (
+        level.elevation_masl is None
+        and getattr(level, "depth_reference", "bgs") != "btoc"
+        and md_to_elevation is None
+    ):
+        return float(level.depth)
+    head = water_head_masl(
+        level, collar_rl, stick_up_m=stick_up_m, md_to_elevation=md_to_elevation
+    )
+    return float(collar_rl) - head
 
 
 def horizontal_gradients_along_profile(
@@ -72,10 +139,14 @@ def horizontal_gradients_along_profile(
     collar_rl_by_hole: Mapping[str, float],
     series_id: str | None = None,
     connect_group: str | None = None,
+    stick_up_by_hole: Mapping[str, float] | None = None,
+    md_to_elevation_by_hole: Mapping[str, MdToElevation] | None = None,
 ) -> tuple[HorizontalGradientSegment, ...]:
     """Compute Δh/Δx between consecutive measured holes along the transect.
 
     Unmeasured (dry/NM) holes are skipped, so a pair may span intermediate holes.
+    Heads come from ``water_head_masl`` (stick-up for ``btoc`` readings and the
+    hole survey for inclined holes when the optional maps are given).
 
     Only levels with status ``measured`` participate. Optional ``series_id`` /
     ``connect_group`` filters match renderer nesting (blank connect_group = shared).
@@ -108,8 +179,20 @@ def horizontal_gradients_along_profile(
             continue
         left = by_hole[left_id]
         right = by_hole[right_id]
-        h_left = water_head_masl(left, float(collar_rl_by_hole[left_id]))
-        h_right = water_head_masl(right, float(collar_rl_by_hole[right_id]))
+        stick_ups = stick_up_by_hole or {}
+        md_maps = md_to_elevation_by_hole or {}
+        h_left = water_head_masl(
+            left,
+            float(collar_rl_by_hole[left_id]),
+            stick_up_m=stick_ups.get(left_id),
+            md_to_elevation=md_maps.get(left_id),
+        )
+        h_right = water_head_masl(
+            right,
+            float(collar_rl_by_hole[right_id]),
+            stick_up_m=stick_ups.get(right_id),
+            md_to_elevation=md_maps.get(right_id),
+        )
         gradient = (h_right - h_left) / dx
         segments.append(
             HorizontalGradientSegment(

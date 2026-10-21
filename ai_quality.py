@@ -21,11 +21,13 @@ from hydro_metrics import (
     absurd_horizontal_gradient_warnings,
     horizontal_gradients_along_profile,
     is_measured_water_level,
+    water_depth_along_hole_bgs,
 )
 from models import (
     COLLAR_COLUMNS,
     LITHOLOGY_COLUMNS,
     Collar,
+    DeviationReading,
     EnvironmentalReading,
     Lithology,
     ScreenInterval,
@@ -33,7 +35,7 @@ from models import (
     WaterLevel,
 )
 from paths import lithology_aliases_path
-from projection import TransectGeometry
+from projection import TransectGeometry, build_along_hole_tvd
 
 logger = logging.getLogger(__name__)
 MAPPING_CONFIDENCE_THRESHOLD = 0.8
@@ -730,8 +732,15 @@ def summarize_water_levels(
     hole_ids_on_transect: Sequence[str],
     *,
     placeholder_elevation_m: float | None = None,
+    deviation_readings: Sequence[DeviationReading] | None = None,
 ) -> WaterQualitySummary:
-    """Summarize groundwater coverage for Validate UI and QA heuristics."""
+    """Summarize groundwater coverage for Validate UI and QA heuristics.
+
+    Depth checks use the along-hole depth below ground (``btoc`` readings
+    minus the collar stick-up). Gradient QA heads come from
+    ``hydro_metrics.water_head_masl`` — with ``deviation_readings`` surveyed
+    holes use true vertical depth, as on the section.
+    """
     transect_holes = tuple(hole_ids_on_transect)
     hole_set = set(transect_holes)
     collar_by_id = {collar.hole_id: collar for collar in collars}
@@ -742,6 +751,7 @@ def summarize_water_levels(
     holes_with_any: set[str] = set()
     orphan_ids: set[str] = set()
     masl_on_placeholder = False
+    btoc_without_stick_up: set[str] = set()
     for level in water_levels:
         series_id = level.series_id or "default"
         connect_group = (level.connect_group or "").strip()
@@ -761,10 +771,15 @@ def summarize_water_levels(
         collar = collar_by_id.get(level.hole_id)
         if collar is None:
             continue
-        if is_measured_water_level(level) and level.depth > collar.total_depth:
+        is_btoc = getattr(level, "depth_reference", "bgs") == "btoc"
+        if is_btoc and level.elevation_masl is None and not collar.stick_up_m:
+            btoc_without_stick_up.add(level.hole_id)
+        depth_bgs = water_depth_along_hole_bgs(level, collar.stick_up_m)
+        if is_measured_water_level(level) and depth_bgs > collar.total_depth:
+            datum = f" ({level.depth:.2f} m below top of casing)" if is_btoc else ""
             warnings.append(
-                f"{level.hole_id} ({series_id}): water depth {level.depth:.2f} m exceeds total depth "
-                f"{collar.total_depth:.2f} m"
+                f"{level.hole_id} ({series_id}): water depth {depth_bgs:.2f} m below ground{datum} "
+                f"exceeds total depth {collar.total_depth:.2f} m"
             )
         if (
             not masl_on_placeholder
@@ -774,6 +789,13 @@ def summarize_water_levels(
         ):
             masl_on_placeholder = True
 
+    if btoc_without_stick_up:
+        warnings.append(
+            "Water depths below top of casing (depth_reference = btoc) on "
+            + ", ".join(sorted(btoc_without_stick_up))
+            + " but Collars.stick_up_m is blank — stick-up taken as 0 m (heads may be "
+            "too low); enter the casing stick-up."
+        )
     if masl_on_placeholder:
         warnings.append(
             "Water elevation_masl was converted using placeholder collar RL — "
@@ -822,6 +844,13 @@ def summarize_water_levels(
         x_along[hole_id] = cumulative
         prev_xy = xy
     collar_rl = {c.hole_id: float(c.elevation) for c in collars}
+    stick_up_by_hole = {c.hole_id: float(c.stick_up_m) for c in collars if c.stick_up_m}
+    tvd_tables = build_along_hole_tvd(collars, deviation_readings, hole_set)
+    md_to_elevation_by_hole = {
+        hole_id: (lambda md, _t=table, _rl=collar_rl[hole_id]: _t.elevation_at(_rl, md))
+        for hole_id, table in tvd_tables.items()
+        if hole_id in collar_rl
+    }
     for series_id, levels in by_series.items():
         label = next((level.series_label for level in levels if level.series_label), series_id)
         by_nest: dict[str, list[WaterLevel]] = {}
@@ -838,6 +867,8 @@ def summarize_water_levels(
                 collar_rl_by_hole=collar_rl,
                 series_id=series_id,
                 connect_group=nest_id,
+                stick_up_by_hole=stick_up_by_hole,
+                md_to_elevation_by_hole=md_to_elevation_by_hole,
             )
             warnings.extend(
                 absurd_horizontal_gradient_warnings(segments, series_label=series_label)

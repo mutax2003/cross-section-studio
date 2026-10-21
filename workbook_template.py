@@ -76,6 +76,7 @@ WATER_COLUMNS = (
     "series_id",
     "series_label",
     "connect_group",
+    "depth_reference",
 )
 ENVIRONMENTAL_COLUMNS = (
     "hole_id",
@@ -242,6 +243,7 @@ def _sample_water() -> list[dict[str, object]]:
             "series_id": "2025-06",
             "series_label": "June 2025",
             "connect_group": "shallow",
+            "depth_reference": "bgs",
         },
         {
             "hole_id": "MW-02",
@@ -251,6 +253,7 @@ def _sample_water() -> list[dict[str, object]]:
             "series_id": "2025-06",
             "series_label": "June 2025",
             "connect_group": "shallow",
+            "depth_reference": "bgs",
         },
         {
             "hole_id": "MW-03",
@@ -260,6 +263,7 @@ def _sample_water() -> list[dict[str, object]]:
             "series_id": "2025-06",
             "series_label": "June 2025",
             "connect_group": "shallow",
+            "depth_reference": "bgs",
         },
         {
             "hole_id": "MW-01",
@@ -269,6 +273,7 @@ def _sample_water() -> list[dict[str, object]]:
             "series_id": "2025-06-deep",
             "series_label": "June 2025 deep",
             "connect_group": "deep",
+            "depth_reference": "bgs",
         },
         {
             "hole_id": "MW-03",
@@ -278,6 +283,7 @@ def _sample_water() -> list[dict[str, object]]:
             "series_id": "2025-06-deep",
             "series_label": "June 2025 deep",
             "connect_group": "deep",
+            "depth_reference": "bgs",
         },
         {
             "hole_id": "MW-02",
@@ -287,6 +293,7 @@ def _sample_water() -> list[dict[str, object]]:
             "series_id": "2025-06",
             "series_label": "June 2025",
             "connect_group": "deep",
+            "depth_reference": "bgs",
         },
     ]
 
@@ -389,12 +396,13 @@ def _column_hints() -> dict[str, dict[str, str]]:
         },
         WATER_SHEET: {
             "hole_id": "Must match Collars.hole_id",
-            "depth": "Water depth below collar (m) — OR use elevation_masl",
+            "depth": "Water depth (m) below ground, or below top of casing if depth_reference = btoc — OR use elevation_masl",
             "elevation_masl": "Water RL (masl) — do not fill both depth and this",
             "status": "measured (default), dry, or nm — dry/nm may omit depth/masl",
             "series_id": "Optional snapshot id (e.g. 2025-06); max 4 series plotted",
             "series_label": "Optional legend label (e.g. June 2025)",
             "connect_group": "Optional nest id (e.g. shallow/deep) — only same group connects",
+            "depth_reference": "Optional: bgs (below ground, default) or btoc (below top of casing; uses Collars.stick_up_m)",
         },
         ENVIRONMENTAL_SHEET: {
             "hole_id": "Must match Collars.hole_id",
@@ -475,6 +483,7 @@ def _instructions_lines() -> list[str]:
         "• Up to four series_id values can be plotted; pick them on Configure.",
         "• connect_group links shallow/deep nest readings — only the same group connects.",
         "• status: measured (default), dry, or nm. Dry/nm rows may omit depth/elevation_masl.",
+        "• depth_reference: bgs (default — depth below ground) or btoc (depth below top of casing; head = collar + Collars.stick_up_m − depth). Depths are along the hole: surveyed (Deviations) holes are converted to true vertical depth.",
         "",
         f"COMMON LITHOLOGY CODES: {lithology_list}",
         "",
@@ -1105,6 +1114,7 @@ def export_cleaned_workbook_bytes(
             level.connect_group or "",
             level.depth,
             level.elevation_masl,
+            getattr(level, "depth_reference", "bgs"),
         )
         if key in seen_water:
             continue
@@ -1129,6 +1139,7 @@ def export_cleaned_workbook_bytes(
                 "series_id": level.series_id or "",
                 "series_label": level.series_label or "",
                 "connect_group": level.connect_group or "",
+                "depth_reference": getattr(level, "depth_reference", "bgs") or "bgs",
             }
         )
     for field in ("color", "marker"):

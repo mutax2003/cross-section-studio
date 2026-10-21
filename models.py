@@ -185,6 +185,37 @@ class Lithology(BaseModel, frozen=True):
         return self
 
 
+_WATER_DEPTH_REFERENCE_ALIASES: dict[str, str] = {
+    "bgs": "bgs",
+    "mbgs": "bgs",
+    "bgl": "bgs",
+    "mbgl": "bgs",
+    "ground": "bgs",
+    "ground surface": "bgs",
+    "btoc": "btoc",
+    "mbtoc": "btoc",
+    "toc": "btoc",
+    "top of casing": "btoc",
+}
+
+
+def normalize_water_depth_reference(value: object) -> str:
+    """Map a Water ``depth_reference`` cell to ``bgs`` (default) or ``btoc``."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "bgs"
+    text = " ".join(_clean_text(value).lower().replace("_", " ").split())
+    if not text:
+        return "bgs"
+    resolved = _WATER_DEPTH_REFERENCE_ALIASES.get(text) or _WATER_DEPTH_REFERENCE_ALIASES.get(
+        text.replace(" ", "")
+    )
+    if resolved is None:
+        raise ValueError(
+            f"depth_reference must be bgs (below ground) or btoc (below top of casing); got {value!r}"
+        )
+    return resolved
+
+
 class WaterLevel(BaseModel, frozen=True):
     hole_id: str
     depth: float
@@ -195,6 +226,14 @@ class WaterLevel(BaseModel, frozen=True):
     marker: str | None = None
     connect_group: str = ""
     status: str = "measured"
+    # Datum of ``depth``: "bgs" = metres below ground surface (default) or
+    # "btoc" = metres below top of casing (head = collar + stick-up − depth).
+    depth_reference: str = "bgs"
+
+    @field_validator("depth_reference", mode="before")
+    @classmethod
+    def normalize_depth_reference(cls, value: object) -> str:
+        return normalize_water_depth_reference(value)
 
     @field_validator("hole_id", mode="before")
     @classmethod

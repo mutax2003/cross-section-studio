@@ -271,8 +271,8 @@ def water_has_multiple_series(water_levels) -> bool:
     return len(series_ids) > 1
 
 
-def primary_water_depth_by_hole(water_levels) -> dict[str, float]:
-    """Map hole_id → depth for the primary GW series (last series_id in workbook order).
+def primary_water_level_by_hole(water_levels) -> dict[str, object]:
+    """Map hole_id → WaterLevel for the primary GW series (last series_id in workbook order).
 
     Workbooks typically list older snapshots first; the last distinct ``series_id``
     is treated as the current/primary series for consulting gradient anchors.
@@ -294,7 +294,17 @@ def primary_water_depth_by_hole(water_levels) -> dict[str, float]:
     if not order:
         return {}
     primary_series = order[-1]
-    return {level.hole_id: level.depth for level in by_series[primary_series]}
+    return {level.hole_id: level for level in by_series[primary_series]}
+
+
+def primary_water_depth_by_hole(water_levels) -> dict[str, float]:
+    """Map hole_id → raw ``depth`` for the primary GW series (see
+    ``primary_water_level_by_hole``; heads should come from
+    ``hydro_metrics.water_head_masl``)."""
+    return {
+        hole_id: level.depth  # type: ignore[attr-defined]
+        for hole_id, level in primary_water_level_by_hole(water_levels).items()
+    }
 
 
 def strip_cross_section_prefix(label: str) -> str:

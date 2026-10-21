@@ -811,7 +811,15 @@ class DataParser:
                     "depth": depth,
                     "elevation_masl": elevation_masl,
                 }
-                for col in ("series_id", "series_label", "color", "marker", "connect_group", "status"):
+                for col in (
+                    "series_id",
+                    "series_label",
+                    "color",
+                    "marker",
+                    "connect_group",
+                    "status",
+                    "depth_reference",
+                ):
                     if hasattr(row, col):
                         payload[col] = getattr(row, col)
                 level = WaterLevel.model_validate(payload)

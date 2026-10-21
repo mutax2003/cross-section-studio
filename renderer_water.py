@@ -17,7 +17,6 @@ from matplotlib.transforms import Bbox, offset_copy
 from hydro_metrics import (
     format_gradient_label,
     horizontal_gradients_along_profile,
-    water_head_masl,
     water_status,
 )
 from models import WaterLevel
@@ -1475,12 +1474,10 @@ class RendererWaterMixin:
         """``(value, unit suffix)`` of a water number: RL (masl) in elevation
         mode, depth (mbgs) in relative mode; consulting sheets print no unit."""
         if self.profile.y_axis_mode == "depth_below_collar":
-            return float(level.depth), "mbgs"
-        water_rl = (
-            float(level.elevation_masl)
-            if level.elevation_masl is not None
-            else collar_rl - level.depth
-        )
+            # Vertical depth below ground: btoc readings lose the stick-up,
+            # inclined holes report true vertical depth.
+            return self._water_depth_below_ground(level, collar_rl), "mbgs"
+        water_rl = self._water_head(level, collar_rl)
         if self.profile.layout == "consulting_section":
             return float(water_rl), ""
         return float(water_rl), "m"
@@ -2280,7 +2277,17 @@ class RendererWaterMixin:
             if dry_lookup:
                 dry_x = np.fromiter((p[0] for p in dry_lookup.values()), dtype=float, count=len(dry_lookup))
                 dry_collars = np.fromiter((p[1] for p in dry_lookup.values()), dtype=float, count=len(dry_lookup))
-                dry_y = self._plot_y_values(dry_collars - 1.0, dry_collars)
+                dry_elev = dry_collars - 1.0
+                if getattr(self, "along_hole_tvd", None):
+                    # Note anchors 1 m down the hole (true vertical on surveyed holes).
+                    dry_elev = np.asarray(
+                        [
+                            self._hole_elevation_at_depth(str(hole_id), 1.0, float(collar))
+                            for hole_id, collar in zip(dry_lookup.keys(), dry_collars, strict=True)
+                        ],
+                        dtype=float,
+                    )
+                dry_y = self._plot_y_values(dry_elev, dry_collars)
                 for hole_id, x_profile, y in zip(dry_lookup.keys(), dry_x, dry_y, strict=True):
                     fully_dry_nm_drawn.add(str(hole_id))
                     self._water_status_note(ax, str(hole_id), (float(x_profile), float(y)), "NM")
@@ -2342,7 +2349,7 @@ class RendererWaterMixin:
                     if profile is None:
                         continue
                     x_profile, collar_rl = profile
-                    y = self._plot_y(collar_rl - 1.0, collar_rl)
+                    y = self._plot_y(self._hole_elevation_at_depth(hole_id, 1.0, collar_rl), collar_rl)
                     self._water_status_note(ax, hole_id, (float(x_profile), float(y)), "NM")
             # Draw each connect_group nest separately so shallow/deep do not join.
             for group_id, group_levels in _connect_subgroups(levels).items():
@@ -2361,13 +2368,15 @@ class RendererWaterMixin:
                     x_profile, collar_rl = profile
                     status = water_status(level)
                     if status in {"dry", "nm"}:
-                        y_nm = self._plot_y(collar_rl - 1.0, collar_rl)
+                        y_nm = self._plot_y(
+                            self._hole_elevation_at_depth(hole_id, 1.0, collar_rl), collar_rl
+                        )
                         self._water_status_note(
                             ax, hole_id, (float(x_profile), float(y_nm)), "NM" if status == "nm" else "DRY"
                         )
                         continue
                     xs.append(x_profile)
-                    water_rls.append(water_head_masl(level, collar_rl))
+                    water_rls.append(self._water_head(level, collar_rl))
                     collars.append(collar_rl)
                     measured_levels.append(level)
                 if not xs:
@@ -2483,17 +2492,20 @@ class RendererWaterMixin:
                             self._set_cad_gid(plotted[0], "water")
                         _register_water_line(ax, xs_arr, ys)
                     # Schematic horizontal i = Δh/Δx between adjacent measured heads.
+                    gradient_collars = {
+                        hid: float(profile_lookup[hid][1])
+                        for hid in transect_hole_ids
+                        if hid in profile_lookup
+                    }
                     gradient_segments = horizontal_gradients_along_profile(
                         measured_levels,
                         hole_order=transect_hole_ids,
                         x_by_hole=transect_x,
-                        collar_rl_by_hole={
-                            hid: float(profile_lookup[hid][1])
-                            for hid in transect_hole_ids
-                            if hid in profile_lookup
-                        },
+                        collar_rl_by_hole=gradient_collars,
                         series_id=series_id,
                         connect_group=group_id,
+                        stick_up_by_hole=getattr(self, "stick_up_by_hole", None),
+                        md_to_elevation_by_hole=self._md_to_elevation_by_hole(gradient_collars),
                     )
                     adjacent_pairs = set(
                         zip(transect_hole_ids, transect_hole_ids[1:], strict=False)

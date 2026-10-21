@@ -41,7 +41,7 @@ Optional: `hatch_pattern`, `unit_order` (1 = shallowest).
 
 | Sheet | Columns | Purpose |
 |-------|---------|---------|
-| **Water** | `hole_id`, `depth` **or** `elevation_masl` (not both) | Groundwater markers. Use `depth` (below collar) or `elevation_masl` (RL). Optional: `status` (`measured` default, `dry`, or `nm`), `series_id`, `series_label`, `connect_group` (nest id — only rows with the same group connect), `color`, `marker`. Rows with `dry`/`nm` may omit depth/masl. Up to **4** series can be plotted; choose them on **Configure**. Schematic water lines are **not** a potentiometric surface. |
+| **Water** | `hole_id`, `depth` **or** `elevation_masl` (not both) | Groundwater markers. Use `depth` (along the hole, below ground by default) or `elevation_masl` (RL). Optional `depth_reference`: `bgs` (default; also `mbgs`, `bgl`, `ground`) or `btoc` (also `toc`, `mbtoc`, `top of casing`) — btoc heads are collar + Collars `stick_up_m` − depth (blank stick-up = 0 m, with a Validate warning). Surveyed holes (Deviations sheet) convert water, screen and sample depths to true vertical depth. Optional: `status` (`measured` default, `dry`, or `nm`), `series_id`, `series_label`, `connect_group` (nest id — only rows with the same group connect), `color`, `marker`. Rows with `dry`/`nm` may omit depth/masl. Up to **4** series can be plotted; choose them on **Configure**. Schematic water lines are **not** a potentiometric surface. |
 | **Screens** | `hole_id`, `from_depth`, `to_depth` | Screen interval hatch bands (consulting layout) |
 | **Gradients** | `hole_id`, `direction` (`up` / `down`) | Vertical gradient arrows (consulting layout) |
 | **Deviations** | `hole_id`, `depth`, `inclination_deg`, `azimuth_deg` | Deviated stick paths |

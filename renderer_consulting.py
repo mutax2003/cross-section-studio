@@ -49,7 +49,7 @@ from render_theme import (
     TRACK_FILL_COLOR,
     consulting_section_title,
     export_font_rc,
-    primary_water_depth_by_hole,
+    primary_water_level_by_hole,
     water_has_multiple_series,
 )
 from renderer_common import (
@@ -1001,7 +1001,7 @@ class ConsultingLayoutMixin:
                 collar_rl = collar_lookup.get(level.hole_id)
                 if collar_rl is None:
                     continue
-                water_y = self._plot_y(collar_rl - level.depth, collar_rl)
+                water_y = self._plot_y(self._water_head(level, collar_rl), collar_rl)
                 y_min = min(y_min, water_y)
                 y_max = max(y_max, water_y)
         # Include active environmental sample depths so chloride markers are not clipped.
@@ -1020,7 +1020,10 @@ class ConsultingLayoutMixin:
                 ):
                     if depth is None:
                         continue
-                    sample_y = self._plot_y(collar_rl - float(depth), collar_rl)
+                    sample_y = self._plot_y(
+                        self._hole_elevation_at_depth(reading.hole_id, float(depth), collar_rl),
+                        collar_rl,
+                    )
                     y_min = min(y_min, sample_y)
                     y_max = max(y_max, sample_y)
         ax.set_ylim(y_min - y_pad, y_max + y_pad)
@@ -1358,7 +1361,7 @@ class ConsultingLayoutMixin:
     ) -> None:
         if not vertical_gradients or hole_summary.empty:
             return
-        water_depth_by_hole = primary_water_depth_by_hole(water_levels)
+        water_level_by_hole = primary_water_level_by_hole(water_levels)
         if profile_lookup is None:
             profile_lookup = self._profile_lookup(hole_summary, collar_lookup)
         arrow_len = 0.12 * self.vertical_exaggeration
@@ -1367,8 +1370,12 @@ class ConsultingLayoutMixin:
             if profile is None:
                 continue
             x_profile, collar_rl = profile
-            water_depth = water_depth_by_hole.get(gradient.hole_id, 1.0)
-            anchor_rl = collar_rl - water_depth
+            level = water_level_by_hole.get(gradient.hole_id)
+            anchor_rl = (
+                self._water_head(level, collar_rl)
+                if level is not None
+                else self._hole_elevation_at_depth(gradient.hole_id, 1.0, collar_rl)
+            )
             y = self._plot_y(anchor_rl, collar_rl)
             if gradient.direction == "up":
                 arrow = FancyArrow(

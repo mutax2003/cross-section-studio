@@ -40,7 +40,7 @@ jobs:
             renderer_water.py renderer_chemistry.py hatch_patterns.py lithology_legend_sheet.py \
             batch_export.py docx_export.py export_framing.py hydro_metrics.py \
             app_menubar.py app_version.py app_identity.py app_styles.py \
-            ai_quality.py ui_output_presets.py workbook_template.py \
+            ai_quality.py chemistry_qc.py ui_output_presets.py workbook_template.py \
             gwm_reference advantage_p2_reference \
             tests/test_streamlit_app.py tests/test_pipeline.py tests/test_ingestion.py \
             tests/test_advantage_conversion.py tests/test_vertical_exaggeration.py \
@@ -52,7 +52,8 @@ jobs:
             tests/test_chem_label_qa_round2.py tests/test_chem_label_qa_round3.py \
             tests/test_chem_labels_right_of_column.py \
             tests/test_chem_threshold_consistency_and_dense.py \
-            tests/test_chem_threshold_dots_and_last_hole.py
+            tests/test_chem_threshold_dots_and_last_hole.py \
+            tests/test_chemistry_non_detects.py
 
       - name: Engine coverage gate
         run: |

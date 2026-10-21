@@ -378,6 +378,10 @@ class EnvironmentalReading(BaseModel, frozen=True):
     # One filled row per parameter seeds the Configure editor.
     green_max: float | None = None
     orange_max: float | None = None
+    # Lab non-detect ("<5"): ``value`` holds the reporting detection limit
+    # (RDL) and the figure prints "<5". Threshold colouring treats it as
+    # below that limit, never as a measured 5 (see render_theme).
+    detected: bool = True
 
     @field_validator("hole_id", "parameter", mode="before")
     @classmethod
@@ -437,11 +441,17 @@ class EnvironmentalReading(BaseModel, frozen=True):
         return (self.from_depth + self.to_depth) / 2.0
 
     @property
+    def value_text(self) -> str:
+        """Compact number for the figure: ``"12.2"``, or ``"<5"`` for a non-detect."""
+        prefix = "" if self.detected else "<"
+        return f"{prefix}{self.value:g}"
+
+    @property
     def display_label(self) -> str:
         if self.value_label:
             return self.value_label
         unit_suffix = f" {self.unit}" if self.unit else ""
-        return f"{self.value:g}{unit_suffix}"
+        return f"{self.value_text}{unit_suffix}"
 
 
 class RasterLogStrip(BaseModel, frozen=True):

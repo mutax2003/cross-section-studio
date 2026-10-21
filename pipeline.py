@@ -787,6 +787,9 @@ def render_cross_section_from_geometry(
         qa_notes = tuple(renderer.map_scale_notes(figure)) + tuple(
             getattr(renderer, "raster_notes", None) or ()
         )
+        # Non-detects whose detection limit is above the guideline (threshold
+        # colour mode): printed grey on the figure, named here.
+        qa_notes = tuple(getattr(renderer, "chemistry_rdl_notes", None) or ()) + qa_notes
         # Hole-ID headers that still overprint after every header fallback.
         qa_notes = qa_notes + tuple(renderer.header_overlap_notes(figure))
         # PNG resolution lowered to stay within the raster size cap.

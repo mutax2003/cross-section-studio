@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
@@ -16,6 +16,7 @@ from typing import BinaryIO, Literal
 import pandas as pd
 from rapidfuzz import fuzz
 
+from chemistry_qc import mixed_unit_warnings, rdl_above_guideline_notes
 from constants import CANONICAL_LITHOLOGY_CODES
 from hydro_metrics import (
     absurd_horizontal_gradient_warnings,
@@ -34,6 +35,7 @@ from models import (
 )
 from paths import lithology_aliases_path
 from projection import TransectGeometry
+from render_profiles import chemistry_thresholds_from_readings
 
 logger = logging.getLogger(__name__)
 MAPPING_CONFIDENCE_THRESHOLD = 0.8
@@ -873,8 +875,15 @@ def summarize_environmental_readings(
     collars: Sequence[Collar],
     readings: Sequence[EnvironmentalReading],
     hole_ids_on_transect: Sequence[str],
+    *,
+    thresholds: Mapping[str, tuple[float | None, float | None]] | None = None,
 ) -> EnvironmentalQualitySummary:
-    """Summarize lab/parameter coverage for Validate UI."""
+    """Summarize lab/parameter coverage for Validate UI.
+
+    Also warns about non-detects whose detection limit is above the
+    parameter's green limit (``thresholds``; default: the workbook
+    ``green_max`` values) and parameters reported in more than one unit.
+    """
     transect_holes = tuple(hole_ids_on_transect)
     hole_set = set(transect_holes)
     collar_by_id = {collar.hole_id: collar for collar in collars}
@@ -909,6 +918,12 @@ def summarize_environmental_readings(
                 max_depth=max(depths),
             )
         )
+
+    on_line = [item for items in by_parameter.values() for item in items]
+    warnings.extend(mixed_unit_warnings(on_line))
+    if thresholds is None:
+        thresholds = chemistry_thresholds_from_readings(readings)
+    warnings.extend(rdl_above_guideline_notes(on_line, thresholds))
 
     if not readings and transect_holes:
         warnings.append("No environmental/lab readings on the selected section line.")

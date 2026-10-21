@@ -53,6 +53,7 @@ hiddenimports = [
     "parsing",
     "render_profiles",
     "render_theme",
+    "chemistry_qc",
     "report_export",
     "export_framing",
     "batch_export",

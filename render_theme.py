@@ -49,6 +49,11 @@ CHEMISTRY_FIXED_COLORS: dict[str, str] = {
     "orange": CHEMISTRY_LABEL_ORANGE,
 }
 CHEMISTRY_LABEL_COLOR_NAMES: tuple[str, ...] = LABEL_COLOR_NAMES
+# Threshold mode only: a non-detect whose detection limit (RDL) is above the
+# green limit (guideline) cannot be said to meet or exceed it, so it prints
+# neither green nor red but in this neutral grey (4.8:1 on white, AA). Not a
+# workbook choice: it marks "inconclusive", a QA state, not a band.
+CHEMISTRY_LABEL_INCONCLUSIVE = "#6B7280"
 assert tuple(CHEMISTRY_FIXED_COLORS) == LABEL_COLOR_NAMES
 # Series (marker/stick) colours per parameter. No blue: that is groundwater.
 PARAMETER_PALETTE: tuple[str, ...] = (
@@ -165,15 +170,24 @@ def chemistry_label_color(
     *,
     green_max: float | None = None,
     yellow_max: float | None = None,
+    detected: bool = True,
 ) -> str:
     """Return label colour for a chemistry value: one fixed colour (black
-    default, red for the P2 chloride figures) or G/O/R threshold bands."""
+    default, red for the P2 chloride figures) or G/O/R threshold bands.
+
+    A non-detect (``detected=False``; ``value`` is the detection limit) is
+    green when its limit is at or below ``green_max`` (below the guideline)
+    and :data:`CHEMISTRY_LABEL_INCONCLUSIVE` grey when the limit is above it:
+    the true concentration may be anywhere under the limit, so the result can
+    be neither passed nor failed (never orange or red)."""
     if mode != "threshold":
         return chemistry_fixed_mode_color(mode) or CHEMISTRY_LABEL_BLACK
     if green_max is None or yellow_max is None:
         return CHEMISTRY_LABEL_BLACK
     if value <= green_max:
         return CHEMISTRY_LABEL_GREEN
+    if not detected:
+        return CHEMISTRY_LABEL_INCONCLUSIVE
     if value <= yellow_max:
         # Orange replaces yellow (hard to read on white) — meeting 1 Oct 2026.
         return CHEMISTRY_LABEL_ORANGE

@@ -81,6 +81,8 @@ ENVIRONMENTAL_COLUMNS = (
     "hole_id",
     "parameter",
     "value",
+    # Lab qualifier beside the value, as on a lab EDD: "<" / ND = non-detect.
+    "qualifier",
     "depth",
     "from_depth",
     "to_depth",
@@ -305,6 +307,7 @@ def _sample_environmental() -> list[dict[str, object]]:
             "label_color": "green",
             "green_max": 100,
             "orange_max": 250,
+            "qualifier": "<",
         },
         {
             "hole_id": "MW-01",
@@ -399,7 +402,7 @@ def _column_hints() -> dict[str, dict[str, str]]:
         ENVIRONMENTAL_SHEET: {
             "hole_id": "Must match Collars.hole_id",
             "parameter": "e.g. Chloride, Benzene",
-            "value": "Numeric concentration (use detection limit for ND)",
+            "value": "Numeric concentration; a non-detect may be typed as <5 (5 = detection limit)",
             "depth": "Point sample depth (m) — OR use from/to interval",
             "from_depth": "Interval top (m) if not using depth",
             "to_depth": "Interval base (m) if not using depth",
@@ -408,6 +411,7 @@ def _column_hints() -> dict[str, dict[str, str]]:
             "label_color": "Optional: green, red, black or orange (blue is reserved for groundwater)",
             "green_max": "Optional: this parameter's green limit (values <= print green), same units as value",
             "orange_max": "Optional: this parameter's orange limit (above green, <= this prints orange; higher red)",
+            "qualifier": "Optional: < (or ND) = not detected, value is the detection limit; blank = measured",
         },
         SCREENS_SHEET: {
             "hole_id": "Must match Collars.hole_id",
@@ -466,7 +470,9 @@ def _instructions_lines() -> list[str]:
         "",
         "ENVIRONMENTAL RULES",
         "• Use depth for a point sample, OR from_depth + to_depth for an interval — not both.",
-        "• value_label is optional display text on the figure (e.g. <5 mg/L for non-detects).",
+        "• Non-detects: type <5 in value (or 5 in value and < in qualifier); 5 is the reporting detection limit. The figure prints <5, never a bare 5. ND, n.d., <RDL 5 and ND (5) are accepted; a bare ND needs its limit.",
+        "• Threshold colours: a non-detect whose limit is at or below the green limit prints green; one whose limit is above the green limit prints grey (inconclusive) and is listed in the QA notes.",
+        "• value_label is optional display text on the figure (e.g. <5 mg/L); it wins over the printed value.",
         "• label_color is optional: green, red, black or orange (one fixed colour each; blue is reserved for groundwater). Blank = black, or G/O/R thresholds if set on Configure.",
         "• green_max / orange_max are optional per-parameter limits in the parameter's own units (fill one row per parameter, e.g. Chloride 100 / 250, Benzene 0.5 / 5). Configure seeds its threshold editor from them; parameters without limits use the sheet-wide defaults.",
         "• Select parameters on Configure after upload.",
@@ -1146,6 +1152,7 @@ def export_cleaned_workbook_bytes(
             "hole_id": reading.hole_id,
             "parameter": reading.parameter,
             "value": reading.value,
+            "qualifier": "" if reading.detected else "<",
             "depth": reading.depth if reading.depth is not None else "",
             "from_depth": reading.from_depth if reading.from_depth is not None else "",
             "to_depth": reading.to_depth if reading.to_depth is not None else "",

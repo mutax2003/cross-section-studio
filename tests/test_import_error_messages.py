@@ -179,9 +179,10 @@ def test_missing_lithology_sheet_is_named_when_collars_exists() -> None:
     assert "No **Collars** sheet" in text
 
 
-def test_non_detect_values_point_to_value_label() -> None:
-    """'<10' / 'ND' in the value column were rejected with "enter a number
-    only", with no hint that value_label exists for lab non-detects."""
+def test_non_detect_values_are_accepted_and_over_range_points_to_value_label() -> None:
+    """'<10' in the value column is a lab non-detect: value keeps the
+    detection limit (10) with detected=False. '>1000' (over range) is still
+    rejected, with a hint that value_label exists."""
     from io import BytesIO
 
     import openpyxl
@@ -189,14 +190,19 @@ def test_non_detect_values_point_to_value_label() -> None:
     from models import DataParser
     from workbook_template import build_input_template_bytes
 
-    book = openpyxl.load_workbook(BytesIO(build_input_template_bytes()))
-    sheet = book["Environmental"]
-    header = [cell.value for cell in sheet[1]]
-    value_col = header.index("value") + 1
-    sheet.cell(row=2, column=value_col, value="<10")
-    buffer = BytesIO()
-    book.save(buffer)
-    buffer.seek(0)
-    result = DataParser().parse_file(buffer)
-    messages = [e for e in result.errors if "'<10'" in e]
+    def parse_with(value: str):
+        book = openpyxl.load_workbook(BytesIO(build_input_template_bytes()))
+        sheet = book["Environmental"]
+        header = [cell.value for cell in sheet[1]]
+        sheet.cell(row=2, column=header.index("value") + 1, value=value)
+        buffer = BytesIO()
+        book.save(buffer)
+        buffer.seek(0)
+        return DataParser().parse_file(buffer)
+
+    result = parse_with("<10")
+    assert not [e for e in result.errors if "'<10'" in e], result.errors
+    assert any(r.value == 10.0 and not r.detected for r in result.environmental_readings)
+    result = parse_with(">1000")
+    messages = [e for e in result.errors if "'>1000'" in e]
     assert messages and "value_label" in messages[0], result.errors

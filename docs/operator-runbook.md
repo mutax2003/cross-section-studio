@@ -57,7 +57,7 @@ Help markdown lives in `docs/help/` (bundled for desktop; Docker keeps `docs/hel
 5. Ensure P2 generated PNGs exist under `data/Data2/test_output/` (`fig6_aa_lithology_chlorides.png`, `fig7_bb_lithology_chlorides.png`)
 6. Run parity check: `python scripts/compare_figure_parity.py --suite all` (suite MSE ceilings hard-fail in quality CI; `--warn-only` softens MSE for local soft runs; aspirational visual target remains lower but is not the CI gate). Optional `--require-same-size` only when crops/DPI truly match.
 7. Rebuild Windows desktop: `powershell -File scripts/build_windows.ps1` — produces `dist/CrossSectionStudio-win64-vX.Y.Z.zip`, legacy `CrossSectionStudio-win64.zip`, and `dist/release-manifest.json` (SHA-256 + download URL).
-8. Publish the versioned zip **and** `release-manifest.json` as GitHub Release assets (so Help → Check for updates can fetch the default manifest URL).
+8. Publish the versioned zip **and** `release-manifest.json` as GitHub Release assets (so Help → Check for updates can fetch the default manifest URL). The **Release Windows** workflow (`.github/workflows/release-windows.yml`) does steps 7–8 on a Windows runner: push a `vX.Y.Z` tag matching `VERSION`, or run it from the Actions tab; it attaches `docs/release-notes-X.Y.Z.md` when present.
 9. For Docker: `docker build -t cross-section-studio .`
 10. Streamlit Cloud: push `main`, or `STREAMLIT_API_TOKEN=… python scripts/deploy_streamlit_cloud.py`
 

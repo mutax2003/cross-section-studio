@@ -1,0 +1,63 @@
+name: Release Windows
+
+# Builds the Windows desktop zip with scripts/build_windows.ps1 and publishes it,
+# with release-manifest.json (Help → Check for updates), as GitHub Release v<VERSION>.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim().TrimStart("v", "V")
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$version") {
+            Write-Error "Tag $env:GITHUB_REF_NAME does not match VERSION $version"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Build Windows zip
+        shell: pwsh
+        run: ./scripts/build_windows.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrossSectionStudio-win64-v${{ steps.version.outputs.version }}
+          path: |
+            dist/CrossSectionStudio-win64-v${{ steps.version.outputs.version }}.zip
+            dist/release-manifest.json
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $tag = "v$version"
+          $notes = "docs/release-notes-$version.md"
+          if (-not (Test-Path $notes)) { $notes = $null }
+          $assets = @("dist/CrossSectionStudio-win64-v$version.zip", "dist/release-manifest.json")
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assets --clobber
+          } else {
+            $ghArgs = @("release", "create", $tag) + $assets + @(
+              "--title", "Cross Section Studio $version", "--target", "$env:GITHUB_SHA")
+            if ($notes) { $ghArgs += @("--notes-file", $notes) } else { $ghArgs += @("--notes", "Windows desktop build $version") }
+            gh @ghArgs
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

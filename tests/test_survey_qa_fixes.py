@@ -220,3 +220,21 @@ def test_dry_well_legend_label_reads_cleanly() -> None:
     assert water_status_legend_label(["NM"]) == "NM — not measured"
     assert water_status_legend_label(["NM", "DRY"]) == "NM / DRY — not measured / dry well"
     assert water_status_legend_label(["DRY"], upper=True) == "DRY — DRY WELL"
+
+
+def test_mining_style_negative_collar_dip_is_converted() -> None:
+    """−90 (mining dip, straight down) stays vertical; −60 is 30° off vertical."""
+    from projection import build_along_hole_tvd
+
+    straight_down = Collar(
+        hole_id="M", easting=0.0, northing=0.0, elevation=100.0, total_depth=50.0,
+        inclination_deg=-90.0, azimuth_deg=0.0,
+    )
+    assert "M" not in build_along_hole_tvd([straight_down], [])
+
+    dipping = Collar(
+        hole_id="N", easting=0.0, northing=0.0, elevation=100.0, total_depth=50.0,
+        inclination_deg=-60.0, azimuth_deg=90.0,
+    )
+    tvd = build_along_hole_tvd([dipping], [])["N"]
+    assert abs(tvd.tvd_at(40.0) - 40.0 * math.cos(math.radians(30.0))) < 1e-6

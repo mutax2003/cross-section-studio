@@ -12,7 +12,7 @@
 | `elevation` | float | Collar RL |
 | `total_depth` | float | Metres below collar |
 
-Optional: `elevation_datum`, `inclination_deg`, `azimuth_deg`, `stick_up_m` (metres above collar for MW stick-up).
+Optional: `elevation_datum`, `inclination_deg`, `azimuth_deg`, `stick_up_m` (metres above collar for MW stick-up). `inclination_deg` is degrees from vertical (0 = straight down); a negative value is read as a mining-style dip (−90 = straight down, −60 = 30° off vertical). A collar angle with no Deviations rows draws a straight inclined hole; a Deviations row at depth 0 overrides the collar angles.
 
 ### Lithology
 

@@ -515,7 +515,10 @@ def _collar_orientation_rad(
     if collar_rows:
         top = collar_rows[-1]
         return _deg_to_rad(top.inclination_deg), _deg_to_rad(top.azimuth_deg)
-    return _deg_to_rad(collar.inclination_deg or 0.0), _deg_to_rad(collar.azimuth_deg or 0.0)
+    return (
+        _deg_to_rad(_collar_inclination_from_vertical(collar)),
+        _deg_to_rad(collar.azimuth_deg or 0.0),
+    )
 
 
 def build_minimum_curvature_survey(
@@ -654,9 +657,23 @@ def densify_survey(stations: Sequence[_SurveyStation]) -> list[_SurveyStation]:
     return dense
 
 
+def _collar_inclination_from_vertical(collar: Collar) -> float:
+    """Collars-sheet inclination as degrees from vertical (0 = straight down).
+
+    A negative angle is a mining-style dip (−90 = straight down, −60 = 30°
+    off vertical) and is converted, so a −90 collar stays vertical instead
+    of being drawn nearly horizontal.
+    """
+    inc = float(collar.inclination_deg or 0.0)
+    if -90.0 <= inc < 0.0:
+        return 90.0 + inc
+    return inc
+
+
 def _collar_is_inclined(collar: Collar) -> bool:
-    inc = collar.inclination_deg
-    return inc is not None and abs(float(inc)) > _VERTICAL_INCLINATION_EPS_DEG
+    if collar.inclination_deg is None:
+        return False
+    return abs(_collar_inclination_from_vertical(collar)) > _VERTICAL_INCLINATION_EPS_DEG
 
 
 def _surveyed_hole_readings(
@@ -677,7 +694,7 @@ def _surveyed_hole_readings(
             readings_by_hole.setdefault(reading.hole_id, []).append(reading)
     for collar in collars:
         if collar.hole_id not in readings_by_hole and _collar_is_inclined(collar):
-            inc = float(collar.inclination_deg or 0.0)
+            inc = _collar_inclination_from_vertical(collar)
             if not 0.0 <= inc <= 90.0:
                 logger.warning(
                     "Hole '%s' collar inclination %.1f° is outside 0–90° "

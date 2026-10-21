@@ -2700,7 +2700,12 @@ class RendererWaterMixin:
                         if left_end is not None and right_end is not None:
                             # Its own segment: the label sits along it.
                             gradient_label._gradient_segment = (left_end, right_end)
-            caption_label = label
+            # An unlabelled default series has no name worth printing: the
+            # caption falls back to its datum ("GROUNDWATER LEVEL (masl)").
+            caption_label = (
+                "" if series_id == "default" and not first.series_label and not default_label
+                else label
+            )
             if not first.series_label:
                 # Unlabelled series from one monitoring event: name the date
                 # ("GROUNDWATER LEVEL (2026-04-02)"). Undated: unchanged.

@@ -413,7 +413,7 @@ def test_no_dates_regression() -> None:
     levels = [WaterLevel(hole_id=h, depth=d) for h, d in (("A", 4.0), ("B", 5.0), ("C", 6.0))]
     result, renderer = _section(levels, elevation_mode="absolute")
     (entry,) = renderer.water_series_legend
-    assert entry["level_label"] == "GROUNDWATER LEVEL (DEFAULT)"  # pre-existing caption
+    assert entry["level_label"] == "GROUNDWATER LEVEL (masl)"
     assert not any("readings 20" in n for n in result.qa_notes)
     assert not any("sampling dates" in n for n in result.qa_notes)
     # Identical figure with and without an explicit blank date.

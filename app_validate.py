@@ -400,7 +400,7 @@ def _render_validate_details(
                     )
                 )
             for warning in import_report.warnings:
-                st.warning(warning)
+                _show_qa_message(warning)
 
     if mapping_proposal is not None:
         with st.expander("Column mapping proposal", expanded=False):

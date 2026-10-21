@@ -9,6 +9,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import get_args
 
+import numpy as np
 import pandas as pd
 
 from constants import (
@@ -19,6 +20,7 @@ from constants import (
     WATER_TABLE_OVERLAY_DISCLAIMER,
 )
 from export_framing import ExportFramingConfig, merge_framing_into_profile_updates
+from hydro_metrics import groundwater_flow_notes as _groundwater_flow_notes
 from lithology_codes import collect_lithology_codes
 from models import (
     _XML_ILLEGAL,
@@ -362,6 +364,42 @@ def _check_render_layout(render_layout: str) -> None:
         )
 
 
+def section_groundwater_flow_notes(
+    collars: Sequence[Collar],
+    water_levels: Sequence[WaterLevel] | None,
+    transect_points: Sequence[tuple[float, float]],
+    *,
+    deviation_readings: Sequence[DeviationReading] | None = None,
+    selected_water_series_ids: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    """Plan-view flow QA lines (planar head fit) for the plotted water series.
+
+    Pass every collar / water reading in the workbook — the fit uses all
+    measured wells, not only those on the section. Section bearing is the
+    overall start→end azimuth of the line (polylines included). Cosmetic /
+    QA only: never part of ``geometry_cache_payload``.
+    """
+    if not water_levels:
+        return ()
+    plotted = filter_water_levels_for_plot(
+        water_levels,
+        tuple(selected_water_series_ids) if selected_water_series_ids else None,
+        max_series=MAX_WATER_SERIES,
+    )
+    if not plotted:
+        return ()
+    try:
+        return _groundwater_flow_notes(
+            collars,
+            plotted,
+            transect_azimuth_deg(transect_points),
+            deviation_readings=deviation_readings,
+        )
+    except (ValueError, ArithmeticError, np.linalg.LinAlgError) as exc:
+        logger.warning("Groundwater flow fit skipped: %s", exc)
+        return ()
+
+
 def build_cross_section(
     collars: Sequence[Collar],
     lithologies: Sequence[Lithology],
@@ -425,12 +463,18 @@ def build_cross_section(
     screen_intervals: Sequence[ScreenInterval] | None = None,
     vertical_gradients: Sequence[VerticalGradient] | None = None,
     export_framing: ExportFramingConfig | None = None,
+    groundwater_flow_notes: Sequence[str] | None = None,
 ) -> CrossSectionResult:
     """Project, build stratigraphy, render. Returns ``CrossSectionResult`` (also unpackable as a 7-tuple).
 
     ``vertical_exaggeration``: ``None`` (default) = auto — the section fills the
     page and every VE caption prints the true VE measured after final layout;
     a number draws exactly that VE (plot box locked, centred in its frame).
+
+    ``groundwater_flow_notes``: ``None`` (default) fits a head plane through
+    every measured well in ``collars`` / ``water_levels`` (≥3 non-collinear
+    wells per series) and adds the plan-view flow line to the QA notes; pass
+    ``()`` to suppress or precomputed lines (e.g. from the full workbook).
     """
     export_formats = _normalize_export_formats(export_formats)
     interpretation_mode = validate_interpretation_mode(interpretation_mode)
@@ -442,6 +486,14 @@ def build_cross_section(
     if not math.isfinite(track_width_m) or track_width_m <= 0:
         raise ValueError("track_width_m must be a positive finite number")
     _check_render_layout(render_layout)
+    if groundwater_flow_notes is None:
+        groundwater_flow_notes = section_groundwater_flow_notes(
+            collars,
+            water_levels,
+            transect_points,
+            deviation_readings=deviation_readings,
+            selected_water_series_ids=selected_water_series_ids,
+        )
     geometry = compute_section_geometry(
         collars,
         lithologies,
@@ -509,6 +561,7 @@ def build_cross_section(
         screen_intervals=screen_intervals,
         vertical_gradients=vertical_gradients,
         export_framing=export_framing,
+        groundwater_flow_notes=groundwater_flow_notes,
     )
 
 
@@ -567,6 +620,7 @@ def render_cross_section_from_geometry(
     vertical_gradients: Sequence[VerticalGradient] | None = None,
     export_framing: ExportFramingConfig | None = None,
     close_figure: bool = True,
+    groundwater_flow_notes: Sequence[str] = (),
 ) -> CrossSectionResult:
     """Render/export from precomputed ``SectionGeometry`` (Prepare can reuse Generate geometry).
 
@@ -724,7 +778,10 @@ def render_cross_section_from_geometry(
         export_framing.fence_only or not export_framing.include_title_block
     ):
         effective_consulting_block = None
-    qa_lines = overlap_warnings
+    # Plan-view flow (planar head fit) only matters when water is drawn; the
+    # lines are QA text, never geometry (post-cache, outside the cache key).
+    flow_notes = tuple(groundwater_flow_notes or ()) if plotted_water else ()
+    qa_lines = tuple(overlap_warnings) + flow_notes
     if export_framing is not None and not export_framing.include_qa_footer:
         qa_lines = ()
     # Scrub XML-1.0-illegal control characters so the SVG backend cannot emit
@@ -807,6 +864,7 @@ def render_cross_section_from_geometry(
         qa_notes = qa_notes + tuple(renderer.header_overlap_notes(figure))
         # PNG resolution lowered to stay within the raster size cap.
         qa_notes = qa_notes + tuple(getattr(renderer, "raster_notes", None) or ())
+        qa_notes = qa_notes + flow_notes
         # Surface them with the other section notes the app shows after Generate.
         overlap_warnings = tuple(overlap_warnings) + qa_notes
         retained: dict[str, object] | None = None

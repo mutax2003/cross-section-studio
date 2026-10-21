@@ -42,6 +42,14 @@ Inter-hole fills are a **rule-based fence** (linear contacts, midpoint pinch-out
 - Chemistry label style (**Label readability over hatched fills**): **Clear strip beside borehole** (default — values sit on a clean white strip right of the column), **Plain coloured text**, **White box**, **Coloured dot, black text**, or **Outlined (white halo) text**. Values stay beside their own borehole in depth order; a value moved off its reading gets a thin leader. Values with no room at the page scale are left off and listed in the section notes (markers stay).
 - When water connectors plot, adjacent measured heads may show a schematic **i=Δh/Δx** label. Validate warns if \|i\| is unrealistically large.
 
+### Plan-view flow direction (planar head fit)
+
+- **Validate → Data health details → Groundwater** fits a plane `h = a·E + b·N + c` through **every measured well in the workbook** (not only the section holes) for each water series / `connect_group` nest — the classic three-point problem, extended to least squares when there are more than three wells. Heads use the same datum rules as the section (`btoc` minus stick-up, surveyed holes at true vertical depth); plan position is the collar easting/northing. Dry / NM readings are left out and the last reading per hole is used.
+- The table lists the wells used, the flow direction (**toward** the azimuth of decreasing head, degrees clockwise from grid north, e.g. `toward 128° (SE)`), the gradient **i = \|∇h\|**, R² and the largest residual (three wells fit exactly, so R² is shown as *exact*), and how the active section line sits relative to flow: **along section** (< 20°), **oblique**, or **nearly perpendicular** (> 70°). A polyline section uses its overall start → end bearing.
+- Warnings: wells nearly in a line (direction cannot be fitted); heads not planar (R² < 0.8 with four or more wells, or a residual > 0.5 m — possible mounding, pumping, or mixed aquifers); flow nearly perpendicular to the section.
+- **Apparent gradients:** an on-section **i=Δh/Δx** label is only the component of the true gradient along the line, \|∇h\|·cos θ. On an oblique section it understates the gradient, and on a section across flow it says little about flow at all. With at least three non-collinear wells the section notes (and the PDF QA page) add a line such as *Groundwater flow (planar fit, 5 wells): toward 128° (SE), i = 0.004; section is oblique (42°) — gradients shown are apparent.*
+- This is a screening estimate from a planar surface, **not a calibrated flow model** and not a contoured potentiometric map: it assumes one aquifer, a uniform gradient and heads measured at the same time.
+
 ## Keyboard shortcuts
 
 - **Alt+Shift+G** (Option+Shift+G on macOS) — Generate section (same as **File → Generate section**). Full list: **Help → Keyboard shortcuts**.

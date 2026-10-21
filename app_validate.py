@@ -135,6 +135,57 @@ def render_skipped_rows(parse_errors: Sequence[str]) -> None:
         st.caption("Column rules and examples: Help → Workbook & data entry.")
 
 
+def _render_groundwater_flow(
+    parse_result: Any, section_points: Sequence[tuple[float, float]]
+) -> None:
+    """Plan-view flow per series from a planar head fit over every measured well."""
+    from hydro_metrics import (
+        fit_head_planes,
+        format_flow_direction,
+        head_plane_fit_warnings,
+        section_flow_relation,
+    )
+    from projection import transect_azimuth_deg
+
+    fits = fit_head_planes(
+        parse_result.collars,
+        parse_result.water_levels,
+        deviation_readings=parse_result.deviation_readings,
+    )
+    if not fits:
+        return
+    section_az = transect_azimuth_deg(list(section_points)) if len(section_points) >= 2 else None
+    st.markdown("**Plan-view flow** (planar head fit, all measured wells — screening only)")
+    st.markdown("| Series | Wells used | Flow | i | R² | Max residual | Section line |")
+    st.markdown("| --- | --- | --- | ---: | ---: | ---: | --- |")
+    messages: list[str] = []
+    for fit in fits:
+        relation = section_flow_relation(fit, section_az)
+        if relation is not None:
+            section_text = f"{relation.classification} ({relation.angle_deg:.0f}°)"
+        elif section_az is None:
+            section_text = "no section line"
+        else:
+            section_text = "—"
+        usable = fit.usable
+        r2 = f"{fit.r_squared:.2f}" if fit.r_squared is not None else (
+            "exact" if usable and fit.method == "3-point" else "—"
+        )
+        st.markdown(
+            f"| `{escape(fit.display_label)}` | {escape(', '.join(fit.hole_ids))} | "
+            f"{format_flow_direction(fit)} | "
+            f"{f'{fit.gradient:.2g}' if usable else '—'} | {r2} | "
+            f"{f'{fit.max_abs_residual_m:.2f} m' if usable else '—'} | {section_text} |"
+        )
+        messages.extend(head_plane_fit_warnings(fit, relation))
+    if section_az is not None and len(section_points) > 2:
+        st.caption(
+            f"Section bearing {section_az:.0f}° uses the polyline's overall start → end direction."
+        )
+    for message in messages:
+        st.warning(message)
+
+
 def _render_validate_details(
     *,
     parse_result: Any,
@@ -147,6 +198,7 @@ def _render_validate_details(
     missing_col: str,
     get_assistant: Callable[[], AIAssistant],
     show_blocking_fix_coach: bool,
+    section_points: Sequence[tuple[float, float]] = (),
 ) -> None:
     skipped_count = len(parse_result.errors)
     skipped_holes = lithology_skipped_holes(parse_result.errors)
@@ -183,6 +235,7 @@ def _render_validate_details(
                 )
             for message in water_summary.warnings:
                 st.warning(message)
+            _render_groundwater_flow(parse_result, section_points)
 
     if parse_result.screen_intervals:
         from ai_quality import summarize_screen_intervals
@@ -592,6 +645,14 @@ def render_validate_step(*, show_coach: bool = True) -> None:
         st.caption(assist_caption)
 
     active_transect = st.session_state.get("transect_selection")
+    section_points: tuple[tuple[float, float], ...] = ()
+    if isinstance(active_transect, (tuple, list)) and len(active_transect) >= 2:
+        try:
+            section_points = tuple(
+                (float(point[0]), float(point[1])) for point in active_transect[1]
+            )
+        except (TypeError, ValueError, IndexError):
+            section_points = ()
     scope_hole_ids: tuple[str, ...]
     if (
         isinstance(active_transect, (tuple, list))
@@ -668,6 +729,7 @@ def render_validate_step(*, show_coach: bool = True) -> None:
         scope_caption=scope_caption,
         missing_col=missing_col,
         get_assistant=get_assistant,
+        section_points=section_points,
     )
 
     if compact:

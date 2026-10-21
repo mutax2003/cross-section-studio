@@ -17,6 +17,7 @@ from models import (
     Transect,
     subset_parse_result,
 )
+from pipeline import section_groundwater_flow_notes
 from projection import off_transect_warnings
 from render_profiles import ChemistryLabelStyle
 from section_build_request import SectionBuildRequest
@@ -391,6 +392,15 @@ def generate_cross_section(
             # workbook's Deviations sheet is silently ignored on Generate.
             "deviation_readings": tuple(request.deviation_readings)
             or tuple(subset.deviation_readings),
+            # Plan-view flow uses every measured well in the workbook, not only
+            # the section holes in ``subset`` (QA text; not in the geometry key).
+            "groundwater_flow_notes": section_groundwater_flow_notes(
+                parse_result.collars,
+                parse_result.water_levels,
+                transect_points_tuple,
+                deviation_readings=parse_result.deviation_readings,
+                selected_water_series_ids=request.selected_water_series_ids or None,
+            ),
         }
     )
     # Reuse Configure-warmed subset JSON when hole set + workbook signature match

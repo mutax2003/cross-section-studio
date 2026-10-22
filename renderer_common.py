@@ -7,8 +7,9 @@ from collections.abc import Callable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
-from matplotlib.backends.backend_agg import RendererAgg
+from matplotlib.backends.backend_agg import FigureCanvasAgg, RendererAgg
 from matplotlib.collections import PolyCollection
+from matplotlib.figure import Figure
 from matplotlib.patches import PathPatch, Polygon, Rectangle
 from matplotlib.path import Path
 from matplotlib.text import Annotation, Text
@@ -1946,6 +1947,19 @@ def draw_without_rendering_fast(fig) -> None:
     finally:
         for arrow in arrows:
             arrow.__dict__.pop("draw", None)
+
+
+def new_figure(figsize: tuple[float, float], **kwargs) -> Figure:
+    """A standalone Figure on its own Agg canvas, never registered with pyplot.
+
+    pyplot's figure registry is process-wide: with two sessions rendering, a
+    figure-number clash or another thread's ``plt.close`` destroyed this
+    figure's manager and reset its canvas to a bare ``FigureCanvasBase`` (no
+    ``get_renderer``). ``plt.close`` on a standalone figure is a harmless no-op.
+    """
+    fig = Figure(figsize=figsize, **kwargs)
+    FigureCanvasAgg(fig)
+    return fig
 
 
 def settle_figure_layout(fig) -> None:

@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
@@ -18,7 +17,7 @@ from lithology_codes import collect_lithology_codes
 from models import WaterLevel
 from render_profiles import CHART_PROFILE
 from render_theme import AXES_BG, FIGURE_BG, GRID_COLOR, LABEL_COLOR, STICK_COLOR, SURFACE_COLOR
-from renderer_common import apply_true_value_y_axis, fit_label
+from renderer_common import apply_true_value_y_axis, fit_label, new_figure
 from stratigraphy import GeologicalPolygon
 
 
@@ -209,7 +208,8 @@ class ChartLayoutMixin:
         self._chart_collar_markers_drawn = False
         try:
             fig_width = 13.5 if self.show_legend else 12.0
-            fig, ax = plt.subplots(figsize=(fig_width, 6.8))
+            fig = new_figure((fig_width, 6.8))
+            ax = fig.add_subplot()
             fig.patch.set_facecolor(FIGURE_BG)
             ax.set_facecolor(AXES_BG)
             self._ve_main_ax = ax

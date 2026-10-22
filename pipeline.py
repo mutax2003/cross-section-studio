@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import math
-import threading
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import get_args
@@ -54,6 +53,7 @@ from projection import (
     project_boreholes,
     transect_azimuth_deg,
 )
+from render_lock import RENDER_LOCK
 from render_profiles import (
     ChemistryLabelStyle,
     LayoutMode,
@@ -75,11 +75,9 @@ from stratigraphy import (
 
 logger = logging.getLogger(__name__)
 
-# pyplot keeps process-wide figure state (figure manager, current figure):
-# two Streamlit sessions rendering at once replaced each other's canvas with
-# a bare FigureCanvasBase ("no attribute get_renderer"). Every render → export
-# → close (and the later export of a retained figure) runs under this lock.
-_RENDER_LOCK = threading.RLock()
+# Matplotlib keeps process-wide state; every render → export → close (and the
+# later export of a retained figure) runs under this lock (see render_lock.py).
+_RENDER_LOCK = RENDER_LOCK
 
 CROSSING_CORRELATION_PREFIX = "Crossing correlation"
 FENCE_NOTE_PREFIXES = (CROSSING_CORRELATION_PREFIX, "Fence clipped")

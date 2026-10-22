@@ -26,6 +26,8 @@ from constants import (  # noqa: E402
     USGS_LITHOLOGY_COLORS,
     get_lithology_style,
 )
+from render_lock import RENDER_LOCK  # noqa: E402
+from renderer_common import new_figure  # noqa: E402
 
 _PATTERN_NAMES = {
     "": "plain",
@@ -68,11 +70,12 @@ def build_legend_sheet_png(
     title: str = "Lithology legend",
 ) -> bytes:
     """PNG legend sheet listing ``codes`` (default: the whole palette)."""
-    with plt.rc_context({"hatch.color": HATCH_LINE_COLOR, "hatch.linewidth": 0.65}):
+    # rc_context changes process-wide rcParams: hold the render lock so a
+    # concurrent section render never draws with these hatch settings.
+    with RENDER_LOCK, plt.rc_context({"hatch.color": HATCH_LINE_COLOR, "hatch.linewidth": 0.65}):
         fig = build_legend_sheet_figure(codes, columns=columns, dpi=dpi, title=title)
         buffer = BytesIO()
         fig.savefig(buffer, format="png", dpi=dpi)
-        plt.close(fig)
     return buffer.getvalue()
 
 
@@ -97,10 +100,10 @@ def build_legend_sheet_figure(
     width_in = columns * col_w_in + 0.3
     height_in = rows * ROW_H_IN + 1.0
 
-    with plt.rc_context(
+    with RENDER_LOCK, plt.rc_context(
         {"hatch.color": HATCH_LINE_COLOR, "hatch.linewidth": 0.65, "font.size": FONT_PT}
     ):
-        fig = plt.figure(figsize=(width_in, height_in), dpi=dpi)
+        fig = new_figure((width_in, height_in), dpi=dpi)
         ax = fig.add_axes((0, 0, 1, 1))
         ax.set_xlim(0, width_in)
         ax.set_ylim(height_in, 0)

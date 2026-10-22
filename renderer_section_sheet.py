@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.figure import Figure
 
 from lithology_codes import collect_lithology_codes
 from models import WaterLevel
 from render_theme import AXES_BG, FIGURE_BG, GRID_COLOR, LABEL_COLOR
-from renderer_common import apply_true_value_y_axis, legend_source_keys, settle_figure_layout
+from renderer_common import (
+    apply_true_value_y_axis,
+    legend_source_keys,
+    new_figure,
+    settle_figure_layout,
+)
 from stratigraphy import GeologicalPolygon
 
 # Clearance between the threshold key and the footer lines below it.
@@ -39,7 +43,8 @@ class SectionSheetLayoutMixin:
         lithology_codes: Sequence[str] | None = None,
     ) -> Figure:
         fig_width = 14.0 if self.show_legend else 12.5
-        fig, ax = plt.subplots(figsize=(fig_width, 7.2))
+        fig = new_figure((fig_width, 7.2))
+        ax = fig.add_subplot()
         fig.patch.set_facecolor(FIGURE_BG)
         ax.set_facecolor(AXES_BG)
         self._ve_main_ax = ax

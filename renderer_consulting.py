@@ -14,9 +14,9 @@ from dataclasses import dataclass
 
 import matplotlib as mpl
 import matplotlib.image as mpimg
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.axes import Axes
 from matplotlib.backends.backend_agg import RendererAgg
 from matplotlib.figure import Figure
 from matplotlib.font_manager import FontProperties
@@ -65,6 +65,7 @@ from renderer_common import (
     add_ve_caption,
     fit_label,
     fitted_x_locators,
+    new_figure,
     pinch_out_key_artist,
     release_twins,
     settle_figure_layout,
@@ -714,7 +715,7 @@ class ConsultingLayoutMixin:
 
         ctx = self._hole_context(projected_df)
         # Lock letter landscape (11×8.5 in) so PNG/PDF match client page extracts.
-        fig = plt.figure(figsize=(11.0, 8.5))
+        fig = new_figure((11.0, 8.5))
         fig.patch.set_facecolor(CONSULTING_FIGURE_BG)
         # right=0.95 leaves room for the twin RL axis label; at 0.97 it fell
         # off the fixed letter page and was silently dropped from PNG/PDF.
@@ -873,7 +874,7 @@ class ConsultingLayoutMixin:
                 column_half_m=track_half,
             )
 
-            ax_right: plt.Axes | None = None
+            ax_right: Axes | None = None
             if self.profile.show_dual_y_axes:
                 ax_right = ax.twinx()
                 ax_right.set_ylim(ax.get_ylim())

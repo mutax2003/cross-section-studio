@@ -11,7 +11,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from io import BytesIO
 
-import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
 from export_framing import _sanitize_stem
@@ -23,6 +22,7 @@ from pipeline import (
     render_cross_section_from_geometry,
     section_groundwater_flow_notes,
 )
+from renderer_common import new_figure
 from section_build_request import SectionBuildRequest
 
 # Default batch deliverables skip SVG encode (usually the slowest); opt in via export_formats.
@@ -505,7 +505,8 @@ def _cover_page_pdf(title: str, subtitle: str, *, page_size_in: tuple[float, flo
     the page to the text, a non-standard ~489 x 624 pt sheet)."""
     buffer = BytesIO()
     with PdfPages(buffer) as pdf:
-        cover, ax = plt.subplots(figsize=page_size_in)
+        cover = new_figure(page_size_in)
+        ax = cover.add_subplot()
         ax.axis("off")
         ax.text(
             0.5,
@@ -520,7 +521,6 @@ def _cover_page_pdf(title: str, subtitle: str, *, page_size_in: tuple[float, flo
         )
         ax.text(0.5, 0.45, subtitle, ha="center", va="center", fontsize=12, transform=ax.transAxes)
         pdf.savefig(cover)
-        plt.close(cover)
     return buffer.getvalue()
 
 

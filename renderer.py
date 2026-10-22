@@ -1438,7 +1438,15 @@ class CrossSectionRenderer(
         style_cache: dict,
         lithology_codes: list[str],
         polygons: list[GeologicalPolygon],
+        *,
+        swatch_alpha: float | None = None,
     ) -> None:
+        """Outside lithology legend.
+
+        ``swatch_alpha`` is the fence fill's alpha: the swatches are drawn
+        with it so they match the (paler) translucent fence, not an opaque
+        colour the section never shows.
+        """
         legend_handles = []
         for code in lithology_codes:
             style = self._resolve_style(code, style_cache)
@@ -1448,6 +1456,7 @@ class CrossSectionRenderer(
                     edgecolor=POLYGON_EDGE_COLOR,
                     hatch=style.hatch or None,
                     linewidth=0.75,
+                    alpha=swatch_alpha,
                     # Long codes wrap to two lines, then ellipsize (a 120-
                     # character code pushed the legend past the page edge).
                     label=fit_label(code, max_chars=LEGEND_LABEL_MAX_CHARS),

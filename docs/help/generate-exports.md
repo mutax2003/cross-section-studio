@@ -54,7 +54,7 @@ Download SVG for drafting. With **CAD-friendly SVG layers** on, export promotes 
 
 ## Vertical exaggeration on exports
 
-With **Auto (fit page)** (the default) the figure fills the page and the VE caption shows the VE actually printed (e.g. `VERTICAL EXAGGERATION ≈2.2×`); it is re-measured for the export page preset, so the PNG, PDF and SVG captions match the sheet they are on. Pick a number (1×, 2×, 5×, …) to draw exactly that VE on every page: the plot keeps its proportions and shrinks inside its frame instead of stretching.
+With **Auto (fit page)** (the default) the figure fills the page and the VE caption shows the VE actually printed (e.g. `≈2.2× VERTICAL EXAGGERATION`); it is re-measured for the export page preset, so the PNG, PDF and SVG captions match the sheet they are on. Pick a number (1×, 2×, 5×, …) to draw exactly that VE on every page: the plot keeps its proportions and shrinks inside its frame instead of stretching.
 
 A workbook **Project** tab `vertical_exaggeration` (a number such as `5`, or `auto`) sets the starting choice when the workbook is uploaded; a new workbook without one, or **Clear workbook**, returns to Auto. A VE you pick yourself stays when you switch **Output style** (it is not reset to the workbook or style default). **Chemistry columns** (P2 style) is always drawn at exactly 1× and its VE control is locked.
 

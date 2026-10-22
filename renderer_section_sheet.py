@@ -161,14 +161,25 @@ class SectionSheetLayoutMixin:
             self._draw_ve_annotation(ax)
 
         if self.show_legend and lithology_codes:
-            self._draw_legend(ax, style_cache, lithology_codes, polygons)
+            self._draw_legend(
+                ax, style_cache, lithology_codes, polygons, swatch_alpha=self.profile.fence_alpha
+            )
             ground = self.profile.show_ground_surface and len(hole_summary) >= 2
-            self._rebuild_outside_legend(ax, self._legend_extra_keys(ax, ground_surface=ground))
+            extras = self._legend_extra_keys(ax, ground_surface=ground)
+            # The groundwater series key joins the lithology legend outside the
+            # frame: in the plot (lower left) it sat over the geology.
+            water_key = next((a for a in ax.artists if a.get_gid() == "water_series_key"), None)
+            if water_key is not None:
+                extras = legend_source_keys(water_key) + extras
+                water_key.remove()
+            self._rebuild_outside_legend(
+                ax, extras, title="Legend" if water_key is not None else None
+            )
 
         y_label = (
             "Depth below collar (m)"
             if self.profile.y_axis_mode == "depth_below_collar"
-            else "Elevation (m RL)"
+            else "Elevation (masl)"
         )
         ax.set_ylabel(y_label, fontsize=10, labelpad=8)
         # Data are plotted at value*VE; label the axis with the true values.

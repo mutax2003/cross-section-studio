@@ -141,7 +141,7 @@ def test_auto_caption_follows_export_page() -> None:
         export_formats=frozenset({"svg"}),
         export_framing=ExportFramingConfig(page_preset="tabloid_landscape"),
     )
-    pattern = re.compile(r"VERTICAL EXAGGERATION ≈([\d.]+)×")
+    pattern = re.compile(r"≈([\d.]+)× VERTICAL EXAGGERATION")
     portrait_ve = pattern.search(portrait.svg_bytes.decode("utf-8", "ignore"))
     landscape_ve = pattern.search(landscape.svg_bytes.decode("utf-8", "ignore"))
     assert portrait_ve and landscape_ve
@@ -208,7 +208,10 @@ def test_format_ve_caption_wording() -> None:
     assert format_ve_caption(1.0, auto=False) == "NO VERTICAL EXAGGERATION"
     assert format_ve_caption(5.0, auto=False) == "5× VERTICAL EXAGGERATION"
     assert format_ve_caption(2.5, auto=False) == "2.5× VERTICAL EXAGGERATION"
-    assert format_ve_caption(2.2349, auto=True) == "VERTICAL EXAGGERATION ≈2.2×"
+    # One wording family: value first, chosen or measured (QA round 7).
+    assert format_ve_caption(2.2349, auto=True) == "≈2.2× VERTICAL EXAGGERATION"
+    assert format_ve_caption(None, auto=True) == "AUTO VERTICAL EXAGGERATION"
     assert format_ve_caption(1.03, auto=True) == "NO VERTICAL EXAGGERATION"
     assert format_ve_caption(12.6, auto=True, style="short") == "V.E. ≈13×"
-    assert format_ve_caption(5.0, auto=False, style="footer") == "VE: 5×"
+    assert format_ve_caption(5.0, auto=False, style="footer") == "V.E. 5×"
+    assert format_ve_caption(1.0, auto=False, style="footer") == "No V.E. (1×)"

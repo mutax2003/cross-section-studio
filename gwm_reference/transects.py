@@ -44,7 +44,7 @@ def _title_block(
     start_secondary: str,
     end_primary: str,
     end_secondary: str,
-    notes: tuple[str, ...] = ("NOTE: masl DENOTES METRES ABOVE SEA LEVEL.",),
+    notes: tuple[str, ...] = ("masl DENOTES METRES ABOVE SEA LEVEL.",),
 ) -> ConsultingTitleBlock:
     return ConsultingTitleBlock(
         section_label=section_label,

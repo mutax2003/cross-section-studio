@@ -188,7 +188,8 @@ def chemistry_label_color(
     be neither passed nor failed (never orange or red)."""
     if mode != "threshold":
         return chemistry_fixed_mode_color(mode) or CHEMISTRY_LABEL_BLACK
-    if green_max is None or yellow_max is None:
+    # No limit set (blank or NaN): black, never a generic band.
+    if green_max is None or yellow_max is None or green_max != green_max or yellow_max != yellow_max:
         return CHEMISTRY_LABEL_BLACK
     if value <= green_max:
         return CHEMISTRY_LABEL_GREEN
@@ -211,8 +212,11 @@ def chemistry_threshold_bands(
     :func:`chemistry_label_color` (green <= green_max < orange <= yellow_max < red).
 
     The range text lets a figure state each band in words so it reads without
-    colour discrimination (WCAG 1.4.1).
+    colour discrimination (WCAG 1.4.1). A parameter with no limit set (NaN
+    limits) has one band: black, "(no limit set)".
     """
+    if green_max is None or yellow_max is None or green_max != green_max or yellow_max != yellow_max:
+        return (("black", CHEMISTRY_LABEL_BLACK, "(no limit set)"),)
     low, high = _fmt_threshold(green_max), _fmt_threshold(yellow_max)
     return (
         ("green", CHEMISTRY_LABEL_GREEN, f"\u2264 {low}"),

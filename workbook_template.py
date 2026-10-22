@@ -166,7 +166,7 @@ def _sample_project() -> dict[str, str]:
         "transect_end": "A' / SOUTHEAST",
         "vertical_exaggeration": "5",
         "figure_preset": "gwm_fence",
-        "notes": "NOTE: masl DENOTES METRES ABOVE SEA LEVEL.",
+        "notes": "masl DENOTES METRES ABOVE SEA LEVEL.",
     }
 
 

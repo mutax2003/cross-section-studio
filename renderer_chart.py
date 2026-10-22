@@ -318,13 +318,13 @@ class ChartLayoutMixin:
             # The chart has no title block: the VE note is its only VE caption.
             self._draw_ve_annotation(ax)
             if self.show_legend and lithology_codes:
-                self._draw_legend(ax, style_cache, lithology_codes, polygons)
+                self._draw_legend(ax, style_cache, lithology_codes, polygons, swatch_alpha=0.92)
                 self._extend_chart_legend(ax, hole_summary, water_levels, profile_lookup)
 
             ax.set_xlabel("Distance along transect (m)", fontsize=10, labelpad=8)
             depth_mode = self.profile.y_axis_mode == "depth_below_collar"
             ax.set_ylabel(
-                "Depth below collar (m)" if depth_mode else "Elevation (m)",
+                "Depth below collar (m)" if depth_mode else "Elevation (masl)",
                 fontsize=10,
                 labelpad=8,
             )
@@ -443,8 +443,8 @@ class ChartLayoutMixin:
             depth = collar_depths.get(row.hole_id)
             depth_text = f"{depth:.1f} m TD" if depth is not None else ""
             # The collar RL rides in the header box: as a separate label it
-            # sat under the box and only "m RL" showed.
-            rl_text = f"{float(row.collar_elevation):.1f} m RL"
+            # sat under the box and only "m RL" showed (now "masl", as the axis).
+            rl_text = f"{float(row.collar_elevation):.1f} masl"
             hole_id = fit_label(str(row.hole_id))
             lines = [hole_id, depth_text, rl_text]
             labels.append(

@@ -125,29 +125,21 @@ def format_ve_value(ve: float, *, auto: bool) -> str:
 def format_ve_caption(ve: float | None, *, auto: bool, style: str = "consulting") -> str:
     """VE wording for the figure.
 
-    ``style``: ``"consulting"`` (subtitle band, upper case), ``"short"``
-    (in-plot "V.E." note) or ``"footer"`` (metadata footer item).
+    One family per sheet register: ``"consulting"`` (subtitle band, upper
+    case, value first as on the client sheets: "5× VERTICAL EXAGGERATION",
+    "≈2.2× VERTICAL EXAGGERATION"); ``"short"`` (in-plot note) and
+    ``"footer"`` (metadata footer item) share the "V.E. 5×" form.
     """
     if ve is None or not np.isfinite(ve) or ve <= 0:
-        return {
-            "consulting": "VERTICAL EXAGGERATION: AUTO",
-            "short": "V.E. auto",
-            "footer": "VE: auto",
-        }.get(style, "VE: auto")
+        return "AUTO VERTICAL EXAGGERATION" if style == "consulting" else "V.E. auto"
     unit = is_unit_ve(ve, auto=auto)
     if style == "consulting":
         if unit:
             return "NO VERTICAL EXAGGERATION"
-        if auto:
-            return f"VERTICAL EXAGGERATION {format_ve_value(ve, auto=True)}"
-        return f"{format_ve_value(ve, auto=False)} VERTICAL EXAGGERATION"
-    if style == "short":
-        if unit:
-            return "No V.E. (1×)"
-        return f"V.E. {format_ve_value(ve, auto=auto)}"
+        return f"{format_ve_value(ve, auto=auto)} VERTICAL EXAGGERATION"
     if unit:
-        return "VE: none (1×)"
-    return f"VE: {format_ve_value(ve, auto=auto)}"
+        return "No V.E. (1×)"
+    return f"V.E. {format_ve_value(ve, auto=auto)}"
 
 
 class VECaptionText(Text):
@@ -2243,6 +2235,20 @@ def legend_source_keys(legend) -> list[tuple[object, str]]:
     ]
 
 
+# pH is not a concentration and keeps its lower-case p: the chemistry pass
+# keys every parameter as "<NAME> CONCENTRATION (<unit>)" in upper case, which
+# printed "PH CONCENTRATION (-)".
+_PH_LEGEND_RE = re.compile(
+    r"^\s*ph\b(?:\s+concentration)?\s*(?:\(\s*(?:-|–|—|s\.?u\.?|ph(?:\s+units?)?|units?)?\s*\))?\s*$",
+    re.IGNORECASE,
+)
+
+
+def parameter_legend_text(label: str) -> str:
+    """Legend wording for a chemistry key: ``"pH"`` for any pH label, else ``label``."""
+    return "pH" if _PH_LEGEND_RE.match(str(label)) else str(label)
+
+
 def parameter_legend_keys(entries, *, draw_markers: bool, upper: bool = False) -> list[tuple[object, str]]:
     """``(handle, label)`` per chemistry legend entry (``parameter_series_legend``)."""
     from matplotlib.lines import Line2D
@@ -2250,7 +2256,7 @@ def parameter_legend_keys(entries, *, draw_markers: bool, upper: bool = False) -
     keys: list[tuple[object, str]] = []
     for entry in entries or ():
         label = str(entry.get("label") or entry.get("parameter") or "Parameter")
-        label = label.upper() if upper else label
+        label = parameter_legend_text(label.upper() if upper else label)
         # Each parameter's own marker shape (set per entry by the chemistry
         # pass) keys its samples, with or without markers on the section.
         marker = entry.get("marker") or "o"

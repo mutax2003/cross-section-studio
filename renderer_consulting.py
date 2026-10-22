@@ -65,6 +65,7 @@ from renderer_common import (
     add_ve_caption,
     fit_label,
     fitted_x_locators,
+    parameter_legend_text,
     pinch_out_key_artist,
     release_twins,
     settle_figure_layout,
@@ -323,6 +324,14 @@ _NOTES_MIN_PT = 4.5
 
 # A label that already names a (cross) section as a word is printed as-is.
 _SECTION_WORD_RE = re.compile(r"\bsection\b", re.IGNORECASE)
+# A note typed with its own "NOTE:" prefix under the "NOTES:" heading read
+# "1. NOTE: masl DENOTES ..."; the numbered list drops the prefix.
+_NOTE_PREFIX_RE = re.compile(r"^\s*notes?\s*[:.\-–—]\s*", re.IGNORECASE)
+
+
+def _strip_note_prefix(note: str) -> str:
+    stripped = _NOTE_PREFIX_RE.sub("", str(note), count=1)
+    return stripped or str(note)
 
 # RL / depth axis labelling: at most this many labelled ticks per side, and
 # labels at least this many font heights apart. The client figures label every
@@ -1859,7 +1868,9 @@ class ConsultingLayoutMixin:
         is cut with "…". At the design size notes that fit draw as before.
         """
         font_scale = self._consulting_font_scale()
-        shown = [f"{index}. {note}" for index, note in enumerate(notes[:4], start=1)]
+        shown = [
+            f"{index}. {_strip_note_prefix(note)}" for index, note in enumerate(notes[:4], start=1)
+        ]
         if not shown:
             return
         note_top = 0.68 - 0.18 * (font_scale - 1.0)
@@ -2346,7 +2357,7 @@ class ConsultingLayoutMixin:
             entries.append(
                 (
                     kind,
-                    str(entry.get("label", entry.get("parameter", "PARAMETER"))),
+                    parameter_legend_text(str(entry.get("label", entry.get("parameter", "PARAMETER")))),
                     {
                         "color": entry.get("color", PARAMETER_READING_COLOR),
                         "marker": entry.get("marker", "D"),

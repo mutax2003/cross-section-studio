@@ -189,7 +189,11 @@ class SectionSheetLayoutMixin:
         ax.set_title(self.title, fontsize=14, fontweight="bold", pad=title_pad, color=LABEL_COLOR)
         # Exact VE: the plot box is locked to the chosen VE (centred in its
         # frame); auto: it fills the frame and the captions print the measured VE.
-        self._apply_ve_aspect(ax)
+        # Exact VE: the box sits on its frame's bottom edge (under it hang the
+        # hole names and distance label), so the bottom fit moves it 1:1 and
+        # can balance the sheet vertically (``_fit_section_sheet_bottom``).
+        # (Depth mode: the title layout engine owns the top; stays centred.)
+        self._apply_ve_aspect(ax, anchor="S" if self.profile.y_axis_mode == "elevation_rl" else "C")
         if self.profile.show_grid:
             ax.grid(True, linestyle="--", alpha=0.35, color=GRID_COLOR, zorder=0)
         else:
@@ -262,6 +266,11 @@ class SectionSheetLayoutMixin:
         lowest of the hole names and x tick labels, the threshold key follows
         it, and the bottom margin is set so that stack ends just above the
         footer lines (or the printable margin). Re-run after page resizes.
+
+        An exact-VE box narrower than its frame left the spare height above
+        the title (3.5 in on letter portrait); the stack is lifted by half
+        the spare height so the sheet is balanced between the top margin and
+        the footers, never so far that the box itself would shrink.
         """
         supx = getattr(fig, "_supxlabel", None)
         axes = getattr(self, "_ve_main_ax", None)
@@ -278,7 +287,9 @@ class SectionSheetLayoutMixin:
                 continue
             if text.get_position()[1] < 0.2:
                 floor_px = max(floor_px, text.get_window_extent(renderer).y1 + _KEY_FOOTER_PAD_PT * dpi / 72.0)
-        for _attempt in range(3):
+        top_limit_px = height - (margins[2] if margins else 0.06) * dpi
+        balance = self.profile.y_axis_mode == "elevation_rl"
+        for _attempt in range(4):
             settle_figure_layout(fig)
             frame = axes.get_window_extent(renderer)
             lowest = frame.y0
@@ -301,7 +312,23 @@ class SectionSheetLayoutMixin:
             key = getattr(self, "_chemistry_threshold_key", None)
             if key is not None and key.figure is fig:
                 stack_bottom = min(stack_bottom, key.get_window_extent(renderer).y0)
-            delta = (stack_bottom - floor_px) / height
+            target_px = floor_px
+            if balance:
+                content_top = frame.y1
+                tight_all = axes.get_tightbbox(renderer)
+                if tight_all is not None:
+                    content_top = max(content_top, tight_all.y1)
+                legend = axes.get_legend()
+                if legend is not None and legend.get_visible():
+                    content_top = max(content_top, legend.get_window_extent(renderer).y1)
+                spare = (top_limit_px - content_top) + (stack_bottom - floor_px)
+                # Frame height the box does not use (anchored at the bottom):
+                # lifting the frame bottom by up to this keeps the box's size.
+                params = fig.subplotpars
+                unused_px = (params.top - params.bottom) * height - frame.height
+                lift = min(max(spare * 0.5, 0.0), max(unused_px, 0.0) + (stack_bottom - floor_px))
+                target_px = floor_px + max(lift, 0.0)
+            delta = (stack_bottom - target_px) / height
             if abs(delta) * height < 1.0:
                 break
             bottom = min(max(fig.subplotpars.bottom - delta, 0.04), fig.subplotpars.top - 0.2)

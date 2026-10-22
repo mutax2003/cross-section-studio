@@ -705,6 +705,20 @@ def _remove_header_leaders(fig) -> None:
             pass
 
 
+def _header_page_bbox(fig):
+    """Page box the header rows may reach: the page, less the printable top
+    margin on a fixed export page (fanned / rotated headers printed 0.24 in
+    from the top of a tabloid sheet)."""
+    from matplotlib.transforms import Bbox
+
+    page = fig.bbox
+    margins = getattr(fig, "_css_page_margins_in", None)
+    if not margins:
+        return page
+    top = float(margins[2]) * fig.dpi
+    return Bbox.from_extents(page.x0, page.y0, page.x1, max(page.y0 + 1.0, page.y1 - top))
+
+
 def _outward(text) -> float:
     """+1 for a header row above the plot (va bottom), -1 below it."""
     return 1.0 if text.get_verticalalignment() == "bottom" else -1.0
@@ -937,7 +951,7 @@ def _stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, rob
         return
     renderer = fig.canvas.get_renderer()
     settle_figure_layout(fig)
-    page = fig.bbox
+    page = _header_page_bbox(fig)
     if not header_overlaps(fig, headers, renderer, min_gap_in=HEADER_MIN_GAP_IN) and all(
         _header_reads_as_own(t, renderer, page) for t in headers
     ):
@@ -1155,7 +1169,7 @@ def _apply_fan(
 
     px_per_pt = fig.dpi / 72.0
     gap = _HEADER_FAN_GAP_PT * px_per_pt if rotation else max(_HEADER_FAN_GAP_PT * px_per_pt, HEADER_MIN_GAP_IN * fig.dpi)
-    page = fig.bbox
+    page = _header_page_bbox(fig)
     lo = page.x0 + margins[0] * fig.dpi
     hi = page.x1 - margins[1] * fig.dpi
     boxes0, anchors = [], []
@@ -1243,7 +1257,7 @@ def _apply_fan(
 def _apply_tiers(fig, ordered, base_states, labels, size, tiers, renderer, reset, line_cls, offset_copy) -> None:
     px_per_pt = fig.dpi / 72.0
     leaders = []
-    page = fig.bbox
+    page = _header_page_bbox(fig)
     for text, base, label, tier in zip(ordered, base_states, labels, tiers, strict=True):
         reset(text, base, label=label, size=size, rotation=0.0)
         text._header_stacked = True

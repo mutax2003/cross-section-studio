@@ -1066,7 +1066,8 @@ def test_structure_and_survey_row_problems_are_row_errors_not_aborts() -> None:
     assert not result.deviation_readings  # NaN survey would NaN the hole geometry
     joined = "\n".join(result.errors)
     assert "Faults sheet" in joined and "Unconformities sheet" in joined
-    assert "Deviations row for 'BH1': inclination_deg" in joined
+    # Same row-numbered shape as the other sheets (Excel row 2).
+    assert "Deviations row 2 (BH1): inclination_deg is empty" in joined
 
 
 def test_oversized_formatted_workbook_is_rejected_before_parsing(tmp_path: Path) -> None:

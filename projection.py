@@ -696,9 +696,19 @@ def _surveyed_hole_readings(
     """
     collar_ids = {collar.hole_id for collar in collars}
     readings_by_hole: dict[str, list[DeviationReading]] = {}
+    orphan_ids: set[str] = set()
     for reading in deviation_readings or ():
         if reading.hole_id in collar_ids:
             readings_by_hole.setdefault(reading.hole_id, []).append(reading)
+        else:
+            orphan_ids.add(reading.hole_id)
+    if orphan_ids:
+        # Validate names these (ai_quality.survey_quality_issues / the parser);
+        # the log keeps the drop visible for API callers too.
+        logger.info(
+            "Deviations rows ignored for holes not in the collar set: %s",
+            ", ".join(sorted(orphan_ids)),
+        )
     for collar in collars:
         if collar.hole_id not in readings_by_hole and _collar_is_inclined(collar):
             inc = _collar_inclination_from_vertical(collar)

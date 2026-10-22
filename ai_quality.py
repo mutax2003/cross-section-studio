@@ -576,6 +576,85 @@ def _coordinates_look_like_degrees(collars: Sequence[Collar]) -> QualityIssue | 
     )
 
 
+def hole_id_case_variant_issues(collars: Sequence[Collar]) -> list[QualityIssue]:
+    """Collars whose IDs differ only by case / spacing (``MW-01`` vs ``mw-01``).
+
+    They are separate holes to the section (IDs match exactly), which is
+    almost never what the logger meant.
+    """
+    groups: dict[str, list[str]] = {}
+    for collar in collars:
+        key = re.sub(r"\s+", "", collar.hole_id).casefold()
+        groups.setdefault(key, []).append(collar.hole_id)
+    issues: list[QualityIssue] = []
+    for ids in groups.values():
+        distinct = list(dict.fromkeys(ids))
+        if len(distinct) < 2:
+            continue
+        issues.append(
+            QualityIssue(
+                code="hole_id_case_variants",
+                message=(
+                    f"Hole IDs {' and '.join(distinct)} differ only by case or spaces — they are "
+                    "treated as separate holes; use one spelling in every sheet"
+                ),
+                severity=Severity.WARNING.value,
+                hole_id=distinct[0],
+            )
+        )
+    return issues
+
+
+def _horizontal_hole_issue(hole_id: str, where: str) -> QualityIssue:
+    return QualityIssue(
+        code="horizontal_hole",
+        message=(
+            f"{hole_id}: inclination 90° (horizontal) {where} — intervals logged along a "
+            "horizontal hole have no vertical extent and won't show on the section; check "
+            "the angle (0 = straight down, or −90 for a mining dip)"
+        ),
+        severity=Severity.WARNING.value,
+        hole_id=hole_id,
+    )
+
+
+def survey_quality_issues(
+    collars: Sequence[Collar],
+    deviation_readings: Sequence[DeviationReading] | None,
+) -> list[QualityIssue]:
+    """Horizontal (90°) holes / survey stations and Deviations rows with no collar."""
+    issues: list[QualityIssue] = []
+    collar_ids = {collar.hole_id for collar in collars}
+    for collar in collars:
+        # +90 only: −90 is a mining dip, i.e. straight down.
+        if collar.inclination_deg == 90.0:
+            issues.append(_horizontal_hole_issue(collar.hole_id, "on Collars"))
+    horizontal: dict[str, list[float]] = {}
+    orphans: dict[str, int] = {}
+    for reading in deviation_readings or ():
+        if reading.hole_id not in collar_ids:
+            orphans[reading.hole_id] = orphans.get(reading.hole_id, 0) + 1
+            continue
+        if reading.inclination_deg == 90.0:
+            horizontal.setdefault(reading.hole_id, []).append(reading.depth)
+    for hole_id, depths in horizontal.items():
+        shown = ", ".join(f"{_m(depth)} m" for depth in sorted(depths)[:5])
+        issues.append(_horizontal_hole_issue(hole_id, f"on Deviations at {shown}"))
+    if orphans:
+        listed = ", ".join(f"{hole} ({count})" for hole, count in sorted(orphans.items()))
+        issues.append(
+            QualityIssue(
+                code="orphan_deviations",
+                message=(
+                    f"Deviations rows for holes not in Collars are not used: {listed} — add "
+                    "the holes to Collars or fix the spelling"
+                ),
+                severity=Severity.WARNING.value,
+            )
+        )
+    return issues
+
+
 def analyze_parsed_data(
     collars: Sequence[Collar],
     lithologies: Sequence[Lithology],
@@ -585,6 +664,7 @@ def analyze_parsed_data(
     mapping_proposal: MappingProposal | None = None,
     aliases: dict[str, str] | None = None,
     placeholder_elevation_m: float | None = None,
+    deviation_readings: Sequence[DeviationReading] | None = None,
 ) -> QualityReport:
     issues: list[QualityIssue] = []
     collar_by_id = {collar.hole_id: collar for collar in collars}
@@ -593,6 +673,8 @@ def analyze_parsed_data(
     degrees_issue = _coordinates_look_like_degrees(collars)
     if degrees_issue is not None:
         issues.append(degrees_issue)
+    issues.extend(hole_id_case_variant_issues(collars))
+    issues.extend(survey_quality_issues(collars, deviation_readings))
 
     for lithology in lithologies:
         lithology_by_hole.setdefault(lithology.hole_id, []).append(lithology)
@@ -718,6 +800,157 @@ class ScreenQualitySummary:
     total_intervals: int
 
 
+# --- Overlay readings far outside their hole --------------------------------
+# A water / screen / chemistry depth this far beyond the hole is a typo (mm
+# typed as m, a pasted serial) — plotted, it stretches the section's depth axis
+# until the geology is a sliver. The figure leaves such readings out with a QA
+# note (pipeline.exclude_implausible_overlays); Validate names them the same way.
+OVERLAY_BEYOND_TD_MIN_M = 5.0
+OVERLAY_BEYOND_TD_FRACTION = 0.25
+# Flowing-artesian heads above ground are real, but not by tens of metres.
+OVERLAY_ABOVE_GROUND_M = 30.0
+_NOT_PLOTTED = "not plotted; check units"
+
+
+def _num(value: float) -> str:
+    """Compact number for messages: 3200 -> "3200", 1e12 -> "1e+12"."""
+    return _m(value) if abs(value) < 1e5 else f"{value:g}"
+
+
+def overlay_depth_limit_m(total_depth: float) -> float:
+    """Deepest plausible overlay depth: TD + max(5 m, 25 % of TD)."""
+    td = max(float(total_depth), 0.0)
+    return td + max(OVERLAY_BEYOND_TD_MIN_M, OVERLAY_BEYOND_TD_FRACTION * td)
+
+
+def implausible_water_reading(
+    level: WaterLevel,
+    *,
+    collar_rl: float,
+    total_depth: float,
+    stick_up_m: float | None = None,
+) -> str | None:
+    """Why a measured water reading lies far outside its hole (``None`` = plausible).
+
+    Depth below ground past :func:`overlay_depth_limit_m`, or a head more than
+    ``OVERLAY_ABOVE_GROUND_M`` above ground. Dry / NM readings carry no level.
+    """
+    if not is_measured_water_level(level):
+        return None
+    hole, td = level.hole_id, float(total_depth)
+    limit = overlay_depth_limit_m(td)
+    if level.elevation_masl is not None:
+        head = float(level.elevation_masl)
+        above = head - float(collar_rl)
+        if above > OVERLAY_ABOVE_GROUND_M:
+            return (
+                f"{hole} water elevation {_num(head)} m is {_num(above)} m above ground "
+                f"(collar {_num(collar_rl)} m) — {_NOT_PLOTTED}"
+            )
+        if -above > limit:
+            return (
+                f"{hole} water elevation {_num(head)} m is beyond the hole (collar "
+                f"{_num(collar_rl)} m, TD {_num(td)} m) — {_NOT_PLOTTED}"
+            )
+        return None
+    depth_bgs = water_depth_along_hole_bgs(level, stick_up_m)
+    if depth_bgs > limit:
+        return f"{hole} water depth {_num(level.depth)} m is beyond the hole (TD {_num(td)} m) — {_NOT_PLOTTED}"
+    if -depth_bgs > OVERLAY_ABOVE_GROUND_M:
+        return (
+            f"{hole} water depth {_num(level.depth)} m below top of casing puts the water "
+            f"{_num(-depth_bgs)} m above ground — {_NOT_PLOTTED}"
+        )
+    return None
+
+
+def implausible_screen_interval(screen: ScreenInterval, *, total_depth: float) -> str | None:
+    """Why a screen lies far below its hole (``None`` = plausible)."""
+    if screen.to_depth <= overlay_depth_limit_m(total_depth):
+        return None
+    return (
+        f"{screen.hole_id} screen {_num(screen.from_depth)}–{_num(screen.to_depth)} m is beyond "
+        f"the hole (TD {_num(total_depth)} m) — {_NOT_PLOTTED}"
+    )
+
+
+def implausible_environmental_reading(
+    reading: EnvironmentalReading, *, total_depth: float
+) -> str | None:
+    """Why a sample lies far below its hole (``None`` = plausible)."""
+    deepest = reading.depth if reading.depth is not None else reading.to_depth
+    if deepest is None or deepest <= overlay_depth_limit_m(total_depth):
+        return None
+    if reading.depth is not None:
+        where = f"sample depth {_num(reading.depth)} m"
+    else:
+        where = f"sample interval {_num(reading.from_depth or 0.0)}–{_num(deepest)} m"
+    return (
+        f"{reading.hole_id} {reading.parameter} {where} is beyond the hole "
+        f"(TD {_num(total_depth)} m) — {_NOT_PLOTTED}"
+    )
+
+
+def chemistry_threshold_inversion_warnings(
+    thresholds: Mapping[str, tuple[float | None, float | None]] | None,
+    *,
+    green_max: float | None = None,
+    orange_max: float | None = None,
+) -> list[str]:
+    """Colour bands entered upside down (``green_max`` > ``orange_max``).
+
+    The figure caps green at the orange limit (render_profiles), so there is
+    no orange band — almost always the two limits were swapped. Covers the
+    per-parameter map (workbook or Configure) and the sheet-wide pair.
+    """
+    warnings: list[str] = []
+
+    def _check(name: str, green: float | None, orange: float | None) -> None:
+        if green is None or orange is None or float(green) <= float(orange):
+            return
+        warnings.append(
+            f"{name}: colour bands inverted (green_max {float(green):g} > orange_max "
+            f"{float(orange):g}) — green is capped at {float(orange):g}, so there is no "
+            "orange band; swap the limits"
+        )
+
+    for name, pair in (thresholds or {}).items():
+        green, orange = (tuple(pair) + (None, None))[:2]
+        _check(str(name), green, orange)
+    _check("All parameters", green_max, orange_max)
+    return warnings
+
+
+# Parameters / units that are legitimately negative (redox potential,
+# temperature); everything else on the Environmental sheet is a concentration
+# or a non-negative field reading.
+_SIGNED_PARAMETER_RE = re.compile(r"\b(orp|eh|redox|temp|temperature)\b", re.IGNORECASE)
+_SIGNED_UNIT_RE = re.compile(r"^\s*(m?v|°\s*[cf]?|deg\s*[cf]?|[cf])\s*$", re.IGNORECASE)
+
+
+def negative_concentration_warnings(readings: Sequence[EnvironmentalReading]) -> list[str]:
+    """Negative values of parameters that cannot be negative (one line per parameter)."""
+    by_parameter: dict[str, list[EnvironmentalReading]] = {}
+    for reading in readings:
+        if reading.value >= 0:
+            continue
+        if _SIGNED_PARAMETER_RE.search(reading.parameter) or _SIGNED_UNIT_RE.match(reading.unit or ""):
+            continue
+        by_parameter.setdefault(reading.parameter, []).append(reading)
+    warnings: list[str] = []
+    for parameter in sorted(by_parameter):
+        items = by_parameter[parameter]
+        shown = ", ".join(
+            f"{item.hole_id} {item.value:g}{f' {item.unit}' if item.unit else ''}" for item in items[:5]
+        )
+        more = f" and {len(items) - 5} more" if len(items) > 5 else ""
+        warnings.append(
+            f"{parameter}: negative value(s) ({shown}{more}) — a concentration can't be "
+            "negative; check the sign (a non-detect is written <RDL, e.g. <0.5)"
+        )
+    return warnings
+
+
 def summarize_screen_intervals(
     collars: Sequence[Collar],
     screen_intervals: Sequence[ScreenInterval],
@@ -731,8 +964,17 @@ def summarize_screen_intervals(
     for interval in screen_intervals:
         if hole_set is not None and interval.hole_id not in hole_set:
             continue
-        by_hole.setdefault(interval.hole_id, []).append(interval)
         collar = collar_by_id.get(interval.hole_id)
+        implausible = (
+            implausible_screen_interval(interval, total_depth=collar.total_depth)
+            if collar is not None
+            else None
+        )
+        if implausible is not None:
+            # Left off the figure: not part of the overlap check either.
+            warnings.append(implausible)
+            continue
+        by_hole.setdefault(interval.hole_id, []).append(interval)
         if collar is not None and interval.to_depth > collar.total_depth + 1e-9:
             warnings.append(
                 f"{interval.hole_id}: screen to_depth {interval.to_depth:.2f} m exceeds total depth "
@@ -810,9 +1052,23 @@ def summarize_water_levels(
         if level.hole_id not in hole_set:
             orphan_ids.add(level.hole_id)
             continue
+        collar = collar_by_id.get(level.hole_id)
+        implausible = (
+            implausible_water_reading(
+                level,
+                collar_rl=collar.elevation,
+                total_depth=collar.total_depth,
+                stick_up_m=collar.stick_up_m,
+            )
+            if collar is not None
+            else None
+        )
+        if implausible is not None:
+            # The figure leaves it out; so do the gradient / artesian checks.
+            warnings.append(implausible)
+            continue
         holes_with_any.add(level.hole_id)
         by_series.setdefault(series_id, []).append(level)
-        collar = collar_by_id.get(level.hole_id)
         if collar is None:
             continue
         is_btoc = getattr(level, "depth_reference", "bgs") == "btoc"
@@ -1303,7 +1559,9 @@ def summarize_environmental_readings(
 
     Also warns about non-detects whose detection limit is above the
     parameter's green limit (``thresholds``; default: the workbook
-    ``green_max`` values) and parameters reported in more than one unit.
+    ``green_max`` values) and parameters reported in more than one unit,
+    negative concentrations, inverted colour bands (green above orange) and
+    samples far below their hole (left off the figure).
     """
     transect_holes = tuple(hole_ids_on_transect)
     hole_set = set(transect_holes)
@@ -1316,8 +1574,16 @@ def summarize_environmental_readings(
         if reading.hole_id not in hole_set:
             orphan_hole_ids.add(reading.hole_id)
             continue
-        by_parameter.setdefault(reading.parameter, []).append(reading)
         collar = collar_by_id.get(reading.hole_id)
+        implausible = (
+            implausible_environmental_reading(reading, total_depth=collar.total_depth)
+            if collar is not None
+            else None
+        )
+        if implausible is not None:
+            warnings.append(implausible)
+            continue
+        by_parameter.setdefault(reading.parameter, []).append(reading)
         if collar is not None and reading.sample_depth > collar.total_depth:
             warnings.append(
                 f"{reading.hole_id} ({reading.parameter}): sample depth {reading.sample_depth:.2f} m "
@@ -1345,8 +1611,10 @@ def summarize_environmental_readings(
     latest_on_line, date_notes = latest_environmental_readings(on_line)
     warnings.extend(f"Info: {note}" for note in date_notes)
     warnings.extend(mixed_unit_warnings(on_line))
+    warnings.extend(negative_concentration_warnings(on_line))
     if thresholds is None:
         thresholds = chemistry_thresholds_from_readings(readings)
+    warnings.extend(chemistry_threshold_inversion_warnings(thresholds))
     # Only the samples the figure draws (superseded dates are not plotted).
     warnings.extend(rdl_above_guideline_notes(latest_on_line, thresholds))
     warnings.extend(lab_qualifier_warnings(latest_on_line))

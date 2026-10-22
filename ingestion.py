@@ -847,6 +847,7 @@ def ingest_workbook(
             mapping_proposal=mapping_proposal,
             aliases=aliases,
             placeholder_elevation_m=placeholder_elevation,
+            deviation_readings=parse_result.deviation_readings,
         )
 
         uses_placeholder = (

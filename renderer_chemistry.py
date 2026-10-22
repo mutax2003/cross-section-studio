@@ -27,7 +27,7 @@ from render_theme import (
     parameter_series_colors,
 )
 from renderer_common import LEGEND_LABEL_MAX_CHARS, THRESHOLD_KEY_GID, fit_label
-from renderer_water import _GW_MARKER_MAP, register_marker_set
+from renderer_water import _GW_MARKER_MAP, _memoise_label, register_marker_set
 
 
 class ParameterLegendEntry(TypedDict):
@@ -321,6 +321,8 @@ class RendererChemistryMixin:
         # Values (and their leaders) draw just above water labels, so a
         # leader is never hidden under a water label's white box.
         annotation.set_zorder(max(float(annotation.get_zorder()), 9.1))
+        # Memoised text layout / leader path (same artist, same output).
+        _memoise_label(annotation)
         if not hasattr(self, "_water_labels"):
             self._water_labels = []
         self._water_labels.append(("chem", annotation, color))

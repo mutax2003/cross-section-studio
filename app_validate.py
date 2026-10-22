@@ -627,6 +627,10 @@ def render_next_step_coach(
     quality_report = st.session_state.get("quality_report")
     if quality_report is None or quality_report.has_blocking_errors:
         return
+    if st.session_state.get("svg_bytes") is not None:
+        # A section is already on screen: the Generate strip above it says
+        # whether it is up to date, so "Next: choose holes…" only misleads.
+        return
     if selection and selection[0]:
         holes = " → ".join(escape(str(hole)) for hole in selection[0])
         if blocked_reason:

@@ -16,8 +16,22 @@ from app_identity import COPYRIGHT_NOTICE, CREATED_BY
 
 # Primes stay: "A-A'" and "A-A" name different things on a drawing list, and
 # an apostrophe is valid in Windows, macOS and ZIP file names.
-_FILENAME_SAFE_RE = re.compile(r"[^\w\-']+")
-_TYPOGRAPHIC_FOLD = str.maketrans({"\u2032": "'", "\u2019": "'", "\u2018": "'", "\u02b9": "'", "\u2013": "-", "\u2014": "-", "\u2212": "-"})
+_FILENAME_SAFE_RE = re.compile(r"[^\w\-]+")
+# Primes and apostrophes (ASCII or typographic) are dropped, dashes folded to
+# "-": "B-B'", "B-B′" and "B–B’" all name the file "B-B".
+_TYPOGRAPHIC_FOLD = str.maketrans(
+    {
+        "'": None,
+        "\u2032": None,
+        "\u2019": None,
+        "\u2018": None,
+        "\u02b9": None,
+        "`": None,
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2212": "-",
+    }
+)
 
 ExportPagePreset = Literal[
     "auto",
@@ -146,12 +160,15 @@ def avoid_windows_reserved_name(stem: str) -> str:
 
 
 def sanitize_filename_stem(text: str, *, fallback: str = "cross_section") -> str:
-    """Safe file-name stem: ``A - A' WITH CL`` → ``A-A'_WITH_CL``."""
-    # Typographic primes / dashes ("B-B′", "B–B’") name the same section as
-    # the ASCII form; fold them first so they neither vanish nor collide.
+    """Safe file-name stem: ``A - A' WITH CL`` → ``A-A_WITH_CL``.
+
+    One policy for every download, ZIP entry and saved file: letters, digits,
+    ``_`` and ``-`` only. Apostrophes / primes are dropped (a quote in a file
+    name breaks shell scripts, some upload portals and e-mail links), so
+    section "B-B'" files as ``B-B`` whichever prime character was typed.
+    """
     cleaned = _FILENAME_SAFE_RE.sub("_", text.strip().translate(_TYPOGRAPHIC_FOLD))
-    # Keep a trailing prime ("A-A'"); only a leading one is meaningless.
-    cleaned = cleaned.replace("_-_", "-")[:80].strip("_").lstrip("'").strip("_")
+    cleaned = cleaned.replace("_-_", "-")[:80].strip("_")
     return avoid_windows_reserved_name(cleaned) if cleaned else fallback
 
 
@@ -213,10 +230,10 @@ def build_export_filename(
         if (include_transect_label and transect_label.strip())
         else ""
     )
-    if label.startswith(stem) and label[len(stem):len(stem) + 1] in ("", "_", "'"):
+    if label.startswith(stem) and label[len(stem):len(stem) + 1] in ("", "_"):
         # The app's transect label is "<section title> <first>→<last>": keep
         # only the hole range instead of printing the title twice.
-        label = label[len(stem):].strip("_'")
+        label = label[len(stem):].strip("_")
     if label and label != stem:
         stem = f"{stem}_{label}"
     if rev:

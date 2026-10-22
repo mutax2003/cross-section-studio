@@ -338,6 +338,41 @@ def queue_consulting_section_label(label: str | None) -> None:
     queue_session_values(consulting_section_label=label, section_title=label)
 
 
+_OFF_LINE_HOLES_SHOWN = 6
+
+
+def off_line_lab_values_message(
+    parse_result: ParseResult,
+    active_ids: Sequence[str],
+    *,
+    offset_warning_m: float,
+) -> str:
+    """Warning text for lab values on holes the coordinate line leaves out.
+
+    A typed (coordinate) line keeps only holes within ``offset_warning_m`` of
+    it, so lab results on the other holes silently never reach the figure.
+    """
+    on_line = set(active_ids)
+    by_hole: dict[str, int] = {}
+    for reading in parse_result.environmental_readings:
+        if reading.hole_id not in on_line:
+            by_hole[reading.hole_id] = by_hole.get(reading.hole_id, 0) + 1
+    if not by_hole:
+        return ""
+    total = sum(by_hole.values())
+    holes = sorted(by_hole)
+    shown = ", ".join(holes[:_OFF_LINE_HOLES_SHOWN])
+    if len(holes) > _OFF_LINE_HOLES_SHOWN:
+        shown += f" +{len(holes) - _OFF_LINE_HOLES_SHOWN} more"
+    noun = "lab value" if total == 1 else "lab values"
+    return (
+        f"**{total} {noun} will be left off** — they belong to "
+        f"{len(holes)} hole(s) more than {offset_warning_m:g} m from this section line "
+        f"({shown}). To include them, raise **Warn when a hole is this far off the line** "
+        "under sidebar **Section line**, or move the line's points so it passes those holes."
+    )
+
+
 def render_configure_step(
     parse_result: ParseResult,
     *,
@@ -496,11 +531,24 @@ def render_configure_step(
             available_params = sorted(
                 {reading.parameter for reading in subset_preflight.environmental_readings}
             )
+            if transect_mode == "By coordinates":
+                off_line_note = off_line_lab_values_message(
+                    parse_result, active_ids, offset_warning_m=offset_warning_m
+                )
+                if off_line_note:
+                    st.warning(off_line_note, icon=":material/warning:")
             if available_params:
                 st.markdown("**Lab / environmental parameters**")
                 options_sig = tuple(available_params)
                 preset_chem_sig = (prefer_chemistry, options_sig)
-                if st.session_state.get("_env_params_options_sig") != options_sig:
+                # Re-seed when the options change, and also when the widget's
+                # value is gone: a workbook (or line) without lab data does not
+                # draw the multiselect, Streamlit drops its key, and coming back
+                # to the same options used to leave "Parameters to plot" empty.
+                if (
+                    st.session_state.get("_env_params_options_sig") != options_sig
+                    or "environmental_parameters_multiselect" not in st.session_state
+                ):
                     previous = list(st.session_state.get("environmental_parameters_multiselect") or [])
                     kept = [p for p in previous if p in available_params]
                     if prefer_chemistry:
@@ -538,7 +586,12 @@ def render_configure_step(
                     )
                 )
                 if not environmental_parameters:
-                    st.caption("No parameters selected — environmental markers will not be plotted.")
+                    reading_count = len(subset_preflight.environmental_readings)
+                    st.warning(
+                        f"No parameters selected — none of the {reading_count} lab value(s) on "
+                        "this section line will be plotted. Pick parameters above to show them.",
+                        icon=":material/warning:",
+                    )
                 label_default = (
                     True
                     if show_parameter_labels_default is None
@@ -686,10 +739,20 @@ def render_configure_step(
                     help="Keeps coloured values legible over hatched lithology fills.",
                 )
                 chemistry_label_style = style_choice
-            elif parse_result.environmental_readings:
-                st.caption(
-                    "Lab results exist, but none are for holes on this section line."
-                )
+            else:
+                # Nothing to pick on this line: forget the option signature so
+                # the next line / workbook with lab data seeds a fresh selection.
+                st.session_state.pop("_env_params_options_sig", None)
+                st.session_state.pop("_env_params_preset_sig", None)
+                if parse_result.environmental_readings:
+                    st.caption(
+                        "Lab results exist, but none are for holes on this section line."
+                    )
+                else:
+                    st.caption(
+                        "Add an **Environmental** sheet (`hole_id`, `parameter`, `value`, `depth` or "
+                        "`from_depth`/`to_depth`) to plot lab data by depth. See Help → Workbook and data entry."
+                    )
 
             water_levels = subset_preflight.water_levels
             if water_levels:
@@ -705,7 +768,10 @@ def render_configure_step(
                 if series_options:
                     st.markdown("**Groundwater series**")
                     options_sig = tuple(series_options)
-                    if st.session_state.get("_water_series_options_sig") != options_sig:
+                    if (
+                        st.session_state.get("_water_series_options_sig") != options_sig
+                        or "water_series_multiselect" not in st.session_state
+                    ):
                         previous = list(
                             st.session_state.get("water_series_multiselect") or []
                         )
@@ -737,11 +803,6 @@ def render_configure_step(
                             "No water series selected — all groundwater series will be plotted. "
                             "Select specific series to limit the markers."
                         )
-            else:
-                st.caption(
-                    "Add an **Environmental** sheet (`hole_id`, `parameter`, `value`, `depth` or "
-                    "`from_depth`/`to_depth`) to plot lab data by depth. See Help → Workbook and data entry."
-                )
             correlation_overrides = _session_correlation_overrides() + subset_preflight.correlation_overrides
             max_interp_m = float(
                 max_offset_for_interpolation_m

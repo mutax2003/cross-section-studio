@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from matplotlib import _path as _mpl_path
 from matplotlib.collections import LineCollection
+from matplotlib.colors import to_rgba
 from matplotlib.markers import MarkerStyle
 from matplotlib.patches import ArrowStyle, ConnectionStyle, FancyArrowPatch, Patch, Rectangle
 from matplotlib.path import Path
@@ -62,6 +63,12 @@ _WATER_EXTRA_DX_PT = (0.0, 4.0, 10.0, 18.0, 28.0, 40.0, 54.0, 70.0)
 # any slot that close (either side, however far out sideways) is free: a
 # short leader sideways reads better than a long one down the hole.
 _WATER_NEAR_HEIGHTS = 2.0
+# "Adjacent to its own well": at most this sideways step (points, one of
+# _WATER_EXTRA_DX_PT) off the column edge and within this many label heights
+# of the marker. Such spots (off every line) beat any further out, so a
+# number never floats mid-span between two wells (GWM Fig 3, QA round 7).
+_WATER_ADJACENT_EXTRA_PT = 10.0
+_WATER_ADJACENT_HEIGHTS = _WATER_NEAR_HEIGHTS
 _WATER_DY_STEP_PT = 2.0
 _WATER_DY_MAX_PT = 96.0
 # Preference costs (points of displacement): the left side is nearly as good
@@ -229,8 +236,24 @@ _GRADIENT_SIG_FIGS = 2
 # LNAPL product band: never thinner / narrower than this on the page (points)
 # so a few-cm band at the marker is not hidden under the water marker
 # (7 pt); grown about its centre only when the true size is smaller.
-_LNAPL_MIN_HEIGHT_PT = 8.0
-_LNAPL_MIN_WIDTH_PT = 20.0
+_LNAPL_MIN_HEIGHT_PT = 10.0
+_LNAPL_MIN_WIDTH_PT = 26.0
+# Outline width (points) of a groundwater marker drawn hollow over the LNAPL
+# band, so the band reads through it.
+_LNAPL_HOLLOW_EDGE_PT = 1.6
+# Depth (mbgs) mode: water depths are joined (line, i=) only when the joined
+# wells' collars agree within this many metres.
+_DEPTH_MODE_COLLAR_TOL_M = 0.01
+_DEPTH_MODE_WATER_NOTE = (
+    "Depth mode (mbgs): groundwater depths are shown as markers only — the wells' collar "
+    "elevations differ, so a line or gradient joining depths below ground would not "
+    "represent the water table (use elevation mode for heads and gradients)"
+)
+# Legend / notes key for the "i=" labels, drawn only when one is: sample
+# text + label (upper case on consulting sheets; Δh/Δx keeps its case).
+GRADIENT_LEGEND_LABEL = "i = horizontal hydraulic gradient Δh/Δx between adjacent wells (schematic)"
+GRADIENT_KEY_SAMPLE = "i="
+GRADIENT_KEY_LABEL = "HORIZONTAL HYDRAULIC GRADIENT Δh/Δx BETWEEN ADJACENT WELLS (SCHEMATIC)"
 # Flowing-artesian head (above ground): dashed riser from the ground to the
 # head plus an upward triangle on the ground line.
 ARTESIAN_LEGEND_LABEL = "Flowing artesian head (above ground)"
@@ -695,6 +718,28 @@ def _water_marker_points(axes, renderer) -> np.ndarray:
     return np.vstack(rows)
 
 
+def _marker_boxes(axes, renderer, clear: float) -> list:
+    """Display boxes (grown by ``clear``) of every drawn chemistry / groundwater marker."""
+    boxes = []
+    for ax in axes:
+        for collection in ax.__dict__.get("_css_marker_sets", ()):
+            if not collection.get_visible():
+                continue
+            offsets = np.asarray(collection.get_offsets(), dtype=float)
+            if not len(offsets):
+                continue
+            display = collection.get_offset_transform().transform(offsets)
+            radius = _marker_radius_px(collection, renderer) + clear
+            if collection._css_marker_kind == "water":
+                radius += renderer.points_to_pixels(_WATER_MARKER_EDGE_PT)
+            boxes.extend(
+                Bbox.from_extents(x - radius, y - radius, x + radius, y + radius)
+                for x, y in display
+                if np.isfinite(x) and np.isfinite(y)
+            )
+    return boxes
+
+
 def _circles_hit_boxes(circles: np.ndarray, boxes: np.ndarray, clear: float) -> np.ndarray:
     """(K,) bool: does box k come within ``clear`` of any circle?"""
     if circles.shape[0] == 0 or boxes.shape[0] == 0:
@@ -948,6 +993,7 @@ def _place_chem_label(
     column_arr,
     own,
     pad,
+    marker_arr=None,
     ceiling=np.inf,
     compact=0,
     line_segs=None,
@@ -1066,6 +1112,10 @@ def _place_chem_label(
         idx = np.flatnonzero(ok)
         if idx.size:
             idx = idx[~column_arr.overlaps_many(boxes[idx])]
+        if idx.size and marker_arr is not None:
+            # Never printed over a marker (another parameter's dot nudged
+            # beside the stick, a groundwater symbol).
+            idx = idx[~marker_arr.overlaps_many(boxes[idx])]
         if idx.size:
             # Placed boxes already carry the pad; a crowded hole's candidates
             # skip their own so values stack one pad apart instead of two.
@@ -1291,7 +1341,7 @@ def _side_candidates(anchor, w: float, h: float, ppt: float, column_boxes, marke
     # straddle it, landing either on the line or past the ground / frame.
     snug = 0.5 * h_pt + _WATER_LINE_CLEAR_PT + 0.25
     dys = np.sort(np.concatenate((dys, [-snug, snug])))
-    centres, costs, leadered, sides = [], [], [], []
+    centres, costs, leadered, sides, extras = [], [], [], [], []
     for side, edge, side_cost in ((1.0, right_edge, 0.0), (-1.0, left_edge, _WATER_LEFT_COST_PT)):
         for extra in _WATER_EXTRA_DX_PT:
             cx = edge + side * (extra * ppt + w / 2)
@@ -1300,7 +1350,14 @@ def _side_candidates(anchor, w: float, h: float, ppt: float, column_boxes, marke
             costs.append(np.abs(dys) + side_cost + _WATER_EXTRA_DX_COST * extra + _WATER_LEADER_COST_PT * lead)
             leadered.append(lead)
             sides.append(np.full(dys.size, side))
-    return np.vstack(centres), np.concatenate(costs), np.concatenate(leadered), np.concatenate(sides)
+            extras.append(np.full(dys.size, extra))
+    return (
+        np.vstack(centres),
+        np.concatenate(costs),
+        np.concatenate(leadered),
+        np.concatenate(sides),
+        np.concatenate(extras),
+    )
 
 
 def _chem_depth_ordered(labels: list) -> list:
@@ -1990,11 +2047,17 @@ def clip_water_line_to_ground(
     Between two heads the line is replaced by ``min(line, ground)`` — with the
     ground vertices and line/ground crossings inserted so the clip is exact —
     unless both heads are above ground (an artesian zone: left as drawn).
+    When one head is above ground (a flowing artesian well) the line must
+    still reach that measured head: the run above ground ending at that well
+    stays straight, and only other runs between the heads (a hill or valley
+    rim in between) are clipped.
 
     Returns ``(xy, clipped_spans, artesian_spans)``: ``xy`` is the clipped
     ``(N, 2)`` polyline or ``None`` when nothing was clipped (draw the
     original, unchanged); spans are indices ``i`` of anchor pairs ``(i, i+1)``
-    where the straight line rose above ground.
+    where the straight line rose above ground and was clipped, or was left
+    above ground (both heads, or the run next to an artesian head) — a span
+    may be in both lists.
     """
     anchor_x = np.asarray(anchor_x, dtype=float)
     anchor_y = np.asarray(anchor_y, dtype=float)
@@ -2023,13 +2086,35 @@ def clip_water_line_to_ground(
             artesian.append(index)
             pieces.append(straight)
             continue
-        clipped.append(index)
         cross = np.flatnonzero(diff[:-1] * diff[1:] < 0.0)
         if cross.size:
             share = diff[cross] / (diff[cross] - diff[cross + 1])
             xs = np.sort(np.concatenate((xs, xs[cross] + (xs[cross + 1] - xs[cross]) * share)))
             line = y0 + (y1 - y0) * (xs - x0) / (x1 - x0)
-        ys = np.minimum(line, np.interp(xs, ground_x, ground_y))
+        ground = np.interp(xs, ground_x, ground_y)
+        ys = np.minimum(line, ground)
+        # One head measured above ground (flowing artesian well): the line
+        # must reach that head. The run above ground that ends at the
+        # artesian well stays straight (it rises out of the ground towards
+        # the head); any other run above ground is still clipped.
+        keep = np.zeros(xs.size, dtype=bool)
+        above = line - ground > _GROUND_CLIP_TOL
+        if above_anchor[index + 1]:
+            below = np.flatnonzero(~above)
+            keep[(int(below[-1]) if below.size else 0):] = True
+        elif above_anchor[index]:
+            below = np.flatnonzero(~above)
+            keep[: (int(below[0]) + 1 if below.size else xs.size)] = True
+        if keep.any():
+            ys = np.where(keep, line, ys)
+            artesian.append(index)
+        if np.any(above & ~keep):
+            clipped.append(index)
+        elif keep.any():
+            # Only the artesian well's own run was above ground: the
+            # straight line is drawn as is.
+            pieces.append(straight)
+            continue
         pieces.append(np.column_stack((xs, ys)))
     if not clipped:
         return None, clipped, artesian
@@ -2046,8 +2131,13 @@ class RendererWaterMixin:
         line_name: str,
         clipped_pairs: Sequence[tuple[str, str]],
         artesian_pairs: Sequence[tuple[str, str]],
+        artesian_holes: set[str] | frozenset[str] = frozenset(),
     ) -> None:
-        """Section QA notes for water-line spans clipped to / left above the ground."""
+        """Section QA notes for water-line spans clipped to / left above the ground.
+
+        ``artesian_holes``: holes whose plotted head is above ground; a span
+        with only one of them rises above the ground towards that head.
+        """
         notes = getattr(self, "water_line_notes", None)
         if notes is None:
             notes = self.water_line_notes = []
@@ -2060,10 +2150,17 @@ class RendererWaterMixin:
             if text not in notes:
                 notes.append(text)
         for left_id, right_id in artesian_pairs:
-            text = (
-                f"Groundwater line {left_id}–{right_id}{series}: drawn above the ground "
-                "surface — both heads are above ground (flowing artesian zone)"
-            )
+            ends = [hole for hole in (left_id, right_id) if hole in artesian_holes]
+            if len(ends) == 1:
+                text = (
+                    f"Groundwater line {left_id}–{right_id}{series}: rises above the ground "
+                    f"surface to the flowing artesian head measured at {ends[0]}"
+                )
+            else:
+                text = (
+                    f"Groundwater line {left_id}–{right_id}{series}: drawn above the ground "
+                    "surface — both heads are above ground (flowing artesian zone)"
+                )
             if text not in notes:
                 notes.append(text)
 
@@ -2292,6 +2389,9 @@ class RendererWaterMixin:
         )
         spans = tuple(
             (id(ax), float(x0), float(x1)) for ax, x0, x1 in (getattr(self, "_column_spans", None) or [])
+        ) + tuple(
+            (id(ax), float(x0), float(x1), float(y0), float(y1))
+            for ax, x0, x1, y0, y1 in (getattr(self, "_column_extra_spans", None) or [])
         )
         return (
             layout[0],
@@ -2532,6 +2632,18 @@ class RendererWaterMixin:
             # column hides the stick/markers, and over a neighbour's column it
             # misattributes the value.
             column_boxes = self._column_obstacle_boxes(fig)
+            # Inclined holes' stepped pieces: hard obstacles like the columns,
+            # but not "a hole's column" for the side / next-hole rules.
+            extra_boxes = self._column_extra_obstacle_boxes(fig)
+            # Every drawn marker (chemistry dots nudged off the stick,
+            # groundwater markers): a value printed on one hides it.
+            marker_arr = _ObstacleArray(
+                _marker_boxes(
+                    {annotation.axes for _k, annotation, _c in labels},
+                    renderer,
+                    renderer.points_to_pixels(_WATER_MARKER_CLEAR_PT),
+                )
+            )
             # Water numbers hole by hole (left to right), each hole's top label
             # first, so crowded holes stack their labels in level order.
             ordered = _chem_depth_ordered(sorted(labels, key=_label_order_key))
@@ -2547,7 +2659,7 @@ class RendererWaterMixin:
             # Obstacles as an (N, 4) array: with hundreds of labels x dozens of
             # candidates the per-box Python loop dominated render time.
             placed_arr = _ObstacleArray(placed)
-            column_arr = _ObstacleArray(column_boxes)
+            column_arr = _ObstacleArray(column_boxes + extra_boxes)
             # Strip knock-outs of the placed values (chemistry goes first), built
             # once the first water label comes up: water numbers and DRY / NM
             # notes keep off them whenever they can.
@@ -2599,6 +2711,7 @@ class RendererWaterMixin:
                             fig,
                             placed_arr=placed_arr,
                             column_arr=column_arr,
+                            marker_arr=marker_arr,
                             own=own,
                             right_limit=right_limit,
                             pad=pad,
@@ -2641,7 +2754,9 @@ class RendererWaterMixin:
                     annotation.arrow_patch.set_visible(leader)
                     continue
                 if scene is None:
-                    scene = self._water_label_scene(fig, labels, renderer, column_boxes, strip_arr)
+                    scene = self._water_label_scene(
+                        fig, labels, renderer, column_boxes, strip_arr, extra_boxes=extra_boxes
+                    )
                 if not self._place_water_label(kind, annotation, renderer, scene, placed_arr, pad):
                     # No free spot: keep the marker, never print overlapping text.
                     annotation._water_dropped = True
@@ -2655,7 +2770,7 @@ class RendererWaterMixin:
         finally:
             _ANCHOR_SCOPES.pop()
 
-    def _water_label_scene(self, fig, labels, renderer, column_boxes, strip_arr) -> dict:
+    def _water_label_scene(self, fig, labels, renderer, column_boxes, strip_arr, *, extra_boxes=()) -> dict:
         """Obstacles the water numbers keep off, read once the values are placed."""
         axes = {annotation.axes for _k, annotation, _c in labels}
         leaders = []
@@ -2677,6 +2792,9 @@ class RendererWaterMixin:
             ],
             "markers": _water_marker_points(axes, renderer),
             "columns": np.array([(b.x0, b.y0, b.x1, b.y1) for b in column_boxes], dtype=float).reshape(-1, 4),
+            # Inclined holes' stepped column pieces: never covered by any
+            # water number, note or gradient (hard, like the own column).
+            "column_pieces": np.array([(b.x0, b.y0, b.x1, b.y1) for b in extra_boxes], dtype=float).reshape(-1, 4),
             "column_boxes": column_boxes,
             "strips": strip_arr._arr if strip_arr is not None else np.zeros((0, 4)),
             "leaders": np.array(leaders, dtype=float).reshape(-1, 4),
@@ -2732,6 +2850,7 @@ class RendererWaterMixin:
         if kind == "gradient":
             centres, costs, leadered, feet = self._gradient_candidates(annotation, anchor, w, h, ppt)
             sides = np.zeros(centres.shape[0])
+            adjacent = None
         else:
             # Every marker drawn on this hole (nudged ones may stick out of
             # the column): numbers start beyond them, in one tidy column.
@@ -2742,8 +2861,15 @@ class RendererWaterMixin:
                 extent = (float(np.min(near[:, 0] - near[:, 2])), float(np.max(near[:, 0] + near[:, 2])))
             else:
                 extent = None
-            centres, costs, leadered, sides = _side_candidates(
+            centres, costs, leadered, sides, extras = _side_candidates(
                 anchor, w, h, ppt, scene["column_boxes"], marker_extent=extent
+            )
+            # Right beside its own column (a small sideways step at most) and
+            # within a few label heights of the marker: a number pushed out
+            # into the middle of the span reads as nobody's (or the next
+            # well's), so these spots come first.
+            adjacent = (extras <= _WATER_ADJACENT_EXTRA_PT) & (
+                np.abs(centres[:, 1] - float(anchor[1])) <= _WATER_ADJACENT_HEIGHTS * h
             )
             if abs(nudge) > 0.5:
                 # Number on the side its marker was nudged to.
@@ -2791,6 +2917,8 @@ class RendererWaterMixin:
             bad = placed_arr.overlaps_many(sub)
             cleared = sub + np.array([-col_clear, 0.0, col_clear, 0.0])
             bad |= _boxes_overlap_any(columns[own_col], cleared)
+            if scene["column_pieces"].shape[0]:
+                bad |= _boxes_overlap_any(scene["column_pieces"], cleared)
             bad |= _circles_hit_boxes(scene["markers"], sub, _WATER_MARKER_CLEAR_PT * ppt)
             if scene["leaders"].shape[0]:
                 bad |= _any_segment_hits(scene["leaders"], sub + np.array([-pad, -pad, pad, pad]))
@@ -2852,6 +2980,11 @@ class RendererWaterMixin:
                 ~on_line,
                 np.ones(idx.size, dtype=bool),
             ]
+            if adjacent is not None:
+                # Beside its own column first (off every line), then the
+                # usual ladder: never mid-span when the column side is free.
+                adj = adjacent[idx]
+                tiers = [adj & ~on_line & ~on_strip & ~sky, adj & ~on_line & ~sky] + tiers
         # Every tier clear of the neighbouring columns first, then the same
         # ladder over them (never the own column, filtered above).
         tiers = [keep & ~on_other for keep in tiers] + tiers
@@ -2916,6 +3049,20 @@ class RendererWaterMixin:
             np.asarray(feet, dtype=float),
         )
 
+    def _column_extra_obstacle_boxes(self, fig) -> list:
+        """Display boxes of inclined holes' column pieces away from the collar x
+        (over their own height; the top / bottom piece runs to the frame)."""
+        boxes = []
+        for ax, x0, x1, y_lo, y_hi in getattr(self, "_column_extra_spans", None) or []:
+            lim0, lim1 = ax.get_ylim()
+            lo_lim, hi_lim = min(lim0, lim1), max(lim0, lim1)
+            lo, hi = max(float(y_lo), lo_lim), min(float(y_hi), hi_lim)
+            if hi <= lo:
+                continue
+            (ax0, ay0), (ax1, ay1) = ax.transData.transform([[x0, lo], [x1, hi]])
+            boxes.append(Bbox.from_extents(min(ax0, ax1), min(ay0, ay1), max(ax0, ax1), max(ay0, ay1)))
+        return boxes
+
     def _column_obstacle_boxes(self, fig) -> list:
         """Display-space boxes of every borehole column on the section."""
         spans = getattr(self, "_column_spans", None) or []
@@ -2951,6 +3098,8 @@ class RendererWaterMixin:
         self.lnapl_drawn = False
         self.artesian_drawn = False
         self.artesian_color = None
+        # Whether any "i=" gradient label was drawn (legend / notes key then).
+        self.gradient_labels_drawn = False
         if hole_summary.empty:
             return
         self._water_status_notes = {}
@@ -3021,10 +3170,23 @@ class RendererWaterMixin:
             for row in hole_summary.itertuples(index=False)
         }
         consulting = self.profile.layout == "consulting_section"
+        depth_mode = self.profile.y_axis_mode == "depth_below_collar"
+        # Series drawn with a joining line: the legend keys a line only for
+        # those (markers only for a single reading, a series broken by every
+        # dry / NM gap, or depth mode across different collar elevations).
+        joined_series: set[str] = set()
         n_series = len(series_groups)
         multi_series = n_series >= 2
         # (x, collar RL, reading) of measured readings with free product.
         lnapl_levels: list[tuple[float, float, WaterLevel]] = []
+        # Holes with an LNAPL band (any series): every head drawn there is
+        # hollow, so neither series' marker hides the band.
+        product_holes = {
+            str(level.hole_id)
+            for levels in series_groups.values()
+            for level in levels
+            if has_lnapl(level) and water_status(level) == "measured"
+        }
         # One "i=" per segment: series with equal heads produce identical text.
         gradient_drawn: set[tuple[str, str, str]] = set()
         # Flowing-artesian heads drawn (legend entry only then).
@@ -3078,8 +3240,9 @@ class RendererWaterMixin:
             plotted_levels: list[WaterLevel] = []
             color, marker, default_label = series_styles[series_index]
             label = first.series_label or default_label or series_id
-            # Several series: each i= names its series (colour alone is not enough).
-            gradient_prefix = label if multi_series else ""
+            # Several series: each i= names its series (colour alone is not
+            # enough), in the legend's case (series names are upper case there).
+            gradient_prefix = label.upper() if multi_series else ""
             series_linestyle = "-" if self.profile.water_line_solid else "--"
             if multi_series and not consulting:
                 series_linestyle = _SERIES_DASHES[series_index % len(_SERIES_DASHES)]
@@ -3170,16 +3333,22 @@ class RendererWaterMixin:
                     # out sideways so one series cannot hide another.
                     shift = (series_index - 0.5 * (n_series - 1)) * _SERIES_MARKER_STEP_PT
                     marker_transform = offset_copy(ax.transData, fig=ax.figure, x=shift, units="points")
+                # A head on an LNAPL band is drawn hollow (series-colour
+                # outline, no fill) so the product band under it stays visible.
+                on_product = [str(level.hole_id) in product_holes for level in measured_levels]
+                face = to_rgba(color)
                 markers = ax.scatter(
                     xs_arr,
                     ys,
                     marker=marker,
-                    c=color,
+                    facecolors=[(0.0, 0.0, 0.0, 0.0) if lnapl else face for lnapl in on_product],
                     s=49,
                     zorder=WATER_MARKER_ZORDER,
                     transform=marker_transform,
-                    edgecolors="white",
-                    linewidths=_WATER_MARKER_EDGE_PT,
+                    edgecolors=[face if lnapl else "white" for lnapl in on_product],
+                    linewidths=[
+                        _LNAPL_HOLLOW_EDGE_PT if lnapl else _WATER_MARKER_EDGE_PT for lnapl in on_product
+                    ],
                     clip_on=True,
                 )
                 # Never past the frame (a level at the collar of an edge hole
@@ -3187,6 +3356,9 @@ class RendererWaterMixin:
                 markers.set_clip_path(ax.patch)
                 register_marker_set(ax, markers, "water")
                 artesian = water_arr > collar_arr + _ARTESIAN_TOL_M
+                artesian_holes = {
+                    str(level.hole_id) for level, above in zip(measured_levels, artesian, strict=True) if above
+                }
                 if np.any(artesian):
                     self._draw_artesian_risers(
                         ax,
@@ -3227,7 +3399,14 @@ class RendererWaterMixin:
                         # Its own marker: a marker nudged off a coincident
                         # one pulls the number to its side.
                         rl_label._water_marker = (markers, marker_index)
-                if len(xs_arr) >= 2 and interpolate:
+                # Depth mode: depths below ground of wells with different
+                # collar elevations do not describe one water table; joining
+                # them (or an i= between them) would be meaningless.
+                depth_join_ok = not depth_mode or float(np.ptp(collar_arr)) <= _DEPTH_MODE_COLLAR_TOL_M
+                if len(xs_arr) >= 2 and interpolate and not depth_join_ok:
+                    if _DEPTH_MODE_WATER_NOTE not in self.water_line_notes:
+                        self.water_line_notes.append(_DEPTH_MODE_WATER_NOTE)
+                if len(xs_arr) >= 2 and interpolate and depth_join_ok:
                     gw_linestyle = series_linestyle
                     line_name = series_id if not group_id else f"{series_id} [{group_id}]"
                     clipped_xy = None
@@ -3243,6 +3422,7 @@ class RendererWaterMixin:
                             line_name,
                             [hole_pairs[i] for i in clipped_spans],
                             [hole_pairs[i] for i in artesian_spans],
+                            artesian_holes,
                         )
                     if across_gaps:
                         x_dense = np.linspace(float(xs_arr.min()), float(xs_arr.max()), 100)
@@ -3258,6 +3438,7 @@ class RendererWaterMixin:
                             zorder=6,
                         )
                         _register_water_line(ax, x_dense, y_dense)
+                        joined_series.add(series_id)
                     elif use_segments:
                         y_by_hole = {
                             level.hole_id: float(y)
@@ -3285,6 +3466,7 @@ class RendererWaterMixin:
                                     line_name,
                                     [pair] if seg_clipped else [],
                                     [pair] if seg_artesian else [],
+                                    artesian_holes,
                                 )
                                 if seg_xy is not None:
                                     segment = seg_xy
@@ -3298,6 +3480,7 @@ class RendererWaterMixin:
                                 zorder=6,
                             )
                             ax.add_collection(collection)
+                            joined_series.add(series_id)
                             if self._cad_svg_layers_enabled():
                                 self._set_cad_gid(collection, "water")
                             for segment in segments:
@@ -3317,6 +3500,7 @@ class RendererWaterMixin:
                         if self._cad_svg_layers_enabled() and plotted:
                             self._set_cad_gid(plotted[0], "water")
                         _register_water_line(ax, line_x, line_y)
+                        joined_series.add(series_id)
                     # Schematic horizontal i = Δh/Δx between adjacent measured heads.
                     gradient_collars = {
                         hid: float(profile_lookup[hid][1])
@@ -3360,6 +3544,7 @@ class RendererWaterMixin:
                             + float(profile_lookup[segment.right_hole_id][1])
                         )
                         mid_y = self._plot_y(segment.mid_head_masl, mid_collar)
+                        self.gradient_labels_drawn = True
                         gradient_label = self._water_annotate(
                             ax,
                             gradient_text,
@@ -3398,7 +3583,7 @@ class RendererWaterMixin:
                     "series_id": series_id,
                     "color": color,
                     "marker": marker,
-                    "linestyle": series_linestyle,
+                    "linestyle": series_linestyle if series_id in joined_series else "none",
                     "level_label": level_label_text,
                     "elevation_label": elevation_label_text,
                 }
@@ -3406,7 +3591,15 @@ class RendererWaterMixin:
         if lnapl_levels:
             self._draw_lnapl_bands(ax, lnapl_levels, track_half)
         key_min = int(getattr(self.profile, "water_series_key_min_series", 0) or 0)
-        if not consulting and key_min and len(self.water_series_legend) >= key_min:
+        # A connect_group nest series ("June 2025 deep") keys its marker even
+        # when it is the only series left (its parent "June 2025" was
+        # deselected): the plain-text fallback shows no marker, and only the
+        # marker tells which nest the heads are. A plain single series keeps
+        # the text line.
+        nested = any(
+            (level.connect_group or "").strip() for levels in series_groups.values() for level in levels
+        )
+        if not consulting and key_min and (len(self.water_series_legend) >= key_min or nested):
             self._draw_water_series_key(ax)
 
     def _draw_artesian_risers(self, ax, xs, ground_ys, head_ys, color: str, transform) -> None:
@@ -3549,7 +3742,7 @@ class RendererWaterMixin:
         from matplotlib.legend import Legend
         from matplotlib.lines import Line2D
 
-        from renderer_common import remember_legend_keys
+        from renderer_common import LEGEND_KEY_HANDLER_MAP, SampleTextKey, remember_legend_keys
 
         handles = [
             Line2D(
@@ -3572,10 +3765,14 @@ class RendererWaterMixin:
         if artesian_proxy is not None:
             handles.append(artesian_proxy)
             labels.append(ARTESIAN_LEGEND_LABEL)
+        if getattr(self, "gradient_labels_drawn", False):
+            handles.append(SampleTextKey(GRADIENT_KEY_SAMPLE, self.water_series_legend[0]["color"]))
+            labels.append(GRADIENT_KEY_LABEL)
         key = Legend(
             ax,
             handles,
             labels,
+            handler_map=LEGEND_KEY_HANDLER_MAP,
             loc="lower left",
             fontsize=7,
             frameon=True,
@@ -3601,6 +3798,8 @@ class RendererWaterMixin:
             lines.append(LNAPL_LEGEND_LABEL.upper())
         if getattr(self, "artesian_drawn", False):
             lines.append(ARTESIAN_LEGEND_LABEL.upper())
+        if getattr(self, "gradient_labels_drawn", False):
+            lines.append(GRADIENT_LEGEND_LABEL)
         ax.text(
             0.01,
             0.01,

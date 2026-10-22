@@ -198,7 +198,7 @@ def test_threshold_mode_without_limits_uses_defaults_for_labels_and_dots(caplog)
         to_hex(c)
         for ax in captured["figure"].axes
         for coll in ax.collections
-        if coll.get_zorder() == 8
+        if getattr(coll, "_css_marker_kind", None) == "chem"
         for c in coll.get_facecolors()
     )
     assert dots == sorted(labels.values())

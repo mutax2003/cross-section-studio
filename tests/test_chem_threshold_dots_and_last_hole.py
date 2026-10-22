@@ -8,7 +8,6 @@ readings on the right-most hole lost values (dropped as a last resort).
 from __future__ import annotations
 
 import pytest
-from matplotlib.collections import PathCollection
 from matplotlib.colors import to_hex
 
 from models import Collar, EnvironmentalReading, Lithology
@@ -63,7 +62,7 @@ def _marker_colours(figure) -> list[str]:
     colours: list[str] = []
     for ax in figure.axes:
         for coll in ax.collections:
-            if isinstance(coll, PathCollection) and coll.get_zorder() == 8:
+            if getattr(coll, "_css_marker_kind", None) == "chem":
                 colours += [to_hex(c) for c in coll.get_facecolors()]
     return colours
 

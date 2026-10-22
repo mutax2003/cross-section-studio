@@ -316,8 +316,9 @@ def test_gradient_label_precision_and_series_prefix() -> None:
     _result, _renderer, fig = _render(collars, water, render_layout="consulting_section")
     texts = _texts(fig)
     plt.close(fig)
-    assert "June i=-0.020" in texts
-    assert "Fall i=-0.018" in texts
+    # Series names follow the legend's case (upper case there).
+    assert "JUNE i=-0.020" in texts
+    assert "FALL i=-0.018" in texts
 
 
 # --- 6. Inclined holes follow the projected intervals ------------------------------

@@ -232,6 +232,54 @@ def chemistry_threshold_key(
     return f"{text} {unit}" if unit else text
 
 
+def _adopted_nest_status_rows(levels, kept, allowed) -> list:
+    """DRY / NM rows of deselected series that belong to a plotted nest series.
+
+    A workbook may log "MW-02 dry" under the shallow round's series id with
+    ``connect_group`` "deep" while the deep heads of the same round sit in
+    their own series ("June 2025 deep"). Deselecting the shallow series must
+    not lose the deep well's DRY note: a dry / NM row whose (non-blank)
+    connect_group matches a plotted series' readings, on the same date (or
+    undated), at a hole that series has no row for, is re-filed under that
+    series (first match in workbook order).
+    """
+    from hydro_metrics import water_status
+
+    nests: dict[str, list[tuple[str, str, set]]] = {}
+    covered: set[tuple[str, str]] = set()
+    for level in kept:
+        series_id = getattr(level, "series_id", None) or "default"
+        covered.add((series_id, str(getattr(level, "hole_id", ""))))
+        group = str(getattr(level, "connect_group", "") or "").strip()
+        if not group:
+            continue
+        entries = nests.setdefault(group, [])
+        entry = next((item for item in entries if item[0] == series_id), None)
+        if entry is None:
+            entry = (series_id, str(getattr(level, "series_label", "") or ""), set())
+            entries.append(entry)
+        entry[2].add(getattr(level, "date", None))
+    adopted: list = []
+    for level in levels:
+        series_id = getattr(level, "series_id", None) or "default"
+        group = str(getattr(level, "connect_group", "") or "").strip()
+        if series_id in allowed or not group or water_status(level) == "measured":
+            continue
+        if not hasattr(level, "model_copy"):
+            continue
+        date = getattr(level, "date", None)
+        hole_id = str(getattr(level, "hole_id", ""))
+        for target_id, target_label, dates in nests.get(group, ()):
+            if (target_id, hole_id) in covered:
+                continue
+            if date is not None and None not in dates and date not in dates:
+                continue
+            adopted.append(level.model_copy(update={"series_id": target_id, "series_label": target_label}))
+            covered.add((target_id, hole_id))
+            break
+    return adopted
+
+
 def filter_water_levels_for_plot(
     water_levels,
     selected_series_ids: tuple[str, ...] | list[str] | None = None,
@@ -244,11 +292,12 @@ def filter_water_levels_for_plot(
     levels = list(water_levels)
     if selected_series_ids:
         allowed = {str(sid).strip() or "default" for sid in selected_series_ids}
-        levels = [
+        kept = [
             level
             for level in levels
             if (getattr(level, "series_id", None) or "default") in allowed
         ]
+        levels = kept + _adopted_nest_status_rows(levels, kept, allowed)
     # Preserve workbook order of first appearance when capping.
     order: list[str] = []
     for level in levels:

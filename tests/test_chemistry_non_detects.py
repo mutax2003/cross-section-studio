@@ -316,7 +316,10 @@ def test_unit_key_normalises_spelling_only() -> None:
     assert unit_key("mg/L") != unit_key("µg/L")
 
 
-def test_mixed_units_within_one_parameter_warn_without_converting() -> None:
+def test_mixed_units_within_one_parameter_warn_and_say_how_the_figure_converts() -> None:
+    # Round 7: the figure now converts known units to the parameter's main
+    # unit (explicitly, with a QA note), so Validate says so instead of
+    # "not converted"; it still asks for one unit per parameter.
     readings = [
         _reading(5.0, unit="µg/L"),
         _reading(0.004, unit="mg/L", hole="BH-02"),
@@ -325,8 +328,9 @@ def test_mixed_units_within_one_parameter_warn_without_converting() -> None:
     ]
     assert mixed_unit_parameters(readings) == {"Benzene": ("µg/L", "mg/L")}
     (warning,) = mixed_unit_warnings(readings)
-    assert "Benzene" in warning and "µg/L, mg/L" in warning and "not converted" in warning
-    # Values are untouched.
+    assert "Benzene" in warning and "µg/L, mg/L" in warning
+    assert "converts them to µg/L" in warning and "Use one unit for Benzene" in warning
+    # The readings themselves are untouched (the figure converts copies).
     assert [r.value for r in readings[:2]] == [5.0, 0.004]
 
 

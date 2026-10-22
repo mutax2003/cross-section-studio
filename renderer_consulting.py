@@ -73,7 +73,7 @@ from renderer_common import (
     water_status_legend_label,
     water_status_texts,
 )
-from renderer_water import ARTESIAN_LEGEND_LABEL
+from renderer_water import ARTESIAN_LEGEND_LABEL, GRADIENT_KEY_LABEL, GRADIENT_KEY_SAMPLE
 from stratigraphy import GeologicalPolygon
 
 logger = logging.getLogger(__name__)
@@ -2288,7 +2288,8 @@ class ConsultingLayoutMixin:
                             {
                                 "color": entry.get("color", CONSULTING_WATER_COLOR),
                                 "marker": entry.get("marker", "v"),
-                                "linestyle": gw_linestyle,
+                                # "none": markers only (depth mode, wells at different collars).
+                                "linestyle": "none" if entry.get("linestyle") == "none" else gw_linestyle,
                             },
                         )
                     )
@@ -2303,6 +2304,8 @@ class ConsultingLayoutMixin:
                             },
                         )
                     )
+                    if entry.get("linestyle") == "none":
+                        continue
                     entries.append(
                         (
                             "line",
@@ -2348,6 +2351,9 @@ class ConsultingLayoutMixin:
                     },
                 )
             )
+        if self.profile.show_water_legend and getattr(self, "gradient_labels_drawn", False):
+            # What the "i=" labels on the water lines mean.
+            entries.append(("status_text", GRADIENT_KEY_LABEL, {"color": CONSULTING_WATER_COLOR, "sample": GRADIENT_KEY_SAMPLE}))
         status = water_status_texts(self, ax.figure)
         if status:
             # The grey NM / DRY water notes, keyed by a sample of their text.

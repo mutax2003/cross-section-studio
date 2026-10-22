@@ -312,6 +312,10 @@ class SectionSheetLayoutMixin:
             key = getattr(self, "_chemistry_threshold_key", None)
             if key is not None and key.figure is fig:
                 stack_bottom = min(stack_bottom, key.get_window_extent(renderer).y0)
+            outside_legend = axes.get_legend()
+            if balance and outside_legend is not None and outside_legend.get_visible():
+                # A legend hung below a narrow portrait box is part of the stack.
+                stack_bottom = min(stack_bottom, outside_legend.get_window_extent(renderer).y0)
             target_px = floor_px
             if balance:
                 content_top = frame.y1

@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 # tapering to its apex (0.5 = mid-way toward the neighbouring hole).
 PINCH_OUT_FRACTION = 0.5
 
+# With "Show layers that end between holes" off a unit logged in one hole only is
+# not carried toward the neighbour: its wedge tapers out this fraction of the
+# spacing from its own hole (the near field), so the hole's log is still honoured
+# at the hole — never replaced by a neighbouring unit — and the bracketing fills
+# close the rest of the gap.
+NEAR_FIELD_PINCH_FRACTION = 0.25
+
 # Intervals thinner than this (from_depth == to_depth within float noise) carry no
 # fence geometry: they are left out of correlation / fence building (columns still
 # show them) because a degenerate match collapses the neighbouring fills. Kept in
@@ -46,6 +53,9 @@ class _LayerInterval:
     top_elevation: float
     bottom_elevation: float
     unit_order: int | None = None
+    # Fence-only unit continued below a short hole's total depth from its deeper
+    # neighbours (``_extend_short_holes``); never logged in the hole itself.
+    inferred: bool = False
 
 
 def _intervals_for_hole(hole_df: pd.DataFrame) -> list[_LayerInterval]:
@@ -739,6 +749,10 @@ def _polygons_for_pair(
                 allow_pinch_outs=allow_pinch_outs,
             )
         )
+    if not x_right - x_left > 0.0:
+        # Coincident holes (a nested pair logged at one projected position): no
+        # fence area between them, so no zero-width polygons to warn about.
+        return polygons
     all_keys = sorted(
         set(left_lookup) | set(right_lookup),
         key=lambda key: _correlation_sort_key(key, left_lookup, right_lookup),
@@ -767,64 +781,52 @@ def _polygons_for_pair(
     top_bends: dict[Hashable, list[tuple[float, float]]] = defaultdict(list)
     bottom_bends: dict[Hashable, list[tuple[float, float]]] = defaultdict(list)
     wedges: list[tuple[_LayerInterval, float, float, float]] = []
-    # Wedges with exactly one bracketing match (base / top of the fence), grouped by
-    # their ``(above, below)`` brackets; tiled against the fence base / top line in
-    # pass 1b instead of tapering to a lone tip (see ``_tile_open_wedges``).
-    open_wedges: dict[
+    # Bracketed wedges grouped by their ``(above, below)`` matched brackets. Groups
+    # logged in both holes (a lateral facies change) and groups with one bracket
+    # only (base / top of the fence) are tiled in pass 1b instead of tapering to
+    # lone tips (see ``_tile_unmatched_region``).
+    bracketed: dict[
         tuple[Hashable | None, Hashable | None],
         list[tuple[bool, tuple[_LayerInterval, float, float, float]]],
     ] = defaultdict(list)
-    if allow_pinch_outs:
-        for key in all_keys:
-            left_layer = left_lookup.get(key)
-            right_layer = right_lookup.get(key)
-            if (left_layer is None) == (right_layer is None):
-                continue
-            if left_layer is not None:
-                source_layer, x_source, x_other = left_layer, x_left, x_right
-                neighbor_intervals, neighbor_by_order = right_intervals, right_by_order
-                source_matches = matched
-            else:
-                source_layer, x_source, x_other = right_layer, x_right, x_left  # type: ignore[assignment]
-                neighbor_intervals, neighbor_by_order = left_intervals, left_by_order
-                source_matches = matched_right_first
-            x_tip = x_source + PINCH_OUT_FRACTION * (x_other - x_source)
-            above, below = _bracketing_matches(source_layer, source_matches)
-            if above is not None or below is not None:
-                z_tip = _bracket_tip_z(
-                    above,
-                    below,
-                    left_lookup,
-                    right_lookup,
-                    x_left,
-                    x_right,
-                    x_tip,
-                )
-                if (
-                    above is not None
-                    and below is not None
-                    and _bend_keeps_fills_valid(
-                        above, below, left_lookup, right_lookup, x_left, x_right, x_tip, z_tip
-                    )
-                ):
-                    bottom_bends[above].append((x_tip, z_tip))
-                    top_bends[below].append((x_tip, z_tip))
-            else:
-                z_tip = _pinch_out_z_mid(
-                    source_layer, neighbor_intervals, by_order=neighbor_by_order
-                )
-            wedge = (source_layer, x_source, x_other, z_tip)
-            if (above is None) != (below is None):
-                open_wedges[(above, below)].append((left_layer is not None, wedge))
-            else:
-                wedges.append(wedge)
+    # Pinch-outs on or off, every unit stays drawn at the hole that logged it
+    # (absorbing it into a bracketing fill drew the neighbour's unit over the
+    # log). Off only shortens the reach of one-sided lenses to the near field.
+    pinch_fraction = PINCH_OUT_FRACTION if allow_pinch_outs else NEAR_FIELD_PINCH_FRACTION
+    for key in all_keys:
+        left_layer = left_lookup.get(key)
+        right_layer = right_lookup.get(key)
+        if (left_layer is None) == (right_layer is None):
+            continue
+        if left_layer is not None:
+            source_layer, x_source, x_other = left_layer, x_left, x_right
+            neighbor_intervals, neighbor_by_order = right_intervals, right_by_order
+            source_matches = matched
+        else:
+            source_layer, x_source, x_other = right_layer, x_right, x_left  # type: ignore[assignment]
+            neighbor_intervals, neighbor_by_order = left_intervals, left_by_order
+            source_matches = matched_right_first
+        above, below = _bracketing_matches(source_layer, source_matches)
+        if above is None and below is None:
+            z_tip = _pinch_out_z_mid(
+                source_layer, neighbor_intervals, by_order=neighbor_by_order
+            )
+            wedges.append((source_layer, x_source, x_other, z_tip))
+            continue
+        x_tip = x_source + pinch_fraction * (x_other - x_source)
+        z_tip = _bracket_tip_z(
+            above, below, left_lookup, right_lookup, x_left, x_right, x_tip
+        )
+        bracketed[(above, below)].append(
+            (left_layer is not None, (source_layer, x_source, x_other, z_tip))
+        )
 
-    # Pass 1b: wedges open toward the fence base (or top). Opposing groups meet
-    # along a facies-change boundary at mid-span; a lone group runs out to the
-    # neighbour's hole end. Groups that cannot tile cleanly keep their tip wedges.
-    open_polygons: list[GeologicalPolygon] = []
-    for (above, below), members in open_wedges.items():
-        tiles = _tile_open_wedges(
+    def _tile(
+        above: Hashable | None,
+        below: Hashable | None,
+        members: list[tuple[bool, tuple[_LayerInterval, float, float, float]]],
+    ) -> list[GeologicalPolygon] | None:
+        return _tile_unmatched_region(
             above,
             below,
             [wedge[0] for is_left, wedge in members if is_left],
@@ -839,26 +841,43 @@ def _polygons_for_pair(
             x_right,
             hole_pair,
         )
+
+    # Pass 1b: two-sided groups first. Units logged only in the left hole facing
+    # units logged only in the right hole between the same matched contacts are a
+    # lateral facies change: they share the slot along a sloping boundary, each
+    # thinning to zero at the opposite hole (two tips meeting mid-span drew a
+    # bow-tie with the bracketing fills pinched to a point). A lens logged on one
+    # side only keeps its tip, with the bracketing fills bent through it.
+    open_polygons: list[GeologicalPolygon] = []
+    for (above, below), members in bracketed.items():
+        if above is None or below is None:
+            continue
+        sides = {is_left for is_left, _wedge in members}
+        tiles = _tile(above, below, members) if len(sides) == 2 else None
+        if tiles is not None:
+            open_polygons.extend(tiles)
+            continue
+        for _is_left, wedge in members:
+            _source, x_source, x_other, z_tip = wedge
+            x_tip = x_source + pinch_fraction * (x_other - x_source)
+            if _bend_keeps_fills_valid(
+                above, below, left_lookup, right_lookup, x_left, x_right, x_tip, z_tip
+            ):
+                bottom_bends[above].append((x_tip, z_tip))
+                top_bends[below].append((x_tip, z_tip))
+            wedges.append(wedge)
+
+    # Pass 1c: wedges open toward the fence base (or top). Opposing groups meet
+    # along a sloping facies-change boundary; a lone group runs out to the
+    # neighbour's hole end. Groups that cannot tile cleanly keep their tip wedges.
+    for (above, below), members in bracketed.items():
+        if above is not None and below is not None:
+            continue
+        tiles = _tile(above, below, members)
         if tiles is None:
             wedges.extend(wedge for _is_left, wedge in members)
         else:
             open_polygons.extend(tiles)
-
-    # Pinch-outs off: unmatched units are not drawn between the holes, so the
-    # bracketing fills close the space they leave at the source hole instead.
-    top_ends: dict[tuple[Hashable, str], float] = {}
-    bottom_ends: dict[tuple[Hashable, str], float] = {}
-    if not allow_pinch_outs:
-        for side, lookup, other, source_matches in (
-            ("left", left_lookup, right_lookup, matched),
-            ("right", right_lookup, left_lookup, matched_right_first),
-        ):
-            sides_top, sides_bottom = _closed_unmatched_ends(
-                [layer for key, layer in lookup.items() if key not in other],
-                source_matches,
-            )
-            top_ends.update({(key, side): z for key, z in sides_top.items()})
-            bottom_ends.update({(key, side): z for key, z in sides_bottom.items()})
 
     # Pass 2: continuous fills (with bent contacts), then wedges.
     for key, left_layer, right_layer in matched:
@@ -866,22 +885,26 @@ def _polygons_for_pair(
         bottom_path = _bend_path(bottom_bends.get(key, ()), x_left, x_right)
         polygon = _make_polygon(
             [
-                (x_left, top_ends.get((key, "left"), left_layer.top_elevation)),
+                (x_left, left_layer.top_elevation),
                 *top_path,
-                (x_right, top_ends.get((key, "right"), right_layer.top_elevation)),
-                (x_right, bottom_ends.get((key, "right"), right_layer.bottom_elevation)),
+                (x_right, right_layer.top_elevation),
+                (x_right, right_layer.bottom_elevation),
                 *reversed(bottom_path),
-                (x_left, bottom_ends.get((key, "left"), left_layer.bottom_elevation)),
+                (x_left, left_layer.bottom_elevation),
             ],
             left_layer.lithology_code,
             hole_pair,
+            # Below a short hole's TD the fill is interpolated, not logged.
+            is_pinch_out=left_layer.inferred or right_layer.inferred,
         )
         if polygon:
             polygons.append(polygon)
 
     for source_layer, x_source, x_other, z_tip in wedges:
         polygon = _make_polygon(
-            _pinch_out_wedge_coords(source_layer, x_source, x_other, z_tip),
+            _pinch_out_wedge_coords(
+                source_layer, x_source, x_other, z_tip, pinch_fraction=pinch_fraction
+            ),
             source_layer.lithology_code,
             hole_pair,
             is_pinch_out=True,
@@ -893,65 +916,32 @@ def _polygons_for_pair(
     return polygons
 
 
-def _closed_unmatched_ends(
-    unmatched: list[_LayerInterval],
-    matched: list[tuple[Hashable, _LayerInterval, _LayerInterval]],
-) -> tuple[dict[Hashable, float], dict[Hashable, float]]:
-    """Source-hole contact elevations that close the space of undrawn unmatched units.
+def _left_group_on_top(
+    left_units: list[_LayerInterval],
+    right_units: list[_LayerInterval],
+    left_slot: tuple[float, float],
+    right_slot: tuple[float, float],
+) -> bool:
+    """Which side of a lateral facies change overlies the other (mirror-invariant).
 
-    Used when pinch-outs are off: the unmatched units of one hole are not drawn
-    between the holes, so the matched units bracketing them take over the space
-    (the hole column still shows the logged units). Returns ``(top_ends,
-    bottom_ends)`` keyed by matched correlation key, the new elevation of that
-    fill's top / bottom edge at the source hole:
-
-    * **Two-sided** (matched unit above and below): the upper unit's base and the
-      lower unit's top both run to the mid-elevation of the space between them,
-      so the two contacts converge at the hole — the same tiling a pinch-out bend
-      gives, with the tip on the hole instead of mid-span.
-    * **Above only** (units below the lowest match): the upper unit's base runs
-      down to the deepest unmatched base, i.e. along the fence base line.
-    * **Below only** (units above the highest match): the lower unit's top runs
-      up to the highest unmatched top, i.e. along the fence top line.
-
-    Unbracketed units and crossing (mis-ordered) brackets are left alone.
+    The group whose slot sits higher (mid-elevation at its own hole) is drawn over
+    the other, so the facies boundary runs from that hole's base contact to the
+    other hole's upper contact. Ties fall back to the lithology codes, so
+    reversing the transect keeps the same unit on top.
     """
-    groups: dict[tuple[Hashable | None, Hashable | None], list[_LayerInterval]] = defaultdict(list)
-    for interval in unmatched:
-        above, below = _bracketing_matches(interval, matched)
-        if above is not None or below is not None:
-            groups[(above, below)].append(interval)
-    source = {key: layer for key, layer, _neighbour in matched}
-    top_ends: dict[Hashable, float] = {}
-    bottom_ends: dict[Hashable, float] = {}
-    for (above, below), members in groups.items():
-        finite = [
-            interval
-            for interval in members
-            if np.isfinite(interval.top_elevation) and np.isfinite(interval.bottom_elevation)
-        ]
-        if not finite:
-            continue
-        if above is not None and below is not None:
-            upper = source[above].bottom_elevation
-            lower = source[below].top_elevation
-            if not (np.isfinite(upper) and np.isfinite(lower)) or upper < lower - 1e-9:
-                continue
-            middle = 0.5 * (upper + lower)
-            bottom_ends[above] = middle
-            top_ends[below] = middle
-        elif above is not None:
-            base = min(interval.bottom_elevation for interval in finite)
-            if base < source[above].bottom_elevation:
-                bottom_ends[above] = base
-        else:
-            top = max(interval.top_elevation for interval in finite)
-            if top > source[below].top_elevation:  # type: ignore[index]
-                top_ends[below] = top
-    return top_ends, bottom_ends
+    left_mid = round(0.5 * (left_slot[0] + left_slot[1]), 6)
+    right_mid = round(0.5 * (right_slot[0] + right_slot[1]), 6)
+    if left_mid != right_mid:
+        return left_mid > right_mid
+
+    def _codes(units: list[_LayerInterval]) -> tuple[str, ...]:
+        ordered = sorted(units, key=lambda item: (-item.top_elevation, -item.bottom_elevation))
+        return tuple(unit.lithology_code for unit in ordered)
+
+    return _codes(left_units) <= _codes(right_units)
 
 
-def _tile_open_wedges(
+def _tile_unmatched_region(
     above: Hashable | None,
     below: Hashable | None,
     left_units: list[_LayerInterval],
@@ -966,28 +956,37 @@ def _tile_open_wedges(
     x_right: float,
     hole_pair: tuple[str, str],
 ) -> list[GeologicalPolygon] | None:
-    """Tile unmatched units that sit below the lowest (or above the highest) match.
+    """Tile unmatched units that share one bracketing slot without tip wedges.
 
-    Such a unit has a bracketing contact on one side only, so a tip wedge leaves
-    a white triangle against the fence base line (hole bottom to hole bottom) or
-    the fence top line (hole top to hole top). The open region between that
-    contact and the base/top line is instead shared out:
+    The slot runs between the bracketing contact(s) hole to hole: the base of the
+    matched unit ``above`` and/or the top of the matched unit ``below``; with one
+    bracket only, the fence base line (hole bottom to hole bottom) or top line
+    (hole top to hole top) closes it. A tip wedge there would leave a white
+    triangle against that line, and two opposing tips would pinch the bracketing
+    fills to a point (a bow-tie). Instead:
 
     * **Opposing groups** (unit(s) X only in the left hole, Y only in the right,
-      same bracketing contact, both reaching their hole ends) meet along a
-      vertical facies-change boundary at ``PINCH_OUT_FRACTION`` of the span:
-      X fills the left part, Y the right part.
-    * **A lone group** (nothing logged opposite because the neighbour ends at the
-      contact) extends to the neighbour, thinning to zero at its hole end — the
-      neighbour simply did not penetrate the unit.
+      each filling its hole's slot) are a lateral facies change. They meet along
+      a sloping boundary from one hole's base of the slot to the other hole's top
+      of it, so each tapers to zero thickness at the hole that did not log it (no
+      vertical wall mid-span). Which group overlies is decided by
+      ``_left_group_on_top`` (mirror-invariant).
+    * **A lone group** (open slot only: nothing logged opposite because the
+      neighbour ends at the contact) extends to the neighbour, thinning to zero
+      at its hole end — the neighbour simply did not penetrate the unit.
 
     Stacked units in a group keep their thickness proportions across the region.
-    Exactly one of ``above`` / ``below`` must be set (unbracketed wedges, e.g.
-    crossing un-matches in a pair with no correlation, keep their tips). Returns
-    ``None`` (caller keeps the tip wedges) when the group does not reach its hole
-    ends or the region is not well ordered.
+    At least one of ``above`` / ``below`` must be set (unbracketed wedges keep
+    their tips); a two-sided slot needs units on both sides (a one-sided lens
+    keeps its tip and bends). Returns ``None`` (caller keeps the tip wedges) when
+    a group does not fill its slot or the region is not well ordered.
     """
-    if (above is None) == (below is None) or (not left_units and not right_units):
+    if above is None and below is None:
+        return None
+    two_sided = above is not None and below is not None
+    if two_sided and not (left_units and right_units):
+        return None
+    if not left_units and not right_units:
         return None
     span = x_right - x_left
     if not (np.isfinite(span) and span > 0.0):
@@ -1013,7 +1012,7 @@ def _tile_open_wedges(
         scale = max(1.0, abs(upper), abs(lower))
         tol = 1e-6 * scale
         if units:
-            # The group must fill its hole from the contact to the hole end.
+            # The group must fill its hole's slot (to the hole end when open).
             if abs(unit_top - upper) > tol or abs(unit_bottom - lower) > tol:
                 return None
             if above is None and abs(unit_top - hole_top) > tol:
@@ -1058,32 +1057,54 @@ def _tile_open_wedges(
         if _upper(x) < _lower(x) - 1e-9 * max(1.0, abs(_upper(x))):
             return None
 
-    x_mid = x_left + PINCH_OUT_FRACTION * span
+    # Each side's share of the slot as column fractions (0 = upper, 1 = lower) at x.
     if left_units and right_units:
-        ranges = {"left": (x_left, x_mid), "right": (x_mid, x_right)}
-    else:
-        ranges = {"left": (x_left, x_right), "right": (x_left, x_right)}
+        left_on_top = _left_group_on_top(
+            left_units,
+            right_units,
+            (upper_ends["left"], lower_ends["left"]),
+            (upper_ends["right"], lower_ends["right"]),
+        )
 
-    def _curve(fraction: float, xs: list[float]) -> list[tuple[float, float]]:
+        def _share(side: str, x: float) -> tuple[float, float]:
+            if x <= x_left:
+                t = 0.0
+            elif x >= x_right:
+                t = 1.0
+            else:
+                t = (x - x_left) / span
+            if left_on_top:
+                boundary = 1.0 - t
+                return (0.0, boundary) if side == "left" else (boundary, 1.0)
+            return (t, 1.0) if side == "left" else (0.0, t)
+    else:
+
+        def _share(side: str, x: float) -> tuple[float, float]:
+            return 0.0, 1.0
+
+    def _curve(side: str, fraction: float, xs: list[float]) -> list[tuple[float, float]]:
         points = []
         for x in xs:
             upper, lower = _upper(x), _lower(x)
+            start, stop = _share(side, x)
             # Exact ends keep shared edges bit-identical between tiles.
-            if fraction <= 0.0:
+            column = start if fraction <= 0.0 else stop if fraction >= 1.0 else (
+                start + fraction * (stop - start)
+            )
+            if column <= 0.0:
                 z = upper
-            elif fraction >= 1.0:
+            elif column >= 1.0:
                 z = lower
             else:
-                z = upper - fraction * (upper - lower)
+                z = upper - column * (upper - lower)
             points.append((x, z))
         return points
 
+    xs = [x_left, *(x for x in breaks if x_left < x < x_right), x_right]
     tiles: list[GeologicalPolygon] = []
     for side, (units, _intervals, _lookup, x_source) in sides.items():
         if not units:
             continue
-        x0, x1 = ranges[side]
-        xs = [x0, *(x for x in breaks if x0 < x < x1), x1]
         source_upper, source_lower = _upper(x_source), _lower(x_source)
         thickness = source_upper - source_lower
         if thickness <= 0.0:
@@ -1091,15 +1112,11 @@ def _tile_open_wedges(
         for unit in sorted(units, key=lambda item: (-item.top_elevation, -item.bottom_elevation)):
             f_top = (source_upper - unit.top_elevation) / thickness
             f_bottom = (source_upper - unit.bottom_elevation) / thickness
-
-            top_curve = _curve(f_top, xs)
-            bottom_curve = _curve(f_bottom, xs)
-            if x_source == x0:
-                top_curve[0] = (x_source, unit.top_elevation)
-                bottom_curve[0] = (x_source, unit.bottom_elevation)
-            else:
-                top_curve[-1] = (x_source, unit.top_elevation)
-                bottom_curve[-1] = (x_source, unit.bottom_elevation)
+            top_curve = _curve(side, f_top, xs)
+            bottom_curve = _curve(side, f_bottom, xs)
+            index = 0 if x_source == xs[0] else -1
+            top_curve[index] = (x_source, unit.top_elevation)
+            bottom_curve[index] = (x_source, unit.bottom_elevation)
             polygon = _make_polygon(
                 [*top_curve, *reversed(bottom_curve)],
                 unit.lithology_code,
@@ -1366,6 +1383,7 @@ def _resolve_overlaps_in_pair(
     *,
     clip_warnings: list[str] | None = None,
     hole_xs: Sequence[float] = (),
+    log_discards: bool = True,
 ) -> list[GeologicalPolygon]:
     """Clip deeper fence polygons so inter-hole fills do not stack on top of shallower units.
 
@@ -1440,7 +1458,7 @@ def _resolve_overlaps_in_pair(
         if largest is None or largest.is_empty:
             continue
         # Difference + MultiPolygon keep-largest can discard secondary fragments.
-        if original_area > 0 and largest.area < 0.85 * original_area:
+        if log_discards and original_area > 0 and largest.area < 0.85 * original_area:
             logger.warning(
                 "Overlap clip discarded fragments for %s between %s–%s "
                 "(kept %.0f%% of original area)",
@@ -1612,6 +1630,204 @@ def _sorted_hole_profiles(
     return hole_profiles
 
 
+# A hole is "short" (continued beneath its total depth by ``_extend_short_holes``)
+# when the nearest holes on both sides were drilled deeper by at least
+# ``max(SHORT_HOLE_MIN_DEPTH_GAIN_M, SHORT_HOLE_MIN_DEPTH_GAIN_FRACTION * TD)``.
+# Ordinary depth differences keep the convention that the fence base follows the
+# hole bottoms; a hole stopped well short of both neighbours (a shallow well of a
+# nested pair) would otherwise notch a white wedge into the fence.
+SHORT_HOLE_MIN_DEPTH_GAIN_M = 1.0
+SHORT_HOLE_MIN_DEPTH_GAIN_FRACTION = 0.25
+
+_HoleProfile = tuple[float, str, list[_LayerInterval], dict[Hashable, _LayerInterval]]
+
+
+def _hole_depth(intervals: list[_LayerInterval]) -> float:
+    """Deepest logged depth below collar (the hole's TD as far as the fence knows)."""
+    depths = [i.to_depth for i in intervals if np.isfinite(i.to_depth)]
+    return max(depths) if depths else float("nan")
+
+
+def _fence_column_at(polygons: list[GeologicalPolygon], x: float) -> list[tuple[str, float, float]]:
+    """``(code, top, bottom)`` runs where the vertical line at ``x`` crosses the fence,
+    top-down; touching runs of one code are merged."""
+    runs: list[tuple[str, float, float]] = []
+    for item in polygons:
+        min_x, min_z, max_x, max_z = item.polygon.bounds
+        if not (min_x < x < max_x):
+            continue
+        probe = LineString([(x, min_z - 1.0), (x, max_z + 1.0)])
+        try:
+            hit = item.polygon.intersection(probe)
+        except GEOSException:  # pragma: no cover - defensive
+            hit = _unsnapped(item.polygon).intersection(probe)
+        for part in getattr(hit, "geoms", [hit]):
+            if part.is_empty or part.geom_type != "LineString":
+                continue
+            zs = [z for _x, z in part.coords]
+            if max(zs) - min(zs) >= MIN_FENCE_THICKNESS_M:
+                runs.append((item.lithology_code, max(zs), min(zs)))
+    runs.sort(key=lambda run: (-run[1], -run[2]))
+    merged: list[tuple[str, float, float]] = []
+    for code, top, bottom in runs:
+        if merged and merged[-1][0] == code and abs(merged[-1][2] - top) <= 1e-6:
+            merged[-1] = (code, merged[-1][1], min(bottom, merged[-1][2]))
+        else:
+            merged.append((code, top, bottom))
+    return merged
+
+
+def _below_td_intervals(
+    intervals: list[_LayerInterval], column: list[tuple[str, float, float]]
+) -> list[_LayerInterval] | None:
+    """``intervals`` continued below the hole's TD with the fence ``column`` beneath it.
+
+    The deepest logged unit is extended when the column continues the same unit
+    across the TD; every other run below the TD becomes an ``inferred`` interval.
+    Returns ``None`` when nothing is added.
+    """
+    finite = [
+        interval
+        for interval in intervals
+        if np.isfinite(interval.top_elevation) and np.isfinite(interval.bottom_elevation)
+    ]
+    if not finite:
+        return None
+    deepest = min(finite, key=lambda interval: (interval.bottom_elevation, interval.top_elevation))
+    td = deepest.bottom_elevation
+    collar = deepest.top_elevation + deepest.from_depth
+    below = [
+        (code, min(top, td), bottom)
+        for code, top, bottom in column
+        if bottom < td - MIN_FENCE_THICKNESS_M
+    ]
+    if not below:
+        return None
+    extended = list(intervals)
+    code, top, bottom = below[0]
+    if code == deepest.lithology_code and top >= td - 1e-6:
+        index = next(i for i, interval in enumerate(extended) if interval is deepest)
+        extended[index] = replace(deepest, bottom_elevation=bottom, to_depth=collar - bottom)
+        below = below[1:]
+    for code, top, bottom in below:
+        if top - bottom < MIN_FENCE_THICKNESS_M:
+            continue
+        extended.append(
+            _LayerInterval(
+                lithology_code=code,
+                from_depth=collar - top,
+                to_depth=collar - bottom,
+                top_elevation=top,
+                bottom_elevation=bottom,
+                inferred=True,
+            )
+        )
+    return _close_logging_gaps(extended)
+
+
+def _extend_short_holes(
+    hole_profiles: list[_HoleProfile],
+    *,
+    allow_pinch_outs: bool,
+    override_index: dict[tuple[str, str], tuple[CorrelationOverride, ...]],
+) -> list[_HoleProfile]:
+    """Continue units beneath holes that stop short of both neighbours (fence copy only).
+
+    A short hole between two deeper ones (MW-06S between MW-05 and MW-06D) pinched
+    the fence base line up to its TD: a white wedge under the hole, with the
+    deeper units squeezed into slivers. The strata do not end because a hole
+    did: below its TD the hole gets the column the fence between its nearest
+    deeper neighbours shows at its position (interpolated, matched and tiled
+    exactly like any other pair), flagged ``inferred`` so those fills are drawn
+    as pinch-outs (dashed, faded). "Short" compares total depths (see
+    ``SHORT_HOLE_MIN_DEPTH_GAIN_M``); nothing is added when the neighbours' fence
+    does not reach below the hole's TD (a hole in a valley). Holes are extended
+    deepest first (equal depths together, so the result does not depend on
+    transect direction), so a run of short holes chains off the already-extended
+    ones. Column / projected data are untouched.
+    """
+    if len(hole_profiles) < 3:
+        return hole_profiles
+    profiles = list(hole_profiles)
+    depths = [_hole_depth(intervals) for _x, _id, intervals, _lookup in profiles]
+    by_depth: dict[float, list[int]] = defaultdict(list)
+    for index in range(1, len(profiles) - 1):
+        if np.isfinite(depths[index]):
+            by_depth[round(depths[index], 6)].append(index)
+    for level in sorted(by_depth, reverse=True):
+        updates: dict[int, _HoleProfile] = {}
+        for index in by_depth[level]:
+            needed = depths[index] + max(
+                SHORT_HOLE_MIN_DEPTH_GAIN_M, SHORT_HOLE_MIN_DEPTH_GAIN_FRACTION * depths[index]
+            )
+            # Nearest hole each side at least as deep as this one (only shorter
+            # holes are skipped, so a run of short holes chains); it must reach
+            # ``needed``, or the hole is not short next to that neighbour.
+            left = next((i for i in range(index - 1, -1, -1) if depths[i] >= depths[index]), None)
+            right = next(
+                (i for i in range(index + 1, len(profiles)) if depths[i] >= depths[index]), None
+            )
+            if left is None or right is None or min(depths[left], depths[right]) < needed:
+                continue
+            x_hole, hole_id, intervals, _lookup = profiles[index]
+            x_left, left_id, left_intervals, left_lookup = profiles[left]
+            x_right, right_id, right_intervals, right_lookup = profiles[right]
+            if not x_left <= x_hole <= x_right:  # pragma: no cover - sorted by x
+                continue
+            if x_hole in (x_left, x_right):
+                # Coincident with a deeper neighbour (nested pair at one projected
+                # position): below the TD the hole shares that neighbour's log.
+                twin = left_intervals if x_hole == x_left else right_intervals
+                column = [
+                    (interval.lithology_code, interval.top_elevation, interval.bottom_elevation)
+                    for interval in sorted(twin, key=lambda item: -item.top_elevation)
+                ]
+                extended = _below_td_intervals(intervals, column)
+                if extended is not None:
+                    updates[index] = (x_hole, hole_id, extended, _correlation_keys(extended))
+                continue
+            reference = _resolve_overlaps_in_pair(
+                _polygons_for_pair(
+                    left_hole_id=left_id,
+                    right_hole_id=right_id,
+                    x_left=x_left,
+                    x_right=x_right,
+                    left_intervals=left_intervals,
+                    right_intervals=right_intervals,
+                    allow_pinch_outs=allow_pinch_outs,
+                    left_lookup=left_lookup,
+                    right_lookup=right_lookup,
+                    correlation_overrides=_overrides_for_hole_pair(
+                        left_id, right_id, override_index
+                    ),
+                ),
+                hole_xs=(x_left, x_right),
+                # Internal reference between non-adjacent holes: not a drawn fence.
+                log_discards=False,
+            )
+            extended = _below_td_intervals(intervals, _fence_column_at(reference, x_hole))
+            if extended is not None:
+                updates[index] = (x_hole, hole_id, extended, _correlation_keys(extended))
+        for index, profile in updates.items():
+            profiles[index] = profile
+            depths[index] = _hole_depth(profile[2])
+    return profiles
+
+
+def _fence_hole_profiles(
+    projected_df: pd.DataFrame,
+    *,
+    allow_pinch_outs: bool,
+    override_index: dict[tuple[str, str], tuple[CorrelationOverride, ...]],
+) -> list[_HoleProfile]:
+    """Hole profiles the fence is built from: sorted, gap-closed, short holes extended."""
+    return _extend_short_holes(
+        _sorted_hole_profiles(projected_df),
+        allow_pinch_outs=allow_pinch_outs,
+        override_index=override_index,
+    )
+
+
 def _correlation_pair_summary(
     left_id: str,
     right_id: str,
@@ -1659,11 +1875,13 @@ def preview_correlation_health(
     correlation_overrides: Sequence[CorrelationOverride] = (),
 ) -> list[CorrelationPairSummary]:
     """Summarize unit matching between adjacent holes without building polygons."""
-    hole_profiles = _sorted_hole_profiles(projected_df)
+    override_index = _correlation_overrides_by_pair(correlation_overrides)
+    hole_profiles = _fence_hole_profiles(
+        projected_df, allow_pinch_outs=allow_pinch_outs, override_index=override_index
+    )
     if len(hole_profiles) < 2:
         return []
     summaries: list[CorrelationPairSummary] = []
-    override_index = _correlation_overrides_by_pair(correlation_overrides)
     for (_x_left, left_id, left_intervals, left_lookup), (
         _x_right,
         right_id,
@@ -1705,12 +1923,14 @@ def build_stratigraphy(
     correlation summaries, and user-facing messages for fence polygons that
     overlap clipping cut down substantially (see ``_resolve_overlaps_in_pair``).
     """
-    hole_profiles = _sorted_hole_profiles(projected_df)
+    override_index = _correlation_overrides_by_pair(correlation_overrides)
+    hole_profiles = _fence_hole_profiles(
+        projected_df, allow_pinch_outs=allow_pinch_outs, override_index=override_index
+    )
     if len(hole_profiles) < 2:
         return []
 
     polygons: list[GeologicalPolygon] = []
-    override_index = _correlation_overrides_by_pair(correlation_overrides)
     for (
         (x_left, left_id, left_intervals, left_lookup),
         (x_right, right_id, right_intervals, right_lookup),

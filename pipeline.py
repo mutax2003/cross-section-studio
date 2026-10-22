@@ -12,6 +12,12 @@ from typing import get_args
 import numpy as np
 import pandas as pd
 
+from ai_quality import (
+    chemistry_threshold_inversion_warnings,
+    implausible_environmental_reading,
+    implausible_screen_interval,
+    implausible_water_reading,
+)
 from constants import (
     BOREHOLE_ONLY_DISCLAIMER,
     CHEMISTRY_OVERLAY_DISCLAIMER,
@@ -400,6 +406,21 @@ def section_groundwater_flow_notes(
         tuple(selected_water_series_ids) if selected_water_series_ids else None,
         max_series=MAX_WATER_SERIES,
     )
+    # Readings far outside their hole are left off the figure; keep them out
+    # of the head-plane fit too (one 3200 m depth would swing the flow arrow).
+    collar_by_id = {collar.hole_id: collar for collar in collars}
+    plotted = tuple(
+        level
+        for level in plotted
+        if level.hole_id not in collar_by_id
+        or implausible_water_reading(
+            level,
+            collar_rl=collar_by_id[level.hole_id].elevation,
+            total_depth=collar_by_id[level.hole_id].total_depth,
+            stick_up_m=collar_by_id[level.hole_id].stick_up_m,
+        )
+        is None
+    )
     if not plotted:
         return ()
     try:
@@ -579,6 +600,90 @@ def build_cross_section(
     )
 
 
+@dataclass(frozen=True)
+class OverlayExclusions:
+    """Overlay readings far outside their hole, left off the figure (with why).
+
+    Keyed by ``id()`` of the reading objects passed in, so callers can drop
+    exactly those objects from any list derived from the same inputs.
+    """
+
+    water: dict[int, str] = field(default_factory=dict)
+    screens: dict[int, str] = field(default_factory=dict)
+    environmental: dict[int, str] = field(default_factory=dict)
+
+
+def _section_hole_extents(geometry: SectionGeometry) -> dict[str, tuple[float, float]]:
+    """``hole_id -> (collar RL, total depth)`` for the projected holes."""
+    projected = geometry.projected
+    rl_by_hole: dict[str, float] = {}
+    if not projected.empty and "collar_elevation" in projected.columns:
+        for hole_id, rl in zip(projected["hole_id"], projected["collar_elevation"], strict=True):
+            rl_by_hole.setdefault(str(hole_id), float(rl))
+    return {
+        hole_id: (rl_by_hole[hole_id], float(td))
+        for hole_id, td in geometry.collar_depths.items()
+        if hole_id in rl_by_hole
+    }
+
+
+def find_implausible_overlays(
+    geometry: SectionGeometry,
+    *,
+    water_levels: Sequence[WaterLevel] = (),
+    screen_intervals: Sequence[ScreenInterval] = (),
+    environmental_readings: Sequence[EnvironmentalReading] = (),
+) -> OverlayExclusions:
+    """Water / screen / chemistry readings lying far outside their hole.
+
+    One mis-typed depth (3200 for 3.2 m) used to stretch the depth axis until
+    the section was a sliver, with no QA note. Limits (``ai_quality``): below
+    ground past TD + max(5 m, 25 % of TD), or a head more than 30 m above
+    ground. Holes not on the section are not checked (nothing is drawn).
+    """
+    extents = _section_hole_extents(geometry)
+    exclusions = OverlayExclusions()
+    for level in water_levels:
+        extent = extents.get(level.hole_id)
+        if extent is None:
+            continue
+        reason = implausible_water_reading(
+            level,
+            collar_rl=extent[0],
+            total_depth=extent[1],
+            stick_up_m=geometry.stick_up_by_hole.get(level.hole_id),
+        )
+        if reason is not None:
+            exclusions.water[id(level)] = reason
+    for screen in screen_intervals:
+        extent = extents.get(screen.hole_id)
+        if extent is None:
+            continue
+        reason = implausible_screen_interval(screen, total_depth=extent[1])
+        if reason is not None:
+            exclusions.screens[id(screen)] = reason
+    for reading in environmental_readings:
+        extent = extents.get(reading.hole_id)
+        if extent is None:
+            continue
+        reason = implausible_environmental_reading(reading, total_depth=extent[1])
+        if reason is not None:
+            exclusions.environmental[id(reading)] = reason
+    return exclusions
+
+
+# The per-sample "N sampling dates, latest … shown" notes: a large dated lab
+# table produced hundreds of figure QA lines. Beyond this many, one summary.
+MAX_CHEMISTRY_DATE_NOTES = 10
+
+
+def _cap_notes(notes: Sequence[str], limit: int, summary: str) -> tuple[str, ...]:
+    """First ``limit`` notes, then ``summary`` formatted with the remainder count."""
+    if len(notes) <= limit:
+        return tuple(notes)
+    return tuple(notes[:limit]) + (summary.format(count=len(notes) - limit),)
+
+
 def _latest_chemistry_samples(
     readings: Sequence[EnvironmentalReading],
     hole_ids: Sequence[str],
@@ -586,8 +691,10 @@ def _latest_chemistry_samples(
 ) -> tuple[tuple[EnvironmentalReading, ...], tuple[str, ...]]:
     """Latest dated sample per hole/parameter/depth, plus QA notes for the drawn ones.
 
-    Notes are limited to holes on the section and the selected parameters;
-    without dates (or with undated duplicates only) readings pass unchanged.
+    Notes are limited to holes on the section and the selected parameters,
+    and capped at ``MAX_CHEMISTRY_DATE_NOTES`` lines plus an "and N more"
+    summary; without dates (or with undated duplicates only) readings pass
+    unchanged.
     """
     if not readings:
         return tuple(readings), ()
@@ -603,6 +710,12 @@ def _latest_chemistry_samples(
             for r in readings
             if r.hole_id in on_section and r.parameter.strip().casefold() in active
         ]
+    )
+    notes = _cap_notes(
+        notes,
+        MAX_CHEMISTRY_DATE_NOTES,
+        "…and {count} more sample points with several sampling dates (latest date shown "
+        "for each; see Validate → Environmental / Lab)",
     )
     return kept, notes
 
@@ -734,11 +847,45 @@ def render_cross_section_from_geometry(
     stick_up_by_hole = geometry.stick_up_by_hole
     disclaimer = _DISCLAIMER_BY_MODE[interpretation_mode]
 
-    plotted_water = filter_water_levels_for_plot(
+    # Overlay readings far outside their hole (mm typed as m ...) are left off
+    # the figure, before anything sizes the axes, and named in the QA notes.
+    exclusions = find_implausible_overlays(
+        geometry,
+        water_levels=water_levels or (),
+        screen_intervals=screen_intervals or (),
+        environmental_readings=environmental_readings or (),
+    )
+    selected_water = filter_water_levels_for_plot(
         water_levels or (),
         tuple(selected_water_series_ids) if selected_water_series_ids else None,
         max_series=MAX_WATER_SERIES,
     )
+    excluded_water_notes = tuple(
+        exclusions.water[id(level)] for level in selected_water if id(level) in exclusions.water
+    )
+    plotted_water = tuple(level for level in selected_water if id(level) not in exclusions.water)
+    if water_levels and exclusions.water:
+        water_levels = [level for level in water_levels if id(level) not in exclusions.water]
+    excluded_screen_notes = tuple(
+        exclusions.screens[id(screen)]
+        for screen in screen_intervals or ()
+        if id(screen) in exclusions.screens
+    )
+    if screen_intervals and exclusions.screens:
+        screen_intervals = [s for s in screen_intervals if id(s) not in exclusions.screens]
+    active_parameters = {
+        name.strip().casefold() for name in (environmental_parameters or ()) if name.strip()
+    }
+    excluded_chemistry_notes = tuple(
+        exclusions.environmental[id(reading)]
+        for reading in environmental_readings or ()
+        if id(reading) in exclusions.environmental
+        and reading.parameter.strip().casefold() in active_parameters
+    )
+    if environmental_readings and exclusions.environmental:
+        environmental_readings = [
+            r for r in environmental_readings if id(r) not in exclusions.environmental
+        ]
     environmental_readings, chemistry_date_notes = _latest_chemistry_samples(
         environmental_readings or (), projected_hole_ids, environmental_parameters
     )
@@ -882,7 +1029,31 @@ def render_cross_section_from_geometry(
         screen_intervals or (),
         vertical_gradients or (),
     )
-    qa_lines = tuple(overlap_warnings) + gradient_notes + flow_notes + chemistry_date_notes
+    if export_framing is not None and not export_framing.include_water_table:
+        excluded_water_notes = ()
+    if export_framing is not None and not export_framing.include_screens:
+        excluded_screen_notes = ()
+    threshold_notes: tuple[str, ...] = ()
+    if chemistry_plotted and render_profile.chemistry_color_mode == "threshold":
+        # Configure / workbook limits entered upside down: the bands are clamped
+        # (no orange band), so say so on the figure's QA lines.
+        threshold_notes = tuple(
+            chemistry_threshold_inversion_warnings(
+                {
+                    name: pair
+                    for name, pair in (render_profile.chemistry_thresholds or {}).items()
+                    if str(name).strip().casefold() in active_parameters
+                },
+                green_max=chemistry_threshold_green_max,
+                orange_max=chemistry_threshold_yellow_max,
+            )
+        )
+    data_notes = (
+        excluded_water_notes + excluded_screen_notes + excluded_chemistry_notes + threshold_notes
+    )
+    qa_lines = (
+        tuple(overlap_warnings) + data_notes + gradient_notes + flow_notes + chemistry_date_notes
+    )
     if export_framing is not None and not export_framing.include_qa_footer:
         qa_lines = ()
     # Scrub XML-1.0-illegal control characters so the SVG backend cannot emit
@@ -956,7 +1127,9 @@ def render_cross_section_from_geometry(
         )
         # Read after export framing: whether the map scale fits depends on the page;
         # raster notes say when PNG resolution was lowered to stay within the size cap.
-        qa_notes = tuple(renderer.map_scale_notes(figure)) + tuple(
+        # Readings left off the figure (far outside their hole) and inverted
+        # threshold bands lead: they change what the figure shows.
+        qa_notes = data_notes + tuple(renderer.map_scale_notes(figure)) + tuple(
             getattr(renderer, "raster_notes", None) or ()
         )
         # Non-detects whose detection limit is above the guideline (threshold

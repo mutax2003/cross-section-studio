@@ -127,6 +127,60 @@ def parse_monitoring_date(value: object) -> datetime.date | None:
 
 _COLLAR_LIMITS = {"easting": 1e9, "northing": 1e9, "elevation": 1e5, "total_depth": 1e5}
 
+# Depths / elevations on the overlay sheets (Water, Screens, Environmental,
+# Deviations): anything beyond ±1,000 km is a typo (units, a pasted serial
+# number, 1e308) and would stretch the section axis to nothing.
+MAX_ABS_DEPTH_M = 1e6
+# Lithology intervals are bounded like Collars.total_depth (100 km).
+MAX_LITHOLOGY_DEPTH_M = 1e5
+
+
+def reject_bool_number(value: object, field: str) -> object:
+    """A TRUE/FALSE cell in a numeric column is an error, not 1.0 / 0.0."""
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{field} = '{bool(value)}' is a TRUE/FALSE cell — enter a number")
+    return value
+
+
+def check_bounded_number(value: float, field: str, limit: float = MAX_ABS_DEPTH_M) -> float:
+    """Finite and within ``±limit`` metres (clear row error otherwise)."""
+    if not math.isfinite(value):
+        raise ValueError(f"{field} must be a finite number")
+    if abs(value) > limit:
+        raise ValueError(
+            f"{field} {value:g} is out of range (limit ±{limit:,.0f} m) — check the units"
+        )
+    return value
+
+
+def _check_inclination(value: float | None, field: str) -> float | None:
+    """Inclination −90..90: 0 = vertical down, 90 = horizontal, negative = mining dip."""
+    if value is None:
+        return None
+    if not math.isfinite(value):
+        raise ValueError(f"{field} must be a finite number")
+    if value > 90.0:
+        raise ValueError(
+            f"{field} {value:g}° is past horizontal (a hole climbing upward) — use degrees from "
+            "vertical (0 = straight down, 90 = horizontal) or a negative mining dip "
+            "(−90 = straight down, −60 = 30° off vertical)"
+        )
+    if value < -90.0:
+        raise ValueError(
+            f"{field} {value:g}° is beyond −90 — a mining dip runs from −90 (straight down) "
+            "to 0; otherwise use 0 = straight down … 90 = horizontal"
+        )
+    return float(value)
+
+
+def _normalise_azimuth(value: float | None, field: str) -> float | None:
+    """Azimuth wrapped to 0–360° (−30 → 330, 360 → 0); non-finite is an error."""
+    if value is None:
+        return None
+    if not math.isfinite(value):
+        raise ValueError(f"{field} must be a finite number")
+    return float(value) % 360.0
+
 
 class Collar(BaseModel, frozen=True):
     hole_id: str
@@ -154,6 +208,14 @@ class Collar(BaseModel, frozen=True):
             return None
         text = _clean_text(value)
         return text or None
+
+    @field_validator(
+        "easting", "northing", "elevation", "total_depth", "inclination_deg", "azimuth_deg",
+        "stick_up_m", mode="before",
+    )
+    @classmethod
+    def reject_bool(cls, value: object, info) -> object:
+        return reject_bool_number(value, info.field_name)
 
     @field_validator("easting", "northing", "elevation", "total_depth")
     @classmethod
@@ -195,6 +257,16 @@ class Collar(BaseModel, frozen=True):
             raise ValueError("stick_up_m must be non-negative")
         return value
 
+    @field_validator("inclination_deg")
+    @classmethod
+    def validate_inclination(cls, value: float | None) -> float | None:
+        return _check_inclination(value, "inclination_deg")
+
+    @field_validator("azimuth_deg")
+    @classmethod
+    def validate_azimuth(cls, value: float | None) -> float | None:
+        return _normalise_azimuth(value, "azimuth_deg")
+
 
 class Lithology(BaseModel, frozen=True):
     hole_id: str
@@ -214,12 +286,15 @@ class Lithology(BaseModel, frozen=True):
             raise ValueError(f"{info.field_name} is blank")
         return text
 
+    @field_validator("from_depth", "to_depth", mode="before")
+    @classmethod
+    def reject_bool(cls, value: object, info) -> object:
+        return reject_bool_number(value, info.field_name)
+
     @field_validator("from_depth", "to_depth")
     @classmethod
     def require_finite(cls, value: float, info) -> float:
-        if not math.isfinite(value):
-            raise ValueError(f"{info.field_name} must be a finite number")
-        return value
+        return check_bounded_number(value, info.field_name, MAX_LITHOLOGY_DEPTH_M)
 
     @field_validator("hatch_pattern", mode="before")
     @classmethod
@@ -442,14 +517,25 @@ class WaterLevel(BaseModel, frozen=True):
         text = _clean_text(value)
         return text or None
 
+    @field_validator("depth", "elevation_masl", mode="before")
+    @classmethod
+    def reject_bool(cls, value: object, info) -> object:
+        return reject_bool_number(value, info.field_name)
+
     @field_validator("depth")
     @classmethod
     def validate_depth(cls, value: float) -> float:
-        if not math.isfinite(value):
-            raise ValueError("depth must be a finite number")
+        check_bounded_number(value, "depth")
         if value < 0:
             raise ValueError("depth must be non-negative")
         return value
+
+    @field_validator("elevation_masl")
+    @classmethod
+    def validate_elevation_masl(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        return check_bounded_number(value, "elevation_masl")
 
 
 class ScreenInterval(BaseModel, frozen=True):
@@ -464,11 +550,18 @@ class ScreenInterval(BaseModel, frozen=True):
             raise ValueError("hole_id is required")
         return _clean_text(value)
 
+    @field_validator("from_depth", "to_depth", mode="before")
+    @classmethod
+    def reject_bool(cls, value: object, info) -> object:
+        return reject_bool_number(value, info.field_name)
+
     @field_validator("from_depth", "to_depth")
     @classmethod
     def require_finite(cls, value: float, info) -> float:
-        if not math.isfinite(value):
-            raise ValueError(f"{info.field_name} must be a finite number")
+        check_bounded_number(value, info.field_name)
+        # Screen depths are below ground: a screen above ground makes no sense.
+        if value < 0:
+            raise ValueError(f"{info.field_name} must be non-negative")
         return value
 
     @model_validator(mode="after")
@@ -510,13 +603,27 @@ class DeviationReading(BaseModel, frozen=True):
     inclination_deg: float
     azimuth_deg: float
 
-    @field_validator("depth", "inclination_deg", "azimuth_deg")
+    @field_validator("depth", "inclination_deg", "azimuth_deg", mode="before")
+    @classmethod
+    def reject_bool(cls, value: object, info) -> object:
+        return reject_bool_number(value, info.field_name)
+
+    @field_validator("depth")
     @classmethod
     def require_finite(cls, value: float, info) -> float:
         # A blank survey cell would otherwise NaN the whole hole's geometry.
-        if not math.isfinite(value):
-            raise ValueError(f"{info.field_name} must be a finite number")
-        return value
+        return check_bounded_number(value, info.field_name)
+
+    @field_validator("inclination_deg")
+    @classmethod
+    def validate_inclination(cls, value: float) -> float:
+        # Same convention as Collars: 0 = down, 90 = horizontal, negative = dip.
+        return _check_inclination(value, "inclination_deg")  # type: ignore[return-value]
+
+    @field_validator("azimuth_deg")
+    @classmethod
+    def validate_azimuth(cls, value: float) -> float:
+        return _normalise_azimuth(value, "azimuth_deg")  # type: ignore[return-value]
 
     @field_validator("hole_id", mode="before")
     @classmethod
@@ -607,19 +714,51 @@ class EnvironmentalReading(BaseModel, frozen=True):
 
     @field_validator("green_max", "orange_max", mode="before")
     @classmethod
-    def blank_limit_is_none(cls, value: object) -> object:
+    def blank_limit_is_none(cls, value: object, info) -> object:
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return None
         if isinstance(value, str) and not value.strip():
             return None
-        return value
+        return reject_bool_number(value, info.field_name)
 
     @field_validator("green_max", "orange_max")
     @classmethod
     def limit_is_non_negative(cls, value: float | None) -> float | None:
         if value is not None and (pd.isna(value) or value < 0):
             raise ValueError("green_max / orange_max must be >= 0 (same units as value)")
+        if value is not None and not math.isfinite(value):
+            raise ValueError("green_max / orange_max must be a finite number")
         return value
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def reject_bool_value(cls, value: object) -> object:
+        return reject_bool_number(value, "value")
+
+    @field_validator("value")
+    @classmethod
+    def value_is_finite(cls, value: float) -> float:
+        # inf / NaN would print "inf" / "nan" labels on the figure. Negative
+        # concentrations are kept; Validate warns (ai_quality).
+        if not math.isfinite(value):
+            raise ValueError("value must be a finite number")
+        return value
+
+    @field_validator("depth", "from_depth", "to_depth", mode="before")
+    @classmethod
+    def blank_depth_is_none(cls, value: object, info) -> object:
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return reject_bool_number(value, info.field_name)
+
+    @field_validator("depth", "from_depth", "to_depth")
+    @classmethod
+    def depth_is_bounded(cls, value: float | None, info) -> float | None:
+        if value is None:
+            return None
+        return check_bounded_number(value, info.field_name)
 
     @field_validator("label_color", mode="before")
     @classmethod

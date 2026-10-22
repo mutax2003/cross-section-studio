@@ -188,7 +188,8 @@ def _export_file_metadata(fmt: str) -> dict[str, str]:
         # inputs give byte-identical SVG.
         return {"Creator": APP_NAME, "Publisher": ORGANIZATION, "Rights": COPYRIGHT_NOTICE, "Date": None}
     if fmt == "pdf":
-        return {"Creator": APP_NAME, "Author": author}
+        # CreationDate omitted so identical inputs give byte-identical PDF.
+        return {"Creator": APP_NAME, "Author": author, "CreationDate": None}
     if fmt == "png":
         return {"Software": APP_NAME, "Author": author, "Copyright": COPYRIGHT_NOTICE}
     return {}

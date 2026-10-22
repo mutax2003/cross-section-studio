@@ -462,6 +462,7 @@ def _reanalyze_quality(
         parse_result.collars,
         parse_result.lithologies,
         placeholder_elevation_m=placeholder_elevation_m,
+        deviation_readings=parse_result.deviation_readings,
     )
     st.session_state.quality_report = qa
     st.session_state.parse_result = parse_result

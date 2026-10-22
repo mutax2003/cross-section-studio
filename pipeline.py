@@ -973,12 +973,18 @@ def render_cross_section_from_geometry(
         if not render_profile.chemistry_thresholds:
             # With per-parameter limits the sheet-wide pair is only a fallback,
             # so missing values there are expected, not a misconfiguration.
-            logger.warning(
-                "chemistry_color_mode='threshold' without both limits: using green <= %g, "
-                "orange <= %g, red above.",
-                green_max,
-                yellow_max,
-            )
+            if math.isnan(green_max) or math.isnan(yellow_max):
+                logger.info(
+                    "chemistry_color_mode='threshold' without limits: values print black "
+                    "(no limit set)."
+                )
+            else:
+                logger.warning(
+                    "chemistry_color_mode='threshold' without both limits: using green <= %g, "
+                    "orange <= %g, red above.",
+                    green_max,
+                    yellow_max,
+                )
         render_profile = render_profile.model_copy(
             update={
                 "chemistry_threshold_green_max": green_max,

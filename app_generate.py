@@ -39,6 +39,7 @@ from pipeline import ALL_EXPORT_FORMATS
 from report_export import normalize_pdf_pages
 from ui_helpers import (
     THIN_PLOT_HEIGHT_IN,
+    drawn_vertical_exaggeration,
     export_metadata_payload,
     fixed_ve_plot_height_in,
     sanitize_filename,
@@ -66,6 +67,12 @@ def _session_export_triple() -> tuple[bytes, bytes, bytes]:
         st.session_state.get("png_bytes") or b"",
         st.session_state.get("pdf_bytes") or b"",
     )
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def _drawn_ve_wording(pdf_bytes: bytes, svg_bytes: bytes) -> str | None:
+    """VE the deliverable prints (read off its caption), for the metadata."""
+    return drawn_vertical_exaggeration(pdf_bytes=pdf_bytes, svg_bytes=svg_bytes)
 
 
 def _ensure_both_exports() -> bool:
@@ -426,6 +433,10 @@ def render_profile_and_downloads(
         consulting_fields=_consulting_field_map(consulting_title_block),
         chemistry_color_mode=chemistry_color_mode,
         chemistry_thresholds=chemistry_thresholds,
+        # Auto VE is measured on the drawn page; record what it printed.
+        drawn_vertical_exaggeration=(
+            None if is_stale else _drawn_ve_wording(pdf_data or b"", svg_bytes or b"")
+        ),
     )
     if is_stale:
         raster_help = "Out of date — click Generate section first."

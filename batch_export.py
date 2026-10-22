@@ -221,12 +221,37 @@ def _section_end_letters(label: str) -> tuple[str, str]:
     return match.group(1), match.group(2)
 
 
+def _swap_title_section_label(text: str, label: str) -> str | None:
+    """Put ``label`` ("B-B'") where ``text`` names a section ("A - A' WITH CL").
+
+    Keeps the text's spacing around the dash ("B - B' WITH CL"), so the batch
+    sheet for the base line reads exactly like the single-section sheet.
+    None when ``text`` names no section or ``label`` is not "X-X'" shaped.
+    """
+    match = _TITLE_SECTION_LABEL_RE.search(text or "")
+    ends = _SECTION_ENDS_RE.match(label or "")
+    if match is None or ends is None:
+        return None
+    spaced = re.search(r"\s[-\u2013]|[-\u2013]\s", match.group(0)) is not None
+    dash = " - " if spaced else "-"
+    return text[: match.start()] + f"{ends.group(1)}{dash}{ends.group(2)}" + text[match.end() :]
+
+
 def _consulting_for_spec(
     base: ConsultingTitleBlock | None,
     *,
     label: str,
     hole_ids: Sequence[str],
+    base_title: str = "",
+    title: str = "",
 ) -> ConsultingTitleBlock | None:
+    """Title block for one batch line.
+
+    Consulting styles copy the whole section title into the block label; the
+    batch sheet then mirrors its own title (``title``) the same way, so it
+    prints "CROSS SECTION B - B' WITH CHLORIDE" like the single sheet, not a
+    bare "CROSS SECTION B-B'". A separately typed label has its "A-A'" swapped.
+    """
     start, end = _section_end_letters(label)
     # The base sheet's compass words describe the base section's direction,
     # not this transect's, so they are cleared rather than copied.
@@ -240,7 +265,14 @@ def _consulting_for_spec(
     }
     if base is None:
         return ConsultingTitleBlock(section_label=label, **ends)
-    return base.model_copy(update={"section_label": label or base.section_label, **ends})
+    base_label = (base.section_label or "").strip()
+    if title and base_label and base_label == base_title.strip():
+        section_label = title
+    else:
+        section_label = (
+            _swap_title_section_label(base_label, label) or label or base.section_label
+        )
+    return base.model_copy(update={"section_label": section_label, **ends})
 
 
 
@@ -257,7 +289,16 @@ def label_in_title(label: str, title: str) -> bool:
 
 
 def _label_pattern(label: str) -> str:
-    return rf"(?<![A-Za-z0-9]){re.escape(label.strip())}(?![A-Za-z0-9])"
+    """Whole-token pattern for ``label``; "B-B'" also matches "B - B'" / "B–B′"."""
+    parts = []
+    for char in label.strip():
+        if char in "-\u2013":
+            parts.append(r"\s*[-\u2013]\s*")
+        elif char in "'\u2032\u2019":
+            parts.append("['\u2032\u2019]")
+        else:
+            parts.append(re.escape(char))
+    return rf"(?<![A-Za-z0-9]){''.join(parts)}(?![A-Za-z0-9])"
 
 
 def _base_section_label(base_request: SectionBuildRequest) -> str:
@@ -291,9 +332,9 @@ def _batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
     if label_in_title(label, title):
         return title
     # No title block (section-sheet styles): look for an "A-A'" style label.
-    match = _TITLE_SECTION_LABEL_RE.search(title)
-    if match is not None and _SECTION_ENDS_RE.match(label):
-        return title[: match.start()] + label + title[match.end() :]
+    swapped = _swap_title_section_label(title, label)
+    if swapped is not None:
+        return swapped
     return f"{title} — {label}"
 
 def batch_section_title(base_request: SectionBuildRequest, label: str) -> str:
@@ -352,6 +393,8 @@ def prepare_batch_section_request(
         base_request.consulting_title_block,
         label=spec.label,
         hole_ids=spec.hole_ids,
+        base_title=base_request.section_title,
+        title=title,
     )
     request = base_request.model_copy(
         update={

@@ -239,7 +239,19 @@ def _bound_text_input(label: str, *, key: str, default: str = "", **kwargs: obje
     return value
 
 
+def _logo_widget_key(base: str) -> str:
+    """Session key of a logo uploader.
+
+    It carries ``logo_uploader_key``, which Sign out bumps: an uploader
+    re-created under its old key could hand back the previous user's logo.
+    """
+    generation = int(st.session_state.get("logo_uploader_key", 0) or 0)
+    return base if generation <= 0 else f"{base}_{generation}"
+
+
 def _is_filled(key: str) -> bool:
+    if key in ("consulting_logo_for", "consulting_logo_by"):
+        key = _logo_widget_key(key)
     value = st.session_state.get(key)
     if value is None:
         return False
@@ -1358,13 +1370,13 @@ def _render_consulting_report_sheet(section_title: str) -> ConsultingTitleBlock:
         logo_for = st.file_uploader(
             "Client logo (PNG)",
             type=["png"],
-            key="consulting_logo_for",
+            key=_logo_widget_key("consulting_logo_for"),
             help="Optional client logo printed in the title block.",
         )
         logo_by = st.file_uploader(
             "Your company logo (PNG)",
             type=["png"],
-            key="consulting_logo_by",
+            key=_logo_widget_key("consulting_logo_by"),
             help="Optional logo of your firm printed in the title block.",
         )
         st.caption(

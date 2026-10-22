@@ -95,12 +95,16 @@ def test_pinch_out_triangle_apex() -> None:
     assert clay.polygon.buffer(0.01).contains(apex)
 
     # Clay (left only) and Silt (right only) are both base units under the matched
-    # Sandstone: they meet along a facies change at mid-span and fill down to the
-    # base line between the hole bottoms (85 -> 80) instead of tapering to a tip.
+    # Sandstone: a lateral facies change. They share the slot down to the base line
+    # between the hole bottoms (85 -> 80) along a sloping boundary, each thinning to
+    # zero at the other hole (no vertical wall mid-span, no white triangle).
     assert clay.polygon.area == pytest.approx(10.0 * 25.0)
     silt = next(item for item in polygons if item.lithology_code == "Silt")
     assert silt.is_pinch_out and silt.polygon.area == pytest.approx(10.0 * 25.0)
-    assert clay.polygon.intersection(silt.polygon).length == pytest.approx(10.0)  # 92.5 -> 82.5
+    # The higher slot (Clay, mid 90 vs 85) overlies: boundary (0, 85) -> (50, 90).
+    shared = clay.polygon.intersection(silt.polygon)
+    assert shared.length == pytest.approx((50.0**2 + 5.0**2) ** 0.5)
+    assert shared.distance(Point(0.0, 85.0)) < 1e-9 and shared.distance(Point(50.0, 90.0)) < 1e-9
 
 
 def test_pinch_out_uses_elevation_neighbors_when_collars_differ() -> None:
@@ -731,8 +735,9 @@ def test_stacked_pinch_outs_fan_to_shared_tip_without_gaps(source_left: bool) ->
         )
 
 
-def test_opposing_pinch_outs_in_one_gap_meet_at_common_tip() -> None:
-    """Different lenses logged in each hole between the same matched units tile the gap."""
+def test_opposing_pinch_outs_in_one_gap_share_it_as_facies_change() -> None:
+    """Different lenses logged in each hole between the same matched units tile the gap
+    along a sloping facies boundary (no bow-tie through a shared tip)."""
     rows = [
         ("A", 0.0, 100.0, 95.0, "Sand"),
         ("A", 0.0, 95.0, 90.0, "Silt"),
@@ -1193,10 +1198,13 @@ def test_opposing_base_units_meet_at_facies_change_without_gap(reverse: bool) ->
     _assert_pinch_outs_attached(polygons, {"A": rows[0][1], "B": rows[2][1]})
     left = next(p for p in polygons if p.lithology_code == "Sandy Clay Loam").polygon
     right = next(p for p in polygons if p.lithology_code == "Sandy Clay").polygon
-    # Vertical facies boundary at mid-span from the contact (93.5) to the base (86.5).
+    # Sloping facies boundary hole to hole (equal slot mid-elevations: the code
+    # tie-break puts Sandy Clay on top either way round): from the Sandy Clay Loam
+    # hole's contact (95) to the Sandy Clay hole's base (88). No vertical wall.
     shared = left.intersection(right)
-    assert shared.length == pytest.approx(7.0)
-    assert shared.bounds[0] == pytest.approx(25.0) and shared.bounds[2] == pytest.approx(25.0)
+    assert shared.length == pytest.approx((50.0**2 + 7.0**2) ** 0.5)
+    assert shared.distance(Point(rows[1][1], 95.0)) < 1e-9
+    assert shared.distance(Point(rows[3][1], 88.0)) < 1e-9
     # The matched Clay Loam above stays a straight quadrilateral.
     clay_loam = next(p for p in polygons if p.lithology_code == "Clay Loam")
     assert not clay_loam.is_pinch_out and len(clay_loam.polygon.exterior.coords) == 5
@@ -1220,10 +1228,11 @@ def test_opposing_base_units_stack_proportionally() -> None:
     assert overlap == pytest.approx(0.0, abs=1e-6)
     _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 40.0})
     silt = next(p for p in polygons if p.lithology_code == "Silt").polygon
-    # Silt is 40% of A's 10 m base column; at mid-span the column is 92 -> 81.5 thick.
-    assert silt.bounds[2] == pytest.approx(20.0)
+    # A's slot sits lower (mid 85 vs 88.5), so A's units underlie B's and thin
+    # linearly to zero at B's base (83): Silt (4 m at A) is 2 m thick mid-span.
+    assert silt.bounds[2] == pytest.approx(40.0)
     assert silt.intersection(LineString([(20.0, 0.0), (20.0, 200.0)])).length == pytest.approx(
-        0.4 * 10.5
+        2.0
     )
 
 
@@ -1246,7 +1255,9 @@ def test_opposing_top_units_meet_at_facies_change_without_gap(reverse: bool) -> 
     _assert_pinch_outs_attached(polygons, {"A": rows[0][1], "B": rows[2][1]})
     fill = next(p for p in polygons if p.lithology_code == "Fill").polygon
     topsoil = next(p for p in polygons if p.lithology_code == "Topsoil").polygon
-    assert fill.intersection(topsoil).length == pytest.approx((101.0 + 99.5) / 2 - 98.5)
+    # Fill's slot is higher (mid 99.5 vs 99.25): boundary from Fill's base at A
+    # (98) to the Topsoil top at B (99.5).
+    assert fill.intersection(topsoil).length == pytest.approx((30.0**2 + 1.5**2) ** 0.5)
 
 
 def test_opposing_base_units_mirror_under_transect_reversal() -> None:

@@ -316,7 +316,11 @@ def compute_section_geometry(
     fence_notes = [
         f"{CROSSING_CORRELATION_PREFIX} {summary.left_hole_id}–{summary.right_hole_id}: "
         f"{', '.join(summary.crossing_codes)} logged in opposite order — "
-        + ("drawn as pinch-outs" if allow_pinch_outs else "not drawn between these holes")
+        + (
+            "drawn as pinch-outs"
+            if allow_pinch_outs
+            else "drawn as short pinch-outs at their own holes, not joined across"
+        )
         for summary in correlation_summaries
         if summary.crossing_codes
     ] + clip_warnings

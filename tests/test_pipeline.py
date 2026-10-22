@@ -488,7 +488,7 @@ def test_crossing_note_wording_follows_pinch_out_setting() -> None:
     lithology = [Lithology(hole_id=h, from_depth=a, to_depth=b, lithology_code=c) for h, a, b, c in rows]
     off = compute_section_geometry(collars, lithology, [(0, 0), (50, 0)], allow_pinch_outs=False)
     notes = [m for m in off.overlap_warnings if m.startswith("Crossing correlation")]
-    assert notes and all("not drawn between these holes" in m for m in notes)
+    assert notes and all("short pinch-outs at their own holes" in m for m in notes)
 
 
 def test_wedge_only_pairs_do_not_report_correlation_conflicts() -> None:

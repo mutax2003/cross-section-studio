@@ -52,7 +52,7 @@ Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) 
 - No bending when crossing correlations invert the bracketing contacts or the tip falls outside the fill's vertical extent
 - When both bracketing units exist, the upper unit's bottom edge and the lower unit's top edge bend through the tip (`_bend_path`) so upper unit, wedge(s) and lower unit tile the gap with no white triangle; stacked lenses share one tip
 - **Single-bounded wedges (`_tile_open_wedges`):** unmatched units below the lowest match (base units) or above the highest match (top units) have one bracketing contact only, so a tip wedge would leave a white triangle against the fence base line (hole bottom → hole bottom) or ground line (hole top → hole top). They are grouped by `(above, below)` bracket and tiled instead:
-  - **Opposing** (X only in the left hole, Y only in the right, same bracket, each group filling its hole from the contact to the hole end): vertical facies-change boundary at `PINCH_OUT_FRACTION` of the span — X fills the left part, Y the right part, between the bracketing contact (with any bends) and the base/top line. Stacked units in a group keep their thickness proportions across the region.
+  - **Opposing** (X only in the left hole, Y only in the right, same bracket): the two meet along a **sloping** facies boundary — each thins to zero at the other hole (no vertical wall mid-span, no crossing polygons). Which unit sits on top is decided by slot mid-elevation (codes break ties), so reversing the transect mirrors the result.
   - **Lone** (nothing opposite; the neighbour ends exactly at the contact): the unit runs to the neighbour, thinning to zero at its hole end, so its edge follows the base/top line (the neighbour simply did not penetrate it).
   - Falls back to tip wedges when a group does not reach its hole end / contact or the region is not ordered. Unbracketed wedges (no match above or below, e.g. crossing un-matches with nothing correlated) keep their `_pinch_out_z_mid` tips.
   - Tiles are `is_pinch_out=True`; `_resolve_overlaps_in_pair(..., hole_xs=(x_left, x_right))` anchors clip fragments on the hole edge, not the mid-span facies boundary (`_pinch_anchor_edge(polygon, hole_xs)`).
@@ -60,10 +60,9 @@ Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) 
 - `is_pinch_out = True` — renderer draws dashed edges and lower alpha
 - `_make_polygon` always stores a single Shapely `Polygon` (largest part after `buffer(0)` repair) so the renderer can use `.exterior`
 
-**Case 3 — `allow_pinch_outs=False`:** unmatched intervals are not drawn between the holes, but the fence still tiles — the bracketing matched fills take over their space at the source hole (`_closed_unmatched_ends`; endpoints only, no mid-span bends; hole/column data untouched):
-- **Two-sided** (match above and below): the upper unit's base and the lower unit's top both run to the mid-elevation of the gap at the source hole, so the contacts converge there (the pinch-out bend with its tip on the hole).
-- **Above only** (units below the lowest match): the upper unit's base runs to the deepest unmatched base (fence base line). **Below only**: the lower unit's top runs to the highest unmatched top (fence top line).
-- Unbracketed units and mis-ordered (crossing) brackets keep the old behaviour (gap left).
+**Case 3 — `allow_pinch_outs=False`:** units are drawn exactly as with pinch-outs on, except a lens logged in one hole reaches only `NEAR_FIELD_PINCH_FRACTION` (0.25) of the spacing instead of `PINCH_OUT_FRACTION` (0.5). A neighbouring fill never takes over a logged unit (the old `_closed_unmatched_ends` behaviour contradicted the logs and was removed). **Invariant (tests/test_fence_logs_honoured.py):** at every hole ± a small offset the fill at each logged depth equals the log, for every preset, pinch-outs on or off.
+
+**Short holes:** a hole stopping well short of both neighbours (they reach ≥ max(1 m, 25% of its TD) deeper) gets inferred units below its TD, taken from the fence between its nearest deeper neighbours and drawn as pinch-out style (dashed, faded), so no white void opens under it. Coincident holes (same projected x) use the deeper hole's log; zero-width pairs build no polygons.
 
 ## Depth mode (depth below collar)
 

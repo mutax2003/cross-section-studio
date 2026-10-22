@@ -628,7 +628,11 @@ def render_sidebar() -> SidebarState:
                 "Show layers that end between holes",
                 key="allow_pinch_outs",
                 disabled=interpretation_mode == "borehole_only",
-                help="When off, a layer logged in only one hole is not drawn toward its neighbours.",
+                help=(
+                    "On: a layer logged in only one hole tapers out halfway to its neighbours. "
+                    "Off: it tapers out within a quarter of the spacing, close to the hole that "
+                    "logged it. Either way every hole shows exactly what was logged."
+                ),
             )
         else:
             if force_gw_chrome:

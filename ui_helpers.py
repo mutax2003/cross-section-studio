@@ -13,10 +13,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from app_identity import APP_NAME, COPYRIGHT_NOTICE, CREATED_BY
-from export_framing import sanitize_filename_stem
+from export_framing import ExportFramingConfig, sanitize_filename_stem
 from models import Collar, Lithology, ScreenInterval, Transect
 from projection import (
-    DEFAULT_OFFSET_WARNING_M,
     select_and_order_holes_near_transect,
 )
 
@@ -388,7 +387,7 @@ def screen_interval_warnings(
     return [f"No screen interval for transect hole(s): {', '.join(missing)}"]
 
 
-def build_export_framing_from_mapping(values: dict[str, object]) -> "ExportFramingConfig":
+def build_export_framing_from_mapping(values: dict[str, object]) -> ExportFramingConfig:
     """Construct export framing from sidebar/session values."""
     from export_framing import ExportFramingConfig
 
@@ -426,6 +425,78 @@ def _optional_float(value: object) -> float | None:
         return None
 
 
+# VE wording the renderer prints (renderer_common.format_ve_caption): consulting
+# band, in-plot "V.E." note and metadata footer, exact ("5×") or measured ("≈2.6×").
+_VE_NONE_RE = re.compile(r"NO VERTICAL EXAGGERATION|No V\.E\.|VE:\s*none", re.IGNORECASE)
+_VE_VALUE_RES = (
+    re.compile(r"VERTICAL EXAGGERATION\s*(≈?\s*\d+(?:\.\d+)?)\s*×"),
+    re.compile(r"(≈?\s*\d+(?:\.\d+)?)\s*×\s*VERTICAL EXAGGERATION"),
+    re.compile(r"V\.E\.\s*(≈?\s*\d+(?:\.\d+)?)\s*×"),
+    re.compile(r"\bVE:\s*(≈?\s*\d+(?:\.\d+)?)\s*×"),
+)
+
+
+def ve_wording_from_text(text: str) -> str | None:
+    """The VE value a figure prints (``"≈2.6×"``, ``"5×"``, ``"1×"``), or None.
+
+    Reads the caption text the renderer wrote, so auto VE records the value
+    measured on the drawn page rather than "auto".
+    """
+    if not text:
+        return None
+    flat = " ".join(text.split())
+    hits: list[tuple[int, str]] = []
+    for pattern in _VE_VALUE_RES:
+        match = pattern.search(flat)
+        if match is not None:
+            hits.append((match.start(), match.group(1).replace(" ", "") + "×"))
+    none_match = _VE_NONE_RE.search(flat)
+    if none_match is not None:
+        hits.append((none_match.start(), "1×"))
+    if not hits:
+        return None
+    return min(hits)[1]
+
+
+def _svg_caption_text(svg_bytes: bytes) -> str:
+    text = svg_bytes.decode("utf-8", errors="replace")
+    # Text drawn as outlines keeps its string in an XML comment; editable SVG
+    # text keeps it in <text>/<tspan> elements.
+    comments = " ".join(match.group(0)[4:-3] for match in _SVG_COMMENT_RE.finditer(text))
+    elements = " ".join(re.findall(r"<t(?:ext|span)\b[^>]*>([^<]*)<", text))
+    return f"{comments} {html.unescape(elements)}"
+
+
+def _pdf_caption_text(pdf_bytes: bytes) -> str:
+    try:
+        from io import BytesIO
+
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(pdf_bytes))
+        return " ".join((page.extract_text() or "") for page in reader.pages[:2])
+    except Exception:  # noqa: BLE001 — metadata hint only; fall back to the SVG
+        return ""
+
+
+def drawn_vertical_exaggeration(*, pdf_bytes: bytes | None = None, svg_bytes: bytes | None = None) -> str | None:
+    """VE printed on the deliverable: the PDF's caption first, else the SVG's."""
+    if pdf_bytes:
+        found = ve_wording_from_text(_pdf_caption_text(pdf_bytes))
+        if found:
+            return found
+    if svg_bytes:
+        return ve_wording_from_text(_svg_caption_text(svg_bytes))
+    return None
+
+
+def _ve_metadata_value(vertical_exaggeration: float | None, drawn: str | None) -> object:
+    """Chosen VE as a number; auto VE as ``"Auto (≈2.6×)"`` (never blank)."""
+    if vertical_exaggeration is not None:
+        return vertical_exaggeration
+    return f"Auto ({drawn})" if drawn else "Auto (fit to page)"
+
+
 def export_metadata_payload(
     *,
     section_title: str,
@@ -437,17 +508,27 @@ def export_metadata_payload(
     consulting_fields: dict[str, str] | None = None,
     chemistry_color_mode: str | None = None,
     chemistry_thresholds: Mapping[str, Sequence[float | None]] | None = None,
+    drawn_vertical_exaggeration: str | None = None,
 ) -> dict[str, object]:
     """JSON-serializable metadata for report packages.
 
     In threshold colour mode the per-parameter limits are listed as
     ``{"Chloride": {"green_max": 100, "orange_max": 250}, ...}`` so the
     metadata JSON / Word table state which limits coloured the figure.
+
+    ``vertical_exaggeration`` None means auto: the payload then records
+    ``"Auto (≈2.6×)"`` from ``drawn_vertical_exaggeration`` (the wording read
+    off the drawn figure), and ``vertical_exaggeration_drawn`` always holds
+    what the figure prints when it is known. ``chemistry_label_colour_mode``
+    is always present (``"black"`` when no mode was passed: the renderer's
+    default).
     """
     payload: dict[str, object] = {
         "section_title": section_title,
         "preset": preset_label,
-        "vertical_exaggeration": vertical_exaggeration,
+        "vertical_exaggeration": _ve_metadata_value(
+            vertical_exaggeration, drawn_vertical_exaggeration
+        ),
         "hole_count": hole_count,
         "transect_label": transect_label,
         "qa_notes": list(overlap_warnings[:20]),
@@ -455,10 +536,11 @@ def export_metadata_payload(
         "created_by": CREATED_BY,
         "copyright": COPYRIGHT_NOTICE,
     }
+    if drawn_vertical_exaggeration:
+        payload["vertical_exaggeration_drawn"] = drawn_vertical_exaggeration
     if consulting_fields:
         payload.update(consulting_fields)
-    if chemistry_color_mode:
-        payload["chemistry_label_colour_mode"] = chemistry_color_mode
+    payload["chemistry_label_colour_mode"] = chemistry_color_mode or "black"
     if chemistry_color_mode == "threshold" and chemistry_thresholds:
         payload["chemistry_thresholds"] = {
             str(parameter): {

@@ -64,7 +64,7 @@ def _title_block(
         project_number=PROJECT_NUMBER,
         source=SOURCE,
         date=REPORT_DATE,
-        notes=("NOTE: mbgs DENOTES METRES BELOW GROUND SURFACE.",),
+        notes=("mbgs DENOTES METRES BELOW GROUND SURFACE.",),
         drawn_by=DRAWN_BY,
         revised=REVISED,
         prepared_for=PREPARED_FOR,

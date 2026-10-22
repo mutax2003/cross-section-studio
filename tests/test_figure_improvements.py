@@ -107,7 +107,7 @@ def test_gwm_c_c_transect_hole_membership_matches_reference() -> None:
         "MW18-20",
         "MW18-21",
     )
-    assert spec.profile_eastings == (0.0, 180.0, 260.0, 320.0, 390.0, 570.0)
+    assert spec.profile_eastings == (0.0, 241.0, 270.5, 356.0, 410.5, 573.0)
 
 
 def test_consulting_pinch_out_legend_when_pinch_present() -> None:

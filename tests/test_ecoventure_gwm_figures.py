@@ -30,7 +30,9 @@ def test_ecoventure_gwm_figure_structure(transect_id: str) -> None:
     text = result.svg_bytes.decode("utf-8", errors="ignore")
     assert "DISTANCE (m)" in text
     assert "ELEVATION ABOVE SEA LEVEL (MASL)" in text
-    assert "SCREENED INTERVAL" in text
+    # The key may wrap ("SCREENED" / "INTERVAL") beside the NM key that the
+    # boreholes without readings add since the fixture follows the client sheets.
+    assert "SCREENED INTERVAL" in text or ("SCREENED" in text and "INTERVAL" in text)
     assert spec.title_block.prepared_for in text
     assert "PROJECT" in text
     assert "100/09-29" in text
@@ -43,7 +45,13 @@ def test_ecoventure_gwm_figure_structure(transect_id: str) -> None:
         assert "WITH GROUNDWATER LEVELS" in text
         # The legend key may wrap ("GROUNDWATER LEVEL" / "(MAY 2024)").
         assert "May 2024" in text or "2024-05" in text or "(MAY 2024)" in text.upper()
-    # The client's 1:1 000 / 1:1 500 sheets are tabloid; on the default letter
+    if transect_id == "A_A":
+        # Fig 3 (139 m at 1:1 000) is a letter sheet on the client set too:
+        # it is drawn at the title-block scale.
+        assert "1:1 000" in text
+        assert "AS SHOWN" not in text
+        return
+    # The client's 1:1 500 sheets (Figs 4–6) are tabloid; on the default letter
     # page the section can't be drawn at that scale, so the title block defers
     # to the scale bar and the build reports why.
     assert "AS SHOWN" in text

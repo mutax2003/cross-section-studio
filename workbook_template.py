@@ -166,7 +166,7 @@ def _sample_project() -> dict[str, str]:
         "transect_end": "A' / SOUTHEAST",
         "vertical_exaggeration": "5",
         "figure_preset": "gwm_fence",
-        "notes": "NOTE: masl DENOTES METRES ABOVE SEA LEVEL.",
+        "notes": "masl DENOTES METRES ABOVE SEA LEVEL.",
     }
 
 
@@ -299,13 +299,16 @@ def _sample_water() -> list[dict[str, object]]:
             "depth_reference": "bgs",
             "date": "2025-06-12",
         },
+        # MW-02 has a level in the shallow 2025-06 series; the dry reading
+        # belongs to the deep nest's own series, so no series holds both a
+        # level and DRY for one well.
         {
             "hole_id": "MW-02",
             "depth": "",
             "elevation_masl": "",
             "status": "dry",
-            "series_id": "2025-06",
-            "series_label": "June 2025",
+            "series_id": "2025-06-deep",
+            "series_label": "June 2025 deep",
             "connect_group": "deep",
             "depth_reference": "bgs",
             "date": "2025-06-12",
@@ -323,7 +326,9 @@ def _sample_environmental() -> list[dict[str, object]]:
             "from_depth": "",
             "to_depth": "",
             "unit": "mg/L",
-            "value_label": "<5 mg/L",
+            # Non-detect: the limit in value, "<" in qualifier; the figure
+            # prints "<5" and the unit column carries the unit.
+            "value_label": "",
             "label_color": "green",
             "green_max": 100,
             "orange_max": 250,
@@ -432,7 +437,7 @@ def _column_hints() -> dict[str, dict[str, str]]:
             "from_depth": "Interval top (m) if not using depth",
             "to_depth": "Interval base (m) if not using depth",
             "unit": "e.g. mg/L",
-            "value_label": "Optional figure text (e.g. <5 mg/L)",
+            "value_label": "Optional figure text (e.g. trace) — no unit (unit column) and not for non-detects (use qualifier)",
             "label_color": "Optional: green, red, black or orange (blue is reserved for groundwater)",
             "green_max": "Optional: this parameter's green limit (values <= print green), same units as value",
             "orange_max": "Optional: this parameter's orange limit (above green, <= this prints orange; higher red)",
@@ -498,7 +503,7 @@ def _instructions_lines() -> list[str]:
         "• Use depth for a point sample, OR from_depth + to_depth for an interval — not both.",
         "• Non-detects: type <5 in value (or 5 in value and < in qualifier); 5 is the reporting detection limit. The figure prints <5, never a bare 5. ND, n.d., <RDL 5 and ND (5) are accepted; a bare ND needs its limit.",
         "• Threshold colours: a non-detect whose limit is at or below the green limit prints green; one whose limit is above the green limit prints grey (inconclusive) and is listed in the QA notes.",
-        "• value_label is optional display text on the figure (e.g. <5 mg/L); it wins over the printed value.",
+        "• value_label is optional display text on the figure (e.g. trace); it wins over the printed value. Leave units to the unit column and non-detects to value + qualifier.",
         "• label_color is optional: green, red, black or orange (one fixed colour each; blue is reserved for groundwater). Blank = black, or G/O/R thresholds if set on Configure.",
         "• green_max / orange_max are optional per-parameter limits in the parameter's own units (fill one row per parameter, e.g. Chloride 100 / 250, Benzene 0.5 / 5). Configure seeds its threshold editor from them; parameters without limits use the sheet-wide defaults.",
         "• date is optional (YYYY-MM-DD or an Excel date cell). When one hole/parameter/depth has several dated samples, the latest is plotted and the QA notes say how many dates exist.",

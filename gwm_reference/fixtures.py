@@ -1,7 +1,8 @@
 """Golden fixture builders for EcoVenture GWM reference figures.
 
-Lithology / screen intervals are hand-digitized approximations from
-``data/pdf_extract/`` (Figs 3–6). Fence contacts remain linear in
+Collars, lithology, screens and water levels are digitized from the client
+sheets in ``data/pdf_extract/`` (Figs 3–6); lithology is sampled at each
+casing, so lens geometry between holes is approximate. Fence contacts remain linear in
 ``stratigraphy.py`` — CAD sand lenses will not match pixel-for-pixel.
 """
 
@@ -14,181 +15,93 @@ import pandas as pd
 from gwm_reference.transects import GWM_TRANSECTS, TransectSpec
 from models import Collar, Lithology, ParseResult, ScreenInterval, WaterLevel
 
+# (ground elevation masl, total depth m) digitized from the client sheets in
+# ``data/pdf_extract/`` (casing top / bottom against the 1 m elevation grid).
 COLLAR_META: dict[str, tuple[float, float]] = {
-    "MW18-18": (632.5, 30.0),
-    "MW18-06B": (632.0, 30.0),
-    "MW18-16": (631.5, 28.0),
-    "BH18-05": (631.8, 28.0),
-    "MW18-08D": (631.2, 32.0),
-    "MW18-24": (633.0, 30.0),
-    "MW18-17": (631.0, 30.0),
-    "BH18-03": (630.5, 32.0),
-    "MW18-20": (631.6, 30.0),
-    "BH18-08": (631.4, 28.0),
-    "BH18-02": (631.1, 28.0),
-    "BH18-07": (631.3, 30.0),
-    "BH18-04": (631.0, 28.0),
-    "MW18-21": (630.8, 28.0),
-    "MW18-19": (631.2, 30.0),
-    "BH18-09": (631.0, 28.0),
-    "MW18-22": (631.5, 30.0),
-    "MW18-23": (632.0, 28.0),
+    "MW18-18": (631.1, 9.0),
+    "MW18-06B": (631.5, 10.5),
+    "MW18-16": (631.6, 6.0),
+    "BH18-05": (631.65, 6.0),
+    "MW18-08D": (631.5, 18.0),
+    "MW18-24": (632.1, 9.0),
+    "MW18-17": (632.7, 9.0),
+    "BH18-03": (631.6, 6.0),
+    "MW18-20": (632.3, 18.0),
+    "BH18-08": (632.3, 9.1),
+    "BH18-02": (631.3, 6.0),
+    "BH18-07": (633.9, 9.0),
+    "BH18-04": (631.4, 6.0),
+    "MW18-21": (631.4, 9.0),
+    "MW18-19": (631.1, 9.0),
+    "BH18-09": (631.35, 9.0),
+    "MW18-22": (631.75, 9.0),
+    "MW18-23": (632.0, 9.0),
 }
 
-# Per-hole lithology (from_depth, to_depth, code) digitized from PDF extracts.
+# Per-hole lithology (from_depth, to_depth, code) sampled beside each casing on
+# the client sheets: a clay matrix with thin topsoil and discontinuous sand /
+# sand-and-clay lenses (silt only at the B' end, BH18-08).
 _LITHOLOGY_STACKS: dict[str, tuple[tuple[float, float, str], ...]] = {
-    "MW18-18": (
-        (0.0, 0.4, "Topsoil"),
-        (0.4, 2.5, "Sand"),
-        (2.5, 8.0, "Sand and Clay"),
-        (8.0, 30.0, "Clay"),
-    ),
-    "MW18-06B": (
-        (0.0, 0.5, "Topsoil"),
-        (0.5, 3.0, "Sand"),
-        (3.0, 9.0, "Sand and Clay"),
-        (9.0, 30.0, "Clay"),
-    ),
-    "MW18-16": (
-        (0.0, 0.4, "Topsoil"),
-        (0.4, 2.0, "Sand"),
-        (2.0, 7.5, "Sand and Clay"),
-        (7.5, 12.0, "Silt"),
-        (12.0, 28.0, "Clay"),
-    ),
-    "BH18-05": (
-        (0.0, 0.5, "Topsoil"),
-        (0.5, 2.5, "Sand"),
-        (2.5, 8.0, "Sand and Clay"),
-        (8.0, 12.0, "Silt"),
-        (12.0, 28.0, "Clay"),
-    ),
+    "MW18-18": ((0.0, 0.3, "Topsoil"), (0.3, 3.1, "Clay"), (3.1, 4.5, "Sand"), (4.5, 9.0, "Clay")),
+    "MW18-06B": ((0.0, 0.3, "Topsoil"), (0.3, 2.6, "Clay"), (2.6, 3.3, "Sand"), (3.3, 10.5, "Clay")),
+    "MW18-16": ((0.0, 0.2, "Topsoil"), (0.2, 3.0, "Clay"), (3.0, 4.55, "Sand"), (4.55, 6.0, "Clay")),
+    "BH18-05": ((0.0, 0.2, "Topsoil"), (0.2, 3.05, "Clay"), (3.05, 4.85, "Sand"), (4.85, 6.0, "Clay")),
     "MW18-08D": (
-        (0.0, 0.4, "Topsoil"),
-        (0.4, 4.0, "Sand"),
-        (4.0, 10.0, "Sand and Clay"),
-        (10.0, 14.0, "Silt"),
-        (14.0, 32.0, "Clay"),
+        (0.0, 0.2, "Topsoil"),
+        (0.2, 2.8, "Clay"),
+        (2.8, 3.4, "Sand"),
+        (3.4, 4.7, "Sand and Clay"),
+        (4.7, 6.5, "Sand"),
+        (6.5, 18.0, "Clay"),
     ),
-    "MW18-24": (
-        (0.0, 0.5, "Topsoil"),
-        (0.5, 3.5, "Sand"),
-        (3.5, 10.0, "Sand and Clay"),
-        (10.0, 30.0, "Clay"),
-    ),
-    "MW18-17": (
-        (0.0, 0.4, "Topsoil"),
-        (0.4, 2.0, "Sand"),
-        (2.0, 8.0, "Sand and Clay"),
-        (8.0, 13.0, "Silt"),
-        (13.0, 30.0, "Clay"),
-    ),
-    "BH18-03": (
-        (0.0, 0.5, "Topsoil"),
-        (0.5, 5.0, "Sand"),
-        (5.0, 10.0, "Sand and Clay"),
-        (10.0, 14.0, "Silt"),
-        (14.0, 32.0, "Clay"),
-    ),
-    "BH18-02": (
-        (0.0, 0.4, "Topsoil"),
-        (0.4, 3.0, "Sand"),
-        (3.0, 9.0, "Sand and Clay"),
-        (9.0, 13.0, "Silt"),
-        (13.0, 28.0, "Clay"),
-    ),
-    "MW18-20": (
-        (0.0, 0.5, "Topsoil"),
-        (0.5, 2.5, "Sand"),
-        (2.5, 8.0, "Sand and Clay"),
-        (8.0, 12.5, "Silt"),
-        (12.5, 30.0, "Clay"),
-    ),
-    "BH18-08": (
-        (0.0, 0.4, "Topsoil"),
-        (0.4, 2.0, "Sand"),
-        (2.0, 7.0, "Sand and Clay"),
-        (7.0, 12.0, "Silt"),
-        (12.0, 28.0, "Clay"),
-    ),
-    "BH18-07": (
-        (0.0, 0.5, "Topsoil"),
-        (0.5, 3.0, "Sand"),
-        (3.0, 9.0, "Sand and Clay"),
-        (9.0, 30.0, "Clay"),
-    ),
-    "BH18-04": (
-        (0.0, 0.4, "Topsoil"),
-        (0.4, 4.0, "Sand"),
-        (4.0, 10.0, "Sand and Clay"),
-        (10.0, 28.0, "Clay"),
-    ),
-    "MW18-21": (
-        (0.0, 0.5, "Topsoil"),
-        (0.5, 2.0, "Sand"),
-        (2.0, 8.0, "Sand and Clay"),
-        (8.0, 28.0, "Clay"),
-    ),
-    "MW18-19": (
-        (0.0, 0.4, "Topsoil"),
-        (0.4, 2.5, "Sand"),
-        (2.5, 6.0, "Sand and Clay"),
-        (6.0, 9.0, "Sand"),
-        (9.0, 14.0, "Silt"),
-        (14.0, 30.0, "Clay"),
-    ),
-    "BH18-09": (
-        (0.0, 0.5, "Topsoil"),
-        (0.5, 3.0, "Sand and Clay"),
-        (3.0, 7.0, "Sand"),
-        (7.0, 28.0, "Clay"),
-    ),
-    "MW18-22": (
-        (0.0, 0.4, "Topsoil"),
-        (0.4, 3.5, "Sand and Clay"),
-        (3.5, 30.0, "Clay"),
-    ),
-    "MW18-23": (
-        (0.0, 0.5, "Topsoil"),
-        (0.5, 4.0, "Sand and Clay"),
-        (4.0, 28.0, "Clay"),
-    ),
+    "MW18-24": ((0.0, 0.3, "Topsoil"), (0.3, 4.5, "Clay"), (4.5, 4.9, "Sand"), (4.9, 9.0, "Clay")),
+    "MW18-17": ((0.0, 0.3, "Topsoil"), (0.3, 3.4, "Clay"), (3.4, 4.0, "Sand and Clay"), (4.0, 9.0, "Clay")),
+    "BH18-03": ((0.0, 0.2, "Topsoil"), (0.2, 3.3, "Clay"), (3.3, 5.0, "Sand"), (5.0, 6.0, "Clay")),
+    "MW18-20": ((0.0, 18.0, "Clay"),),
+    "BH18-08": ((0.0, 0.3, "Topsoil"), (0.3, 0.6, "Silt"), (0.6, 9.1, "Clay")),
+    "BH18-02": ((0.0, 6.0, "Clay"),),
+    "BH18-07": ((0.0, 0.2, "Topsoil"), (0.2, 4.2, "Clay"), (4.2, 7.9, "Sand"), (7.9, 9.0, "Clay")),
+    "BH18-04": ((0.0, 1.7, "Clay"), (1.7, 2.8, "Sand"), (2.8, 6.0, "Clay")),
+    "MW18-21": ((0.0, 0.5, "Topsoil"), (0.5, 2.25, "Clay"), (2.25, 2.8, "Sand"), (2.8, 9.0, "Clay")),
+    "MW18-19": ((0.0, 0.3, "Topsoil"), (0.3, 5.0, "Clay"), (5.0, 6.35, "Sand"), (6.35, 9.0, "Clay")),
+    "BH18-09": ((0.0, 0.2, "Topsoil"), (0.2, 4.5, "Clay"), (4.5, 6.05, "Sand"), (6.05, 9.0, "Clay")),
+    "MW18-22": ((0.0, 0.2, "Topsoil"), (0.2, 9.0, "Clay")),
+    "MW18-23": ((0.0, 0.5, "Topsoil"), (0.5, 1.0, "Sand"), (1.0, 9.0, "Clay")),
 }
 
-# Screen intervals (mbgs) — monitoring wells only; approximate from PDF MASL bands.
+# Screen intervals (mbgs) — monitoring wells only; read from the screen ticks
+# drawn inside each casing on the client sheets.
 _SCREEN_INTERVALS: dict[str, tuple[float, float]] = {
-    "MW18-18": (7.5, 9.5),
-    "MW18-06B": (8.0, 10.0),
-    "MW18-16": (9.0, 12.0),
-    "MW18-08D": (10.0, 13.0),
-    "MW18-24": (8.5, 11.0),
-    "MW18-17": (9.5, 12.5),
-    "MW18-20": (9.0, 12.0),
-    "MW18-21": (10.0, 13.0),
-    "MW18-19": (8.0, 11.0),
-    "MW18-22": (9.0, 12.0),
-    "MW18-23": (8.5, 11.5),
+    "MW18-18": (3.0, 6.1),
+    "MW18-06B": (7.6, 10.3),
+    "MW18-16": (3.0, 5.9),
+    "MW18-08D": (15.0, 17.9),
+    "MW18-24": (3.2, 5.1),
+    "MW18-17": (3.0, 6.0),
+    "MW18-20": (15.0, 17.6),
+    "MW18-21": (2.0, 5.0),
+    "MW18-19": (3.0, 6.0),
+    "MW18-22": (2.5, 5.5),
+    "MW18-23": (1.6, 4.6),
 }
 
+# Groundwater elevations (masl) printed on the client sheets. Cyan labels and
+# lines are May 2024, blue are June 2025 (legend on every sheet). Boreholes
+# (BH18-xx) carry no reading on any sheet. Wells shared between sheets
+# (MW18-08D on Figs 3/4, MW18-16 on 3/5, MW18-20 on 4/5) print the same pair on
+# each, which cross-checks the per-well assignment.
 GW_MASL: dict[str, dict[str, float]] = {
-    "MW18-18": {"2024-05": 631.618, "2025-06": 631.188},
-    "MW18-06B": {"2024-05": 630.451, "2025-06": 630.142},
-    "MW18-16": {"2024-05": 629.903, "2025-06": 629.870},
-    "BH18-05": {"2024-05": 630.491, "2025-06": 630.971},
-    "MW18-08D": {"2024-05": 629.870},
-    "MW18-24": {"2024-05": 632.631},
-    "MW18-17": {"2024-05": 629.311, "2025-06": 629.870},
-    "BH18-03": {"2024-05": 628.817},
-    "MW18-20": {"2024-05": 630.868, "2025-06": 630.971},
-    "BH18-08": {"2024-05": 631.293},
-    "BH18-02": {"2024-05": 630.200},
-    "BH18-07": {"2024-05": 630.400},
-    "BH18-04": {"2024-05": 630.491, "2025-06": 630.491},
-    "MW18-21": {"2024-05": 629.311, "2025-06": 630.060},
-    "MW18-19": {"2024-05": 629.847, "2025-06": 630.060},
-    "BH18-09": {"2024-05": 629.911},
-    "MW18-22": {"2024-05": 630.308, "2025-06": 631.193},
-    "MW18-23": {"2024-05": 631.674},
+    "MW18-18": {"2024-05": 629.903, "2025-06": 629.870},
+    "MW18-06B": {"2024-05": 630.142, "2025-06": 630.451},
+    "MW18-16": {"2024-05": 631.378, "2025-06": 630.491},
+    "MW18-08D": {"2024-05": 630.971, "2025-06": 629.900},
+    "MW18-24": {"2024-05": 631.618, "2025-06": 631.188},
+    "MW18-17": {"2024-05": 631.293, "2025-06": 630.868},
+    "MW18-20": {"2024-05": 629.311, "2025-06": 628.817},
+    "MW18-21": {"2024-05": 630.400, "2025-06": 630.060},
+    "MW18-19": {"2024-05": 629.847, "2025-06": 629.911},
+    "MW18-22": {"2024-05": 630.874, "2025-06": 630.308},
+    "MW18-23": {"2024-05": 631.674, "2025-06": 631.193},
 }
 
 SERIES_LABELS = {

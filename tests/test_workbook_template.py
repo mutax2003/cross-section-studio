@@ -96,7 +96,11 @@ def test_data_entry_template_parses_in_dataparser(tmp_path: Path) -> None:
     assert len(result.vertical_gradients) == 2
     chloride = [reading for reading in result.environmental_readings if reading.parameter == "Chloride"]
     assert len(chloride) == 4
-    assert any(reading.value_label == "<5 mg/L" for reading in chloride)
+    # The sample non-detect uses value + qualifier, not a "<5 mg/L" label
+    # that would repeat the unit column (QA round 7).
+    non_detects = [reading for reading in chloride if not reading.detected]
+    assert len(non_detects) == 1 and non_detects[0].value == 5.0
+    assert not any(reading.value_label for reading in result.environmental_readings)
 
 
 def test_load_data_entry_project_metadata(tmp_path: Path) -> None:

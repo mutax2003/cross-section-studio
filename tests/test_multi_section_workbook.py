@@ -13,6 +13,7 @@ the batch ZIP builders and the Streamlit app.
 
 from __future__ import annotations
 
+import re
 import zipfile
 from io import BytesIO
 from pathlib import Path
@@ -439,6 +440,7 @@ def _pdf_pages(payload: bytes) -> int:
 def test_batch_zip_builds_every_workbook_section(site_ingest, layout: str, tmp_path: Path) -> None:
     pytest.importorskip("pypdf")
     from batch_export import (
+        _label_pattern,
         build_batch_zip,
         build_multi_transect_exports,
         clear_batch_geometry_memo,
@@ -462,11 +464,12 @@ def test_batch_zip_builds_every_workbook_section(site_ingest, layout: str, tmp_p
         assert pdf.startswith(b"%PDF")
         text = svg.decode("utf-8")
         # Each sheet is titled with its own line, never another one's (the
-        # base title "A - A' WITH CHLORIDE" is relabelled per line).
-        assert label in text, label
+        # base title "A - A' WITH CHLORIDE" is relabelled per line, keeping
+        # its spacing: "B - B' WITH CHLORIDE").
+        assert re.search(_label_pattern(label), text), label
         for other in SECTIONS:
             if other != label:
-                assert other not in text, (label, other)
+                assert not re.search(_label_pattern(other), text), (label, other)
         for hole in SECTIONS[label]:
             assert hole in text, (label, hole)
 
@@ -478,12 +481,13 @@ def test_batch_zip_builds_every_workbook_section(site_ingest, layout: str, tmp_p
     with zipfile.ZipFile(BytesIO(zip_bytes)) as archive:
         names = set(archive.namelist())
         expected = {
-            f"{stem}.{ext}" for stem in ("A-A'", "B-B'", "C-C'") for ext in ("png", "pdf", "svg")
+            # Primes are dropped from file names (filesystem-safe): A-A' -> A-A.
+            f"{stem}.{ext}" for stem in ("A-A", "B-B", "C-C") for ext in ("png", "pdf", "svg")
         }
         assert names == expected | {"report_binder.pdf", "README.txt"}
         assert "3 section line(s)" in archive.read("README.txt").decode("utf-8")
         archive.extractall(tmp_path)  # stems are filesystem-safe
-    assert (tmp_path / "A-A'.png").stat().st_size > 10_000
+    assert (tmp_path / "A-A.png").stat().st_size > 10_000
 
 
 def _section_geometry(parse_result, holes):
@@ -602,10 +606,11 @@ def test_streamlit_upload_seeds_batch_lines_and_builds_zip(site_bytes: bytes) ->
     pngs = sorted(name for name in names if name.endswith(".png"))
     pdfs = sorted(name for name in names if name.endswith(".pdf") and name != "report_binder.pdf")
     assert len(pngs) == 3 and len(pdfs) == 3, names
-    for stem in ("A-A'", "B-B'", "C-C'"):
+    for stem in ("A-A", "B-B", "C-C"):
         assert any(name.endswith(f"{stem}.png") for name in pngs), names
     assert not any("B-B_" in name for name in names), names
     zip_name = at.session_state["_batch_zip_name"]
-    assert all(label in zip_name for label in ("A-A'", "B-B'", "C-C'")), zip_name
+    assert all(label in zip_name for label in ("A-A", "B-B", "C-C")), zip_name
+    assert "'" not in zip_name and not any("'" in name for name in names), names
     assert {"README.txt", "report_binder.pdf"} <= names
     assert any("Batch ZIP ready: 3 section line" in s.value for s in at.success)

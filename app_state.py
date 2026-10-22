@@ -110,6 +110,8 @@ DEFAULT_SESSION: dict[str, object] = {
     "ai_figure_caption": None,
     "uploaded_name": None,
     "workbook_uploader_key": 0,
+    # Bumped on Sign out so the logo uploaders start empty (app_sidebar._logo_widget_key).
+    "logo_uploader_key": 0,
     "output_preset": "section_sheet",
     "track_width_m": 3.0,
     "auto_fit_track_width": True,

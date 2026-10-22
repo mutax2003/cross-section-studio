@@ -110,6 +110,11 @@ mpl.rcParams["svg.hashsalt"] = "cross-section-studio"
 
 logger = logging.getLogger(__name__)
 
+# Fixed-page margin fit aims this far inside the printable margin (inches),
+# and a tight crop pads this much past it, so strokes / antialiasing never
+# print inside the 0.25 in margin (measured 0.24 in before).
+_FIT_MARGIN_SLACK_IN = 0.02
+
 
 # Auto-fit bounds for borehole columns, as fractions of the hole span. All
 # columns together cover at most this share of the section, so fills between
@@ -1439,7 +1444,15 @@ class CrossSectionRenderer(
         style_cache: dict,
         lithology_codes: list[str],
         polygons: list[GeologicalPolygon],
+        *,
+        swatch_alpha: float | None = None,
     ) -> None:
+        """Outside lithology legend.
+
+        ``swatch_alpha`` is the fence fill's alpha: the swatches are drawn
+        with it so they match the (paler) translucent fence, not an opaque
+        colour the section never shows.
+        """
         legend_handles = []
         for code in lithology_codes:
             style = self._resolve_style(code, style_cache)
@@ -1449,6 +1462,7 @@ class CrossSectionRenderer(
                     edgecolor=POLYGON_EDGE_COLOR,
                     hatch=style.hatch or None,
                     linewidth=0.75,
+                    alpha=swatch_alpha,
                     # Long codes wrap to two lines, then ellipsize (a 120-
                     # character code pushed the legend past the page edge).
                     label=fit_label(code, max_chars=LEGEND_LABEL_MAX_CHARS),
@@ -1760,7 +1774,9 @@ class CrossSectionRenderer(
         )
         if kwargs.get("bbox_inches") == "tight":
             # A tight crop keeps the same least printable margin as a page.
-            kwargs["pad_inches"] = max(float(kwargs.get("pad_inches") or 0.0), MIN_PRINT_MARGIN_IN)
+            kwargs["pad_inches"] = max(
+                float(kwargs.get("pad_inches") or 0.0), MIN_PRINT_MARGIN_IN + _FIT_MARGIN_SLACK_IN
+            )
         return kwargs
 
     def _prepare_export_figure(self, figure: Figure) -> Figure:
@@ -1848,7 +1864,7 @@ class CrossSectionRenderer(
             cursor = text.get_window_extent(renderer).y1 + gap
         return cursor - gap if cursor > bottom_px else bottom_px
 
-    def fit_page_content(self, figure: Figure, *, max_passes: int = 4) -> bool:
+    def fit_page_content(self, figure: Figure, *, max_passes: int = 8) -> bool:
         """Pull the plot frame in until all content keeps the printable margins.
 
         Fixed export pages only (consulting sheets and letter / tabloid
@@ -1895,10 +1911,15 @@ class CrossSectionRenderer(
             content = Bbox.union(boxes)
             dpi = figure.dpi
             width, height = figure.bbox.width, figure.bbox.height
+            # Aim a hair inside the margin: an aspect-locked box re-centres
+            # after every move, so the overflow only decays pass by pass and
+            # the last pass left content ~0.01-0.04 in past it (QA round 7:
+            # letter portrait left margin 0.21 in).
+            slack = _FIT_MARGIN_SLACK_IN * dpi
             floor = max(margins[3] * dpi, footer_top + 3.0 * dpi / 72.0)
-            over_l = margins[0] * dpi - content.x0
-            over_r = content.x1 - (width - margins[1] * dpi)
-            over_t = content.y1 - (height - margins[2] * dpi)
+            over_l = margins[0] * dpi + slack - content.x0
+            over_r = content.x1 - (width - margins[1] * dpi - slack)
+            over_t = content.y1 - (height - margins[2] * dpi - slack)
             over_b = floor - content.y0
             if os.environ.get("CSS_DEBUG_FIT"):
                 print("fit pass", _pass, [round(v / dpi, 3) for v in (over_l, over_r, over_t, over_b)])

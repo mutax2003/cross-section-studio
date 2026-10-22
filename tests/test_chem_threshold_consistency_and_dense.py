@@ -31,6 +31,7 @@ from render_profiles import (
     resolved_chemistry_thresholds,
 )
 from render_theme import (
+    CHEMISTRY_LABEL_BLACK,
     CHEMISTRY_LABEL_GREEN,
     CHEMISTRY_LABEL_ORANGE,
     CHEMISTRY_LABEL_RED,
@@ -147,16 +148,20 @@ def test_consulting_threshold_legend_is_three_dots_in_fence_mode() -> None:
 
 
 def test_resolved_thresholds_fill_gaps_with_configure_defaults() -> None:
-    assert resolved_chemistry_thresholds(None, None) == (
-        DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX,
-        DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX,
-    ) == (100.0, 250.0)
+    # Neither limit: "no limit set" (QA round 7) -- a generic 100 / 250 band
+    # no longer colours a parameter that has no limits of its own.
+    from render_profiles import chemistry_limits_set
+
+    assert (DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX, DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX) == (100.0, 250.0)
+    assert not chemistry_limits_set(*resolved_chemistry_thresholds(None, None))
     assert resolved_chemistry_thresholds(50.0, None) == (50.0, 250.0)
     assert resolved_chemistry_thresholds(300.0, None) == (300.0, 300.0)
     assert resolved_chemistry_thresholds(None, 400.0) == (100.0, 400.0)
 
 
-def test_threshold_mode_without_limits_uses_defaults_for_labels_and_dots(caplog) -> None:
+def test_threshold_mode_without_limits_prints_black_no_limit_set(caplog) -> None:
+    """Threshold mode with no limits anywhere: values print black and the key
+    says "no limit set" (it used to band them by a generic 100 / 250)."""
     import matplotlib.pyplot as plt
 
     import pipeline
@@ -193,7 +198,8 @@ def test_threshold_mode_without_limits_uses_defaults_for_labels_and_dots(caplog)
     assert any("without both limits" in record.getMessage() for record in caplog.records)
     renderer = captured["renderer"]
     labels = {ann.get_text(): to_hex(ann.get_color()) for kind, ann, _c in renderer._water_labels if kind == "chem"}
-    assert labels == {"20": GREEN, "180": ORANGE, "900": RED}
+    black = to_hex(CHEMISTRY_LABEL_BLACK)
+    assert labels == {"20": black, "180": black, "900": black}
     dots = sorted(
         to_hex(c)
         for ax in captured["figure"].axes
@@ -203,6 +209,7 @@ def test_threshold_mode_without_limits_uses_defaults_for_labels_and_dots(caplog)
     )
     assert dots == sorted(labels.values())
     assert renderer.chemistry_threshold_key_text is not None
+    assert "no limit set" in renderer.chemistry_threshold_key_text
     plt.close("all")
 
 

@@ -89,6 +89,27 @@ def clear_service_memos() -> None:
     _reset_svg_draw_body_flag()
 
 
+def drop_session_memos(session_id: str | None = None) -> int:
+    """Close this session's retained figures and drop its geometry / export memos.
+
+    Sign out calls this so the next user of a shared-password kiosk cannot be
+    served the previous user's drawn figure or export bytes. Returns how many
+    entries were removed. ``@st.cache_data`` entries are keyed by content and
+    are unreachable without the workbook bytes, so they are left alone.
+    """
+    sid = session_id or _memo_session_id()
+    removed = 0
+    with _memo_lock:
+        for key in [key for key in _figure_memo if key[0] == sid]:
+            _close_figure_bundle(_figure_memo.pop(key, None))
+            removed += 1
+        for memo in (_export_memo, _geometry_memo):
+            for key in [key for key in memo if key[0] == sid]:
+                memo.pop(key, None)
+                removed += 1
+    return removed
+
+
 def _memo_session_id() -> str:
     """Isolate process memos per Streamlit session when a script context exists."""
     try:

@@ -30,7 +30,9 @@ def test_ecoventure_gwm_figure_structure(transect_id: str) -> None:
     text = result.svg_bytes.decode("utf-8", errors="ignore")
     assert "DISTANCE (m)" in text
     assert "ELEVATION ABOVE SEA LEVEL (MASL)" in text
-    assert "SCREENED INTERVAL" in text
+    # The key may wrap ("SCREENED" / "INTERVAL") beside the NM key that the
+    # boreholes without readings add since the fixture follows the client sheets.
+    assert "SCREENED INTERVAL" in text or ("SCREENED" in text and "INTERVAL" in text)
     assert spec.title_block.prepared_for in text
     assert "PROJECT" in text
     assert "100/09-29" in text

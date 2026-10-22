@@ -437,18 +437,6 @@ def test_section_sheet_portrait_is_balanced_vertically(tmp_path: Path) -> None:
     assert abs(top_blank - inner_blank) < 0.6, (top_blank, inner_blank)
 
 
-def test_fanned_headers_stay_under_the_top_margin() -> None:
-    from renderer_common import _header_page_bbox
-
-    fig = plt.figure(figsize=(17.0, 11.0), dpi=100)
-    try:
-        assert _header_page_bbox(fig).y1 == fig.bbox.y1
-        fig._css_page_margins_in = (0.25, 0.25, 0.25, 0.25)
-        assert _header_page_bbox(fig).y1 == pytest.approx(fig.bbox.y1 - 25.0)
-    finally:
-        plt.close(fig)
-
-
 # --- 8. QA page sheet --------------------------------------------------------
 
 

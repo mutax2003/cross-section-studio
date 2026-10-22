@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 # tapering to its apex (0.5 = mid-way toward the neighbouring hole).
 PINCH_OUT_FRACTION = 0.5
 
+# With "Show layers that end between holes" off a unit logged in one hole only is
+# not carried toward the neighbour: its wedge tapers out this fraction of the
+# spacing from its own hole (the near field), so the hole's log is still honoured
+# at the hole — never replaced by a neighbouring unit — and the bracketing fills
+# close the rest of the gap.
+NEAR_FIELD_PINCH_FRACTION = 0.25
+
 # Intervals thinner than this (from_depth == to_depth within float noise) carry no
 # fence geometry: they are left out of correlation / fence building (columns still
 # show them) because a degenerate match collapses the neighbouring fills. Kept in
@@ -782,34 +789,37 @@ def _polygons_for_pair(
         tuple[Hashable | None, Hashable | None],
         list[tuple[bool, tuple[_LayerInterval, float, float, float]]],
     ] = defaultdict(list)
-    if allow_pinch_outs:
-        for key in all_keys:
-            left_layer = left_lookup.get(key)
-            right_layer = right_lookup.get(key)
-            if (left_layer is None) == (right_layer is None):
-                continue
-            if left_layer is not None:
-                source_layer, x_source, x_other = left_layer, x_left, x_right
-                neighbor_intervals, neighbor_by_order = right_intervals, right_by_order
-                source_matches = matched
-            else:
-                source_layer, x_source, x_other = right_layer, x_right, x_left  # type: ignore[assignment]
-                neighbor_intervals, neighbor_by_order = left_intervals, left_by_order
-                source_matches = matched_right_first
-            above, below = _bracketing_matches(source_layer, source_matches)
-            if above is None and below is None:
-                z_tip = _pinch_out_z_mid(
-                    source_layer, neighbor_intervals, by_order=neighbor_by_order
-                )
-                wedges.append((source_layer, x_source, x_other, z_tip))
-                continue
-            x_tip = x_source + PINCH_OUT_FRACTION * (x_other - x_source)
-            z_tip = _bracket_tip_z(
-                above, below, left_lookup, right_lookup, x_left, x_right, x_tip
+    # Pinch-outs on or off, every unit stays drawn at the hole that logged it
+    # (absorbing it into a bracketing fill drew the neighbour's unit over the
+    # log). Off only shortens the reach of one-sided lenses to the near field.
+    pinch_fraction = PINCH_OUT_FRACTION if allow_pinch_outs else NEAR_FIELD_PINCH_FRACTION
+    for key in all_keys:
+        left_layer = left_lookup.get(key)
+        right_layer = right_lookup.get(key)
+        if (left_layer is None) == (right_layer is None):
+            continue
+        if left_layer is not None:
+            source_layer, x_source, x_other = left_layer, x_left, x_right
+            neighbor_intervals, neighbor_by_order = right_intervals, right_by_order
+            source_matches = matched
+        else:
+            source_layer, x_source, x_other = right_layer, x_right, x_left  # type: ignore[assignment]
+            neighbor_intervals, neighbor_by_order = left_intervals, left_by_order
+            source_matches = matched_right_first
+        above, below = _bracketing_matches(source_layer, source_matches)
+        if above is None and below is None:
+            z_tip = _pinch_out_z_mid(
+                source_layer, neighbor_intervals, by_order=neighbor_by_order
             )
-            bracketed[(above, below)].append(
-                (left_layer is not None, (source_layer, x_source, x_other, z_tip))
-            )
+            wedges.append((source_layer, x_source, x_other, z_tip))
+            continue
+        x_tip = x_source + pinch_fraction * (x_other - x_source)
+        z_tip = _bracket_tip_z(
+            above, below, left_lookup, right_lookup, x_left, x_right, x_tip
+        )
+        bracketed[(above, below)].append(
+            (left_layer is not None, (source_layer, x_source, x_other, z_tip))
+        )
 
     def _tile(
         above: Hashable | None,
@@ -849,7 +859,7 @@ def _polygons_for_pair(
             continue
         for _is_left, wedge in members:
             _source, x_source, x_other, z_tip = wedge
-            x_tip = x_source + PINCH_OUT_FRACTION * (x_other - x_source)
+            x_tip = x_source + pinch_fraction * (x_other - x_source)
             if _bend_keeps_fills_valid(
                 above, below, left_lookup, right_lookup, x_left, x_right, x_tip, z_tip
             ):
@@ -869,34 +879,18 @@ def _polygons_for_pair(
         else:
             open_polygons.extend(tiles)
 
-    # Pinch-outs off: unmatched units are not drawn between the holes, so the
-    # bracketing fills close the space they leave at the source hole instead.
-    top_ends: dict[tuple[Hashable, str], float] = {}
-    bottom_ends: dict[tuple[Hashable, str], float] = {}
-    if not allow_pinch_outs:
-        for side, lookup, other, source_matches in (
-            ("left", left_lookup, right_lookup, matched),
-            ("right", right_lookup, left_lookup, matched_right_first),
-        ):
-            sides_top, sides_bottom = _closed_unmatched_ends(
-                [layer for key, layer in lookup.items() if key not in other],
-                source_matches,
-            )
-            top_ends.update({(key, side): z for key, z in sides_top.items()})
-            bottom_ends.update({(key, side): z for key, z in sides_bottom.items()})
-
     # Pass 2: continuous fills (with bent contacts), then wedges.
     for key, left_layer, right_layer in matched:
         top_path = _bend_path(top_bends.get(key, ()), x_left, x_right)
         bottom_path = _bend_path(bottom_bends.get(key, ()), x_left, x_right)
         polygon = _make_polygon(
             [
-                (x_left, top_ends.get((key, "left"), left_layer.top_elevation)),
+                (x_left, left_layer.top_elevation),
                 *top_path,
-                (x_right, top_ends.get((key, "right"), right_layer.top_elevation)),
-                (x_right, bottom_ends.get((key, "right"), right_layer.bottom_elevation)),
+                (x_right, right_layer.top_elevation),
+                (x_right, right_layer.bottom_elevation),
                 *reversed(bottom_path),
-                (x_left, bottom_ends.get((key, "left"), left_layer.bottom_elevation)),
+                (x_left, left_layer.bottom_elevation),
             ],
             left_layer.lithology_code,
             hole_pair,
@@ -908,7 +902,9 @@ def _polygons_for_pair(
 
     for source_layer, x_source, x_other, z_tip in wedges:
         polygon = _make_polygon(
-            _pinch_out_wedge_coords(source_layer, x_source, x_other, z_tip),
+            _pinch_out_wedge_coords(
+                source_layer, x_source, x_other, z_tip, pinch_fraction=pinch_fraction
+            ),
             source_layer.lithology_code,
             hole_pair,
             is_pinch_out=True,
@@ -918,64 +914,6 @@ def _polygons_for_pair(
     polygons.extend(open_polygons)
 
     return polygons
-
-
-def _closed_unmatched_ends(
-    unmatched: list[_LayerInterval],
-    matched: list[tuple[Hashable, _LayerInterval, _LayerInterval]],
-) -> tuple[dict[Hashable, float], dict[Hashable, float]]:
-    """Source-hole contact elevations that close the space of undrawn unmatched units.
-
-    Used when pinch-outs are off: the unmatched units of one hole are not drawn
-    between the holes, so the matched units bracketing them take over the space
-    (the hole column still shows the logged units). Returns ``(top_ends,
-    bottom_ends)`` keyed by matched correlation key, the new elevation of that
-    fill's top / bottom edge at the source hole:
-
-    * **Two-sided** (matched unit above and below): the upper unit's base and the
-      lower unit's top both run to the mid-elevation of the space between them,
-      so the two contacts converge at the hole — the same tiling a pinch-out bend
-      gives, with the tip on the hole instead of mid-span.
-    * **Above only** (units below the lowest match): the upper unit's base runs
-      down to the deepest unmatched base, i.e. along the fence base line.
-    * **Below only** (units above the highest match): the lower unit's top runs
-      up to the highest unmatched top, i.e. along the fence top line.
-
-    Unbracketed units and crossing (mis-ordered) brackets are left alone.
-    """
-    groups: dict[tuple[Hashable | None, Hashable | None], list[_LayerInterval]] = defaultdict(list)
-    for interval in unmatched:
-        above, below = _bracketing_matches(interval, matched)
-        if above is not None or below is not None:
-            groups[(above, below)].append(interval)
-    source = {key: layer for key, layer, _neighbour in matched}
-    top_ends: dict[Hashable, float] = {}
-    bottom_ends: dict[Hashable, float] = {}
-    for (above, below), members in groups.items():
-        finite = [
-            interval
-            for interval in members
-            if np.isfinite(interval.top_elevation) and np.isfinite(interval.bottom_elevation)
-        ]
-        if not finite:
-            continue
-        if above is not None and below is not None:
-            upper = source[above].bottom_elevation
-            lower = source[below].top_elevation
-            if not (np.isfinite(upper) and np.isfinite(lower)) or upper < lower - 1e-9:
-                continue
-            middle = 0.5 * (upper + lower)
-            bottom_ends[above] = middle
-            top_ends[below] = middle
-        elif above is not None:
-            base = min(interval.bottom_elevation for interval in finite)
-            if base < source[above].bottom_elevation:
-                bottom_ends[above] = base
-        else:
-            top = max(interval.top_elevation for interval in finite)
-            if top > source[below].top_elevation:  # type: ignore[index]
-                top_ends[below] = top
-    return top_ends, bottom_ends
 
 
 def _left_group_on_top(
@@ -1822,9 +1760,14 @@ def _extend_short_holes(
             needed = depths[index] + max(
                 SHORT_HOLE_MIN_DEPTH_GAIN_M, SHORT_HOLE_MIN_DEPTH_GAIN_FRACTION * depths[index]
             )
-            left = next((i for i in range(index - 1, -1, -1) if depths[i] >= needed), None)
-            right = next((i for i in range(index + 1, len(profiles)) if depths[i] >= needed), None)
-            if left is None or right is None:
+            # Nearest hole each side at least as deep as this one (only shorter
+            # holes are skipped, so a run of short holes chains); it must reach
+            # ``needed``, or the hole is not short next to that neighbour.
+            left = next((i for i in range(index - 1, -1, -1) if depths[i] >= depths[index]), None)
+            right = next(
+                (i for i in range(index + 1, len(profiles)) if depths[i] >= depths[index]), None
+            )
+            if left is None or right is None or min(depths[left], depths[right]) < needed:
                 continue
             x_hole, hole_id, intervals, _lookup = profiles[index]
             x_left, left_id, left_intervals, left_lookup = profiles[left]

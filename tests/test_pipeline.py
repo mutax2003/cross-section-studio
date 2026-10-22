@@ -149,7 +149,9 @@ def test_borehole_only_mode_skips_polygons() -> None:
     assert BOREHOLE_ONLY_DISCLAIMER.encode() in svg_bytes
 
 
-def test_allow_pinch_outs_false_reduces_polygons() -> None:
+def test_allow_pinch_outs_false_still_honours_logged_units() -> None:
+    """Pinch-outs off must not absorb a one-hole unit into its neighbour fill: the
+    Sandstone used to run down over BH-01's logged Clay (5-10 m)."""
     collars = [
         Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
         Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=10.0),
@@ -165,8 +167,13 @@ def test_allow_pinch_outs_false_reduces_polygons() -> None:
     _, without_pinch, _, _, _, _, _ = build_cross_section(
         collars, lithologies, [(0.0, 0.0), (50.0, 0.0)], allow_pinch_outs=False
     )
-    assert len(with_pinch) > len(without_pinch)
     assert any(polygon.is_pinch_out for polygon in with_pinch)
+    for polygons in (with_pinch, without_pinch):
+        clay = [p for p in polygons if p.lithology_code == "Clay"]
+        assert clay and all(p.is_pinch_out for p in clay)
+        sandstone = next(p for p in polygons if p.lithology_code == "Sandstone")
+        at_bh01 = [z for x, z in sandstone.polygon.exterior.coords if abs(x) < 1e-9]
+        assert abs(min(at_bh01) - 95.0) < 1e-9  # stops at the logged contact
 
 
 def test_overlap_warnings_returned_from_pipeline() -> None:

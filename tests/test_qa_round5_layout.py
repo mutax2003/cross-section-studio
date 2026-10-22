@@ -267,7 +267,12 @@ def _orphan_case(*, unit_hole: str, from_depth: float, to_depth: float, depths: 
         polygons, projected, collar_depths={c.hole_id: c.total_depth for c in collars}
     )
     hole_summary = renderer._hole_context(projected).summary
-    _rows, lenses = renderer._orphan_unit_geometry(projected, polygons, hole_summary, 1.0)
+    # Stratigraphy draws the one-hole Gravel itself now (pinch-outs off keep logged
+    # units at their hole); the renderer's lens fallback is for units no fence
+    # polygon draws, so exercise it without the Gravel fills.
+    assert "Gravel" in {polygon.lithology_code for polygon in polygons}
+    no_gravel = [polygon for polygon in polygons if polygon.lithology_code != "Gravel"]
+    _rows, lenses = renderer._orphan_unit_geometry(projected, no_gravel, hole_summary, 1.0)
     envelope = renderer._fence_envelope(hole_summary)
     plt.close(figure)
     return lenses, envelope

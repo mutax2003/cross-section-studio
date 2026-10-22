@@ -249,11 +249,11 @@ _DEPTH_MODE_WATER_NOTE = (
     "elevations differ, so a line or gradient joining depths below ground would not "
     "represent the water table (use elevation mode for heads and gradients)"
 )
-# Legend / notes key for the "i=" labels, drawn only when one is: sample
-# text + label (upper case on consulting sheets; Δh/Δx keeps its case).
+# What the "i=" labels mean, shown only when one is drawn: a key row in the
+# section-sheet series key (sample "i=" + the sentence), a numbered note in
+# the consulting title block (a legend row there re-flowed the legend).
 GRADIENT_LEGEND_LABEL = "i = horizontal hydraulic gradient Δh/Δx between adjacent wells (schematic)"
 GRADIENT_KEY_SAMPLE = "i="
-GRADIENT_KEY_LABEL = "HORIZONTAL HYDRAULIC GRADIENT Δh/Δx BETWEEN ADJACENT WELLS (SCHEMATIC)"
 # Flowing-artesian head (above ground): dashed riser from the ground to the
 # head plus an upward triangle on the ground line.
 ARTESIAN_LEGEND_LABEL = "Flowing artesian head (above ground)"
@@ -3767,7 +3767,7 @@ class RendererWaterMixin:
             labels.append(ARTESIAN_LEGEND_LABEL)
         if getattr(self, "gradient_labels_drawn", False):
             handles.append(SampleTextKey(GRADIENT_KEY_SAMPLE, self.water_series_legend[0]["color"]))
-            labels.append(GRADIENT_KEY_LABEL)
+            labels.append(GRADIENT_LEGEND_LABEL.split(" = ", 1)[1].upper())
         key = Legend(
             ax,
             handles,

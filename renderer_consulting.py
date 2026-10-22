@@ -74,7 +74,7 @@ from renderer_common import (
     water_status_legend_label,
     water_status_texts,
 )
-from renderer_water import ARTESIAN_LEGEND_LABEL, GRADIENT_KEY_LABEL, GRADIENT_KEY_SAMPLE
+from renderer_water import ARTESIAN_LEGEND_LABEL, GRADIENT_LEGEND_LABEL
 from stratigraphy import GeologicalPolygon
 
 logger = logging.getLogger(__name__)
@@ -1843,7 +1843,12 @@ class ConsultingLayoutMixin:
                 fit_axes=ax_center,
             )
 
-        notes = title_block.notes or DEFAULT_CONSULTING_NOTES
+        notes = list(title_block.notes or DEFAULT_CONSULTING_NOTES)
+        if getattr(self, "gradient_labels_drawn", False) and GRADIENT_LEGEND_LABEL not in notes:
+            # What the "i=" labels on the water lines mean (a legend row for
+            # it re-flowed the legend); ahead of the interpretation disclaimer.
+            at = notes.index(self.disclaimer) if self.disclaimer in notes else len(notes)
+            notes.insert(at, GRADIENT_LEGEND_LABEL)
         ax_notes.text(
             0.04,
             0.86,
@@ -1951,7 +1956,11 @@ class ConsultingLayoutMixin:
                     linespacing=1.15,
                 )
                 extent = artist.get_window_extent()
-                if extent.x1 <= right_px or wrap_width <= 12 or attempt == 5:
+                # Measured at the layout dpi: the 300 dpi export sets a long
+                # line a little wider (a 70-character note reached 0.11 in
+                # from the page edge), so a line must clear the margin by a
+                # few percent of its width.
+                if extent.x1 + 0.03 * extent.width <= right_px or wrap_width <= 12 or attempt == 5:
                     break
                 ratio = (right_px - extent.x0) / max(extent.width, 1.0)
                 wrap_width = max(12, min(wrap_width - 1, int(wrap_width * ratio)))
@@ -2371,9 +2380,6 @@ class ConsultingLayoutMixin:
                     },
                 )
             )
-        if self.profile.show_water_legend and getattr(self, "gradient_labels_drawn", False):
-            # What the "i=" labels on the water lines mean.
-            entries.append(("status_text", GRADIENT_KEY_LABEL, {"color": CONSULTING_WATER_COLOR, "sample": GRADIENT_KEY_SAMPLE}))
         status = water_status_texts(self, ax.figure)
         if status:
             # The grey NM / DRY water notes, keyed by a sample of their text.

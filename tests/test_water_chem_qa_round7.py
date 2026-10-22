@@ -36,7 +36,7 @@ from render_theme import (
     filter_water_levels_for_plot,
 )
 from renderer_chemistry import parameter_series_markers
-from renderer_water import GRADIENT_KEY_LABEL, GRADIENT_KEY_SAMPLE
+from renderer_water import GRADIENT_KEY_SAMPLE, GRADIENT_LEGEND_LABEL
 
 POINTS = [(-10.0, 0.0), (210.0, 0.0)]
 
@@ -330,10 +330,16 @@ def test_nest_series_alone_keeps_dry_note_and_legend_marker() -> None:
         notes = [a.get_text() for kind, a, _c in renderer._water_labels if kind == "nm" and a.get_visible()]
         assert "DRY" in notes
         ax = fig.axes[0]
-        (key,) = [a for a in ax.artists if a.get_gid() == "water_series_key"]
-        texts = [t.get_text() for t in key.get_texts()]
-        assert any("JUNE 2025 DEEP" in t for t in texts)
-        handle = key.legend_handles[0]
+        # The series key (in the plot, or merged into the outside legend).
+        keys = [a for a in ax.artists if a.get_gid() == "water_series_key"]
+        if ax.get_legend() is not None:
+            keys.append(ax.get_legend())
+        pairs = [
+            (text.get_text(), handle)
+            for key in keys
+            for text, handle in zip(key.get_texts(), key.legend_handles, strict=False)
+        ]
+        (handle,) = [handle for text, handle in pairs if "JUNE 2025 DEEP" in text.upper()]
         assert handle.get_marker() not in (None, "", "None", "none")
         # MW-02 is dry: the deep line is broken, so the key shows no line.
         assert handle.get_linestyle() in ("None", "none", "")
@@ -463,15 +469,28 @@ def test_gradient_key_and_series_case() -> None:
         gradients = _gradient_texts(renderer)
         assert gradients and all(t.startswith(("JUNE 2025 i=", "FALL 2025 i=")) for t in gradients)
         assert renderer.gradient_labels_drawn
+        # Consulting sheet: a numbered note in the title block.
         texts = [" ".join(t.get_text().split()) for ax in fig.axes for t in ax.texts]
-        assert GRADIENT_KEY_LABEL in texts and GRADIENT_KEY_SAMPLE in texts
+        assert any(GRADIENT_LEGEND_LABEL in t for t in texts)
     finally:
         plt.close(fig)
-    # No i= drawn (one reading per series): no key.
+    # No i= drawn (one reading per series): no note.
     _result, renderer, fig = _render(collars, water[:1], render_layout="consulting_section")
     try:
         texts = [" ".join(t.get_text().split()) for ax in fig.axes for t in ax.texts]
-        assert GRADIENT_KEY_LABEL not in texts
+        assert not any(GRADIENT_LEGEND_LABEL in t for t in texts)
+    finally:
+        plt.close(fig)
+    # Section sheet: a row in the series key (sample "i=" + the sentence).
+    _result, renderer, fig = _render(collars, water, render_layout="section_sheet")
+    try:
+        ax = fig.axes[0]
+        keys = [a for a in ax.artists if a.get_gid() == "water_series_key"]
+        if ax.get_legend() is not None:
+            keys.append(ax.get_legend())
+        texts = [" ".join(t.get_text().split()).upper() for key in keys for t in key.get_texts()]
+        assert any(GRADIENT_LEGEND_LABEL.split(" = ", 1)[1].upper() in t for t in texts)
+        assert GRADIENT_KEY_SAMPLE in [t.get_text() for t in ax.texts] or keys
     finally:
         plt.close(fig)
 

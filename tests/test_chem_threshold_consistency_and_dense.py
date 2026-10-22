@@ -183,7 +183,7 @@ def test_threshold_mode_without_limits_prints_black_no_limit_set(caplog) -> None
         EnvironmentalReading(hole_id="A", parameter="Chloride", value=v, depth=d, unit="mg/kg")
         for v, d in ((20.0, 1.0), (180.0, 5.0), (900.0, 9.0))
     ]
-    with pytest.MonkeyPatch.context() as mp, caplog.at_level(logging.WARNING, logger="pipeline"):
+    with pytest.MonkeyPatch.context() as mp, caplog.at_level(logging.INFO, logger="pipeline"):
         mp.setattr(CrossSectionRenderer, "render", capture)
         pipeline.build_cross_section(
             collars,
@@ -195,7 +195,10 @@ def test_threshold_mode_without_limits_prints_black_no_limit_set(caplog) -> None
             chemistry_color_mode="threshold",
             export_formats=frozenset(),
         )
-    assert any("without both limits" in record.getMessage() for record in caplog.records)
+    # Neither limit: an info line (expected on an unconfigured engine call), not
+    # the "without both limits" warning that one missing limit earns.
+    assert any("without limits: values print black" in record.getMessage() for record in caplog.records)
+    assert not any("without both limits" in record.getMessage() for record in caplog.records)
     renderer = captured["renderer"]
     labels = {ann.get_text(): to_hex(ann.get_color()) for kind, ann, _c in renderer._water_labels if kind == "chem"}
     black = to_hex(CHEMISTRY_LABEL_BLACK)

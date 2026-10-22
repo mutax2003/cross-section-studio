@@ -155,6 +155,27 @@ def _threshold_key_text(
     return f"{text} {unit}" if unit else text
 
 
+def _no_limit_set(green_max: float | None, yellow_max: float | None) -> bool:
+    """True for a parameter without real limits (blank / NaN pair: black values)."""
+    return (
+        green_max is None
+        or yellow_max is None
+        or float(green_max) != float(green_max)
+        or float(yellow_max) != float(yellow_max)
+    )
+
+
+def _parameter_with_unit(parameter: str, unit: str | None) -> str:
+    """``"Chloride (mg/L)"`` \u2014 the unit sits beside the parameter it belongs to."""
+    unit = (unit or "").strip()
+    return f"{parameter} ({unit})" if unit else parameter
+
+
+# Key text for a parameter without limits: the unit stays with the
+# parameter ("Chloride (mg/L): no limit set \u2014 black"), never after "black".
+_NO_LIMIT_KEY_TEXT = "no limit set \u2014 black"
+
+
 def _threshold_key_lines(
     entries: Sequence[tuple[str, str, float, float]],
     inconclusive: set[str] | frozenset[str] = frozenset(),
@@ -163,20 +184,17 @@ def _threshold_key_lines(
 
     A single parameter keeps the bare band text (``green <= 100 . ...``); with
     several parameters each line is prefixed by its parameter name, since
-    every parameter carries its own limits in its own units.
+    every parameter carries its own limits in its own units. A parameter
+    without limits always reads ``Chloride (mg/L): no limit set \u2014 black``.
     """
-    if len(entries) == 1:
-        parameter, unit, green_max, yellow_max = entries[0]
-        return (
-            _threshold_key_text(
-                green_max, yellow_max, unit, inconclusive=parameter in inconclusive
-            ),
-        )
-    return tuple(
-        f"{parameter}: "
-        + _threshold_key_text(green_max, yellow_max, unit, inconclusive=parameter in inconclusive)
-        for parameter, unit, green_max, yellow_max in entries
-    )
+    lines: list[str] = []
+    for parameter, unit, green_max, yellow_max in entries:
+        if _no_limit_set(green_max, yellow_max):
+            lines.append(f"{_parameter_with_unit(parameter, unit)}: {_NO_LIMIT_KEY_TEXT}")
+            continue
+        text = _threshold_key_text(green_max, yellow_max, unit, inconclusive=parameter in inconclusive)
+        lines.append(text if len(entries) == 1 else f"{parameter}: {text}")
+    return tuple(lines)
 
 
 def _below_x_axis_anchor(ax):
@@ -826,16 +844,27 @@ class RendererChemistryMixin:
             parts: list[TextArea] = []
             if index == 0:
                 parts.append(TextArea("Label colour:", textprops=text_props))
-            if len(entries) > 1:
-                if len(parameter) > _THRESHOLD_KEY_INLINE_NAME_CHARS:
+            no_limit = _no_limit_set(green_max, yellow_max)
+            if len(entries) > 1 or no_limit:
+                # Without limits the unit stays beside the parameter
+                # ("Chloride (mg/L): no limit set — black").
+                named = _parameter_with_unit(parameter, unit) if no_limit else parameter
+                if len(named) > _THRESHOLD_KEY_INLINE_NAME_CHARS and not no_limit:
                     # A long name takes its own row (wrapped to at most two
                     # lines) so the band text under it never runs past the frame.
-                    name = fit_label(parameter, max_chars=LEGEND_LABEL_MAX_CHARS)
+                    name = fit_label(named, max_chars=LEGEND_LABEL_MAX_CHARS)
                     parts.append(TextArea(f"{name}:", textprops=text_props))
                     rows.append(HPacker(children=parts, align="baseline", pad=0, sep=3))
                     parts = []
                 else:
-                    parts.append(TextArea(f"{parameter}:", textprops=text_props))
+                    parts.append(TextArea(f"{named}:", textprops=text_props))
+            if no_limit:
+                parts.append(TextArea("no limit set —", textprops=text_props))
+                parts.append(
+                    TextArea("black", textprops={**text_props, "color": CHEMISTRY_LABEL_BLACK, "fontweight": "bold"})
+                )
+                rows.append(HPacker(children=parts, align="baseline", pad=0, sep=3))
+                continue
             bands = _shown_threshold_bands(green_max, yellow_max)
             if parameter in inconclusive:
                 bands = bands + _inconclusive_band(green_max)

@@ -13,10 +13,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from app_identity import APP_NAME, COPYRIGHT_NOTICE, CREATED_BY
-from export_framing import sanitize_filename_stem
+from export_framing import ExportFramingConfig, sanitize_filename_stem
 from models import Collar, Lithology, ScreenInterval, Transect
 from projection import (
-    DEFAULT_OFFSET_WARNING_M,
     select_and_order_holes_near_transect,
 )
 
@@ -388,7 +387,7 @@ def screen_interval_warnings(
     return [f"No screen interval for transect hole(s): {', '.join(missing)}"]
 
 
-def build_export_framing_from_mapping(values: dict[str, object]) -> "ExportFramingConfig":
+def build_export_framing_from_mapping(values: dict[str, object]) -> ExportFramingConfig:
     """Construct export framing from sidebar/session values."""
     from export_framing import ExportFramingConfig
 

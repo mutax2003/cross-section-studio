@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import textwrap
+from collections.abc import Sequence
 from io import BytesIO
-from typing import Sequence
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -12,6 +12,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 
 from app_identity import APP_NAME, AUTHOR, COPYRIGHT_NOTICE, ORGANIZATION
+from export_framing import PAGE_FIGSIZE_IN
 from renderer import CrossSectionRenderer
 from stratigraphy import GeologicalPolygon
 
@@ -56,6 +57,36 @@ LETTER_LANDSCAPE_IN = (11.0, 8.5)
 _PAGE_MARGIN_IN = 0.75
 # Rough average glyph width as a share of the font size (DejaVu Sans).
 _CHAR_WIDTH_EM = 0.56
+
+
+def _pdf_first_page_size_in(pdf_bytes: bytes | None) -> tuple[float, float] | None:
+    """Width x height (inches) of the first page of ``pdf_bytes``; None if unreadable."""
+    if not pdf_bytes:
+        return None
+    try:
+        from pypdf import PdfReader
+
+        box = PdfReader(BytesIO(pdf_bytes)).pages[0].mediabox
+        return float(box.width) / 72.0, float(box.height) / 72.0
+    except Exception:  # pypdf missing or an unreadable page: keep the default
+        return None
+
+
+def text_page_size_for(figure_page_in: tuple[float, float] | None) -> tuple[float, float]:
+    """Sheet for the QA notes / summary pages that follow a figure page.
+
+    A figure on a paper sheet (letter / tabloid, either orientation) gets
+    its text pages on that same sheet: a tabloid figure was followed by a
+    letter QA page. A tight / auto-sized figure page (no paper size) gets
+    letter in its own orientation.
+    """
+    if figure_page_in is None:
+        return LETTER_LANDSCAPE_IN
+    width, height = figure_page_in
+    for paper in PAGE_FIGSIZE_IN.values():
+        if abs(width - paper[0]) < 0.05 and abs(height - paper[1]) < 0.05:
+            return float(paper[0]), float(paper[1])
+    return LETTER_LANDSCAPE_IN if width >= height else (LETTER_LANDSCAPE_IN[1], LETTER_LANDSCAPE_IN[0])
 
 
 def _wrap(text: str, *, fontsize: float, width_in: float) -> list[str]:
@@ -117,8 +148,10 @@ def build_report_summary_pdf(
     *,
     lithology_codes: Sequence[str] | None = None,
     qa_lines: Sequence[str] = (),
+    page_size_in: tuple[float, float] = LETTER_LANDSCAPE_IN,
 ) -> bytes:
-    """Letter landscape page(s) with title, metadata, lithology list, and QA notes."""
+    """Page(s) with title, metadata, lithology list, and QA notes (letter landscape
+    unless ``page_size_in`` matches the figure page)."""
     bold: dict[str, object] = {"fontweight": "bold"}
     blocks: list[tuple[str, float, dict[str, object], float]] = [
         (f"{APP_NAME} \u2014 Report Summary", 14.0, bold, 0.0),
@@ -133,11 +166,16 @@ def build_report_summary_pdf(
     if qa_lines:
         blocks.append(("QA notes:", 10.0, bold, 0.0))
         blocks.extend(_bullets(list(qa_lines), fontsize=8.5))
-    return _text_pages_pdf(blocks)
+    return _text_pages_pdf(blocks, page_size_in=page_size_in)
 
 
-def build_qa_notes_pdf(renderer: CrossSectionRenderer, qa_lines: Sequence[str]) -> bytes:
-    """Letter landscape QA notes page for a single-sheet (consulting) figure."""
+def build_qa_notes_pdf(
+    renderer: CrossSectionRenderer,
+    qa_lines: Sequence[str],
+    *,
+    page_size_in: tuple[float, float] = LETTER_LANDSCAPE_IN,
+) -> bytes:
+    """QA notes page for a single-sheet (consulting) figure, on ``page_size_in``."""
     bold: dict[str, object] = {"fontweight": "bold"}
     blocks: list[tuple[str, float, dict[str, object], float]] = [
         ("QA notes", 14.0, bold, 0.0),
@@ -151,7 +189,7 @@ def build_qa_notes_pdf(renderer: CrossSectionRenderer, qa_lines: Sequence[str]) 
         ),
     ]
     blocks.extend(_bullets(list(qa_lines)))
-    return _text_pages_pdf(blocks)
+    return _text_pages_pdf(blocks, page_size_in=page_size_in)
 
 
 def assemble_section_pdf(
@@ -166,13 +204,17 @@ def assemble_section_pdf(
     Section sheet / Quick preview: the figure page plus the summary page.
     Consulting styles (one client sheet): the figure page, plus a QA notes
     page only when there are notes (``qa_lines`` is empty when "Include QA
-    notes (PDF)" is off).
+    notes (PDF)" is off). Text pages use the figure page's sheet and
+    orientation (``text_page_size_for``).
     """
     if renderer.profile.layout == "consulting_section":
         notes = [line for line in qa_lines if str(line).strip()]
         if not notes:
             return section_page_pdf
-        return _merge_pdf_pages([section_page_pdf, build_qa_notes_pdf(renderer, notes)])
+        page_size = text_page_size_for(_pdf_first_page_size_in(section_page_pdf))
+        return _merge_pdf_pages(
+            [section_page_pdf, build_qa_notes_pdf(renderer, notes, page_size_in=page_size)]
+        )
     return export_section_pdf(
         renderer,
         [],
@@ -267,5 +309,6 @@ def export_section_pdf(
         renderer,
         lithology_codes=lithology_codes,
         qa_lines=qa_lines,
+        page_size_in=text_page_size_for(_pdf_first_page_size_in(page1)),
     )
     return _merge_pdf_pages([page1, summary])

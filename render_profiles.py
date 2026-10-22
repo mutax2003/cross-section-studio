@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
 from typing import Literal
 
@@ -22,21 +23,46 @@ ChemistryColorMode = Literal["black", "red", "threshold"]
 ChemistryLabelStyle = Literal["strip", "plain", "box", "dot", "stroke"]
 
 
-# Threshold-mode bands when no limits are given (the Configure step's
-# defaults): green <= 100, orange 100-250, red > 250.
+# The Configure step's starting bands (green <= 100, orange 100-250, red >
+# 250). The app seeds them into its threshold editor; the engine no longer
+# applies them to a parameter that has no limit at all (see below).
 DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX = 100.0
 DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX = 250.0
+# "No limit set": a parameter with neither limit (no own entry, no sheet-wide
+# pair) resolves to NaN limits, which ``render_theme.chemistry_label_color``
+# prints black and the threshold key states as "no limit set". A generic
+# 100 / 250 band coloured Benzene (mg/L) by chloride-scale limits.
+NO_CHEMISTRY_LIMIT = float("nan")
+
+
+def chemistry_limit_value(limit: float | None) -> float | None:
+    """A limit as a float, or ``None`` when it is blank / "no limit set" (NaN)."""
+    if limit is None:
+        return None
+    value = float(limit)
+    return None if math.isnan(value) else value
+
+
+def chemistry_limits_set(green_max: float | None, yellow_max: float | None) -> bool:
+    """True when a resolved pair carries real limits (not "no limit set")."""
+    return chemistry_limit_value(green_max) is not None and chemistry_limit_value(yellow_max) is not None
 
 
 def resolved_chemistry_thresholds(
     green_max: float | None, yellow_max: float | None
 ) -> tuple[float, float]:
-    """Threshold-mode limits with the Configure defaults filling any gap.
+    """Threshold-mode limits, one given limit completing the other.
 
     A given limit is kept; a missing orange limit never falls below the green
     one (green 300 alone gives orange <= 300, i.e. no orange band), and green
-    never exceeds orange (orange 50 alone gives green <= 50).
+    never exceeds orange (orange 50 alone gives green <= 50); the Configure
+    defaults fill the other side. With *neither* limit the pair is
+    ``NO_CHEMISTRY_LIMIT`` (NaN, NaN): values print black, not by a generic band.
     """
+    green_max = chemistry_limit_value(green_max)
+    yellow_max = chemistry_limit_value(yellow_max)
+    if green_max is None and yellow_max is None:
+        return NO_CHEMISTRY_LIMIT, NO_CHEMISTRY_LIMIT
     if yellow_max is not None:
         yellow = float(yellow_max)
         # The bands must not invert: an orange limit alone below the default
@@ -137,8 +163,9 @@ def resolved_chemistry_thresholds_for(
     no-inversion rules as :func:`resolved_chemistry_thresholds`.
     """
     own_green, own_orange = chemistry_threshold_pair_for(parameter, thresholds)
-    green = own_green if own_green is not None else green_max
-    orange = own_orange if own_orange is not None else yellow_max
+    own_green, own_orange = chemistry_limit_value(own_green), chemistry_limit_value(own_orange)
+    green = own_green if own_green is not None else chemistry_limit_value(green_max)
+    orange = own_orange if own_orange is not None else chemistry_limit_value(yellow_max)
     return resolved_chemistry_thresholds(green, orange)
 
 

@@ -126,8 +126,8 @@ def test_chart_collar_rl_rides_in_the_header_box() -> None:
     try:
         texts = [t.get_text() for ax in figure.axes for t in ax.texts]
         headers = [t for t in texts if t.startswith("BH-01")]
-        assert headers and "100.0 m RL" in headers[0]
-        assert not any(t.endswith("m RL") and not t.startswith("BH-") for t in texts)
+        assert headers and "100.0 masl" in headers[0]
+        assert not any(t.endswith("masl") and not t.startswith("BH-") for t in texts)
     finally:
         import matplotlib.pyplot as plt
 

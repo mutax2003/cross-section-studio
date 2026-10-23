@@ -51,7 +51,10 @@ jobs:
           $notes = "docs/release-notes-$version.md"
           if (-not (Test-Path $notes)) { $notes = $null }
           $assets = @("dist/CrossSectionStudio-win64-v$version.zip", "dist/release-manifest.json")
-          gh release view $tag *> $null
+          # A missing release makes gh exit 1; with pwsh's native-command
+          # error preference that would abort the step, so query the API instead.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $exists = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" --silent 2>$null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag @assets --clobber
           } else {

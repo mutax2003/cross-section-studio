@@ -51,11 +51,17 @@ jobs:
           $notes = "docs/release-notes-$version.md"
           if (-not (Test-Path $notes)) { $notes = $null }
           $assets = @("dist/CrossSectionStudio-win64-v$version.zip", "dist/release-manifest.json")
-          # A missing release makes gh exit 1; with pwsh's native-command
-          # error preference that would abort the step, so query the API instead.
+          # gh release view also finds a draft for the tag (upload into it rather
+          # than creating a second release). A missing release exits 1: keep that
+          # from becoming a terminating error, and tell "not found" apart from a
+          # broken API call so a transient failure never routes into "create".
           $PSNativeCommandUseErrorActionPreference = $false
-          $exists = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" --silent 2>$null
-          if ($LASTEXITCODE -eq 0) {
+          $probe = (gh release view $tag 2>&1 | Out-String)
+          $viewExit = $LASTEXITCODE
+          if ($viewExit -ne 0 -and $probe -notmatch 'release not found|Not Found|HTTP 404') {
+            Write-Error "gh release view $tag failed: $probe"
+          }
+          if ($viewExit -eq 0) {
             gh release upload $tag @assets --clobber
           } else {
             $ghArgs = @("release", "create", $tag) + $assets + @(

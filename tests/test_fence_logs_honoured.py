@@ -31,11 +31,50 @@ from ui_output_presets import OUTPUT_PRESETS
 
 REPO = Path(__file__).resolve().parents[1]
 EPS_FRACTION = 1e-3  # of the spacing to the neighbour on that side
+# "On the hole edge": no fence edge dips enough to cross a contact this close.
+AT_HOLE_FRACTION = 1e-6
+_HOLE_X_TOL_M = 1e-8  # vertices snapped to the 1e-9 m clip grid still sit "on" the hole
+
+
+def _straight_beside_hole(shape, x: float, px: float) -> bool:
+    """No vertex of ``shape`` lies strictly between the hole (``x``) and ``px``, so
+    its edges run straight from the hole edge out to the probe."""
+    lo, hi = sorted((x, px))
+    rings = [shape.exterior, *shape.interiors]
+    return not any(
+        lo < vx < hi and abs(vx - x) > _HOLE_X_TOL_M for ring in rings for vx, _vz in ring.coords
+    )
+
+
+def _drawn_at(polygons, x: float, z: float) -> list[str]:
+    point = Point(x, z)
+    return sorted({p.lithology_code for p in polygons if p.polygon.covers(point)})
 
 
 def _log_mismatches(projected: pd.DataFrame, polygons) -> list[tuple]:
     """``(hole, side, z, logged, drawn)`` wherever the fence beside a hole disagrees
-    with its log (``drawn`` is ``"VOID"`` when nothing covers a logged depth)."""
+    with its log (``drawn`` is ``"VOID"`` when nothing covers a logged depth).
+
+    Each logged depth is probed at ``EPS_FRACTION`` of the spacing out from the
+    hole. A probe at a fixed elevation reads *across* a dipping contact: a contact
+    that leaves the hole at slope ``m`` has moved ``m * EPS_FRACTION * spacing``
+    vertically at the probe, so a sample 5 mm inside a thin unit (10 % of 5 cm)
+    lands in the next unit once ``m`` is a few m/m — a 2 m hole 3 m from a 35 m one,
+    or matched units logged 10 m apart in elevation (round-9 QA: every one of the
+    26 violations in the 5 cm-offset harness, and seeds 12/16/19 here, was exactly
+    this; the fill on the hole edge matched the log in all of them). Such a probe
+    is a *contact dip*, not a contradiction of the log, and is not reported when:
+
+    * on the hole edge (``AT_HOLE_FRACTION`` of the spacing) the fill is exactly
+      the logged unit — the hard invariant, checked for every sample and never
+      relaxed; and
+    * the logged unit's polygon there has no vertex between the hole and the
+      probe, so the probe left it across one straight edge that starts on the
+      hole at the logged contact (a clip notch, a bend vertex or a foreign sliver
+      next to the hole puts a vertex in that range and is still reported); and
+    * nothing else overlaps the logged unit at the probe (the logged unit is not
+      among the drawn ones).
+    """
     xs = projected.groupby("hole_id")["x_profile"].first().to_dict()
     order = sorted(xs.values())
     found = []
@@ -51,18 +90,31 @@ def _log_mismatches(projected: pd.DataFrame, polygons) -> list[tuple]:
             if spacing[side] <= 0.0:
                 continue
             px = x + side * EPS_FRACTION * spacing[side]
+            edge_x = x + side * AT_HOLE_FRACTION * spacing[side]
             if not any(p.polygon.bounds[0] <= px <= p.polygon.bounds[2] for p in nearby):
                 continue
             for row in group.itertuples():
                 if row.top_elevation - row.bottom_elevation < 0.05:
                     continue
+                logged = row.lithology_code
                 for fraction in (0.1, 0.5, 0.9):
                     z = row.top_elevation - fraction * (row.top_elevation - row.bottom_elevation)
-                    drawn = sorted(
-                        {p.lithology_code for p in nearby if p.polygon.covers(Point(px, z))}
-                    )
-                    if drawn != [row.lithology_code]:
-                        found.append((hole, side, round(z, 3), row.lithology_code, drawn or "VOID"))
+                    on_edge = _drawn_at(nearby, edge_x, z)
+                    if on_edge != [logged]:
+                        found.append((hole, side, round(z, 3), logged, on_edge or "VOID"))
+                        continue
+                    drawn = _drawn_at(nearby, px, z)
+                    if drawn == [logged]:
+                        continue
+                    if logged not in drawn:
+                        own = [
+                            p
+                            for p in nearby
+                            if p.lithology_code == logged and p.polygon.covers(Point(edge_x, z))
+                        ]
+                        if all(_straight_beside_hole(p.polygon, x, px) for p in own):
+                            continue  # contact dip
+                    found.append((hole, side, round(z, 3), logged, drawn or "VOID"))
     return found
 
 

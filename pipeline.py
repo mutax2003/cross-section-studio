@@ -66,9 +66,11 @@ from render_profiles import (
     LayoutMode,
     cap_chemistry_parameters,
     chemistry_parameter_cap_note,
+    chemistry_parameter_key,
     is_threshold_style_mode,
     is_two_band_mode,
     normalise_chemistry_thresholds,
+    parse_chemistry_limit,
     profile_for_layout,
     profile_with_elevation_mode,
     resolved_chemistry_limits,
@@ -528,6 +530,15 @@ def build_cross_section(
     if not math.isfinite(track_width_m) or track_width_m <= 0:
         raise ValueError("track_width_m must be a positive finite number")
     _check_render_layout(render_layout)
+    # Before compute_section_geometry: a bad colour mode / limit must not cost
+    # (or cache) a geometry pass first.
+    chemistry_color_mode, chemistry_threshold_green_max, chemistry_threshold_yellow_max = (
+        _check_chemistry_options(
+            chemistry_color_mode, chemistry_threshold_green_max, chemistry_threshold_yellow_max
+        )
+    )
+    if chemistry_thresholds:
+        chemistry_thresholds = normalise_chemistry_thresholds(chemistry_thresholds)
     if groundwater_flow_notes is None:
         groundwater_flow_notes = section_groundwater_flow_notes(
             collars,
@@ -691,6 +702,28 @@ def _cap_notes(notes: Sequence[str], limit: int, summary: str) -> tuple[str, ...
     return tuple(notes[:limit]) + (summary.format(count=len(notes) - limit),)
 
 
+def _canonical_parameter_spellings(
+    readings: Sequence[EnvironmentalReading], parameters: Sequence[str]
+) -> list[EnvironmentalReading]:
+    """Readings of a plotted parameter renamed to its plotted spelling.
+
+    Parameter identity is :func:`render_profiles.chemistry_parameter_key`
+    (trimmed, case-folded), so a workbook with ``Cl`` and ``cl`` rows plots
+    every reading under the one parameter (the first spelling, as Configure
+    lists it). Other readings pass unchanged.
+    """
+    display = {chemistry_parameter_key(name): name for name in parameters}
+    if not display:
+        return list(readings)
+    renamed: list[EnvironmentalReading] = []
+    for reading in readings:
+        name = display.get(chemistry_parameter_key(reading.parameter))
+        if name is not None and reading.parameter != name:
+            reading = reading.model_copy(update={"parameter": name})
+        renamed.append(reading)
+    return renamed
+
+
 def _latest_chemistry_samples(
     readings: Sequence[EnvironmentalReading],
     hole_ids: Sequence[str],
@@ -707,7 +740,7 @@ def _latest_chemistry_samples(
         return tuple(readings), ()
     kept, _all_notes = latest_environmental_readings(readings)
     # Case-insensitive, like the sample grouping (environmental_sample_key).
-    active = {name.strip().casefold() for name in (parameters or ()) if name.strip()}
+    active = {chemistry_parameter_key(name) for name in (parameters or ()) if name.strip()}
     if not active:
         return kept, ()
     on_section = set(hole_ids)
@@ -715,7 +748,7 @@ def _latest_chemistry_samples(
         [
             r
             for r in readings
-            if r.hole_id in on_section and r.parameter.strip().casefold() in active
+            if r.hole_id in on_section and chemistry_parameter_key(r.parameter) in active
         ]
     )
     notes = _cap_notes(
@@ -788,16 +821,27 @@ def _check_chemistry_color_mode(mode: object) -> str | None:
 
 
 def _check_chemistry_limit(value: object, field: str) -> float | None:
-    """A sheet-wide chemistry limit: ``None`` (blank) or a finite number >= 0."""
-    if value is None:
-        return None
-    try:
-        number = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field} must be a number >= 0 (got {value!r})") from exc
-    if not math.isfinite(number) or number < 0:
-        raise ValueError(f"{field} must be a finite number >= 0 (got {value!r})")
-    return number
+    """A sheet-wide chemistry limit: ``None`` for no limit (blank / NaN) or a
+    finite number >= 0; TRUE/FALSE, negative and ±inf are errors.
+
+    Same rules as the per-parameter limits
+    (:func:`render_profiles.parse_chemistry_limit`), so a value accepted in
+    one place is never rejected in the other.
+    """
+    return parse_chemistry_limit(value, field)
+
+
+def _check_chemistry_options(
+    chemistry_color_mode: object,
+    chemistry_threshold_green_max: object,
+    chemistry_threshold_yellow_max: object,
+) -> tuple[str | None, float | None, float | None]:
+    """Validated ``(mode, green_max, yellow_max)``: checked before any geometry is built."""
+    return (
+        _check_chemistry_color_mode(chemistry_color_mode),
+        _check_chemistry_limit(chemistry_threshold_green_max, "chemistry_threshold_green_max"),
+        _check_chemistry_limit(chemistry_threshold_yellow_max, "chemistry_threshold_yellow_max"),
+    )
 
 
 def render_cross_section_from_geometry(
@@ -871,12 +915,10 @@ def render_cross_section_from_geometry(
         raise ValueError("uncertainty_offset_m must be a positive finite number")
     if not math.isfinite(track_width_m) or track_width_m <= 0:
         raise ValueError("track_width_m must be a positive finite number")
-    chemistry_color_mode = _check_chemistry_color_mode(chemistry_color_mode)
-    chemistry_threshold_green_max = _check_chemistry_limit(
-        chemistry_threshold_green_max, "chemistry_threshold_green_max"
-    )
-    chemistry_threshold_yellow_max = _check_chemistry_limit(
-        chemistry_threshold_yellow_max, "chemistry_threshold_yellow_max"
+    chemistry_color_mode, chemistry_threshold_green_max, chemistry_threshold_yellow_max = (
+        _check_chemistry_options(
+            chemistry_color_mode, chemistry_threshold_green_max, chemistry_threshold_yellow_max
+        )
     )
 
     projected = geometry.projected
@@ -923,20 +965,25 @@ def render_cross_section_from_geometry(
     chemistry_cap_notes: tuple[str, ...] = ()
     if dropped_parameters:
         chemistry_cap_notes = (chemistry_parameter_cap_note(plotted_parameters, dropped_parameters),)
-        environmental_parameters = plotted_parameters
-    active_parameters = {
-        name.strip().casefold() for name in (environmental_parameters or ()) if name.strip()
-    }
+    # Trimmed, one spelling per parameter (cap_chemistry_parameters de-duplicates
+    # by chemistry_parameter_key).
+    environmental_parameters = plotted_parameters
+    active_parameters = {chemistry_parameter_key(name) for name in plotted_parameters}
     excluded_chemistry_notes = tuple(
         exclusions.environmental[id(reading)]
         for reading in environmental_readings or ()
         if id(reading) in exclusions.environmental
-        and reading.parameter.strip().casefold() in active_parameters
+        and chemistry_parameter_key(reading.parameter) in active_parameters
     ) + chemistry_cap_notes
     if environmental_readings and exclusions.environmental:
         environmental_readings = [
             r for r in environmental_readings if id(r) not in exclusions.environmental
         ]
+    # One spelling per plotted parameter ("Cl" / "cl" / " CL " are one): every
+    # renderer matches readings to the plotted names.
+    environmental_readings = _canonical_parameter_spellings(
+        environmental_readings or (), plotted_parameters
+    )
     environmental_readings, chemistry_date_notes = _latest_chemistry_samples(
         environmental_readings or (), projected_hole_ids, environmental_parameters
     )
@@ -1107,7 +1154,7 @@ def render_cross_section_from_geometry(
                 {
                     name: pair
                     for name, pair in (render_profile.chemistry_thresholds or {}).items()
-                    if str(name).strip().casefold() in active_parameters
+                    if chemistry_parameter_key(str(name)) in active_parameters
                 },
                 green_max=chemistry_threshold_green_max,
                 orange_max=chemistry_threshold_yellow_max,

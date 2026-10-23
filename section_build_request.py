@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from export_framing import ExportFramingConfig
 from models import (
@@ -29,6 +29,7 @@ from render_profiles import (
     ColumnHeaderDetail,
     LayoutMode,
     normalise_chemistry_thresholds,
+    parse_chemistry_limit,
 )
 
 ElevationMode = Literal["absolute", "relative"]
@@ -73,10 +74,10 @@ class SectionBuildRequest(BaseModel, frozen=True):
     water_line_solid: bool | None = None
     legend_ncol: int | None = None
     chemistry_color_mode: ChemistryColorMode | None = None
-    # Sheet-wide limits: blank, or a finite number >= 0 (NaN / inf are
-    # rejected — NaN is the engine's "no limit set" marker and must not arrive
-    # by request; per-parameter limits in ``chemistry_thresholds`` reject
-    # negatives the same way).
+    # Sheet-wide limits: no limit (None / blank / NaN, stored as None) or a
+    # finite number >= 0; TRUE/FALSE, negatives and ±inf are rejected — the
+    # same rules as build_cross_section and the per-parameter limits in
+    # ``chemistry_thresholds`` (render_profiles.parse_chemistry_limit).
     chemistry_threshold_green_max: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     chemistry_threshold_yellow_max: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     # Per-parameter limits (parameter -> (green_max, orange_max), in that
@@ -106,6 +107,21 @@ class SectionBuildRequest(BaseModel, frozen=True):
     # well, see ``pipeline.section_groundwater_flow_notes``) — never geometry,
     # so it stays out of ``geometry_cache_payload``.
     groundwater_flow_notes: tuple[str, ...] = ()
+
+    @field_validator("chemistry_color_mode", mode="before")
+    @classmethod
+    def _normalise_chemistry_color_mode(cls, value: object) -> object:
+        # Trimmed and case-folded like build_cross_section, so ' BLACK_RED ' /
+        # 'Threshold' are accepted by both entry points (the Literal then
+        # rejects anything that is still not a mode, '' included).
+        return value.strip().casefold() if isinstance(value, str) else value
+
+    @field_validator(
+        "chemistry_threshold_green_max", "chemistry_threshold_yellow_max", mode="before"
+    )
+    @classmethod
+    def _check_sheet_wide_limit(cls, value: object, info: ValidationInfo) -> float | None:
+        return parse_chemistry_limit(value, info.field_name or "chemistry limit")
 
     @field_validator("chemistry_thresholds", mode="before")
     @classmethod

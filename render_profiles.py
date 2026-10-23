@@ -128,20 +128,37 @@ def chemistry_parameter_key(parameter: str) -> str:
     return str(parameter or "").strip().casefold()
 
 
-def _optional_limit(value: object) -> float | None:
+def parse_chemistry_limit(value: object, field: str = "threshold limit") -> float | None:
+    """One chemistry limit as typed (sheet-wide or per parameter), or ``None`` for no limit.
+
+    Blank (``None``, empty / whitespace text) and NaN (a blank spreadsheet
+    cell, the engine's "no limit set") mean no limit. A TRUE/FALSE value,
+    text that is not a number, a negative number and ±inf are errors naming
+    ``field``. The sheet-wide pair (``pipeline``, ``SectionBuildRequest``) and
+    the per-parameter map (:func:`normalise_chemistry_thresholds`) share it, so
+    they accept and reject the same values.
+    """
+    from models import reject_bool_number  # models is heavy; render_profiles stays light
+
     if value is None:
         return None
+    reject_bool_number(value, field)
     if isinstance(value, str):
         text = value.strip()
         if not text:
             return None
-        value = float(text)
-    number = float(value)  # type: ignore[arg-type]
-    if number != number:  # NaN from a blank spreadsheet cell
+        value = text
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a number >= 0 (got {value!r})") from exc
+    limit = chemistry_limit_value(number)
+    if limit is None:
         return None
-    if number < 0:
-        raise ValueError(f"threshold limits must be >= 0 (got {number:g})")
-    return number
+    if math.isinf(limit) or limit < 0:
+        raise ValueError(f"{field} must be a finite number >= 0 (got {value!r})")
+    return limit
+
 
 
 def normalise_chemistry_thresholds(
@@ -168,7 +185,8 @@ def normalise_chemistry_thresholds(
             pair = tuple(raw_pair or ())  # type: ignore[arg-type]
             green = pair[0] if len(pair) > 0 else None
             orange = pair[1] if len(pair) > 1 else None
-        green_limit, orange_limit = _optional_limit(green), _optional_limit(orange)
+        green_limit = parse_chemistry_limit(green, f"{name} green_max")
+        orange_limit = parse_chemistry_limit(orange, f"{name} orange_max")
         if green_limit is None and orange_limit is None:
             continue
         canonical = seen.setdefault(key, name)
@@ -333,6 +351,43 @@ def cap_chemistry_parameters(
             by_key.setdefault(chemistry_parameter_key(text), text)
     ordered = tuple(by_key.values())
     return ordered[:limit], ordered[limit:]
+
+
+def chemistry_parameter_spellings(names: Iterable[object]) -> dict[str, tuple[str, ...]]:
+    """``{first spelling: every distinct spelling}`` per parameter, in first-seen order.
+
+    Parameters are one when their :func:`chemistry_parameter_key` matches
+    (``"Cl"``, ``"cl"`` and ``" CL "``); the first (trimmed) spelling names the
+    parameter in Configure, on the figure and in Validate.
+    """
+    first: dict[str, str] = {}
+    spellings: dict[str, dict[str, None]] = {}
+    for raw in names:
+        text = str(raw or "").strip()
+        key = chemistry_parameter_key(text)
+        if not key:
+            continue
+        display = first.setdefault(key, text)
+        spellings.setdefault(display, {})[text] = None
+    return {display: tuple(variants) for display, variants in spellings.items()}
+
+
+def merged_parameter_spelling_note(names: Iterable[object]) -> str | None:
+    """Validate ``Info:`` line naming parameters typed in several spellings, or ``None``."""
+    merged = [
+        (display, variants)
+        for display, variants in chemistry_parameter_spellings(names).items()
+        if len(variants) > 1
+    ]
+    if not merged:
+        return None
+    parts = "; ".join(
+        f"{', '.join(repr(v) for v in variants)} → '{display}'" for display, variants in merged
+    )
+    return (
+        "Info: Parameter names that differ only in case or spaces are one parameter "
+        f"(listed and plotted under the first spelling): {parts}."
+    )
 
 
 def chemistry_parameter_cap_note(plotted: Sequence[str], dropped: Sequence[str]) -> str:

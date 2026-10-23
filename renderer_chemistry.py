@@ -18,6 +18,7 @@ from models import EnvironmentalReading
 from render_profiles import (
     cap_chemistry_parameters,
     chemistry_parameter_cap_note,
+    chemistry_parameter_key,
     is_threshold_style_mode,
     resolved_chemistry_limits_for,
 )
@@ -435,8 +436,11 @@ class RendererChemistryMixin:
             self.chemistry_cap_notes.append(
                 chemistry_parameter_cap_note(plotted_parameters, dropped_parameters)
             )
-        active_parameters = set(plotted_parameters)
-        if not active_parameters:
+        # Parameter identity is chemistry_parameter_key (trimmed, case-folded):
+        # "Cl" and "cl" readings plot as one parameter under the first
+        # spelling, the same key the cap, the limits and the unit grouping use.
+        display_by_key = {chemistry_parameter_key(name): name for name in plotted_parameters}
+        if not display_by_key:
             return
 
         use_segments = self.profile.parameter_interpolate_segments
@@ -454,9 +458,12 @@ class RendererChemistryMixin:
         by_parameter: dict[str, list[EnvironmentalReading]] = {}
         profile_holes = set(profile_lookup)
         for reading in self.environmental_readings:
-            if reading.parameter not in active_parameters or reading.hole_id not in profile_holes:
+            name = display_by_key.get(chemistry_parameter_key(reading.parameter))
+            if name is None or reading.hole_id not in profile_holes:
                 continue
-            by_parameter.setdefault(reading.parameter, []).append(reading)
+            if reading.parameter != name:
+                reading = reading.model_copy(update={"parameter": name})
+            by_parameter.setdefault(name, []).append(reading)
         # One unit per parameter on the figure: readings in another,
         # convertible unit are shown (and threshold-coloured) in the
         # parameter's main unit; unconvertible ones print with their own unit
@@ -505,9 +512,7 @@ class RendererChemistryMixin:
         series_colors = parameter_series_colors(by_parameter)
         # Marker shape per parameter, in Configure order: the first keeps the
         # Configure marker, the rest take distinct shapes (see the cycle).
-        configured_order = [
-            name for name in dict.fromkeys(n.strip() for n in self.environmental_parameters) if name in by_parameter
-        ]
+        configured_order = [name for name in plotted_parameters if name in by_parameter]
         configured_order += sorted(name for name in by_parameter if name not in configured_order)
         series_markers = parameter_series_markers(configured_order, base_marker)
         several_parameters = len(by_parameter) >= 2

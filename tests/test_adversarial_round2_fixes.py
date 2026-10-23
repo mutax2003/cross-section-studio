@@ -210,7 +210,7 @@ def test_chemistry_color_mode_is_trimmed_and_case_folded(given: str, normalised:
     assert result.svg_bytes == reference.svg_bytes
 
 
-@pytest.mark.parametrize("limit", [-1.0, -0.0001, math.nan, math.inf, -math.inf])
+@pytest.mark.parametrize("limit", [-1.0, -0.0001, math.inf, -math.inf])
 @pytest.mark.parametrize(
     "field", ["chemistry_threshold_green_max", "chemistry_threshold_yellow_max"]
 )

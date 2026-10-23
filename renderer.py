@@ -108,6 +108,22 @@ if TYPE_CHECKING:
 # Salted element ids (with no <dc:date>) make identical inputs give identical SVG.
 mpl.rcParams["svg.hashsalt"] = "cross-section-studio"
 
+# rcParams the export reads at draw / save time (font sizes of text added
+# while framing, hatch strokes, SVG/PDF font embedding, path simplification,
+# savefig defaults). ``rc_context`` restores rcParams on exit but another
+# thread writing ``plt.rcParams[...]`` meanwhile leaked into the bytes, so
+# the whole export runs with these pinned: the process values at import (the
+# ones every export is compared against) plus the render typography/hatch keys.
+_EXPORT_RC_PREFIXES = ("savefig.", "pdf.", "svg.", "path.", "mathtext.")
+_EXPORT_RC_KEYS = frozenset(
+    {"agg.path.chunksize", "text.antialiased", "text.hinting", "text.hinting_factor"}
+)
+_EXPORT_RC_BASELINE: dict[str, object] = {
+    key: dict.__getitem__(mpl.rcParams, key)  # no deprecation lookups
+    for key in dict.keys(mpl.rcParams)
+    if key.startswith(_EXPORT_RC_PREFIXES) or key in _EXPORT_RC_KEYS
+}
+
 logger = logging.getLogger(__name__)
 
 # Wider-spacing / offset zones: pale amber wash over the fence between a
@@ -2040,6 +2056,15 @@ class CrossSectionRenderer(
             return int(self.export_framing.export_dpi)
         return default
 
+    def _export_rc(self) -> dict[str, object]:
+        """rcParams pinned for the export path (see ``_EXPORT_RC_BASELINE``)."""
+        return {
+            **_EXPORT_RC_BASELINE,
+            "hatch.color": HATCH_LINE_COLOR,
+            "hatch.linewidth": 0.65,
+            **export_font_rc(self.profile.export_font_family, self.profile.export_font_size),
+        }
+
     def _savefig_format(
         self,
         fig: Figure,
@@ -2059,7 +2084,7 @@ class CrossSectionRenderer(
         # SVG text: outlines by default (identical on every machine); editable
         # <text> on request so labels can be nudged in Illustrator / Inkscape.
         editable = fmt == "svg" and bool(getattr(self.export_framing, "svg_editable_text", False))
-        with mpl.rc_context({"svg.fonttype": "none" if editable else "path"}):
+        with mpl.rc_context({**self._export_rc(), "svg.fonttype": "none" if editable else "path"}):
             fig.savefig(buffer, **kwargs)
         buffer.seek(0)
         payload = buffer.getvalue()
@@ -2099,23 +2124,26 @@ class CrossSectionRenderer(
         return capped
 
     def to_svg_bytes(self, fig: Figure) -> bytes:
-        self._prepare_export_figure(fig)
-        return self._savefig_format(fig, fmt="svg")
+        with mpl.rc_context(self._export_rc()):
+            self._prepare_export_figure(fig)
+            return self._savefig_format(fig, fmt="svg")
 
     def to_png_bytes(self, fig: Figure, *, dpi: int | None = None) -> bytes:
-        self._prepare_export_figure(fig)
-        apply_draft_watermark(fig, self.export_framing)
-        return self._savefig_format(
-            fig,
-            fmt="png",
-            dpi=dpi if dpi is not None else self._export_dpi(),
-        )
+        with mpl.rc_context(self._export_rc()):
+            self._prepare_export_figure(fig)
+            apply_draft_watermark(fig, self.export_framing)
+            return self._savefig_format(
+                fig,
+                fmt="png",
+                dpi=dpi if dpi is not None else self._export_dpi(),
+            )
 
     def to_pdf_bytes(self, fig: Figure) -> bytes:
         """Single-page vector PDF of the rendered figure."""
-        self._prepare_export_figure(fig)
-        apply_draft_watermark(fig, self.export_framing)
-        return self._savefig_format(fig, fmt="pdf")
+        with mpl.rc_context(self._export_rc()):
+            self._prepare_export_figure(fig)
+            apply_draft_watermark(fig, self.export_framing)
+            return self._savefig_format(fig, fmt="pdf")
 
     def export_figure_bytes(
         self,
@@ -2133,6 +2161,24 @@ class CrossSectionRenderer(
         """Export the figure; ``append_render_notes`` adds the final (post page
         framing) chemistry-drop and map-scale notes, and the render-time water
         line notes (ground clipping, LNAPL correction), to the PDF QA lines."""
+        with mpl.rc_context(self._export_rc()):
+            return self._export_figure_bytes(
+                figure,
+                export_formats,
+                lithology_codes=lithology_codes,
+                qa_lines=qa_lines,
+                append_render_notes=append_render_notes,
+            )
+
+    def _export_figure_bytes(
+        self,
+        figure: Figure,
+        export_formats: frozenset[str],
+        *,
+        lithology_codes: Sequence[str] | None,
+        qa_lines: Sequence[str],
+        append_render_notes: bool,
+    ) -> tuple[bytes, bytes, bytes]:
         # savefig() draws on demand; an explicit canvas.draw() here doubled render cost.
         # Prefer cheaper formats first so a later failure still leaves cheaper bytes usable.
         ordered = [fmt for fmt in ("svg", "png", "pdf") if fmt in export_formats]

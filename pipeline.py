@@ -61,6 +61,7 @@ from projection import (
 )
 from render_lock import RENDER_LOCK
 from render_profiles import (
+    ChemistryColorMode,
     ChemistryLabelStyle,
     LayoutMode,
     cap_chemistry_parameters,
@@ -769,6 +770,36 @@ def vertical_gradient_qa_notes(
     return tuple(notes)
 
 
+def _check_chemistry_color_mode(mode: object) -> str | None:
+    """``chemistry_color_mode`` as one of :data:`ChemistryColorMode` (trimmed,
+    case-folded), ``None`` for the profile default; anything else is an error.
+
+    The profile is updated with ``model_copy(update=...)``, which skips the
+    Literal, so ``'BLACK_RED'`` / ``'purple_red'`` / ``''`` used to pass through
+    and silently print black values with no banding.
+    """
+    if mode is None:
+        return None
+    valid = get_args(ChemistryColorMode)
+    text = str(mode).strip().casefold()
+    if text not in valid:
+        raise ValueError(f"chemistry_color_mode must be one of {valid} (got {mode!r})")
+    return text
+
+
+def _check_chemistry_limit(value: object, field: str) -> float | None:
+    """A sheet-wide chemistry limit: ``None`` (blank) or a finite number >= 0."""
+    if value is None:
+        return None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a number >= 0 (got {value!r})") from exc
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(f"{field} must be a finite number >= 0 (got {value!r})")
+    return number
+
+
 def render_cross_section_from_geometry(
     geometry: SectionGeometry,
     transect_points: Sequence[tuple[float, float]],
@@ -840,6 +871,13 @@ def render_cross_section_from_geometry(
         raise ValueError("uncertainty_offset_m must be a positive finite number")
     if not math.isfinite(track_width_m) or track_width_m <= 0:
         raise ValueError("track_width_m must be a positive finite number")
+    chemistry_color_mode = _check_chemistry_color_mode(chemistry_color_mode)
+    chemistry_threshold_green_max = _check_chemistry_limit(
+        chemistry_threshold_green_max, "chemistry_threshold_green_max"
+    )
+    chemistry_threshold_yellow_max = _check_chemistry_limit(
+        chemistry_threshold_yellow_max, "chemistry_threshold_yellow_max"
+    )
 
     projected = geometry.projected
     polygons = geometry.polygons

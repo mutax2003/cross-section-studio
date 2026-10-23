@@ -235,17 +235,23 @@ def cap_chemistry_parameters(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """``(plotted, dropped)`` parameter names for one section.
 
-    Names are trimmed and de-duplicated in the order given (Configure order);
-    at most ``limit`` (default :data:`models.MAX_CHEMISTRY_PARAMETERS`) are
-    plotted, the rest are named in a QA note by the caller.
+    Names are trimmed and de-duplicated in the order given (Configure order)
+    by :func:`chemistry_parameter_key` (``"Cl"`` and ``" cl"`` are one
+    parameter; the first spelling is kept), the same key thresholds and
+    readings match on. At most ``limit`` (default
+    :data:`models.MAX_CHEMISTRY_PARAMETERS`) are plotted, the rest are named
+    in a QA note by the caller.
     """
     if limit is None:
         from models import MAX_CHEMISTRY_PARAMETERS
 
         limit = MAX_CHEMISTRY_PARAMETERS
-    ordered = tuple(
-        dict.fromkeys(str(name).strip() for name in (parameters or ()) if str(name).strip())
-    )
+    by_key: dict[str, str] = {}
+    for name in parameters or ():
+        text = str(name).strip()
+        if text:
+            by_key.setdefault(chemistry_parameter_key(text), text)
+    ordered = tuple(by_key.values())
     return ordered[:limit], ordered[limit:]
 
 

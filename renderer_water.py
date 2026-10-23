@@ -1170,9 +1170,10 @@ def _prefer_clear_spots(
 
     A leader that would cross a groundwater line (the value parked on the
     far side of the line from its sample) is the worst case: such a spot is
-    used only when every free spot has one. A spot near the sample whose box
-    touches the line beats it (QA round 8: values leadered 6-12 m down,
-    across the water line, while room beside the sample was free).
+    used only when every free spot has one; a spot near the sample whose box
+    touches the line beats it (QA round 8). Where the ground leaves no free
+    spot beside the sample above the line (a sample at a steep ground apex),
+    every right-of-column spot crosses it and the nearest one is used.
     """
     cand = boxes[idx]
     line_hit = np.zeros(idx.size, dtype=bool)

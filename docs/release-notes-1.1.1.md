@@ -1,6 +1,7 @@
 # Cross Section Studio 1.1.1 — release notes
 
-Chemistry figure follow-ups on top of 1.1.0.
+Chemistry colour modes plus the fixes from a full QA/QC and adversarial review
+of 1.1.0.
 
 ## Chemistry
 
@@ -20,7 +21,47 @@ Chemistry figure follow-ups on top of 1.1.0.
 - **Four parameters per section:** the **Parameters to plot** picker stops at
   four (each with its own marker shape); a longer scripted or batch list plots
   its first four in Configure order and a section note names the rest.
+- **Mixed units are converted, not mis-coloured:** a value reported in a
+  convertible unit (µg/L ↔ mg/L, µg/kg ↔ mg/kg, ppm/ppb) is converted to the
+  parameter's main unit for display and colouring, with a QA note; limits typed
+  on such a row convert with it. Unconvertible units print black with their own
+  unit and a note.
+- Each parameter's marker glyph sits beside its labels, so two parameters on one
+  hole can be told apart.
 
-## QA / QC
+## Geology and groundwater
 
-- QA/QC fixes (uncertainty band and figure parity follow-ups).
+- **Fills always honour the logs:** with *Show layers that end between holes*
+  off, a unit logged in one hole tapers out near that hole instead of being
+  replaced by a neighbour's unit. Short holes between deeper ones are filled
+  below their TD with inferred units (pinch-out styling) instead of a white void;
+  opposing one-hole units meet on a sloping facies boundary (no vertical walls,
+  no crossing polygons).
+- **Inclined holes:** a Deviations row at depth 0 sets the collar orientation; a
+  collar angle with no Deviations rows draws a straight inclined hole; negative
+  angles are read as mining-style dips; depth between survey stations follows
+  the minimum-curvature arc.
+- **Depth (mbgs) mode** draws groundwater as markers only (no connecting lines
+  or gradients) unless the collars share one elevation.
+- Flowing artesian heads keep their measured value at the well; interior valleys
+  are still clipped to ground. LNAPL bands stay visible under water and
+  chemistry markers.
+- Readings far outside their hole (a depth typed in mm, say) are left off the
+  figure with a QA note instead of stretching the axes.
+
+## App and exports
+
+- **Sign out clears everything** the previous user loaded, including the
+  workbook, figures and logos.
+- Two sessions generating at once no longer crash each other.
+- Switching workbooks re-seeds the chemistry parameter selection.
+- QA notes (LNAPL correction, vertical gradients, water-line clipping, flow
+  fit, unit conversions) reach the PDF QA page in Generate, Prepare and batch.
+- Title-block titles wrap instead of being cut off; every page preset keeps a
+  0.25 in margin; the QA page uses the figure's sheet size; axis and VE wording
+  is consistent (`Elevation (masl)`, `5× VERTICAL EXAGGERATION`).
+- Lab flags J, B, E and similar keep a result as detected; U-type flags mean
+  non-detect; R and unknown flags are kept with a warning.
+- Chemistry label placement is 1.5–2× faster with identical output.
+- The desktop updater accepts PyInstaller 6 zips; the Windows build fails
+  loudly on pip or PyInstaller errors and ships without client reference files.

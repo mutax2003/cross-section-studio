@@ -1,5 +1,6 @@
 # PyInstaller version resource for CrossSectionStudio.exe (Properties > Details).
-# Numeric fields track VERSION (1.1.1); keep in step with scripts/build_windows.ps1.
+# Numeric fields track the VERSION file (single source; tests/test_attribution.py
+# asserts VERSION, pyproject.toml and this resource agree).
 VSVersionInfo(
   ffi=FixedFileInfo(
     filevers=(1, 1, 1, 0),

@@ -8,6 +8,10 @@
 4. The "Next: choose holes…" hint stayed after a section was generated.
 5. Lab values left off the figure were only an info-styled note.
 6. File names carried apostrophes; batch sheets dropped the title text.
+7. Switching from a two-band colour mode into thresholds left the stale
+   exceedance limit as "Orange <=" (no orange band, workbook orange_max lost).
+8. Switching Output style to a chemistry style trimmed "Parameters to plot"
+   to chloride and cleared "Interpolate", both persisting after switching back.
 """
 
 from __future__ import annotations
@@ -377,3 +381,82 @@ def test_logout_allowlist_names_the_real_shortcut_setting() -> None:
     from ops_auth import _LOGOUT_KEEP_KEYS
 
     assert SHORTCUTS_ENABLED_KEY in _LOGOUT_KEEP_KEYS
+
+
+# --- 7. Colour-mode switch re-seeds the per-parameter limits -----------------------
+
+
+def _limit_rows(at) -> dict[str, float]:
+    return {n.label: float(n.value) for n in at.number_input if "::" in (n.key or "")}
+
+
+def test_two_band_to_threshold_reseeds_the_orange_limits() -> None:
+    at = _app()
+    at.run()
+    at.file_uploader[0].upload("chem.xlsx", _two_parameter_workbook_bytes()).run()
+    assert not at.exception
+    at.radio(key="chemistry_color_mode_radio").set_value("Black / red (exceedance)").run()
+    assert not at.exception
+    rows = _limit_rows(at)
+    assert rows["Exceedance ≤ — Benzene"] == 0.5 and rows["Exceedance ≤ — Chloride"] == 100.0
+    # The user raises Chloride's exceedance limit; it is a two-band value only.
+    at.number_input(key=[n.key for n in at.number_input if n.label == "Exceedance ≤ — Chloride"][0]).set_value(150.0).run()
+    at.radio(key="chemistry_color_mode_radio").set_value("Green / orange / red thresholds").run()
+    assert not at.exception
+    rows = _limit_rows(at)
+    # Workbook green / orange for Benzene; chloride on its 100 / 250 bands —
+    # not the two-band editor's stale widget state.
+    assert rows["Green ≤ — Benzene"] == 0.5 and rows["Orange ≤ — Benzene"] == 5.0
+    assert rows["Green ≤ — Chloride"] == 100.0 and rows["Orange ≤ — Chloride"] == 250.0
+    assert not any("orange limit should be" in (w.value or "") for w in at.warning)
+    # Back to two-band: the edited exceedance limit is remembered per mode.
+    at.radio(key="chemistry_color_mode_radio").set_value("Green / red (exceedance)").run()
+    assert not at.exception
+    rows = _limit_rows(at)
+    assert rows["Exceedance ≤ — Chloride"] == 150.0 and rows["Exceedance ≤ — Benzene"] == 0.5
+    # The per-parameter rows name one unit (the parameter's main unit).
+    assert "mg/kg" in "\n".join(str(m.value) for m in at.markdown)
+    assert "mg/kg / " not in "\n".join(str(m.value) for m in at.markdown)
+    _generate(at)
+    import json
+
+    request = json.loads(at.session_state["section_build_request_json"])
+    assert request["chemistry_color_mode"] == "green_red"
+    assert request["chemistry_thresholds"] == {"Benzene": [0.5, 0.5], "Chloride": [150.0, 150.0]}
+    # Generated in threshold mode, the figure gets the editor's green / orange
+    # pairs (an orange band), not the exceedance limits.
+    at.radio(key="chemistry_color_mode_radio").set_value("Green / orange / red thresholds").run()
+    _generate(at)
+    request = json.loads(at.session_state["section_build_request_json"])
+    assert request["chemistry_color_mode"] == "threshold"
+    assert request["chemistry_thresholds"] == {"Benzene": [0.5, 5.0], "Chloride": [100.0, 250.0]}
+
+
+# --- 8. Output style switches keep the user's chemistry choices -------------------
+
+
+def test_style_switch_keeps_parameters_and_restores_the_interpolate_toggle() -> None:
+    at = _app()
+    at.run()
+    at.file_uploader[0].upload("chem.xlsx", _two_parameter_workbook_bytes()).run()
+    assert not at.exception
+    assert _chem_params(at) == ["Benzene", "Chloride"]
+    at.toggle(key="parameter_interpolate_segments_toggle").set_value(True).run()
+    assert at.session_state["parameter_interpolate_segments_toggle"] is True
+    for style in ("p2_chemistry_sticks", "chemistry_gw"):
+        at.selectbox(key="output_preset").set_value(style).run()
+        assert not at.exception, style
+        # The chemistry style keeps the user's parameters (it only seeds an empty pick).
+        assert _chem_params(at) == ["Benzene", "Chloride"], style
+        # The style locks interpolation off while it is active ...
+        assert at.session_state["parameter_interpolate_segments_toggle"] is False, style
+        at.selectbox(key="output_preset").set_value("section_sheet").run()
+        assert not at.exception, style
+        # ... and Section sheet gets its own choice back.
+        assert _chem_params(at) == ["Benzene", "Chloride"], style
+        assert at.session_state["parameter_interpolate_segments_toggle"] is True, style
+    # An empty pick is still seeded with the style's chloride-like default.
+    at.multiselect(key="environmental_parameters_multiselect").set_value([]).run()
+    at.selectbox(key="output_preset").set_value("p2_chemistry_sticks").run()
+    assert not at.exception
+    assert _chem_params(at) == ["Chloride"]

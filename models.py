@@ -683,9 +683,14 @@ class EnvironmentalReading(BaseModel, frozen=True):
     unit: str = ""
     value_label: str = ""
     label_color: str = ""  # "", green, red, black or orange (fixed hex each)
-    # Optional per-parameter threshold limits typed in the workbook (same
-    # units as ``value``): green <= green_max < orange <= orange_max < red.
-    # One filled row per parameter seeds the Configure editor.
+    # Optional per-parameter threshold limits typed in the workbook, in this
+    # row's ``unit`` (same as ``value``): green <= green_max < orange <=
+    # orange_max < red. Limits are read in the parameter's *main* unit (the
+    # unit most of its rows use): a row in another unit has its limits
+    # converted from that unit with its value, and a row whose unit cannot
+    # be converted has its limits ignored with a warning
+    # (chemistry_qc.workbook_threshold_limits / harmonize_units). One filled
+    # row per parameter seeds the Configure editor.
     green_max: float | None = None
     orange_max: float | None = None
     # Lab non-detect ("<5"): ``value`` holds the reporting detection limit

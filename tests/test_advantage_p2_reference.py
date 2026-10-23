@@ -138,6 +138,129 @@ def test_advantage_p2_hole_order_and_chainage() -> None:
         assert tuple(c.easting for c in parse_result.collars) == expected.profile_eastings
 
 
+# Stick centres read off the client sheets (data/pdf_extract_p2) against the
+# 10 m grid lines, which sit 590.5 px apart (59.05 px/m) on both figures. The
+# first stick of each section is centred on the 0 m grid line.
+_SHEET_STATIONS: dict[str, tuple[float, ...]] = {
+    "A_A": (0.0, 8.96, 10.96, 15.65, 25.44, 28.74, 32.09),
+    "B_B": (0.0, 8.45, 17.41, 20.61, 25.84, 30.16, 33.02),
+}
+# Total depths read from the sheet sticks (same 59.05 px/m depth axis).
+_SHEET_TOTAL_DEPTHS: dict[str, dict[str, float]] = {
+    "A_A": {
+        "BH23-10": 4.5,
+        "2017-BH05": 4.5,
+        "2017-BH18": 9.0,
+        "2017-BH11 / BH24-11": 13.5,
+        "2017-BH09": 3.0,
+        "2017-BH10": 3.0,
+        "BH23-07": 4.5,
+    },
+    "B_B": {
+        "BH24-12 / HA25-02": 12.0,
+        "BH23-04": 15.0,
+        "2017-BH11 / BH24-11": 13.5,
+        "BH23-03": 12.0,
+        "2017-BH12": 7.5,
+        "BH24-08": 6.0,
+        "BH23-01": 6.0,
+    },
+}
+
+
+@pytest.mark.parametrize("transect_id", sorted(_SHEET_STATIONS))
+def test_advantage_p2_stations_match_client_sheet(transect_id: str) -> None:
+    """Fixture chainage tracks the sheet stick centres to within 0.1 m."""
+    _, parse_result = build_parse_result(transect_id)
+    stations = _SHEET_STATIONS[transect_id]
+    for collar, sheet_station in zip(parse_result.collars, stations, strict=True):
+        assert collar.easting == pytest.approx(sheet_station, abs=0.1), collar.hole_id
+
+
+@pytest.mark.parametrize("transect_id", sorted(_SHEET_TOTAL_DEPTHS))
+def test_advantage_p2_total_depths_match_client_sheet(transect_id: str) -> None:
+    """Collar TD equals the sheet stick bottom; sample depths never pad a digitised stick."""
+    _, parse_result = build_parse_result(transect_id)
+    for collar in parse_result.collars:
+        assert collar.total_depth == pytest.approx(_SHEET_TOTAL_DEPTHS[transect_id][collar.hole_id])
+        bottom = max(
+            lith.to_depth for lith in parse_result.lithologies if lith.hole_id == collar.hole_id
+        )
+        assert bottom == pytest.approx(collar.total_depth), collar.hole_id
+        samples = [
+            r.sample_depth
+            for r in parse_result.environmental_readings
+            if r.hole_id == collar.hole_id
+        ]
+        assert max(samples) <= collar.total_depth, collar.hole_id
+
+
+def _stack(parse_result, hole_id: str) -> tuple[tuple[float, float, str], ...]:
+    rows = sorted(
+        (lith for lith in parse_result.lithologies if lith.hole_id == hole_id),
+        key=lambda lith: lith.from_depth,
+    )
+    return tuple((lith.from_depth, lith.to_depth, lith.lithology_code) for lith in rows)
+
+
+def test_advantage_p2_fig7_logs_match_client_sheet() -> None:
+    """Fig 7 sticks digitised from the sheet legend swatches (were Fill/Clay/... before)."""
+    _, parse_result = build_parse_result("B_B")
+    assert _stack(parse_result, "BH24-12 / HA25-02") == (
+        (0.0, 3.0, "Sand"),
+        (3.0, 7.0, "Sandy Clay"),
+        (7.0, 7.5, "Sand"),
+        (7.5, 12.0, "Sandy Clay"),
+    )
+    assert _stack(parse_result, "BH23-04") == (
+        (0.0, 1.0, "Fill"),
+        (1.0, 2.5, "Sandy Clay"),
+        (2.5, 3.0, "Loamy Sand"),
+        (3.0, 8.75, "Clay Loam"),
+        (8.75, 10.5, "Sandy Clay Loam"),
+        (10.5, 15.0, "Clay"),
+    )
+    assert _stack(parse_result, "2017-BH12") == ((0.0, 4.5, "Clay"), (4.5, 7.5, "Silty Clay"))
+    assert _stack(parse_result, "BH23-01") == (
+        (0.0, 0.3, "Fill"),
+        (0.3, 1.5, "Clay"),
+        (1.5, 2.5, "Sand"),
+        (2.5, 5.5, "Clay"),
+        (5.5, 6.0, "Sand"),
+    )
+
+
+def test_advantage_p2_fig6_logs_match_client_sheet() -> None:
+    """Fig 6 sticks; 2017-BH11 / BH24-11 carries the identical log on both sheets."""
+    _, fig6 = build_parse_result("A_A")
+    _, fig7 = build_parse_result("B_B")
+    assert _stack(fig6, "BH23-10") == ((0.0, 1.25, "Sandy Clay Loam"), (1.25, 4.5, "Clay Loam"))
+    assert _stack(fig6, "2017-BH05") == ((0.0, 2.3, "Sandy Clay"), (2.3, 4.5, "Clay"))
+    assert _stack(fig6, "2017-BH09") == ((0.0, 3.0, "Sandy Clay"),)
+    assert _stack(fig6, "BH23-07") == ((0.0, 0.9, "Fill"), (0.9, 4.5, "Clay Loam"))
+    shared = "2017-BH11 / BH24-11"
+    assert (
+        _stack(fig6, shared)
+        == _stack(fig7, shared)
+        == (
+            (0.0, 2.0, "Sandy Clay"),
+            (2.0, 3.0, "Sand"),
+            (3.0, 10.5, "Sandy Clay"),
+            (10.5, 13.5, "Silty Clay"),
+        )
+    )
+
+
+def test_advantage_p2_digitised_sticks_are_contiguous() -> None:
+    for transect_id in ADVANTAGE_P2_TRANSECTS:
+        _, parse_result = build_parse_result(transect_id)
+        for hole_id in {lith.hole_id for lith in parse_result.lithologies}:
+            stack = _stack(parse_result, hole_id)
+            assert stack[0][0] == 0.0, hole_id
+            for (_, prev_to, _), (next_from, _, _) in zip(stack, stack[1:], strict=False):
+                assert prev_to == next_from, hole_id
+
+
 def test_advantage_p2_no_water_series_in_legend() -> None:
     spec, parse_result = build_parse_result("B_B")
     assert parse_result.water_levels == ()
@@ -159,4 +282,3 @@ def test_advantage_p2_no_water_series_in_legend() -> None:
     text = result.svg_bytes.decode("utf-8", errors="ignore").upper()
     assert "GROUNDWATER LEVEL" not in text
     assert "CHLORIDE" in text
-

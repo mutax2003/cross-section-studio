@@ -133,11 +133,14 @@ def build_parse_result(
     collars: list[Collar] = []
     lithologies: list[Lithology] = []
     for hole_id, easting in zip(spec.hole_ids, spec.profile_eastings, strict=True):
+        digitized = digitized_lithology(transect_id, hole_id)
         total = digitized_total_depth(transect_id, hole_id, fallback=max_depth)
         if chloride_readings:
             hole_cl = [r.sample_depth for r in chloride_readings if r.hole_id == hole_id]
             if hole_cl:
-                total = max(total, max(hole_cl) + 0.5)
+                # A digitised stick already carries the sheet TD; only pad the
+                # last-resort fallback so a sample never hangs below the stick.
+                total = max(total, max(hole_cl) + (0.0 if digitized else 0.5))
         collars.append(
             Collar(
                 hole_id=hole_id,

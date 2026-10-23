@@ -343,29 +343,36 @@ def test_inclined_hole_column_and_markers_follow_interval_x() -> None:
     )
     steps = renderer._deviated_x["B"]
     assert "A" not in renderer._deviated_x and "C" not in renderer._deviated_x
-    step_xs = set(np.round(steps[2], 6))
-    assert len(step_xs) >= 2
-    collar_x = float(steps[2][0])  # first interval x = collar x
-    deep_x = float(steps[2][-1])
-    assert deep_x > collar_x + 1.0
-    marker_xs = {
-        round(float(x), 6)
+    assert float(np.ptp(steps[2])) > 1.0
+    collar_rl = 100.0
+    trace_y, trace_x = renderer._deviated_trace_plot("B", collar_rl)
+    collar_x = float(trace_x[0])
+    head = renderer._hole_elevation_at_depth("B", 12.0, collar_rl)  # TVD of the 12 m reading
+    water_y = float(renderer._plot_y_values(np.asarray([head]), np.asarray([collar_rl]))[0])
+    # The 12 m water level is a measured depth; the survey bends the hole,
+    # so the marker sits on the trace at the head's plot height.
+    marker_xs = [
+        float(x)
         for ax in fig.axes
         for coll in ax.__dict__.get("_css_marker_sets", [])
         if coll._css_marker_kind == "water"
         for x in coll._css_base_offsets[:, 0]
-    }
-    # Column / screen rectangles of B: several x centres (stepped), not one.
-    rect_centres = {
-        round(float(np.mean(path.vertices[:4, 0])), 6)
+    ]
+    column_polys = [
+        path.vertices
         for ax in fig.axes
         for coll in ax.collections
-        if coll.get_zorder() in (8, 9) and hasattr(coll, "get_paths")
+        if coll.get_zorder() == 8 and hasattr(coll, "get_paths")
         for path in coll.get_paths()
-        if len(path.vertices) >= 4
-    }
+        if len(path.vertices) > 5
+    ]
     plt.close(fig)
-    # B's 12 m reading lies on its deep (stepped-out) interval, not at the collar.
-    assert round(deep_x, 6) in marker_xs
-    assert round(collar_x, 6) not in marker_xs
-    assert len(rect_centres & step_xs) >= 2
+    # B's water marker lies on the slanted trace, well off the collar x.
+    on_trace = [x for x in marker_xs if x > collar_x + 1.0]
+    assert on_trace, marker_xs
+    assert abs(on_trace[0] - float(np.interp(water_y, trace_y[::-1], trace_x[::-1]))) < 0.5
+    # B's column is ONE continuous slanted polygon (not stacked rectangles):
+    # its outline spans from the collar x to the deep trace x.
+    assert len(column_polys) == 1
+    xs = column_polys[0][:, 0]
+    assert float(xs.max() - xs.min()) > float(np.ptp(steps[2]))

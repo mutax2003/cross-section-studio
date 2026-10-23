@@ -1166,7 +1166,15 @@ def _prefer_clear_spots(
     check_leaders=True,
 ):
     """Narrow free candidates to those no water line crosses and whose leader
-    clears other labels (each criterion only while some candidate meets it)."""
+    clears other labels (each criterion only while some candidate meets it).
+
+    A leader that would cross a groundwater line (the value parked on the
+    far side of the line from its sample) is the worst case: such a spot is
+    used only when every free spot has one; a spot near the sample whose box
+    touches the line beats it (QA round 8). Where the ground leaves no free
+    spot beside the sample above the line (a sample at a steep ground apex),
+    every right-of-column spot crosses it and the nearest one is used.
+    """
     cand = boxes[idx]
     line_hit = np.zeros(idx.size, dtype=bool)
     if line_segs is not None and line_segs.shape[0]:
@@ -1175,7 +1183,9 @@ def _prefer_clear_spots(
     leader_hits = [np.zeros(idx.size, dtype=bool) for _arr in label_arrs]
     shift = np.maximum(np.maximum(ddx[idx], 0.0), np.abs(ddy[idx]))
     leadered = shift > max(label_height_pt, _CHEM_MIN_LEADER_SHIFT_PT)
-    if check_leaders and leadered.any() and label_arrs[0].shape[0]:
+    crosses_line = np.zeros(idx.size, dtype=bool)
+    segs = None
+    if leadered.any():
         ax0, ay0 = anchor
         ends = np.column_stack((cand[:, 0], 0.5 * (cand[:, 1] + cand[:, 3])))
         vec = ends - np.array([ax0, ay0])
@@ -1184,6 +1194,11 @@ def _prefer_clear_spots(
         trim = np.clip(2.0 * px_per_pt / np.maximum(length, 1e-9), 0.0, 1.0)[:, None]
         starts = np.array([ax0, ay0]) + vec * trim
         segs = np.column_stack((starts, ends))[leadered]
+        if line_segs is not None and line_segs.shape[0]:
+            near_lines = _rows_touching(line_segs, _hull(segs))
+            if near_lines.shape[0]:
+                crosses_line[np.flatnonzero(leadered)] = _segments_cross(segs, near_lines).any(axis=1)
+    if check_leaders and segs is not None and label_arrs[0].shape[0]:
         # Labels outside the leaders' hull cannot be crossed by any of them.
         lo_x = np.minimum(segs[:, 0], segs[:, 2]).min()
         hi_x = np.maximum(segs[:, 0], segs[:, 2]).max()
@@ -1197,7 +1212,13 @@ def _prefer_clear_spots(
                 & (label_arr[:, 1] <= hi_y)
             ]
             leader_hit[np.flatnonzero(leadered)] = _segment_hits_any(segs, near)
-    tiers = [~line_hit & ~leader_hit for leader_hit in leader_hits] + [~line_hit]
+    clear = ~crosses_line
+    tiers = (
+        [clear & ~line_hit & ~leader_hit for leader_hit in leader_hits]
+        + [clear & ~line_hit, clear]
+        + [~line_hit & ~leader_hit for leader_hit in leader_hits]
+        + [~line_hit]
+    )
     for keep in tiers:
         if keep.any():
             return idx[keep]
@@ -2190,6 +2211,23 @@ class RendererWaterMixin:
     ) -> tuple[str, str]:
         relative = self.profile.y_axis_mode == "depth_below_collar"
         datum = "mbgs" if relative else "masl"
+        if not self._legend_upper_case():
+            # Section sheet / chart legends: sentence case beside the
+            # title-case lithology rows (the series name as given).
+            if series_id == "default" and not label:
+                if relative:
+                    return "Groundwater level (mbgs)", "Groundwater depth (mbgs)"
+                return "Groundwater level (masl)", "Groundwater elevation (masl)"
+            display_label = label or default_label or series_id
+            if relative:
+                return (
+                    f"Groundwater level ({display_label})",
+                    f"Groundwater depth {datum} ({display_label})",
+                )
+            return (
+                f"Groundwater level ({display_label})",
+                f"Groundwater elevation masl ({display_label})",
+            )
         if series_id == "default" and not label:
             if relative:
                 return "GROUNDWATER LEVEL (mbgs)", "GROUNDWATER DEPTH (mbgs)"
@@ -2204,6 +2242,11 @@ class RendererWaterMixin:
             f"GROUNDWATER LEVEL ({display_label})",
             f"GROUNDWATER ELEVATION masl ({display_label})",
         )
+
+    def _legend_upper_case(self) -> bool:
+        """Consulting title-block legends are upper case; the section sheet
+        and chart legends follow their title-case lithology rows."""
+        return str(getattr(self.profile, "layout", "")) == "consulting_section"
 
     def _water_status_note(self, ax, hole_id: str, xy: tuple[float, float], text: str) -> None:
         """One NM / DRY note per hole: a second status merges into it ("DRY / NM")
@@ -3051,7 +3094,9 @@ class RendererWaterMixin:
 
     def _column_extra_obstacle_boxes(self, fig) -> list:
         """Display boxes of inclined holes' column pieces away from the collar x
-        (over their own height; the top / bottom piece runs to the frame)."""
+        (over their own height; the top / bottom piece runs to the frame),
+        plus the LNAPL bands (grown to their drawn minimum size): a value or
+        water number printed over a band hid it (QA round 8)."""
         boxes = []
         for ax, x0, x1, y_lo, y_hi in getattr(self, "_column_extra_spans", None) or []:
             lim0, lim1 = ax.get_ylim()
@@ -3061,6 +3106,28 @@ class RendererWaterMixin:
                 continue
             (ax0, ay0), (ax1, ay1) = ax.transData.transform([[x0, lo], [x1, hi]])
             boxes.append(Bbox.from_extents(min(ax0, ax1), min(ay0, ay1), max(ax0, ax1), max(ay0, ay1)))
+        boxes += self._lnapl_band_boxes(fig)
+        return boxes
+
+    @staticmethod
+    def _lnapl_band_boxes(fig) -> list:
+        """Display boxes of the drawn LNAPL bands (``MinSizeBandCollection``)."""
+        renderer = fig.canvas.get_renderer()
+        min_half = 0.5 * renderer.points_to_pixels(
+            np.asarray([_LNAPL_MIN_WIDTH_PT, _LNAPL_MIN_HEIGHT_PT], dtype=float)
+        )
+        boxes = []
+        for ax in fig.axes:
+            for band in ax.collections:
+                data_boxes = getattr(band, "_data_boxes", None)
+                if band.get_gid() != "lnapl_band" or data_boxes is None or not band.get_visible():
+                    continue
+                lo = ax.transData.transform(data_boxes[:, :2])
+                hi = ax.transData.transform(data_boxes[:, 2:])
+                centre = 0.5 * (lo + hi)
+                half = np.maximum(0.5 * np.abs(hi - lo), min_half)
+                for (cx, cy), (hx, hy) in zip(centre, half, strict=True):
+                    boxes.append(Bbox.from_extents(cx - hx, cy - hy, cx + hx, cy + hy))
         return boxes
 
     def _column_obstacle_boxes(self, fig) -> list:
@@ -3695,6 +3762,11 @@ class RendererWaterMixin:
             height = abs(float(top_y) - float(bottom_y))
             if height <= 1e-9:
                 continue
+            if getattr(self, "_deviated_x", None):
+                # Surveyed holes: the band sits on the trace at its depth.
+                x_profile = self._deviated_x_at(
+                    str(level.hole_id), float(collar_rl), 0.5 * (float(top_y) + float(bottom_y)), float(x_profile)
+                )
             x_left.append(float(x_profile) - half)
             y_low.append(min(float(top_y), float(bottom_y)))
             heights.append(height)
@@ -3767,7 +3839,8 @@ class RendererWaterMixin:
             labels.append(ARTESIAN_LEGEND_LABEL)
         if getattr(self, "gradient_labels_drawn", False):
             handles.append(SampleTextKey(GRADIENT_KEY_SAMPLE, self.water_series_legend[0]["color"]))
-            labels.append(GRADIENT_LEGEND_LABEL.split(" = ", 1)[1].upper())
+            gradient_label = GRADIENT_LEGEND_LABEL.split(" = ", 1)[1]
+            labels.append(gradient_label.upper() if self._legend_upper_case() else gradient_label)
         key = Legend(
             ax,
             handles,
@@ -3794,10 +3867,11 @@ class RendererWaterMixin:
         lines = []
         for entry in self.water_series_legend:
             lines.append(entry["level_label"])
+        upper = self._legend_upper_case()
         if getattr(self, "lnapl_drawn", False):
-            lines.append(LNAPL_LEGEND_LABEL.upper())
+            lines.append(LNAPL_LEGEND_LABEL.upper() if upper else LNAPL_LEGEND_LABEL)
         if getattr(self, "artesian_drawn", False):
-            lines.append(ARTESIAN_LEGEND_LABEL.upper())
+            lines.append(ARTESIAN_LEGEND_LABEL.upper() if upper else ARTESIAN_LEGEND_LABEL)
         if getattr(self, "gradient_labels_drawn", False):
             lines.append(GRADIENT_LEGEND_LABEL)
         ax.text(

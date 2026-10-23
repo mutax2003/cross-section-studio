@@ -77,7 +77,9 @@ from renderer_common import (
     PinchOutKey,
     RendererGeometryMixin,
     SampleTextKey,
+    UncertaintyZoneKey,
     VECaptionAnnotation,
+    _measure_header_extent,
     add_ve_caption,
     apply_ve_aspect,
     below_axes_anchor,
@@ -129,6 +131,37 @@ logger = logging.getLogger(__name__)
 # hole pair past the thresholds, keyed in the outside legend only when drawn.
 UNCERTAINTY_ZONE_ALPHA = 0.28
 UNCERTAINTY_LEGEND_LABEL = "Wider hole spacing (interpretation less certain)"
+# The amber tint under the fence fills was near-invisible over sand / clay
+# (QA round 8): a sparse grey diagonal hatch with a dashed outline is laid
+# over the fence as well (low alpha, so the lithology stays readable), and
+# the legend swatch carries the same hatch and outline.
+# Back-slanted: "/" is the Silty Clay / Silt hatch and read as lithology.
+UNCERTAINTY_HATCH = "\\"
+UNCERTAINTY_HATCH_COLOR = "#6B7280"
+UNCERTAINTY_HATCH_ALPHA = 0.55
+UNCERTAINTY_OUTLINE_STYLE = (0, (4.0, 2.5))
+UNCERTAINTY_OVERLAY_ZORDER = 2.6
+# Outside legend (section sheet / chart): the plot keeps at least this share
+# of the page width; a wider legend is rebuilt narrower first.
+LEGEND_PLOT_MIN_SHARE = 0.6
+
+
+def uncertainty_legend_patch() -> UncertaintyZoneKey:
+    """Legend key of the wider-spacing zone: the tint as it prints over the
+    page (pre-blended, so the hatch and dashed outline stay at full strength)
+    with back-slanted grey lines and the dashed outline of the zone overlay."""
+    from matplotlib.colors import to_rgb
+
+    tint = tuple(
+        UNCERTAINTY_ZONE_ALPHA * channel + (1.0 - UNCERTAINTY_ZONE_ALPHA)
+        for channel in to_rgb(UNCERTAINTY_COLOR)
+    )
+    return UncertaintyZoneKey(
+        facecolor=tint,
+        edgecolor=UNCERTAINTY_HATCH_COLOR,
+        linestyle=UNCERTAINTY_OUTLINE_STYLE,
+        label=fit_label(UNCERTAINTY_LEGEND_LABEL, max_chars=LEGEND_LABEL_MAX_CHARS),
+    )
 
 # Fixed-page margin fit aims this far inside the printable margin (inches),
 # and a tight crop pads this much past it, so strokes / antialiasing never
@@ -699,16 +732,26 @@ class CrossSectionRenderer(
         self.fit_page_content(figure)
 
     def _hole_context(self, projected_df: pd.DataFrame) -> _HoleContext:
-        summary = (
-            projected_df.groupby("hole_id", as_index=False, sort=False)
-            .agg(
-                x_profile=("x_profile", "first"),
-                collar_elevation=("collar_elevation", "first"),
-                bottom_elevation=("bottom_elevation", "min"),
-                offset_distance=("offset_distance", "first"),
-            )
-            .sort_values("x_profile", kind="mergesort")
+        # Surveyed holes: the trace the column / screens / water markers follow.
+        self._deviated_x = deviated_x_steps(projected_df)
+        self.__dict__["_deviated_trace_cache"] = {}
+        summary = projected_df.groupby("hole_id", as_index=False, sort=False).agg(
+            x_profile=("x_profile", "first"),
+            collar_elevation=("collar_elevation", "first"),
+            bottom_elevation=("bottom_elevation", "min"),
+            offset_distance=("offset_distance", "first"),
         )
+        if self._deviated_x:
+            # An inclined hole's headers, stick-up and labels sit at its
+            # collar, not at its first interval's mid-depth x.
+            xs = summary["x_profile"].to_numpy(dtype=float).copy()
+            for index, (hole_id, collar) in enumerate(
+                zip(summary["hole_id"].astype(str), summary["collar_elevation"], strict=True)
+            ):
+                if hole_id in self._deviated_x:
+                    xs[index] = self._deviated_collar_x(hole_id, float(collar), float(xs[index]))
+            summary["x_profile"] = xs
+        summary = summary.sort_values("x_profile", kind="mergesort")
         hole_ids = summary["hole_id"].astype(str).to_numpy()
         x_values = summary["x_profile"].to_numpy(dtype=float)
         collar_values = summary["collar_elevation"].to_numpy(dtype=float)
@@ -722,8 +765,6 @@ class CrossSectionRenderer(
             collar_lookup[hole_id] = cf
             x_by_hole[hole_id] = xf
         x_span = float(x_values[-1] - x_values[0]) if x_values.size >= 2 else 10.0
-        # Surveyed holes: interval x steps the column / screens / water follow.
-        self._deviated_x = deviated_x_steps(projected_df)
         return _HoleContext(
             summary=summary,
             collar_lookup=collar_lookup,
@@ -886,7 +927,9 @@ class CrossSectionRenderer(
             style = self._resolve_style(geo_polygon.lithology_code, style_cache)
             coords = np.asarray(geo_polygon.polygon.exterior.coords, dtype=float)
             linestyle = "--" if geo_polygon.is_pinch_out else "-"
-            patch_alpha = PINCH_OUT_ALPHA if geo_polygon.is_pinch_out else alpha
+            # A faded wedge, never darker than the sheet's fills (the section
+            # sheet draws fills and legend swatches at a lower alpha).
+            patch_alpha = min(PINCH_OUT_ALPHA, alpha) if geo_polygon.is_pinch_out else alpha
             verts = self._fence_plot_coords(
                 coords, ve, collars, geo_polygon.hole_pair, hole_x_lookup
             )
@@ -1049,7 +1092,17 @@ class CrossSectionRenderer(
         contact_x = contact_x[keep]
         contact_elev = contact_elev[keep]
         contact_collar = contact_collar[keep]
+        contact_hole = contact_hole[keep]
         ys = self._plot_y_values(contact_elev, contact_collar)
+        if getattr(self, "_deviated_x", None):
+            # Surveyed holes: a tick sits on the trace at its contact.
+            contact_x = contact_x.copy()
+            for hole_id in self._deviated_x:
+                rows = np.flatnonzero(contact_hole == hole_id)
+                if rows.size:
+                    contact_x[rows] = self._deviated_x_of(
+                        hole_id, float(contact_collar[rows[0]]), ys[rows], float(contact_x[rows[0]])
+                    )
         x_left = contact_x - track_half_width
         x_right = contact_x + track_half_width
         segments = np.stack(
@@ -1100,6 +1153,15 @@ class CrossSectionRenderer(
                         hole_id, float(td_numeric[index]), float(collars[index])
                     )
         ys = self._plot_y_values(td_elev, collars)
+        if getattr(self, "_deviated_x", None):
+            # Surveyed holes: the bar sits on the trace at TD.
+            x_values = np.asarray(
+                [
+                    self._deviated_x_at(str(hole_id), float(collar), float(y), float(x))
+                    for hole_id, collar, y, x in zip(hole_ids[mask], collars, ys, x_values, strict=True)
+                ],
+                dtype=float,
+            )
         width = track_half_width * 1.15
         segments = np.stack(
             [
@@ -1195,18 +1257,15 @@ class CrossSectionRenderer(
         projected_df: pd.DataFrame,
         collar_lookup: dict[str, float],
     ) -> None:
-        lines: list[list[tuple[float, float]]] = []
+        lines: list[np.ndarray] = []
         for hole_id, group in projected_df.groupby("hole_id", sort=False):
-            xs = group["x_profile"].to_numpy(dtype=float)
-            if len(xs) < 2 or np.ptp(xs) < 0.05:
+            if str(hole_id) not in (getattr(self, "_deviated_x", None) or {}):
                 continue
             collar = float(collar_lookup.get(str(hole_id), group["collar_elevation"].iloc[0]))
-            mids = (
-                group["top_elevation"].to_numpy(dtype=float)
-                + group["bottom_elevation"].to_numpy(dtype=float)
-            ) / 2.0
-            collar_arr = np.full(len(mids), collar, dtype=float)
-            ys = self._plot_y_values(mids, collar_arr)
+            trace = self._deviated_trace_plot(str(hole_id), collar)
+            if trace is None or trace[0].size < 2:
+                continue
+            ys, xs = trace
             lines.append(np.column_stack((xs, ys)))
         if lines:
             collection = LineCollection(
@@ -1439,6 +1498,20 @@ class CrossSectionRenderer(
         collection.set_zorder(0)
         collection.set_gid("uncertainty-zone")
         ax.add_collection(collection)
+        # Over the fence fills (zorder 2), under the tracks: the hatch and
+        # dashed outline stay legible whatever lithology lies beneath.
+        overlay = PolyCollection(
+            verts_list,
+            facecolors="none",
+            edgecolors=UNCERTAINTY_HATCH_COLOR,
+            linewidths=0.9,
+            linestyles=[UNCERTAINTY_OUTLINE_STYLE],
+            hatch=UNCERTAINTY_HATCH,
+            alpha=UNCERTAINTY_HATCH_ALPHA,
+        )
+        overlay.set_zorder(UNCERTAINTY_OVERLAY_ZORDER)
+        overlay.set_gid("uncertainty-zone-hatch")
+        ax.add_collection(overlay)
         self._has_uncertainty_zone = True
 
     def _draw_faults(
@@ -1556,15 +1629,7 @@ class CrossSectionRenderer(
         if getattr(self, "_has_uncertainty_zone", False):
             # Only when a wider-spacing zone is shaded: the pale amber wash
             # was drawn unexplained.
-            legend_handles.append(
-                Patch(
-                    facecolor=UNCERTAINTY_COLOR,
-                    edgecolor=POLYGON_EDGE_COLOR,
-                    linewidth=0.75,
-                    alpha=UNCERTAINTY_ZONE_ALPHA,
-                    label=fit_label(UNCERTAINTY_LEGEND_LABEL, max_chars=LEGEND_LABEL_MAX_CHARS),
-                )
-            )
+            legend_handles.append(uncertainty_legend_patch())
             labels.append(legend_handles[-1].get_label())
         legend = ax.legend(
             handles=legend_handles,
@@ -1621,7 +1686,9 @@ class CrossSectionRenderer(
         keys: list[tuple[object, str]] = []
         if self.profile.show_parameter_markers or self.profile.show_parameter_labels:
             keys += parameter_legend_keys(
-                self.parameter_series_legend, draw_markers=self.profile.parameter_draw_markers
+                self.parameter_series_legend,
+                draw_markers=self.profile.parameter_draw_markers,
+                sentence_case=True,
             )
         if ground_surface:
             keys.append((Line2D([], [], color=SURFACE_COLOR, linewidth=3.0), "Ground surface"))
@@ -1695,6 +1762,10 @@ class CrossSectionRenderer(
         legend = ax.get_legend()
         if legend is None:
             return
+        # The layout's own right edge (before any legend fit), for giving
+        # room back when a narrower legend frees it.
+        if figure.__dict__.get("_css_legend_stock_right") is None:
+            figure._css_legend_stock_right = float(figure.subplotpars.right)
         settle_figure_layout(figure)
         renderer = figure.canvas.get_renderer()
         page_w = figure.bbox.width
@@ -1703,7 +1774,9 @@ class CrossSectionRenderer(
         gap = 0.015
         if self._fixed_page_export():
             gap = max(gap, float(page_margins_in(self.export_framing)[1]) * figure.dpi / page_w)
-        floor = 0.45
+        # The plot keeps at least this share of the page width: a wide
+        # two-column legend left it 30-45% of a tabloid sheet (QA round 8).
+        floor = LEGEND_PLOT_MIN_SHARE
 
         def right_for(current) -> float:
             legend_w = current.get_window_extent(renderer).width / page_w
@@ -1714,7 +1787,9 @@ class CrossSectionRenderer(
             # Wider than the page can give it beside the narrowest plot
             # (two columns of long names on a portrait page): one column,
             # then smaller text, before it is let past the margin.
-            for ncol, size in ((1, 8.0), (1, 7.0), (1, 6.5)):
+            for ncol, size in ((2, 7.0), (1, 8.0), (1, 7.0), (1, 6.5)):
+                if ncol >= legend._ncols and size >= legend.get_texts()[0].get_fontsize() - 1e-6:
+                    continue
                 rebuilt = self._rebuild_outside_legend(ax, [], ncol=ncol, fontsize=size, force=True)
                 if rebuilt is None:
                     break
@@ -1725,6 +1800,49 @@ class CrossSectionRenderer(
         right = min(figure.subplotpars.right, max(floor, right))
         if right < figure.subplotpars.right - 1e-3:
             figure.subplots_adjust(right=right)
+        self._narrow_legend_beside_drawn_plot(figure, ax, right_for)
+
+    def _narrow_legend_beside_drawn_plot(self, figure: Figure, ax, right_for) -> None:
+        """Keep the drawn plot at least ``LEGEND_PLOT_MIN_SHARE`` of plot + legend.
+
+        An exact-VE box is height-bound: it never grows into the room the
+        page gives it, so a wide two-column legend beside it (long series
+        names) left the plot 30-50% of a tight sheet (QA round 8). The legend
+        is rebuilt in one column (then smaller text) until it fits that
+        share, and the plot's right edge moves back out into the freed room.
+        """
+        legend = ax.get_legend()
+        if legend is None:
+            return
+        stock_right = figure.__dict__.get("_css_legend_stock_right")
+        renderer = figure.canvas.get_renderer()
+
+        def fits(current) -> bool:
+            ax.apply_aspect()
+            plot_w = ax.get_window_extent(renderer).width
+            legend_w = current.get_window_extent(renderer).width
+            return legend_w <= plot_w * (1.0 - LEGEND_PLOT_MIN_SHARE) / LEGEND_PLOT_MIN_SHARE
+
+        settle_figure_layout(figure)
+        if fits(legend):
+            return
+        base_size = float(legend.get_texts()[0].get_fontsize()) if legend.get_texts() else 8.0
+        for ncol, size in ((1, base_size), (1, 7.0), (1, 6.5)):
+            if ncol >= legend._ncols and size >= float(legend.get_texts()[0].get_fontsize()) - 1e-6:
+                continue
+            rebuilt = self._rebuild_outside_legend(ax, [], ncol=ncol, fontsize=size, force=True)
+            if rebuilt is None:
+                break
+            legend = rebuilt
+            # The narrower legend frees room on the right: give it back to
+            # the plot (never past the layout's own right edge).
+            limit = stock_right if stock_right is not None else figure.subplotpars.right
+            target = min(limit, right_for(legend))
+            if target > figure.subplotpars.right + 1e-3:
+                figure.subplots_adjust(right=target)
+            settle_figure_layout(figure)
+            if fits(legend):
+                break
 
     def _apply_ve_aspect(self, ax, twins: Sequence = (), *, anchor: str = "C") -> None:
         """Exact VE: lock the axes box to the chosen VE; auto: fill the frame."""
@@ -1850,7 +1968,7 @@ class CrossSectionRenderer(
         if callable(setter):
             setter(layer_id)
 
-    def _savefig_kwargs(self) -> dict[str, object]:
+    def _savefig_kwargs(self, fig: Figure | None = None) -> dict[str, object]:
         """Export framing controls page crop; consulting default is fixed letter page."""
         kwargs = savefig_kwargs(
             self.export_framing,
@@ -1861,7 +1979,44 @@ class CrossSectionRenderer(
             kwargs["pad_inches"] = max(
                 float(kwargs.get("pad_inches") or 0.0), MIN_PRINT_MARGIN_IN + _FIT_MARGIN_SLACK_IN
             )
+            if fig is not None:
+                crop = self._tight_crop_bbox_in(fig)
+                if crop is not None:
+                    # An explicit crop box is not padded by savefig: pad it here.
+                    kwargs["bbox_inches"] = crop.padded(float(kwargs["pad_inches"]))
         return kwargs
+
+    def _tight_crop_bbox_in(self, fig: Figure):
+        """The tight crop box (inches) including the framed hole headers.
+
+        ``bbox_inches="tight"`` measures text without its frame, so a framed
+        header at the page edge printed 0.02-0.04 in into the margin (QA
+        round 8: quick preview left margin 0.23 in). None when nothing framed
+        reaches past the stock tight box.
+        """
+        from matplotlib.transforms import Bbox
+
+        headers = [
+            t for t in getattr(self, "_header_labels", None) or []
+            if t.figure is fig and t.get_visible() and t.get_text().strip() and t.get_bbox_patch() is not None
+        ]
+        if not headers:
+            return None
+        settle_figure_layout(fig)
+        renderer = fig.canvas.get_renderer()
+        tight = fig.get_tightbbox(renderer)
+        if tight is None:
+            return None
+        # ``Figure.get_tightbbox`` is in inches; the header frames are display px.
+        dpi = float(fig.dpi)
+        boxes = [
+            Bbox.from_extents(b.x0 / dpi, b.y0 / dpi, b.x1 / dpi, b.y1 / dpi)
+            for b in (_measure_header_extent(t, renderer) for t in headers)
+        ]
+        union = Bbox.union([tight, *boxes])
+        if all(abs(getattr(union, side) - getattr(tight, side)) < 1e-3 for side in ("x0", "x1", "y0", "y1")):
+            return None
+        return union
 
     def _prepare_export_figure(self, figure: Figure) -> Figure:
         prepare_export_figure(
@@ -1888,6 +2043,8 @@ class CrossSectionRenderer(
         self._settle_labels(figure, fit_page=True)
         # Fitted title-block / band / notes text was measured at the render size.
         self.refit_consulting_fitted_text(figure)
+        # A locked VE that leaves the section a thin strip gets its caption.
+        self.annotate_locked_ve_strip(figure)
         return figure
 
     def _fixed_page_export(self) -> bool:
@@ -2070,7 +2227,7 @@ class CrossSectionRenderer(
         kwargs: dict[str, object] = {
             "format": fmt,
             "facecolor": fig.get_facecolor(),
-            **self._savefig_kwargs(),
+            **self._savefig_kwargs(fig),
         }
         kwargs["metadata"] = _export_file_metadata(fmt)
         if fmt == "png":

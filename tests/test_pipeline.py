@@ -559,16 +559,18 @@ def _pdf_pages(pdf: bytes) -> list[tuple[float, float, str]]:
     ]
 
 
-def test_section_sheet_summary_page_is_letter_with_wrapped_text() -> None:
-    """The summary page claimed letter but was cropped to its text (19.9 x
-    8.9 in with a long disclaimer)."""
+def test_section_sheet_summary_page_matches_figure_page_with_wrapped_text() -> None:
+    """The summary page was cropped to its text (19.9 x 8.9 in with a long
+    disclaimer). It is a fixed sheet with wrapped text: the figure page's own
+    size on a tight / auto export (QA round 8: no mixed page sizes)."""
     collars, lithology = _crossing_holes()
     result = build_cross_section(
         collars, lithology, [(0, 0), (50, 0)], title="X" * 40, export_formats=frozenset({"pdf"})
     )
     pages = _pdf_pages(result.pdf_bytes)
     assert len(pages) >= 2
-    assert all(page[:2] == (11.0, 8.5) for page in pages[1:])
+    figure_page = pages[0][:2]
+    assert all(page[:2] == figure_page for page in pages[1:])
     assert "QA notes" in pages[1][2] and "Crossing correlation" in pages[1][2]
 
 

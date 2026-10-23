@@ -121,3 +121,17 @@ def test_batch_zip_carries_the_attribution_readme() -> None:
     with zipfile.ZipFile(BytesIO(payload)) as archive:
         readme = archive.read("README.txt").decode("utf-8")
     assert CREATED_BY in readme
+
+
+def test_version_is_the_same_in_every_file() -> None:
+    """VERSION is the single source; pyproject and the exe resource must agree."""
+    import re
+
+    version = (ROOT / "VERSION").read_text(encoding="utf-8").strip().lstrip("v")
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert re.search(rf'^version = "{re.escape(version)}"$', pyproject, re.M), "pyproject.toml version"
+    resource = (ROOT / "windows_version_info.txt").read_text(encoding="utf-8")
+    numeric = ", ".join(version.split(".")) + ", 0"
+    assert f"filevers=({numeric})" in resource, "windows_version_info.txt filevers"
+    assert f"prodvers=({numeric})" in resource, "windows_version_info.txt prodvers"
+    assert f'StringStruct("ProductVersion", "{version}")' in resource

@@ -73,12 +73,14 @@ class SectionBuildRequest(BaseModel, frozen=True):
     water_line_solid: bool | None = None
     legend_ncol: int | None = None
     chemistry_color_mode: ChemistryColorMode | None = None
-    # Sheet-wide limits: blank, or a finite number >= 0 (per-parameter limits
-    # in ``chemistry_thresholds`` are checked the same way).
+    # Sheet-wide limits: blank, or a finite number >= 0 (NaN / inf are
+    # rejected — NaN is the engine's "no limit set" marker and must not arrive
+    # by request; per-parameter limits in ``chemistry_thresholds`` reject
+    # negatives the same way).
     chemistry_threshold_green_max: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     chemistry_threshold_yellow_max: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     # Per-parameter limits (parameter -> (green_max, orange_max), in that
-    # parameter's units); the pair above covers parameters not listed here.
+    # parameter's main unit); the pair above covers parameters not listed here.
     # Cosmetic: colours labels only, so it stays out of the geometry cache key.
     chemistry_thresholds: ChemistryThresholdMap = Field(default_factory=dict)
     chemistry_label_style: ChemistryLabelStyle | None = None

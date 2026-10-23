@@ -16,7 +16,12 @@ from typing import BinaryIO, Literal
 import pandas as pd
 from rapidfuzz import fuzz
 
-from chemistry_qc import lab_qualifier_warnings, mixed_unit_warnings, rdl_above_guideline_notes
+from chemistry_qc import (
+    ignored_limit_warnings,
+    lab_qualifier_warnings,
+    mixed_unit_warnings,
+    rdl_above_guideline_notes,
+)
 from constants import CANONICAL_LITHOLOGY_CODES
 from hydro_metrics import (
     APPARENT_LNAPL_THICKNESS_WARN_M,
@@ -56,7 +61,11 @@ from models import (
 )
 from paths import lithology_aliases_path
 from projection import TransectGeometry, build_along_hole_tvd, project_collar_to_transect
-from render_profiles import chemistry_thresholds_from_readings
+from render_profiles import (
+    chemistry_limit_value,
+    chemistry_thresholds_from_readings,
+    orange_only_limit_notes,
+)
 
 logger = logging.getLogger(__name__)
 MAPPING_CONFIDENCE_THRESHOLD = 0.8
@@ -906,7 +915,9 @@ def chemistry_threshold_inversion_warnings(
     warnings: list[str] = []
 
     def _check(name: str, green: float | None, orange: float | None) -> None:
-        if green is None or orange is None or float(green) <= float(orange):
+        # NaN is "no limit set" (render_profiles.NO_CHEMISTRY_LIMIT), never inverted.
+        green, orange = chemistry_limit_value(green), chemistry_limit_value(orange)
+        if green is None or orange is None or green <= orange:
             return
         warnings.append(
             f"{name}: colour bands inverted (green_max {float(green):g} > orange_max "
@@ -1611,10 +1622,14 @@ def summarize_environmental_readings(
     latest_on_line, date_notes = latest_environmental_readings(on_line)
     warnings.extend(f"Info: {note}" for note in date_notes)
     warnings.extend(mixed_unit_warnings(on_line))
+    # Workbook limit rows in a unit that cannot be converted to the
+    # parameter's main unit are ignored (limits are read from every row).
+    warnings.extend(ignored_limit_warnings(readings))
     warnings.extend(negative_concentration_warnings(on_line))
     if thresholds is None:
         thresholds = chemistry_thresholds_from_readings(readings)
     warnings.extend(chemistry_threshold_inversion_warnings(thresholds))
+    warnings.extend(f"Info: {note}" for note in orange_only_limit_notes(thresholds))
     # Only the samples the figure draws (superseded dates are not plotted).
     warnings.extend(rdl_above_guideline_notes(latest_on_line, thresholds))
     warnings.extend(lab_qualifier_warnings(latest_on_line))

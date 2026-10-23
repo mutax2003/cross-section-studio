@@ -114,12 +114,15 @@ def test_threshold_and_fixed_modes_are_unchanged() -> None:
 def test_two_band_limits_are_one_limit_stored_as_an_equal_pair(mode: str) -> None:
     assert resolved_chemistry_limits(100.0, 250.0, mode) == (100.0, 100.0)  # orange ignored
     assert resolved_chemistry_limits(100.0, None, mode) == (100.0, 100.0)
-    green, orange = resolved_chemistry_limits(None, 250.0, mode)
-    assert math.isnan(green) and math.isnan(orange)  # orange alone is not a limit here
+    # A sheet-wide pair with only an orange limit still gives one limit.
+    assert resolved_chemistry_limits(None, 250.0, mode) == (250.0, 250.0)
+    green, orange = resolved_chemistry_limits(None, None, mode)
+    assert math.isnan(green) and math.isnan(orange)
     thresholds = {"Chloride": (100.0, 250.0), "Benzene": (None, 5.0)}
     assert resolved_chemistry_limits_for("chloride", thresholds, 7.0, 9.0, mode=mode) == (100.0, 100.0)
-    # No own green limit -> sheet-wide green limit.
-    assert resolved_chemistry_limits_for("Benzene", thresholds, 7.0, 9.0, mode=mode) == (7.0, 7.0)
+    # No own green limit -> own orange limit, then the sheet-wide pair
+    # (see tests/test_chemistry_limit_units.py for the precedence table).
+    assert resolved_chemistry_limits_for("Benzene", thresholds, 7.0, 9.0, mode=mode) == (5.0, 5.0)
     assert resolved_chemistry_limits_for("TPH", thresholds, 7.0, 9.0, mode=mode) == (7.0, 7.0)
     # Nothing at all -> no limit set (no Configure default sneaks in).
     green, orange = resolved_chemistry_limits_for("TPH", thresholds, mode=mode)

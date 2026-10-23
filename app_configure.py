@@ -24,6 +24,7 @@ from app_common import (
 from app_services import cached_configure_preflight, cached_recommend_transects
 from app_upload import queue_session_values
 from batch_export import validate_batch_transect_lines
+from chemistry_qc import dominant_units
 from models import (
     MAX_CHEMISTRY_PARAMETERS,
     Collar,
@@ -36,9 +37,11 @@ from render_profiles import (
     DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX,
     ChemistryLabelStyle,
     ChemistryThresholdMap,
+    chemistry_limit_value,
     chemistry_parameter_key,
     chemistry_thresholds_from_readings,
     is_two_band_mode,
+    resolved_chemistry_limits_for,
 )
 from ui_output_presets import resolve_output_preset
 
@@ -547,7 +550,10 @@ def render_configure_step(
             if available_params:
                 st.markdown("**Lab / environmental parameters**")
                 options_sig = tuple(available_params)
-                preset_chem_sig = (prefer_chemistry, options_sig)
+                output_preset = str(st.session_state.get("output_preset", "section_sheet"))
+                # Re-selecting a chemistry style (p2 -> section sheet -> p2)
+                # seeds an empty pick again, hence the style in the signature.
+                preset_chem_sig = (prefer_chemistry, output_preset, options_sig)
                 # Re-seed when the options change, and also when the widget's
                 # value is gone: a workbook (or line) without lab data does not
                 # draw the multiselect, Streamlit drops its key, and coming back
@@ -576,12 +582,18 @@ def render_configure_step(
                     prefer_chemistry
                     and st.session_state.get("_env_params_preset_sig") != preset_chem_sig
                 ):
+                    # A chemistry style prefers chloride-like parameters, but
+                    # only as a seed for an empty pick: switching output styles
+                    # must never drop the parameters the user chose.
+                    current_pick = list(
+                        st.session_state.get("environmental_parameters_multiselect") or []
+                    )
                     chloride_like = [
                         p
                         for p in available_params
                         if "chlor" in p.lower() or p.lower() in {"cl", "cl-"}
                     ]
-                    if chloride_like:
+                    if chloride_like and not current_pick:
                         st.session_state.environmental_parameters_multiselect = chloride_like[
                             :MAX_CHEMISTRY_PARAMETERS
                         ]
@@ -630,13 +642,27 @@ def render_configure_step(
                     st.session_state.show_parameter_labels_toggle = label_default
                 if "parameter_interpolate_segments_toggle" not in st.session_state:
                     st.session_state.parameter_interpolate_segments_toggle = segments_default
-                if prefer_chemistry:
-                    if st.session_state.get("_chem_toggle_preset") != prefer_chemistry:
-                        st.session_state.show_parameter_labels_toggle = label_default
-                        st.session_state.parameter_interpolate_segments_toggle = (
-                            segments_default
+                # Each output style remembers its own toggles: a chemistry
+                # style that locks "interpolate" off must not clear the choice
+                # made on Section sheet — switching back restores it.
+                toggle_memory = st.session_state.setdefault(PARAMETER_TOGGLE_MEMORY_KEY, {})
+                last_toggle_preset = st.session_state.get("_param_toggle_preset")
+                if last_toggle_preset != output_preset:
+                    if last_toggle_preset is not None:
+                        toggle_memory[last_toggle_preset] = (
+                            bool(st.session_state.get("show_parameter_labels_toggle", label_default)),
+                            bool(
+                                st.session_state.get(
+                                    "parameter_interpolate_segments_toggle", segments_default
+                                )
+                            ),
                         )
-                        st.session_state._chem_toggle_preset = prefer_chemistry
+                    labels_value, segments_value = toggle_memory.get(
+                        output_preset, (label_default, segments_default)
+                    )
+                    st.session_state.show_parameter_labels_toggle = labels_value
+                    st.session_state.parameter_interpolate_segments_toggle = segments_value
+                    st.session_state._param_toggle_preset = output_preset
                 show_parameter_labels = st.toggle(
                     "Show parameter value labels",
                     key="show_parameter_labels_toggle",
@@ -676,7 +702,6 @@ def render_configure_step(
                 # The output style sets the starting colour (Chemistry columns
                 # prints red like the client's P2 figures); switching style
                 # resets it, otherwise the user's choice is kept.
-                output_preset = str(st.session_state.get("output_preset", "section_sheet"))
                 style_mode = resolve_output_preset(output_preset).chemistry_color_mode
                 if (
                     "chemistry_color_mode_radio" not in st.session_state
@@ -1001,6 +1026,11 @@ CHEMISTRY_THRESHOLD_KEY_PREFIX = "chem_threshold"
 # (a parameter deselected, or the colour mode switched away), so the limits
 # are also kept here (widget key -> value) and restored when the row returns.
 CHEMISTRY_THRESHOLD_MEMORY_KEY = "_chem_threshold_memory"
+# Which editor last wrote the per-parameter widget keys ("two_band" /
+# "threshold"): a change re-seeds the rows for the new mode.
+CHEMISTRY_THRESHOLD_EDITOR_MODE_KEY = "_chem_threshold_editor_mode"
+# Output style -> (show labels, interpolate segments) as last set there.
+PARAMETER_TOGGLE_MEMORY_KEY = "_param_toggle_memory"
 
 
 def chemistry_threshold_widget_key(parameter: str, limit: str, workbook_token: str = "") -> str:
@@ -1037,12 +1067,21 @@ def seeded_parameter_thresholds(
     *,
     default_green: float | None,
     default_orange: float | None,
+    mode: str | None = "threshold",
 ) -> tuple[float, float]:
     """Starting limits for a parameter's editor row.
 
     Workbook ``green_max`` / ``orange_max`` win; chloride-like parameters
     start on the 100 / 250 mg/kg bands the client figures use; anything else
     starts on the sheet-wide pair (then the Configure defaults).
+
+    In a two-band exceedance mode (``mode`` = ``"black_red"`` /
+    ``"green_red"``) the row's single limit is resolved exactly as the engine
+    resolves it (:func:`render_profiles.resolved_chemistry_limits_for`: own
+    green, own orange, sheet-wide green, sheet-wide orange), so a workbook
+    row with only an ``orange_max`` seeds that limit and the editor and the
+    figure agree; a parameter with no limit anywhere starts on the chloride
+    / Configure default because the editor row needs a number.
     """
     key = chemistry_parameter_key(parameter)
     own = next(
@@ -1061,21 +1100,29 @@ def seeded_parameter_thresholds(
             if default_orange is not None
             else DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX
         )
+    if is_two_band_mode(mode):
+        sheet_green = None if _is_chloride_like(parameter) else default_green
+        sheet_orange = None if _is_chloride_like(parameter) else default_orange
+        limit = chemistry_limit_value(
+            resolved_chemistry_limits_for(
+                parameter, workbook_thresholds, sheet_green, sheet_orange, mode=mode
+            )[0]
+        )
+        if limit is None:
+            limit = fallback_green
+        return limit, limit
     green = float(own[0]) if own[0] is not None else fallback_green
     orange = float(own[1]) if own[1] is not None else max(green, fallback_orange)
     return green, orange
 
 
 def _parameter_units(readings, parameters: Sequence[str]) -> dict[str, str]:
-    units: dict[str, set[str]] = {chemistry_parameter_key(p): set() for p in parameters}
-    for reading in readings:
-        key = chemistry_parameter_key(reading.parameter)
-        unit = (reading.unit or "").strip()
-        if key in units and unit:
-            units[key].add(unit)
+    """Unit beside each editor row: the parameter's main unit — the one the
+    figure converts the other rows to and reads the limits in — not every
+    spelling seen ("mg/L / ug/L")."""
+    dominant = dominant_units(readings)
     return {
-        parameter: " / ".join(sorted(units[chemistry_parameter_key(parameter)]))
-        for parameter in parameters
+        parameter: dominant.get(chemistry_parameter_key(parameter), "") for parameter in parameters
     }
 
 
@@ -1106,10 +1153,21 @@ def _render_parameter_threshold_editor(
     workbook_thresholds = chemistry_thresholds_from_readings(parse_result.environmental_readings)
     units = _parameter_units(subset_preflight.environmental_readings, parameters)
     token = str(st.session_state.get("file_hash") or "")
-    memory = st.session_state.setdefault(CHEMISTRY_THRESHOLD_MEMORY_KEY, {})
     result: ChemistryThresholdMap = {}
     two_band = is_two_band_mode(two_band_mode)
     low_colour = "black" if two_band_mode == "black_red" else "green"
+    # The exceedance limit (two-band) and the green / orange pair (threshold)
+    # share widget keys but mean different things, so each mode keeps its own
+    # memory and a mode switch re-seeds every row for the new mode instead of
+    # inheriting the other mode's widget state (an exceedance limit of 100
+    # otherwise came back as "Orange <= 100" beside "Green <= 100" — no
+    # orange band — in place of the workbook orange_max).
+    mode_kind = "two_band" if two_band else "threshold"
+    memory = st.session_state.setdefault(CHEMISTRY_THRESHOLD_MEMORY_KEY, {}).setdefault(
+        mode_kind, {}
+    )
+    mode_changed = st.session_state.get(CHEMISTRY_THRESHOLD_EDITOR_MODE_KEY) != mode_kind
+    st.session_state[CHEMISTRY_THRESHOLD_EDITOR_MODE_KEY] = mode_kind
     with st.expander("Per-parameter limits", expanded=True):
         if two_band:
             st.caption(
@@ -1125,17 +1183,27 @@ def _render_parameter_threshold_editor(
         for parameter in parameters:
             green_key = chemistry_threshold_widget_key(parameter, "green", token)
             orange_key = chemistry_threshold_widget_key(parameter, "orange", token)
-            if green_key not in st.session_state or orange_key not in st.session_state:
+            if (
+                mode_changed
+                or green_key not in st.session_state
+                or orange_key not in st.session_state
+            ):
                 seed_green, seed_orange = seeded_parameter_thresholds(
                     parameter,
                     workbook_thresholds,
                     default_green=default_green,
                     default_orange=default_orange,
+                    mode=two_band_mode,
                 )
-                # An edited value outlives the row being hidden; the seed
-                # applies only the first time the row appears for a workbook.
-                st.session_state.setdefault(green_key, memory.get(green_key, seed_green))
-                st.session_state.setdefault(orange_key, memory.get(orange_key, seed_orange))
+                # An edited value outlives the row being hidden (and, per
+                # mode, a colour-mode switch); the seed applies only the first
+                # time the row appears for a workbook in this mode.
+                if mode_changed:
+                    st.session_state[green_key] = memory.get(green_key, seed_green)
+                    st.session_state[orange_key] = memory.get(orange_key, seed_orange)
+                else:
+                    st.session_state.setdefault(green_key, memory.get(green_key, seed_green))
+                    st.session_state.setdefault(orange_key, memory.get(orange_key, seed_orange))
             # Spinner step and display precision follow the limits' size, so
             # benzene 0.5 / 5 shows as typed rather than rounded to 2 dp.
             step = _limit_step(

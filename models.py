@@ -40,6 +40,11 @@ LNAPL_SPECIFIC_GRAVITY_MIN = 0.5
 SCREEN_COLUMNS = {"hole_id", "from_depth", "to_depth"}
 GRADIENT_COLUMNS = {"hole_id", "direction"}
 MAX_WATER_SERIES = 4
+# Chemistry parameters plotted on one section: Configure's multiselect caps
+# the pick and the engine plots the first four (in Configure order) of a
+# longer scripted list, naming the rest in a QA note (four distinct marker
+# shapes and series colours exist).
+MAX_CHEMISTRY_PARAMETERS = 4
 
 InterpretationMode = Literal["borehole_only", "interpolated", "correlation_lines"]
 

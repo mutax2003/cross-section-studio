@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -15,8 +15,26 @@ ScaleBarPosition = Literal["bottom_left", "bottom_right"]
 ColumnHeaderDetail = Literal["id_only", "id_rl_td"]
 # "black" (default) and "red" print every value in one fixed colour ("red"
 # matches the client P2 chloride figures); "threshold" bands green/orange/red.
-# A per-reading workbook label_color always wins. Blue stays for groundwater.
-ChemistryColorMode = Literal["black", "red", "threshold"]
+# "black_red" and "green_red" are two-band exceedance modes: one limit per
+# parameter, black (or green) at or below it and red above. A per-reading
+# workbook label_color always wins. Blue stays for groundwater.
+ChemistryColorMode = Literal["black", "red", "black_red", "green_red", "threshold"]
+# Modes that band values by per-parameter limits (coloured dots, a key under
+# the distance label, the per-parameter limits editor in Configure).
+THRESHOLD_STYLE_MODES: frozenset[str] = frozenset({"black_red", "green_red", "threshold"})
+# Two-band exceedance modes: a single limit per parameter (stored as
+# ``green_max``; ``orange_max`` is set equal to it and never shown).
+TWO_BAND_MODES: frozenset[str] = frozenset({"black_red", "green_red"})
+
+
+def is_threshold_style_mode(mode: str | None) -> bool:
+    """True for the modes that colour values by per-parameter limits."""
+    return mode in THRESHOLD_STYLE_MODES
+
+
+def is_two_band_mode(mode: str | None) -> bool:
+    """True for the one-limit exceedance modes (``black_red`` / ``green_red``)."""
+    return mode in TWO_BAND_MODES
 # How a value label is kept legible over hatched fills. "strip" (default)
 # knocks a clean background strip out of the fills beside each column, so
 # values read on white with the hatching resuming beyond them.
@@ -71,6 +89,25 @@ def resolved_chemistry_thresholds(
         return min(green, yellow), yellow
     green = float(green_max) if green_max is not None else DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX
     return green, max(green, DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX)
+
+
+def resolved_chemistry_limits(
+    green_max: float | None, yellow_max: float | None, mode: str | None = "threshold"
+) -> tuple[float, float]:
+    """Limits a colour mode uses, as a ``(green_max, orange_max)`` pair.
+
+    Threshold mode: :func:`resolved_chemistry_thresholds`. The two-band
+    exceedance modes keep one limit per parameter — the green (exceedance)
+    limit — and return it twice (``orange_max == green_max``, so no orange
+    band exists); ``yellow_max`` is ignored there. With no limit the pair is
+    ``NO_CHEMISTRY_LIMIT`` (NaN, NaN): values print black, "no limit set".
+    """
+    if is_two_band_mode(mode):
+        limit = chemistry_limit_value(green_max)
+        if limit is None:
+            return NO_CHEMISTRY_LIMIT, NO_CHEMISTRY_LIMIT
+        return float(limit), float(limit)
+    return resolved_chemistry_thresholds(green_max, yellow_max)
 
 
 # Per-parameter threshold limits: parameter name -> (green_max, orange_max),
@@ -167,6 +204,60 @@ def resolved_chemistry_thresholds_for(
     green = own_green if own_green is not None else chemistry_limit_value(green_max)
     orange = own_orange if own_orange is not None else chemistry_limit_value(yellow_max)
     return resolved_chemistry_thresholds(green, orange)
+
+
+def resolved_chemistry_limits_for(
+    parameter: str,
+    thresholds: Mapping[str, ChemistryThresholdPair] | None,
+    green_max: float | None = None,
+    yellow_max: float | None = None,
+    *,
+    mode: str | None = "threshold",
+) -> tuple[float, float]:
+    """Per-parameter limits for a colour mode (see :func:`resolved_chemistry_limits`).
+
+    Threshold mode is :func:`resolved_chemistry_thresholds_for`. In a two-band
+    exceedance mode the parameter's own green limit, else the sheet-wide
+    ``green_max``, is the single exceedance limit (returned as an equal
+    pair); no Configure default is applied, so a parameter with no limit
+    prints black with "no limit set".
+    """
+    if not is_two_band_mode(mode):
+        return resolved_chemistry_thresholds_for(parameter, thresholds, green_max, yellow_max)
+    own_green, _own_orange = chemistry_threshold_pair_for(parameter, thresholds)
+    own_green = chemistry_limit_value(own_green)
+    limit = own_green if own_green is not None else chemistry_limit_value(green_max)
+    return resolved_chemistry_limits(limit, None, mode)
+
+
+def cap_chemistry_parameters(
+    parameters: Iterable[str] | None, limit: int | None = None
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(plotted, dropped)`` parameter names for one section.
+
+    Names are trimmed and de-duplicated in the order given (Configure order);
+    at most ``limit`` (default :data:`models.MAX_CHEMISTRY_PARAMETERS`) are
+    plotted, the rest are named in a QA note by the caller.
+    """
+    if limit is None:
+        from models import MAX_CHEMISTRY_PARAMETERS
+
+        limit = MAX_CHEMISTRY_PARAMETERS
+    ordered = tuple(
+        dict.fromkeys(str(name).strip() for name in (parameters or ()) if str(name).strip())
+    )
+    return ordered[:limit], ordered[limit:]
+
+
+def chemistry_parameter_cap_note(plotted: Sequence[str], dropped: Sequence[str]) -> str:
+    """QA note naming the parameters beyond the per-section cap."""
+    from models import MAX_CHEMISTRY_PARAMETERS
+
+    return (
+        f"Up to {MAX_CHEMISTRY_PARAMETERS} chemistry parameters per section: plotted "
+        f"{', '.join(plotted)}; not plotted: {', '.join(dropped)} "
+        f"(the first {MAX_CHEMISTRY_PARAMETERS} in Configure order are drawn)."
+    )
 
 
 def chemistry_thresholds_from_readings(readings: Iterable[object]) -> ChemistryThresholdMap:

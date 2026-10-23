@@ -26,7 +26,9 @@ from render_profiles import SECTION_SHEET_PROFILE
 from renderer import CrossSectionRenderer
 
 _N_READINGS = 300
-_PARAMETERS = tuple(f"P{i:02d}" for i in range(20))
+# Four parameters: the per-section cap (MAX_CHEMISTRY_PARAMETERS); the
+# stress is the 300 values on one hole, however they split by parameter.
+_PARAMETERS = tuple(f"P{i:02d}" for i in range(4))
 
 
 def _one_hole_case(n: int):

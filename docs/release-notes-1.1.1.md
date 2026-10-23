@@ -63,5 +63,11 @@ of 1.1.0.
 - Lab flags J, B, E and similar keep a result as detected; U-type flags mean
   non-detect; R and unknown flags are kept with a warning.
 - Chemistry label placement is 1.5–2× faster with identical output.
+- A TRUE/FALSE cell in a numeric column of a real workbook (Collars,
+  Lithology, Water, Screens, Environmental, Deviations) is a row error, not a
+  silent 1 / 0. Scripted builds reject an unknown chemistry colour mode and a
+  negative sheet-wide limit; the four-parameter cap treats `Cl` and ` cl` as one
+  parameter; exports no longer pick up matplotlib settings changed by other
+  code while they run.
 - The desktop updater accepts PyInstaller 6 zips; the Windows build fails
   loudly on pip or PyInstaller errors and ships without client reference files.

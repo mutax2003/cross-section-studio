@@ -226,8 +226,13 @@ class ChartLayoutMixin:
             ve = self.vertical_exaggeration
 
             if self.interpretation_mode in {"interpolated", "correlation_lines"}:
-                z_min, z_max = self._uncertainty_y_bounds(hole_summary)
-                self._draw_uncertainty_zones(ax, hole_summary, z_min, z_max, collar_lookup)
+                self._draw_uncertainty_zones(
+                    ax,
+                    hole_summary,
+                    collar_lookup,
+                    polygons=polygons,
+                    hole_x_lookup=ctx.x_by_hole,
+                )
 
             if self.profile.show_ground_surface and len(hole_summary) >= 2:
                 self._draw_sky_and_surface(ax, hole_summary, collar_lookup)

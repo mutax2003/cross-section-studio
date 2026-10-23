@@ -110,6 +110,11 @@ mpl.rcParams["svg.hashsalt"] = "cross-section-studio"
 
 logger = logging.getLogger(__name__)
 
+# Wider-spacing / offset zones: pale amber wash over the fence between a
+# hole pair past the thresholds, keyed in the outside legend only when drawn.
+UNCERTAINTY_ZONE_ALPHA = 0.28
+UNCERTAINTY_LEGEND_LABEL = "Wider hole spacing (interpretation less certain)"
+
 # Fixed-page margin fit aims this far inside the printable margin (inches),
 # and a tight crop pads this much past it, so strokes / antialiasing never
 # print inside the 0.25 in margin (measured 0.24 in before).
@@ -289,6 +294,7 @@ class CrossSectionRenderer(
         self.parameter_series_legend: list[ParameterLegendEntry] = []
         self._has_pinch_out = False
         self._has_unlogged_intervals = False
+        self._has_uncertainty_zone = False
         if show_ground_surface is not None:
             self.profile = self.profile.model_copy(update={"show_ground_surface": show_ground_surface})
 
@@ -377,6 +383,7 @@ class CrossSectionRenderer(
         self._water_compact_level = 0
         self._header_labels = []
         self._has_unlogged_intervals = False
+        self._has_uncertainty_zone = False
         if self.profile.layout == "section_sheet":
             render_layout = self._render_section_sheet
         elif self.profile.layout == "consulting_section":
@@ -1336,10 +1343,20 @@ class CrossSectionRenderer(
         self,
         ax,
         hole_summary: pd.DataFrame,
-        y_min: float,
-        y_max: float,
         collar_lookup: dict[str, float],
+        *,
+        polygons: Sequence[GeologicalPolygon] = (),
+        hole_x_lookup: dict[str, float] | None = None,
     ) -> None:
+        """Shade the fence between hole pairs spaced (or offset) past the thresholds.
+
+        Each zone is clipped to the union of the fence polygons drawn between
+        that pair, so it never shows outside the geology: as a rectangle down
+        to the section's deepest TD it hung below the fence under short holes
+        as a mystery band. A pair with no fence polygons (nothing drawn to
+        clip to) gets the quadrilateral between its collars and its own TDs.
+        """
+        self._has_uncertainty_zone = False
         if len(hole_summary) < 2:
             return
         x_values = hole_summary["x_profile"].to_numpy(dtype=float)
@@ -1350,25 +1367,64 @@ class CrossSectionRenderer(
         idxs = np.flatnonzero(uncertain)
         if idxs.size == 0:
             return
-        x0 = x_values[idxs]
-        x1 = x_values[idxs + 1]
-        x_left = np.minimum(x0, x1)
-        widths = np.abs(x1 - x0)
-        count = int(idxs.size)
-        self._add_rect_collection(
-            ax,
-            (
-                x_left,
-                np.full(count, y_min),
-                widths,
-                np.full(count, y_max - y_min),
-            ),
+        from shapely.geometry import MultiPolygon, Polygon
+        from shapely.ops import unary_union
+
+        hole_ids = hole_summary["hole_id"].astype(str).tolist()
+        collars = hole_summary["collar_elevation"].to_numpy(dtype=float)
+        bottoms = hole_summary["bottom_elevation"].to_numpy(dtype=float)
+        by_pair: dict[frozenset[str], list[Polygon]] = {}
+        for geo_polygon in polygons:
+            if geo_polygon.polygon is None or geo_polygon.polygon.is_empty:
+                continue
+            by_pair.setdefault(frozenset(map(str, geo_polygon.hole_pair)), []).append(
+                geo_polygon.polygon
+            )
+        ve = self.vertical_exaggeration
+        verts_list: list[np.ndarray] = []
+        for idx in idxs:
+            left_id, right_id = hole_ids[idx], hole_ids[idx + 1]
+            pair = (left_id, right_id)
+            parts = by_pair.get(frozenset(pair))
+            if parts:
+                union = unary_union(parts)
+                if union.is_empty:
+                    continue
+                geoms = list(union.geoms) if isinstance(union, MultiPolygon) else [union]
+                for geom in geoms:
+                    if not isinstance(geom, Polygon) or geom.is_empty:
+                        continue
+                    coords = np.asarray(geom.exterior.coords, dtype=float)
+                    verts_list.append(
+                        self._fence_plot_coords(coords, ve, collar_lookup, pair, hole_x_lookup)
+                    )
+                continue
+            # No fence drawn for this pair: the strip between its ground line
+            # and its own hole bases (never deeper than the pair's logs).
+            x0, x1 = float(x_values[idx]), float(x_values[idx + 1])
+            coords = np.array(
+                [
+                    (x0, collars[idx]),
+                    (x1, collars[idx + 1]),
+                    (x1, bottoms[idx + 1]),
+                    (x0, bottoms[idx]),
+                ],
+                dtype=float,
+            )
+            verts_list.append(self._fence_plot_coords(coords, ve, collar_lookup, pair, hole_x_lookup))
+        if not verts_list:
+            return
+        collection = PolyCollection(
+            verts_list,
             facecolors=UNCERTAINTY_COLOR,
             edgecolors="none",
             linewidths=0.0,
-            zorder=0,
-            alpha=0.28,
+            alpha=UNCERTAINTY_ZONE_ALPHA,
         )
+        collection.set_zorder(0)
+        collection.set_gid("uncertainty-zone")
+        ax.add_collection(collection)
+        self._has_uncertainty_zone = True
 
     def _draw_faults(
         self,
@@ -1482,6 +1538,19 @@ class CrossSectionRenderer(
             # Keyed by a faded, dashed wedge like the ones drawn.
             legend_handles.append(PinchOutKey())
             labels.append("Inferred pinch-out")
+        if getattr(self, "_has_uncertainty_zone", False):
+            # Only when a wider-spacing zone is shaded: the pale amber wash
+            # was drawn unexplained.
+            legend_handles.append(
+                Patch(
+                    facecolor=UNCERTAINTY_COLOR,
+                    edgecolor=POLYGON_EDGE_COLOR,
+                    linewidth=0.75,
+                    alpha=UNCERTAINTY_ZONE_ALPHA,
+                    label=fit_label(UNCERTAINTY_LEGEND_LABEL, max_chars=LEGEND_LABEL_MAX_CHARS),
+                )
+            )
+            labels.append(legend_handles[-1].get_label())
         legend = ax.legend(
             handles=legend_handles,
             labels=labels,

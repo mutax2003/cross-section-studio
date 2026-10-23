@@ -62,8 +62,13 @@ class SectionSheetLayoutMixin:
         ve = self.vertical_exaggeration
 
         if self.interpretation_mode in {"interpolated", "correlation_lines"}:
-            z_min, z_max = self._uncertainty_y_bounds(hole_summary)
-            self._draw_uncertainty_zones(ax, hole_summary, z_min, z_max, collar_lookup)
+            self._draw_uncertainty_zones(
+                ax,
+                hole_summary,
+                collar_lookup,
+                polygons=polygons,
+                hole_x_lookup=ctx.x_by_hole,
+            )
 
         self._draw_fence_polygons(
             ax,

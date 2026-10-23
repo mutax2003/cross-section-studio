@@ -36,9 +36,11 @@ from render_profiles import (
     DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX,
     ChemistryLabelStyle,
     ChemistryThresholdMap,
+    chemistry_limit_value,
     chemistry_parameter_key,
     chemistry_thresholds_from_readings,
     is_two_band_mode,
+    resolved_chemistry_limits_for,
 )
 from ui_output_presets import resolve_output_preset
 
@@ -1037,12 +1039,21 @@ def seeded_parameter_thresholds(
     *,
     default_green: float | None,
     default_orange: float | None,
+    mode: str | None = "threshold",
 ) -> tuple[float, float]:
     """Starting limits for a parameter's editor row.
 
     Workbook ``green_max`` / ``orange_max`` win; chloride-like parameters
     start on the 100 / 250 mg/kg bands the client figures use; anything else
     starts on the sheet-wide pair (then the Configure defaults).
+
+    In a two-band exceedance mode (``mode`` = ``"black_red"`` /
+    ``"green_red"``) the row's single limit is resolved exactly as the engine
+    resolves it (:func:`render_profiles.resolved_chemistry_limits_for`: own
+    green, own orange, sheet-wide green, sheet-wide orange), so a workbook
+    row with only an ``orange_max`` seeds that limit and the editor and the
+    figure agree; a parameter with no limit anywhere starts on the chloride
+    / Configure default because the editor row needs a number.
     """
     key = chemistry_parameter_key(parameter)
     own = next(
@@ -1061,6 +1072,17 @@ def seeded_parameter_thresholds(
             if default_orange is not None
             else DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX
         )
+    if is_two_band_mode(mode):
+        sheet_green = None if _is_chloride_like(parameter) else default_green
+        sheet_orange = None if _is_chloride_like(parameter) else default_orange
+        limit = chemistry_limit_value(
+            resolved_chemistry_limits_for(
+                parameter, workbook_thresholds, sheet_green, sheet_orange, mode=mode
+            )[0]
+        )
+        if limit is None:
+            limit = fallback_green
+        return limit, limit
     green = float(own[0]) if own[0] is not None else fallback_green
     orange = float(own[1]) if own[1] is not None else max(green, fallback_orange)
     return green, orange
@@ -1131,6 +1153,7 @@ def _render_parameter_threshold_editor(
                     workbook_thresholds,
                     default_green=default_green,
                     default_orange=default_orange,
+                    mode=two_band_mode,
                 )
                 # An edited value outlives the row being hidden; the seed
                 # applies only the first time the row appears for a workbook.

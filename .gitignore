@@ -38,6 +38,8 @@ Thumbs.db
 # Synthetic Advantage CI fixtures (built by tests/fixtures/advantage_synthetic.py)
 !data/fixtures/advantage_phase2_source.xlsx
 !data/advantage_phase2_platform.xlsx
+# Client lithology legend 261023 (source of data/bh_log_lithology_legend.json)
+!data/BH Log Lithology Legend.xlsx
 
 # Local stakeholder dumps (keep tracked CI fixtures / reference exports)
 data/*.docx

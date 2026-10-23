@@ -117,7 +117,7 @@ DEFAULT_SESSION: dict[str, object] = {
     "auto_fit_track_width": True,
     "allow_pinch_outs": False,
     "show_ground_surface": True,
-    # On by default: the client legend (template 261002) uses hatches to tell
+    # On by default: the client legend (261023) uses hatches to tell
     # units that share a colour apart (Sandy Clay vs Clay, dotted Sand).
     "show_hatches": True,
     "show_legend": True,

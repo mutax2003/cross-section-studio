@@ -42,5 +42,15 @@
   "flare_pit_material": "Flare Pit Material",
   "silty sand": "Silty Sand",
   "sand, silty": "Silty Sand",
-  "silty snd": "Silty Sand"
+  "silty snd": "Silty Sand",
+  "top soil": "Topsoil",
+  "organic": "Organics",
+  "silt loam": "Silty Loam",
+  "sand & gravel": "Sand and Gravel",
+  "clay_loam": "Clay Loam",
+  "sandy_clay_loam": "Sandy Clay Loam",
+  "silty_clay_loam": "Silty Clay Loam",
+  "loamy_sand": "Loamy Sand",
+  "silty_loam": "Silty Loam",
+  "sand and clay": "Sand and Clay"
 }

@@ -21,7 +21,7 @@ Input: `GeologicalPolygon` list, projected DataFrame, optional `WaterLevel` / sc
 Output: Matplotlib figure or SVG/PNG/PDF bytes.
 
 **No projection or pinch-out logic** — consume pre-built polygons and projected intervals only.
-Lithology fills use the **BH Log** legend (Excel → `constants.get_lithology_style()`; namespaced as `USGS_LITHOLOGY_*`).
+Lithology fills use the client legend **261023** (`data/BH Log Lithology Legend.xlsx` → `scripts/build_lithology_legend.py` → `data/bh_log_lithology_legend.json` → `constants.get_lithology_style()`; namespaced as `USGS_LITHOLOGY_*`). Never hard-code a lithology hex: edit the workbook and rerun the script. Hatch marks (`.` dots, `/` 45° dashes, `+` loam, `O` gravel stones) are drawn by `hatch_patterns.py` to the CAD legend's DOTS / DASH / CROSS / GRAVEL patterns.
 
 `CrossSectionRenderer` accepts `environmental_readings` plus `environmental_parameters` (filter names). When profile `show_parameter_markers` is on, `_draw_parameter_readings()` / `parameter_marker` place labels (pipeline forces markers on when `environmental_parameters` is non-empty).
 

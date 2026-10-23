@@ -3,7 +3,7 @@
 The client's real multi-section workbook is not available yet, so this builds
 one shaped like a typical site investigation: 14 boreholes on three named
 section lines (A-A' west→east, B-B' and C-C' north→south crossing A-A' at a
-shared hole each), 261002-style lithology names, one logging gap, two water
+shared hole each), 261023 legend lithology names, one logging gap, two water
 level rounds, chloride readings scored against thresholds, and well screens.
 
 It is written into the input template (so upload detection and the Project

@@ -92,7 +92,7 @@ def test_import_app_modules() -> None:
 
 
 def test_hatches_default_on_to_match_legend_template() -> None:
-    """Template 261002 distinguishes same-colour units only by hatch."""
+    """Legend 261023 distinguishes same-colour units only by hatch."""
     import app_state
 
     assert app_state.DEFAULT_SESSION["show_hatches"] is True

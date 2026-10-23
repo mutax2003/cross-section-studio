@@ -368,13 +368,28 @@ class ChartLayoutMixin:
         if extents is None:
             return
         x_values, top_y, bottom_y = extents
-        segments = np.stack(
+        segments: list[np.ndarray] | np.ndarray = np.stack(
             [
                 np.column_stack([x_values, top_y]),
                 np.column_stack([x_values, bottom_y]),
             ],
             axis=1,
         )
+        if getattr(self, "_deviated_x", None):
+            # Surveyed holes: the stick is a polyline along the hole's trace.
+            hole_ids = hole_summary["hole_id"].astype(str).to_numpy()
+            collars = self._collar_values(
+                hole_summary["hole_id"], hole_summary["collar_elevation"], collar_lookup
+            )
+            lines: list[np.ndarray] = []
+            for index, hole_id in enumerate(hole_ids):
+                if hole_id in self._deviated_x:
+                    lo, hi = sorted((float(top_y[index]), float(bottom_y[index])))
+                    band = self._deviated_band_verts(hole_id, float(collars[index]), lo, hi, 0.0)
+                    lines.append(band[: len(band) // 2])
+                else:
+                    lines.append(segments[index])
+            segments = lines
         collection = LineCollection(segments, colors=STICK_COLOR, linewidths=4.0, zorder=5)
         ax.add_collection(collection)
         ax.scatter(x_values, top_y, marker="v", s=49, c=SURFACE_COLOR, zorder=7)

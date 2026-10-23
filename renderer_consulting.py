@@ -65,6 +65,7 @@ from renderer_common import (
     add_ve_caption,
     fit_label,
     fitted_x_locators,
+    format_ve_value,
     new_figure,
     parameter_legend_text,
     pinch_out_key_artist,
@@ -665,6 +666,10 @@ class _TrueMetreFormatter(Formatter):
             return ""
         text = f"{true_value:.0f}" if abs(true_value - round(true_value)) < 1e-6 else f"{true_value:g}"
         return "0" if text == "-0" else text
+
+
+# Caption colour of the "section too long for 1x" warning printed under the strip.
+LOCKED_VE_CAPTION_COLOR = "#B91C1C"
 
 
 class ConsultingLayoutMixin:
@@ -1413,6 +1418,9 @@ class ConsultingLayoutMixin:
                 else self._hole_elevation_at_depth(gradient.hole_id, 1.0, collar_rl)
             )
             y = self._plot_y(anchor_rl, collar_rl)
+            if getattr(self, "_deviated_x", None):
+                # Surveyed holes: the arrow sits on the trace at its anchor.
+                x_profile = self._deviated_x_at(str(gradient.hole_id), float(collar_rl), float(y), float(x_profile))
             if gradient.direction == "up":
                 arrow = FancyArrow(
                     float(x_profile),
@@ -1599,12 +1607,88 @@ class ConsultingLayoutMixin:
         _box, status, printed = aspect.layout()
         return status, printed
 
+    # A locked (exact) VE that draws the section shorter than this on the
+    # page is unusable: 1x on a 1.8 km x 20 m section was a 1.5 cm strip.
+    LOCKED_VE_MIN_PLOT_HEIGHT_IN = 3.0 / 2.54
+    LOCKED_VE_STRIP_CAPTION = "Section too long for {ve} \u2014 choose a VE or split the section"
+
+    def _locked_ve_plot_height_in(self, figure: Figure) -> float | None:
+        """Drawn height (inches) of the main axes when the VE is locked; None
+        in auto VE or off a consulting sheet."""
+        if getattr(self, "ve_auto", True) or str(getattr(self.profile, "layout", "")) != "consulting_section":
+            return None
+        axes = getattr(figure, "_css_main_axes", None)
+        if not axes:
+            return None
+        main_ax = axes[0]
+        main_ax.apply_aspect()
+        height = float(main_ax.bbox.height) / float(figure.dpi)
+        return height if np.isfinite(height) and height > 0.0 else None
+
+    def _locked_ve_label(self) -> str:
+        ve = self.chosen_vertical_exaggeration
+        if ve is None:
+            ve = float(self.vertical_exaggeration)
+        return format_ve_value(float(ve), auto=False)
+
+    def locked_ve_strip_notes(self, figure: Figure) -> tuple[str, ...]:
+        """QA note when the locked VE leaves the section a thin strip on the page.
+
+        The preset's VE is a client style and is never changed silently: the
+        note (and the on-figure caption) say to choose a VE or split the
+        section instead.
+        """
+        height = self._locked_ve_plot_height_in(figure)
+        if height is None or height >= self.LOCKED_VE_MIN_PLOT_HEIGHT_IN:
+            return ()
+        page = page_description(tuple(figure.get_size_inches()))
+        return (
+            f"Section too long for {self._locked_ve_label()} \u2014 at the locked vertical exaggeration the "
+            f"section is only {height * 2.54:.1f} cm high on a {page} page (under "
+            f"{self.LOCKED_VE_MIN_PLOT_HEIGHT_IN * 2.54:.0f} cm). Choose a vertical exaggeration or split "
+            "the section; the preset's VE was kept.",
+        )
+
+    def annotate_locked_ve_strip(self, figure: Figure) -> None:
+        """Print the strip caption under the plot (or remove a stale one)."""
+        previous = figure.__dict__.pop("_css_locked_ve_caption", None)
+        if previous is not None:
+            previous.remove()
+        height = self._locked_ve_plot_height_in(figure)
+        if height is None or height >= self.LOCKED_VE_MIN_PLOT_HEIGHT_IN:
+            return
+        main_ax = figure._css_main_axes[0]
+        cell = main_ax.get_position(original=True)
+        drawn = main_ax.get_position()
+        fig_h = float(figure.get_size_inches()[1])
+        # Under the x tick labels and distance label (about 0.55 in), inside
+        # the plot's own gridspec cell.
+        y = max(cell.y0 + 0.02, drawn.y0 - 0.55 / fig_h)
+        caption = figure.text(
+            0.5 * (drawn.x0 + drawn.x1),
+            y,
+            self.LOCKED_VE_STRIP_CAPTION.format(ve=self._locked_ve_label()),
+            ha="center",
+            va="top",
+            fontsize=self._fs(9),
+            fontweight="bold",
+            color=LOCKED_VE_CAPTION_COLOR,
+            zorder=20,
+        )
+        caption.set_gid("locked-ve-strip-caption")
+        figure._css_locked_ve_caption = caption
+
     def map_scale_notes(self, figure: Figure) -> tuple[str, ...]:
-        """User-facing QA note when the title block map scale could not be drawn exactly.
+        """User-facing QA notes from the export page fit: the title block map
+        scale that could not be drawn exactly, and a locked VE that leaves
+        the section a thin strip (``locked_ve_strip_notes``).
 
         Read after the export page geometry is applied (the pipeline adds it to
         the build's QA notes); empty when the scale fits or was never set.
         """
+        return self._map_scale_only_notes(figure) + self.locked_ve_strip_notes(figure)
+
+    def _map_scale_only_notes(self, figure: Figure) -> tuple[str, ...]:
         layout = self._map_scale_layout(figure)
         if layout is None or layout[0] == "exact":
             return ()

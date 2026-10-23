@@ -72,13 +72,21 @@ def _pdf_first_page_size_in(pdf_bytes: bytes | None) -> tuple[float, float] | No
         return None
 
 
+# A text page needs at least this much room each way (margins plus a few
+# lines); a tighter figure page falls back to letter in its orientation.
+TEXT_PAGE_MIN_SIDE_IN = 4.0
+
+
 def text_page_size_for(figure_page_in: tuple[float, float] | None) -> tuple[float, float]:
     """Sheet for the QA notes / summary pages that follow a figure page.
 
-    A figure on a paper sheet (letter / tabloid, either orientation) gets
-    its text pages on that same sheet: a tabloid figure was followed by a
-    letter QA page. A tight / auto-sized figure page (no paper size) gets
-    letter in its own orientation.
+    One rule: the text pages take the figure page's own size, so a PDF never
+    mixes page sizes. A paper sheet (letter / tabloid, either orientation)
+    is matched exactly; a tight / auto-sized figure page is matched to its
+    actual canvas size rounded to 0.01 in (QA round 8: 10.99 x 8.43 in
+    figure followed by an 11 x 8.5 in QA page). Only a figure page too small
+    to hold text (under ``TEXT_PAGE_MIN_SIDE_IN`` either way) gets letter in
+    its own orientation.
     """
     if figure_page_in is None:
         return LETTER_LANDSCAPE_IN
@@ -86,6 +94,8 @@ def text_page_size_for(figure_page_in: tuple[float, float] | None) -> tuple[floa
     for paper in PAGE_FIGSIZE_IN.values():
         if abs(width - paper[0]) < 0.05 and abs(height - paper[1]) < 0.05:
             return float(paper[0]), float(paper[1])
+    if width >= TEXT_PAGE_MIN_SIDE_IN and height >= TEXT_PAGE_MIN_SIDE_IN:
+        return round(float(width), 2), round(float(height), 2)
     return LETTER_LANDSCAPE_IN if width >= height else (LETTER_LANDSCAPE_IN[1], LETTER_LANDSCAPE_IN[0])
 
 

@@ -467,8 +467,12 @@ def test_text_page_size_rules() -> None:
 
     assert text_page_size_for((17.0, 11.0)) == (17.0, 11.0)
     assert text_page_size_for((8.5, 11.0)) == (8.5, 11.0)
-    assert text_page_size_for((12.1, 7.1)) == LETTER_LANDSCAPE_IN
-    assert text_page_size_for((5.0, 9.0)) == (8.5, 11.0)
+    # Round 8: a tight / auto page keeps its own size (no mixed page sizes).
+    assert text_page_size_for((12.1, 7.1)) == (12.1, 7.1)
+    assert text_page_size_for((5.0, 9.0)) == (5.0, 9.0)
+    # Too small to hold text: letter in the figure's orientation.
+    assert text_page_size_for((3.0, 9.0)) == (8.5, 11.0)
+    assert text_page_size_for((12.0, 2.5)) == LETTER_LANDSCAPE_IN
     assert text_page_size_for(None) == LETTER_LANDSCAPE_IN
 
 

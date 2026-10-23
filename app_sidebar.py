@@ -1075,7 +1075,7 @@ def _render_fill_style_editor() -> None:
         "Hatch pattern",
         options=style_hatch_options,
         format_func=lambda hatch: hatch or "None (solid fill)",
-        help="Pattern drawn over the fill colour (template 261002 marks by default).",
+        help="Pattern drawn over the fill colour (legend 261023 marks by default).",
         index=style_hatch_options.index(current_style.hatch)
         if current_style.hatch in style_hatch_options
         else 0,

@@ -322,7 +322,7 @@ def render_full_lithology_legend() -> None:
         png = _full_legend_png()
         st.image(
             png,
-            caption="Colours and patterns follow the client legend template (261002).",
+            caption="Colours and patterns follow the client lithology legend 261023.",
             width="stretch",
         )
         st.download_button(

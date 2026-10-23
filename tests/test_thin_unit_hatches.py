@@ -23,14 +23,15 @@ from tests.conftest import assert_valid_svg, run_pipeline
 
 matplotlib.use("Agg")
 
-# Densify mechanics use Clay Loam's "+" marks (6 rows per inch, the sparsest
-# template pattern); Sand's stipple and the gravel stones are fine enough that
-# ordinary thin beds no longer need densifying.
-THIN_CODE = "Clay Loam"
+# Densify mechanics use Loam's "+" marks (legend 261023: Loam is the "+" unit;
+# 8 rows per inch, the sparsest template pattern with the silty dashes);
+# Sand's stipple and the gravel stones are fine enough that ordinary thin beds
+# no longer need densifying.
+THIN_CODE = "Loam"
 THIN_TOP = 5.0
-# 0.25 m: ~0.085 in on the section sheet (the sheet's bottom fit gives the
-# plot more height than it had, so a 0.3 m bed now draws just over 0.1 in).
-THIN_BOTTOM = 5.25
+# 0.2 m: ~0.068 in on the section sheet, under the "+" pattern's thin
+# threshold (0.1 in x 6/8 rows = 0.075 in).
+THIN_BOTTOM = 5.2
 THICK_TOP = 8.0
 THICK_BOTTOM = 13.0
 
@@ -277,9 +278,10 @@ def test_multi_char_base_hatch_factors() -> None:
     # Stock-pitch single-char bases behave like the default.
     for height in (0.0, 0.01, 0.05, 0.08, 0.099, 0.1, 0.5):
         assert thin_unit_densify_factor(height, base_hatch="o") == thin_unit_densify_factor(height)
-    # Template stipple ('.', 14 rows/in) only densifies far thinner beds.
-    assert thin_unit_densify_factor(0.05, base_hatch=".") == 1
-    assert thin_unit_densify_factor(0.04, base_hatch=".") >= 2
+    # Template stipple ('.', 16 rows/in) only densifies far thinner beds
+    # (threshold 0.1 in x 6/16 = 0.0375 in).
+    assert thin_unit_densify_factor(0.04, base_hatch=".") == 1
+    assert thin_unit_densify_factor(0.035, base_hatch=".") >= 2
 
 
 def test_thin_bed_with_multi_char_hatch_is_not_over_densified() -> None:
@@ -334,7 +336,7 @@ def test_draw_leaves_figure_not_stale() -> None:
 
 def test_legend_swatch_hatch_keeps_marks_on_short_swatches() -> None:
     """A swatch shorter than one hatch row could miss every mark, so Sand
-    read as plain in a large-font portrait legend (template 261002: Sand is
+    read as plain in a large-font portrait legend (legend 261023: Sand is
     dotted)."""
     from renderer_common import legend_swatch_hatch
 

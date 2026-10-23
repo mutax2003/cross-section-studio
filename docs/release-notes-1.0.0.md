@@ -8,7 +8,8 @@ Publish the Windows zip from `scripts/build_windows.ps1` and a
 
 - **Lithology legend 261002** is the authoritative colour and hatch scheme (sand
   stipple, silty dashes, "+" loam mixes, cobble circles for gravel). The old Excel
-  hex sheet only supplies codes the scheme lacks.
+  hex sheet only supplies codes the scheme lacks. *(Superseded in 1.1.1 by
+  legend 261023.)*
 - **Hatch marks print at template density**; legend swatches draw the same marks
   at the same spacing as the section, on every page size.
 - **Chemistry values** sit to the right of their own borehole, in depth order,

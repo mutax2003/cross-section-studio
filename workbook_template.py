@@ -462,9 +462,10 @@ def _column_hints() -> dict[str, dict[str, str]]:
 
 def _instructions_lines() -> list[str]:
     try:
-        from constants import USGS_LITHOLOGY_COLORS
+        from constants import LITHOLOGY_LEGEND_ORDER
 
-        lithology_list = ", ".join(sorted(USGS_LITHOLOGY_COLORS))
+        # The client legend's codes (261023), in legend order.
+        lithology_list = ", ".join(LITHOLOGY_LEGEND_ORDER)
     except Exception:
         lithology_list = (
             "Clay, Sand, Clay Loam, Sandy Clay, Silty Clay, Sandstone, Silt, "

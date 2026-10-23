@@ -1,12 +1,14 @@
 """Write one PNG swatch per lithology for the Survey123 borehole-log export.
 
 Survey123 renders each lithology from a fixed-size PNG in a zip; this script
-draws every canonical code with the app's own colour and hatch so field logs
-and cross-sections match. Size is a parameter because the required pixel
+draws every canonical code with the app's own colour and hatch (client legend
+261023, ``data/bh_log_lithology_legend.json``) so field logs and
+cross-sections match. Size is a parameter because the required pixel
 dimensions are set by the form, not by this program.
 
     python scripts/export_lithology_swatches.py --width 64 --height 64 --out dist/swatches
     python scripts/export_lithology_swatches.py --zip dist/lithology_swatches.zip
+    python scripts/export_lithology_swatches.py --sheet dist/legend_261023.png
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ from constants import (  # noqa: E402
 )
 from hatch_patterns import install as install_template_hatches  # noqa: E402
 
-# Same marks as the app's figures (template 261002 stipple, dashes, plus marks).
+# Same marks as the app's figures (CAD legend 261023 dots, dashes, plus marks, stones).
 install_template_hatches()
 
 _DPI = 100
@@ -137,7 +139,13 @@ def main() -> int:
         "--sheet",
         type=Path,
         default=None,
-        help="also write a legend sheet PNG (swatch, name, colour and pattern per row)",
+        help="also write a legend sheet PNG (261023 style: tall swatches, name above)",
+    )
+    parser.add_argument(
+        "--sheet-layout",
+        choices=("tall", "rows"),
+        default="tall",
+        help="legend sheet layout: tall swatches (261023, default) or one row per code",
     )
     args = parser.parse_args()
     names = export_swatches(
@@ -152,7 +160,8 @@ def main() -> int:
         from lithology_legend_sheet import build_legend_sheet_png
 
         args.sheet.parent.mkdir(parents=True, exist_ok=True)
-        args.sheet.write_bytes(build_legend_sheet_png(resolve_codes(args.code)))
+        sheet_codes = resolve_codes(args.code) if args.code else None
+        args.sheet.write_bytes(build_legend_sheet_png(sheet_codes, layout=args.sheet_layout))
         print(f"Legend sheet: {args.sheet}")
     if args.zip:
         print(f"Zip: {args.zip}")

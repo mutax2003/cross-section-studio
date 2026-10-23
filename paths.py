@@ -51,12 +51,12 @@ def lithology_styles_path() -> Path:
 
 
 def bh_log_lithology_legend_xlsx_path() -> Path:
-    """Source-of-truth BH Log lithology colour legend (Excel)."""
+    """Client lithology legend workbook (261023): source of the scheme JSON."""
     return app_root() / "data" / "BH Log Lithology Legend.xlsx"
 
 
 def bh_log_lithology_legend_path() -> Path:
-    """Cached JSON export of the BH Log legend (fallback when Excel is absent)."""
+    """Lithology scheme JSON generated from the legend workbook (runtime source)."""
     return app_root() / "data" / "bh_log_lithology_legend.json"
 
 

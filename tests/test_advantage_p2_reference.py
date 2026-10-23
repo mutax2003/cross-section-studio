@@ -21,7 +21,6 @@ from constants import (
     CONSULTING_LITHOLOGY_COLORS,
     USGS_LITHOLOGY_COLORS,
     get_lithology_style,
-    parse_bh_log_legend_xlsx,
 )
 from paths import bh_log_lithology_legend_xlsx_path
 from pipeline import build_cross_section
@@ -31,19 +30,26 @@ from tests.conftest import assert_valid_svg
 def test_bh_log_legend_colors_loaded() -> None:
     assert CONSULTING_LITHOLOGY_COLORS["Clay"] == "#967259"
     assert USGS_LITHOLOGY_COLORS["Sand"] == "#FFE39F"
-    assert get_lithology_style("Clay Loam", consulting_palette=True).color == "#C68642"
-    assert get_lithology_style("clay loam").color == "#C68642"
+    # Legend 261023: the clay loams moved to their own beige (#CAB5A5); Loam
+    # keeps the orange.
+    assert get_lithology_style("Clay Loam", consulting_palette=True).color == "#CAB5A5"
+    assert get_lithology_style("clay loam").color == "#CAB5A5"
+    assert get_lithology_style("Loam").color == "#C68642"
 
 
-def test_bh_log_legend_excel_is_runtime_source() -> None:
+def test_bh_log_legend_workbook_colours_reach_the_figures() -> None:
+    """Every row of the client workbook (via the generated JSON) is the colour drawn."""
     xlsx = bh_log_lithology_legend_xlsx_path()
     if not xlsx.exists():
-        pytest.skip("BH Log Lithology Legend.xlsx not present (CI uses JSON palette)")
-    excel_colors = parse_bh_log_legend_xlsx(xlsx)
-    assert excel_colors
-    for code, colour in excel_colors.items():
-        assert USGS_LITHOLOGY_COLORS[code] == colour
-        assert get_lithology_style(code).color == colour
+        pytest.skip("BH Log Lithology Legend.xlsx not present")
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from build_lithology_legend import read_workbook_rows
+
+    rows = read_workbook_rows(xlsx)
+    assert len(rows) == 24
+    for row in rows:
+        assert USGS_LITHOLOGY_COLORS[row["name"]] == row["color"]
+        assert get_lithology_style(row["name"]).color == row["color"]
 
 
 def test_normalize_compound_hole_id() -> None:

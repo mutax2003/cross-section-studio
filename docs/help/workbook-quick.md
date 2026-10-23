@@ -23,6 +23,8 @@ Optional: `elevation_datum`, `inclination_deg`, `azimuth_deg`, `stick_up_m`.
 
 Depth intervals below collar: `hole_id`, `from_depth`, `to_depth`, `lithology_code`.
 
+Colours and hatches follow the client lithology legend **261023** — use its names (Clay, Silty Clay, Clay Loam, Sandy Clay Loam, Loam, Loamy Sand, Sand, Sand and Gravel, Gravel, Topsoil, Fill, …). Unknown codes draw in grey.
+
 Optional: `hatch_pattern`, `unit_order` (1 = shallowest). You can usually leave `unit_order` blank: layers correlate by code, and when a hole repeats a code the app numbers the layers for you, lining all holes up into one site-wide sequence so the same layer gets the same number in every hole (sidebar **Number layers down each hole automatically**, on by default). Enter it only to force a correlation.
 
 Validate also checks the log:

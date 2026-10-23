@@ -966,9 +966,10 @@ def test_dense_consulting_headers_go_vertical_instead_of_overlapping() -> None:
 
 
 def test_agreed_lithology_scheme_groups_and_hatches() -> None:
-    """Meeting 1 Oct 2026: one base colour per soil group, hatch marks the
-    secondary component, Coal is the only black unit, Topsoil sits between
-    clay/silt and organics in darkness with no hatch."""
+    """Legend 261023: one base colour per soil group, hatch marks the secondary
+    component (sandy = dots, silty = dashes, loam = "+", gravel = stones),
+    Coal is the only black unit, Topsoil sits between clay/silt and organics in
+    darkness with no hatch."""
     from constants import HATCH_GRAVEL, HATCH_PLUS, HATCH_SANDY, HATCH_SILTY
 
     def colour(code):
@@ -977,18 +978,17 @@ def test_agreed_lithology_scheme_groups_and_hatches() -> None:
     def hatch(code):
         return get_lithology_style(code).hatch
 
-    assert {colour(c) for c in ("Clay", "Sandy Clay", "Silty Clay", "Silty Clay Loam")} == {"#967259"}
-    assert {colour(c) for c in ("Sandy Clay Loam", "Clay Loam", "Loam", "Silty Loam")} == {"#C68642"}
+    assert {colour(c) for c in ("Clay", "Sandy Clay", "Silty Clay")} == {"#967259"}
+    assert {colour(c) for c in ("Clay Loam", "Sandy Clay Loam", "Silty Clay Loam")} == {"#CAB5A5"}
+    assert {colour(c) for c in ("Loam", "Silty Loam")} == {"#C68642"}
     assert {colour(c) for c in ("Sand", "Loamy Sand", "Silty Sand", "Sand and Gravel")} == {"#FFE39F"}
     assert {colour(c) for c in ("Siltstone", "Sandstone", "Mudstone")} == {"#4C516D"}
-    assert hatch("Sandy Clay") == HATCH_SANDY and hatch("Silty Clay") == HATCH_SILTY
-    assert hatch("Silty Clay Loam") == hatch("Clay Loam") == HATCH_PLUS
-    assert hatch("Sand and Gravel") == hatch("Gravel") == HATCH_GRAVEL
-    assert hatch("Silty Sand") == hatch("Loamy Sand") == HATCH_SILTY
-    # Template 261002: Sand carries the same stipple as the other sandy units
-    # (same dot density as Sandy Clay, Sandy Clay Loam and Sandstone).
     assert hatch("Sand") == hatch("Sandy Clay") == hatch("Sandy Clay Loam") == hatch("Sandstone") == HATCH_SANDY
-    assert hatch("Clay") == hatch("Silt") == hatch("Loam") == hatch("Topsoil") == ""
+    assert hatch("Silty Clay") == hatch("Silty Clay Loam") == hatch("Silty Loam") == hatch("Siltstone") == HATCH_SILTY
+    assert hatch("Loam") == hatch("Loamy Sand") == HATCH_PLUS
+    assert hatch("Sand and Gravel") == hatch("Gravel") == HATCH_GRAVEL
+    assert hatch("Silty Sand") == HATCH_SILTY  # legacy code, sand group
+    assert hatch("Clay") == hatch("Silt") == hatch("Clay Loam") == hatch("Topsoil") == hatch("Mudstone") == ""
 
     def luminance(code):
         r, g, b = (int(colour(code)[i : i + 2], 16) for i in (1, 3, 5))
@@ -1016,36 +1016,20 @@ def test_consulting_first_borehole_is_drawn_in_full() -> None:
     assert "0" in labels
 
 
-def test_old_excel_legend_is_fallback_only(tmp_path, monkeypatch, caplog) -> None:
-    """Template 261002 supersedes the old BH Log hex sheet: a leftover Excel
-    legend never recolours scheme codes; it only adds codes the scheme lacks."""
-    import logging
-
-    import openpyxl
+def test_flat_legacy_scheme_json_still_parses(tmp_path) -> None:
+    """Schema 1 (a flat ``{code: hex}`` map) still loads; hatches then fall
+    back to the default "+" (the bundled 261023 JSON carries them)."""
+    import json
 
     import constants
-    import paths
 
-    legend = tmp_path / "BH Log Lithology Legend.xlsx"
-    book = openpyxl.Workbook()
-    sheet = book.active
-    sheet.append(["BH Log Lithology Legend"])  # title row; the parser reads header=1
-    sheet.append(["Colour", "", "Lithology", "RGB"])
-    sheet.append(["#38220F", "", "Clay", ""])
-    sheet.append(["#123456", "", "Legacy Fill Unit", ""])
-    book.save(legend)
-    monkeypatch.setattr(paths, "bh_log_lithology_legend_xlsx_path", lambda: legend)
-    monkeypatch.setattr(constants, "bh_log_lithology_legend_xlsx_path", lambda: legend)
-    constants._load_bh_log_lithology_colors.cache_clear()
-    try:
-        with caplog.at_level(logging.WARNING):
-            palette = constants._build_lithology_palette()
-        assert palette["Clay"] == constants.USGS_LITHOLOGY_COLORS["Clay"] != "#38220F"
-        assert palette["Coal"] == "#000000" and palette["Silty Sand"] == "#FFE39F"
-        assert palette["Legacy Fill Unit"] == "#123456"  # old-only code falls back
-        assert any("the scheme wins" in r.message for r in caplog.records)
-    finally:
-        constants._load_bh_log_lithology_colors.cache_clear()
+    legacy = tmp_path / "legend.json"
+    legacy.write_text(json.dumps({"Clay": "967259", "Bogus": "nothex"}), encoding="utf-8")
+    scheme = constants.parse_lithology_scheme(legacy)
+    assert scheme.colors == {"Clay": "#967259"}
+    assert scheme.hatches == {} and scheme.scheme_id == "unversioned"
+    assert constants.parse_bh_log_legend_json(legacy) == {"Clay": "#967259"}
+    assert constants.parse_lithology_scheme(tmp_path / "missing.json").colors == {}
 
 
 def test_style_override_can_be_cleared(tmp_path, monkeypatch) -> None:
@@ -1226,27 +1210,6 @@ def test_unknown_lithology_codes_get_distinct_fallback_styles() -> None:
     assert all(s.color.startswith("#") and len(s.hatch) >= 2 for s in styles.values())
     assert len({(s.color, s.hatch) for s in styles.values()}) >= 3  # not one grey for all
     assert get_lithology_style("CL") == get_lithology_style("cl")  # stable per code
-
-
-# Fill colours read from the client CAD template Cross_Section_Litho_Legend_261002.
-_CAD_TEMPLATE_261002_COLOURS = {
-    "Clay": "#967259", "Silt": "#8D5524", "Loam": "#C68642", "Sand": "#FFE39F",
-    "Topsoil": "#534230", "Organics": "#38220F", "Fill": "#854442", "Gravel": "#D9D9D9",
-    "Mudstone": "#4C516D", "Drilling Waste": "#808080", "Other": "#4D5D53",
-    "No Recovery": "#FFFFFF", "Bentonite": "#BFBFBF", "Coal": "#000000", "Refuse": "#8C973D",
-    "Sandy Clay": "#967259", "Silty Clay": "#967259", "Silty Clay Loam": "#967259",
-    "Sand and Gravel": "#FFE39F", "Loamy Sand": "#FFE39F", "Sandy Clay Loam": "#C68642",
-    "Silty Loam": "#C68642", "Clay Loam": "#C68642", "Sandstone": "#4C516D", "Siltstone": "#4C516D",
-}
-
-
-def test_palette_matches_cad_template_261002() -> None:
-    mismatched = {
-        code: (expected, get_lithology_style(code).color.upper())
-        for code, expected in _CAD_TEMPLATE_261002_COLOURS.items()
-        if get_lithology_style(code).color.upper() != expected
-    }
-    assert not mismatched, mismatched
 
 
 def test_section_sheet_legend_stays_on_the_page() -> None:

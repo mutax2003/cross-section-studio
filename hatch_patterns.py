@@ -1,21 +1,35 @@
-"""Hatch marks drawn like the client CAD legend (Cross_Section_Litho_Legend_261002).
+"""Hatch marks drawn like the client CAD legend 261023.
 
-Matplotlib's built-in hatches do not match the template:
+Source: Cross_Section_Litho_Legend_261002_CB.dwg (the 261023 legend; read with
+LibreDWG) and its plot 261023_Cross_Section_Litho_Legend.pdf. Every hatch is
+on layer XSEC-LITH-HATCH / XSEC-LITH-GRVL-HATCH in #323232:
 
-* ``.`` draws large dots on a 1/6 in grid; the template stipple is fine
-  (~0.8 pt dots, ~5 pt apart, staggered).
-* ``/`` draws continuous diagonals; the template's silty pattern is short
-  45° dashes (~7 pt long, ~9 pt apart, staggered).
-* ``+`` draws a full grid; the template's clay-loam pattern is isolated small
-  ``+`` marks (4.35 pt strokes, ~12 pt apart, staggered).
+====================  ==============================  ==========================
+App hatch             CAD pattern (scale, angle)      Mark on the 261023 plot
+====================  ==============================  ==========================
+``.`` sandy           DOTS (0.75, 0°)                 0.84 pt dots, 4.7 pt
+                                                      staggered lattice
+``/`` silty           DASH (0.5, 45°)                 6.25 pt 45° dashes on a
+                                                      square 8.85 pt lattice
+``+`` loam            CROSS (0.35, 0°)                4.38 pt "+" marks on a
+                                                      checkerboard of 8.76 pt
+``O`` gravel          GRAVEL (0.15, 0°)               stone outlines, 15 pt tile
+====================  ==============================  ==========================
 
-``install()`` swaps the matplotlib pattern classes for those three characters
+Matplotlib's built-in hatches do not match: ``.`` draws large dots on a 1/6 in
+grid, ``/`` continuous diagonals, ``+`` a full grid and ``O`` even circles.
+``install()`` swaps the matplotlib pattern classes for those characters
 (every other character keeps its stock pattern; ``x`` keeps continuous
-diagonals). The hatch strings themselves are unchanged, so they stay valid
-matplotlib hatches, repeat-to-densify still works, and SVG/PDF/PNG all draw
-the same path. Matplotlib exposes no public custom-hatch API yet, so this
-patches ``matplotlib.hatch._hatch_types``; ``tests/test_hatch_patterns.py``
-guards it.
+diagonals). Marks per inch are whole numbers so the 1 in hatch cell tiles
+seamlessly: dots 16/in (4.5 pt), dashes and "+" 8/in (9 pt); the measured CAD
+pitches are 4.69, 8.85 and 8.76 pt. Gravel stones are drawn at 8 tiles/in
+(9 pt) rather than the CAD's 15 pt so the small figure-legend swatches still
+show whole stones (the stone shapes are the CAD's).
+
+The hatch strings themselves are unchanged, so they stay valid matplotlib
+hatches, repeat-to-densify still works, and SVG/PDF/PNG all draw the same
+path. Matplotlib exposes no public custom-hatch API yet, so this patches
+``matplotlib.hatch._hatch_types``; ``tests/test_hatch_patterns.py`` guards it.
 """
 
 from __future__ import annotations
@@ -27,20 +41,25 @@ import numpy as np
 from matplotlib.path import Path
 
 # Marks per inch along each axis for ONE pattern character at matplotlib's
-# default hatch density (6). Matplotlib's hatch unit cell is one inch.
-TEMPLATE_ROWS_PER_INCH: dict[str, int] = {".": 14, "/": 8, "+": 6, "O": 8}
+# default hatch density (6). Matplotlib's hatch unit cell is one inch. Even
+# counts keep the staggered dot rows and the "+" checkerboard seamless across
+# cell edges.
+TEMPLATE_ROWS_PER_INCH: dict[str, int] = {".": 16, "/": 8, "+": 8, "O": 8}
 STOCK_ROWS_PER_INCH = 6
 
-# Mark sizes, in inches (template measurements at 1:1).
-_DOT_RADIUS_IN = 0.42 / 72.0
-_DASH_HALF_SPAN_IN = 2.52 / 72.0  # each axis: 5.04 pt box -> ~7.1 pt dash
-_PLUS_ARM_IN = 4.35 / 2 / 72.0  # template "+" strokes are 4.35 pt long
+# Mark sizes, in inches (CAD legend 261023 at plot scale). Hatch dots are
+# filled *and* stroked with the 0.65 pt hatch line, so a 0.12 pt radius
+# prints as the CAD's 0.84 pt dot (the old 0.42 pt radius printed 1.5 pt).
+DOT_PRINTED_DIAMETER_PT = 0.84
+_DOT_RADIUS_IN = 0.12 / 72.0
+_DASH_HALF_SPAN_IN = 6.25 / 2.0 / np.sqrt(2.0) / 72.0  # 6.25 pt dash at 45°
+_PLUS_ARM_IN = 4.38 / 2 / 72.0  # CAD "+" strokes are 4.38 pt long
 
 _DEFAULT_DENSITY = 6
 
 # Gravel outlines are drawn thinner than other hatch marks: at the smaller
 # legend-size stones the shared 0.65 pt hatch line filled them in (the
-# template uses 0.42 pt lines on 17 pt stones).
+# template uses 0.42 pt lines on 15 pt stones).
 GRAVEL_HATCH_LINEWIDTH_PT = 0.3
 
 
@@ -50,8 +69,10 @@ def hatch_linewidth_for(hatch: str | None) -> float | None:
         return GRAVEL_HATCH_LINEWIDTH_PT
     return None
 
-# Gravel cobbles: one repeat tile of the template's stone outlines, traced
-# from Cross_Section_Litho_Legend_261002 (17.1 pt square tile). Drawn at 8
+
+# Gravel cobbles: one repeat tile of the CAD GRAVEL pattern's stone outlines,
+# traced from the 261002 plot (17.1 pt tile; the 261023 plot draws the same
+# stones on a 15 pt tile). Drawn at 8
 # tiles per inch (9 pt) in sections and legend swatches alike, so the figure
 # shows the stones the legend shows; whole tiles fit the 1 in cell. Each
 # entry is a straight segment (x0, y0, x1, y1) in tile units, y up; outlines
@@ -110,11 +131,12 @@ def rows_per_inch(hatch: str | None) -> int:
     return STOCK_ROWS_PER_INCH
 
 
-def _rows(hatch: str, char: str, density: int) -> int:
+def _rows(hatch: str, char: str, density: int, *, even: bool = False) -> int:
     count = hatch.count(char)
     if not count:
         return 0
-    return max(1, round(count * density * TEMPLATE_ROWS_PER_INCH[char] / _DEFAULT_DENSITY))
+    rows = max(1, round(count * density * TEMPLATE_ROWS_PER_INCH[char] / _DEFAULT_DENSITY))
+    return rows + (rows % 2) if even else rows
 
 
 class _TemplateShapes(mhatch.Shapes):
@@ -124,7 +146,8 @@ class _TemplateShapes(mhatch.Shapes):
     half_size_in = 0.0
 
     def __init__(self, hatch, density):
-        self.num_rows = _rows(hatch, self.char, density)
+        # Odd row counts would put two un-staggered rows on the cell edge.
+        self.num_rows = _rows(hatch, self.char, density, even=True)
         if self.num_rows:
             # Shapes scales vertices by (1 / num_rows) * size.
             self.size = self.half_size_in * self.num_rows
@@ -132,7 +155,7 @@ class _TemplateShapes(mhatch.Shapes):
 
 
 class TemplateDots(_TemplateShapes):
-    """Fine stipple for sandy units (``.``)."""
+    """Fine stipple for sandy units (``.``; CAD DOTS)."""
 
     char = "."
     half_size_in = _DOT_RADIUS_IN
@@ -145,34 +168,70 @@ class TemplateDots(_TemplateShapes):
         super().__init__(hatch, density)
 
 
-class TemplateDashes(_TemplateShapes):
-    """Short 45° dashes for silty units (``/``)."""
+class _LatticeMarks(mhatch.HatchPatternBase):
+    """One stroked mark per lattice point; subclasses give points and strokes."""
+
+    char = ""
+    even = False
+    # Strokes of one mark, relative to its centre, in inches: ((x0, y0, x1, y1), ...).
+    strokes: tuple[tuple[float, float, float, float], ...] = ()
+
+    def __init__(self, hatch, density):
+        self.num_rows = _rows(hatch, self.char, density, even=self.even)
+        self.centres = self.lattice(self.num_rows) if self.num_rows else np.empty((0, 2))
+        self.num_vertices = len(self.centres) * len(self.strokes) * 2
+
+    @staticmethod
+    def lattice(rows: int) -> np.ndarray:
+        raise NotImplementedError
+
+    def set_vertices_and_codes(self, vertices, codes):
+        strokes = np.asarray(self.strokes, dtype=float).reshape(-1, 2, 2)
+        marks = strokes[None, :, :, :] + self.centres[:, None, None, :]
+        vertices[:] = marks.reshape(-1, 2)
+        codes[0::2] = Path.MOVETO
+        codes[1::2] = Path.LINETO
+
+
+class TemplateDashes(_LatticeMarks):
+    """Short 45° dashes for silty units (``/``; CAD DASH at 45°).
+
+    The CAD dashes sit on a square lattice (rows and columns aligned), not
+    staggered. Centres are half a pitch in from the cell edge, so no dash is
+    cut by it.
+    """
 
     char = "/"
-    half_size_in = _DASH_HALF_SPAN_IN
-    filled = True  # open polyline: stroke it once, no reversed copy
+    strokes = ((-_DASH_HALF_SPAN_IN, -_DASH_HALF_SPAN_IN, _DASH_HALF_SPAN_IN, _DASH_HALF_SPAN_IN),)
 
-    def __init__(self, hatch, density):
-        self.shape_vertices = np.array([[-1.0, -1.0], [1.0, 1.0]])
-        self.shape_codes = np.array([Path.MOVETO, Path.LINETO], dtype=Path.code_type)
-        super().__init__(hatch, density)
+    @staticmethod
+    def lattice(rows: int) -> np.ndarray:
+        steps = (np.arange(rows) + 0.5) / rows
+        xs, ys = np.meshgrid(steps, steps)
+        return np.column_stack([xs.ravel(), ys.ravel()])
 
 
-class TemplatePlus(_TemplateShapes):
-    """Isolated small ``+`` marks for clay-loam mixes (``+``)."""
+class TemplatePlus(_LatticeMarks):
+    """Isolated small ``+`` marks for loam units (``+``; CAD CROSS).
+
+    The CAD marks sit on a checkerboard (every other point of a square grid),
+    i.e. each column is offset half a step from its neighbours. Marks on the
+    cell edge are listed on both edges so the clipped halves join up.
+    """
 
     char = "+"
-    half_size_in = _PLUS_ARM_IN
-    filled = True  # two open strokes
+    even = True
+    strokes = (
+        (-_PLUS_ARM_IN, 0.0, _PLUS_ARM_IN, 0.0),
+        (0.0, -_PLUS_ARM_IN, 0.0, _PLUS_ARM_IN),
+    )
 
-    def __init__(self, hatch, density):
-        self.shape_vertices = np.array([[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]])
-        self.shape_codes = np.array(
-            [Path.MOVETO, Path.LINETO, Path.MOVETO, Path.LINETO], dtype=Path.code_type
-        )
-        super().__init__(hatch, density)
-
-
+    @staticmethod
+    def lattice(rows: int) -> np.ndarray:
+        index = np.arange(rows + 1)
+        ix, iy = np.meshgrid(index, index)
+        keep = (ix + iy) % 2 == 0
+        return np.column_stack([ix[keep], iy[keep]]).astype(float) / rows
 
 class TemplateCobbles(mhatch.HatchPatternBase):
     """Irregular stone outlines for gravel (``O``), as on the template."""
@@ -404,6 +463,11 @@ def swatch_marks_path(
         all_c = (centres[None, :, :] + offsets[:, None, :]).reshape(-1, 2)
         all_h = np.broadcast_to(halves[None, :, :], (len(offsets), len(halves), 2)).reshape(-1, 2)
         all_i = np.arange(len(all_c))
+        # Marks on the cell edge are listed on both edges (the backends clip
+        # each half); tiled cells would draw them twice in a swatch.
+        _unique, first = np.unique(np.round(all_c, 6), axis=0, return_index=True)
+        first = np.sort(first)
+        all_c, all_h, all_i = all_c[first], all_h[first], all_i[first]
         pitch = 1.0 / max(rows_per_inch(hatch), 1)
         steps = np.arange(0.0, 2.0 * pitch, _MARK_PHASE_STEP_IN)
         # Only marks that some phase shift can bring into the swatch.

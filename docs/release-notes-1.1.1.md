@@ -82,10 +82,19 @@ of 1.1.0.
   non-detect; R and unknown flags are kept with a warning.
 - Chemistry label placement is 1.5–2× faster with identical output.
 - A TRUE/FALSE cell in a numeric column of a real workbook (Collars,
-  Lithology, Water, Screens, Environmental, Deviations) is a row error, not a
-  silent 1 / 0. Scripted builds reject an unknown chemistry colour mode and a
-  negative sheet-wide limit; the four-parameter cap treats `Cl` and ` cl` as one
-  parameter; exports no longer pick up matplotlib settings changed by other
-  code while they run.
+  Lithology, Water, Screens, Environmental, Deviations, the Data Entry sheet,
+  Field Data OVA / EC / RL / TD and import-profile lithology sheets) is a row
+  error or import note, not a silent 1 / 0; each sheet is read once. A file
+  type whose reader cannot report TRUE/FALSE cells gets an import warning.
+  Scripted builds reject an unknown chemistry colour mode, a TRUE/FALSE,
+  negative or infinite limit (blank / NaN means no limit, sheet-wide and per
+  parameter alike) before any geometry is built; `SectionBuildRequest` accepts
+  `Threshold` / ` BLACK_RED ` like `build_cross_section`.
+- Parameter names that differ only in case or spaces (`Cl`, `cl`, ` CL `) are
+  one parameter everywhere: Configure lists it once, every reading plots under
+  the first spelling with its limits and units, and Validate names the merged
+  spellings. Lithology codes match the legend in any case (`SAND AND GRAVEL`).
+- Exports no longer pick up matplotlib settings changed by other code while
+  they run.
 - The desktop updater accepts PyInstaller 6 zips; the Windows build fails
   loudly on pip or PyInstaller errors and ships without client reference files.

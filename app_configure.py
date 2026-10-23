@@ -39,6 +39,7 @@ from render_profiles import (
     ChemistryThresholdMap,
     chemistry_limit_value,
     chemistry_parameter_key,
+    chemistry_parameter_spellings,
     chemistry_thresholds_from_readings,
     is_two_band_mode,
     resolved_chemistry_limits_for,
@@ -538,8 +539,13 @@ def render_configure_step(
             st.caption("Fix the section line or the workbook data before generating.")
         else:
             subset_ready = True
+            # One option per parameter: spellings that differ only in case /
+            # spaces ("Cl", "cl") are one (chemistry_parameter_key), listed by
+            # the first spelling; Validate names the merged spellings.
             available_params = sorted(
-                {reading.parameter for reading in subset_preflight.environmental_readings}
+                chemistry_parameter_spellings(
+                    reading.parameter for reading in subset_preflight.environmental_readings
+                )
             )
             if transect_mode == "By coordinates":
                 off_line_note = off_line_lab_values_message(

@@ -291,10 +291,13 @@ def test_nan_limits_are_not_inverted() -> None:
 
 
 @pytest.mark.parametrize("field", ["chemistry_threshold_green_max", "chemistry_threshold_yellow_max"])
-@pytest.mark.parametrize("bad", [NAN, float("inf"), float("-inf")])
-def test_request_rejects_nan_and_inf_sheet_limits(field: str, bad: float) -> None:
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), True])
+def test_request_rejects_inf_and_bool_sheet_limits(field: str, bad: float) -> None:
     with pytest.raises(ValueError):
         SectionBuildRequest(transect_points=((0.0, 0.0), (1.0, 0.0)), **{field: bad})
     request = SectionBuildRequest(transect_points=((0.0, 0.0), (1.0, 0.0)), **{field: 5.0})
     assert getattr(request, field) == 5.0
     assert getattr(SectionBuildRequest(transect_points=((0.0, 0.0), (1.0, 0.0))), field) is None
+    # NaN (a blank cell) is "no limit", as for the per-parameter limits.
+    blank = SectionBuildRequest(transect_points=((0.0, 0.0), (1.0, 0.0)), **{field: NAN})
+    assert getattr(blank, field) is None

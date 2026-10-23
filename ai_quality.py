@@ -63,7 +63,9 @@ from paths import lithology_aliases_path
 from projection import TransectGeometry, build_along_hole_tvd, project_collar_to_transect
 from render_profiles import (
     chemistry_limit_value,
+    chemistry_parameter_key,
     chemistry_thresholds_from_readings,
+    merged_parameter_spelling_note,
     orange_only_limit_notes,
 )
 
@@ -193,24 +195,32 @@ def save_lithology_alias(source_code: str, canonical_code: str, path: Path | Non
     load_lithology_aliases.cache_clear()
 
 
+def _scheme_key(code: str) -> str:
+    """Case- and spacing-insensitive key: ``"SAND  AND_GRAVEL"`` → ``"sand and gravel"``."""
+    return " ".join(re.sub(r"_+", " ", code).split()).casefold()
+
+
 @lru_cache(maxsize=1)
 def _canonical_by_lower() -> dict[str, str]:
-    """Lowercase → canonical code map for O(1) case-insensitive matching."""
-    return {canonical.lower(): canonical for canonical in CANONICAL_LITHOLOGY_CODES}
+    """Scheme key → canonical code (``constants`` scheme, client legend JSON)."""
+    return {_scheme_key(canonical): canonical for canonical in CANONICAL_LITHOLOGY_CODES}
 
 
 def normalize_lithology_code(code: str, aliases: dict[str, str] | None = None) -> str:
+    """The scheme spelling of ``code``; then an alias; else ``code`` trimmed.
+
+    Scheme codes match case- and spacing-insensitively first (``"SAND AND
+    GRAVEL"``, ``"sand and gravel"``, ``"Sand  And Gravel"`` are all ``"Sand
+    and Gravel"``), so a legend code never depends on title-casing or an alias.
+    """
     stripped = code.strip()
     if not stripped:
         return ""
-    lookup = aliases if aliases is not None else load_lithology_aliases()
-    normalized_key = _normalize_header(stripped)
-    canonical = _canonical_by_lower().get(normalized_key)
+    canonical = _canonical_by_lower().get(_scheme_key(stripped))
     if canonical is not None:
         return canonical
-    title = stripped.title()
-    if title in CANONICAL_LITHOLOGY_CODES:
-        return title
+    lookup = aliases if aliases is not None else load_lithology_aliases()
+    normalized_key = _normalize_header(stripped)
     if normalized_key in lookup:
         return lookup[normalized_key]
     return stripped
@@ -348,13 +358,16 @@ def read_mapped_sheets(
     mapping: MappingProposal,
     workbook: pd.ExcelFile | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    from parsing import read_data_sheet  # parsing imports this module lazily
+
     active_workbook = workbook or pd.ExcelFile(source)
+    # Same read as the parser: TRUE/FALSE cells stay bools (not 1 / 0).
     collars_df = apply_column_mapping(
-        pd.read_excel(active_workbook, sheet_name=mapping.collars_sheet),
+        read_data_sheet(active_workbook, mapping.collars_sheet),
         mapping.collar_column_mappings,
     )
     lithology_df = apply_column_mapping(
-        pd.read_excel(active_workbook, sheet_name=mapping.lithology_sheet),
+        read_data_sheet(active_workbook, mapping.lithology_sheet),
         mapping.lithology_column_mappings,
     )
     return collars_df, lithology_df
@@ -1580,6 +1593,9 @@ def summarize_environmental_readings(
     warnings: list[str] = []
     orphan_hole_ids: set[str] = set()
     by_parameter: dict[str, list[EnvironmentalReading]] = {}
+    # One row per parameter (chemistry_parameter_key: "Cl" and "cl" are one),
+    # named by its first spelling, as Configure lists it and the figure plots it.
+    display_by_key: dict[str, str] = {}
 
     for reading in readings:
         if reading.hole_id not in hole_set:
@@ -1594,7 +1610,10 @@ def summarize_environmental_readings(
         if implausible is not None:
             warnings.append(implausible)
             continue
-        by_parameter.setdefault(reading.parameter, []).append(reading)
+        display = display_by_key.setdefault(
+            chemistry_parameter_key(reading.parameter), reading.parameter
+        )
+        by_parameter.setdefault(display, []).append(reading)
         if collar is not None and reading.sample_depth > collar.total_depth:
             warnings.append(
                 f"{reading.hole_id} ({reading.parameter}): sample depth {reading.sample_depth:.2f} m "
@@ -1618,6 +1637,9 @@ def summarize_environmental_readings(
         )
 
     on_line = [item for items in by_parameter.values() for item in items]
+    spelling_note = merged_parameter_spelling_note(item.parameter for item in on_line)
+    if spelling_note:
+        warnings.append(spelling_note)
     # Several dated samples at one hole/parameter/depth: the figure draws the latest.
     latest_on_line, date_notes = latest_environmental_readings(on_line)
     warnings.extend(f"Info: {note}" for note in date_notes)

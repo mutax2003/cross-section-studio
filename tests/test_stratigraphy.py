@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
-from shapely.geometry import LineString, Point, Polygon as ShapelyPolygon
+from shapely.geometry import LineString, Point
+from shapely.geometry import Polygon as ShapelyPolygon
 
 from models import CorrelationOverride
 from stratigraphy import (
@@ -156,13 +157,19 @@ def test_pinch_out_uses_elevation_neighbors_when_collars_differ() -> None:
     )
     polygons = build_stratigraphy(projected, allow_pinch_outs=True)
     clay = next(item for item in polygons if item.lithology_code == "Clay" and item.is_pinch_out)
-    # Elevation neighbor above = Fill bottom 100 (nothing below 85) → apex at mid-x, z=100
-    apex = Point(25.0, 100.0)
+    # In elevation, BH-02's Silt (100–90) overlaps the Clay (95–85): the Clay
+    # projects into it and tapers at its own mid-elevation → apex at mid-x, z=90
+    # (not jumping to the Fill base at 100 above the Silt).
+    apex = Point(25.0, 90.0)
     assert clay.polygon.buffer(0.05).contains(apex)
     # Depth-based neighbors (Gravel base 5 m → 115, Silt top 20 m → 100) would
     # average to 107.5 (must not be used)
     wrong_apex = Point(25.0, 107.5)
     assert not clay.polygon.buffer(0.05).contains(wrong_apex)
+    # The Sand (100–95) overlaps the top of the Silt too (and touches the Fill
+    # base only at the contact): it tapers at its own mid-elevation as well.
+    sand = next(item for item in polygons if item.lithology_code == "Sand" and item.is_pinch_out)
+    assert sand.polygon.buffer(0.05).contains(Point(25.0, 97.5))
 
 
 def test_unit_order_correlates_duplicate_lithology_codes() -> None:

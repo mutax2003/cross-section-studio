@@ -170,58 +170,47 @@ def _correlation_keys(intervals: list[_LayerInterval]) -> dict[Hashable, _LayerI
 
 def _pinch_out_z_mid(
     pinch_interval: _LayerInterval,
-    neighbor_intervals: list[_LayerInterval],
     *,
-    by_order: dict[int, _LayerInterval] | None = None,
+    ground_at_tip: float | None = None,
 ) -> float:
-    """Average contact elevation from units above/below the pinch-out at the neighbor hole.
+    """Tip elevation of an unbracketed pinch-out (no matched unit above or below it).
 
-    When ``unit_order`` is set on the pinch interval, prefer neighbor intervals with
-    adjacent ``unit_order`` values before falling back to elevation-position neighbors.
-    This stabilizes pinch-outs when duplicate lithology codes appear in one hole.
+    The wedge thins laterally at its own mid-elevation, held at or below the
+    ground line (``ground_at_tip``: the collar-to-collar line at the tip's x).
 
-    Pass ``by_order`` when calling repeatedly for the same neighbor hole to avoid
-    rebuilding the order map on every unmatched key.
+    The tip used to come from the neighbour's contacts, classifying its
+    intervals only as wholly *above* or *below* the wedge. A neighbour unit that
+    overlaps the wedge's span — the unit the wedge projects *into* — was
+    neither, so the tip jumped past it to the next contact: every unit of a 2 m
+    hole was drawn as a needle plunging 16 m to the base of the neighbour's 15 m
+    Sand, the 19 m Fill under that Sand rose 14 m to the 2 m hole's TD (then
+    clipped back against the Sand), and the fill a few centimetres from the hole
+    no longer matched its log (fuzz seed 46). The neighbour's TD and its top
+    are not contacts the wedge abuts either: a unit above the neighbour's log
+    following the ground to it crossed the own-mid wedges of the units below
+    and clipped them. The rule no longer looks at the neighbour's units at all.
     """
-    if pinch_interval.unit_order is not None:
-        order = pinch_interval.unit_order
-        if by_order is None:
-            by_order = {
-                interval.unit_order: interval
-                for interval in neighbor_intervals
-                if interval.unit_order is not None
-            }
-        contacts: list[float] = []
-        above = by_order.get(order - 1)
-        below = by_order.get(order + 1)
-        if above is not None:
-            contacts.append(above.bottom_elevation)
-        if below is not None:
-            contacts.append(below.top_elevation)
-        if contacts:
-            return sum(contacts) / len(contacts)
+    own_mid = (pinch_interval.top_elevation + pinch_interval.bottom_elevation) / 2.0
+    if ground_at_tip is not None and np.isfinite(ground_at_tip):
+        return min(own_mid, ground_at_tip)
+    return own_mid
 
-    # Elevation-position neighbors: shallower (above) and deeper (below) the pinch interval.
-    # Compare elevations (not hole-local depths) so unequal collar RLs stay correct.
-    above = None
-    below = None
-    for interval in neighbor_intervals:
-        if interval.bottom_elevation >= pinch_interval.top_elevation - 1e-9:
-            if above is None or interval.bottom_elevation < above.bottom_elevation:
-                above = interval
-        if interval.top_elevation <= pinch_interval.bottom_elevation + 1e-9:
-            if below is None or interval.top_elevation > below.top_elevation:
-                below = interval
 
-    contacts = []
-    if above is not None:
-        contacts.append(above.bottom_elevation)
-    if below is not None:
-        contacts.append(below.top_elevation)
+def _collar_elevation(intervals: list[_LayerInterval]) -> float:
+    """Collar RL the hole's intervals were logged from (``top_elevation + from_depth``)."""
+    collars = [
+        interval.top_elevation + interval.from_depth
+        for interval in intervals
+        if np.isfinite(interval.top_elevation) and np.isfinite(interval.from_depth)
+    ]
+    return max(collars) if collars else float("nan")
 
-    if not contacts:
-        return (pinch_interval.top_elevation + pinch_interval.bottom_elevation) / 2.0
-    return sum(contacts) / len(contacts)
+
+def _interpolate(x0: float, z0: float, x1: float, z1: float, x: float) -> float:
+    """Linear interpolation of the line ``(x0, z0)``–``(x1, z1)`` at ``x``."""
+    span = x1 - x0
+    t = (x - x0) / span if span else 0.5
+    return z0 + t * (z1 - z0)
 
 
 def _dedupe_vertices(
@@ -758,16 +747,8 @@ def _polygons_for_pair(
         key=lambda key: _correlation_sort_key(key, left_lookup, right_lookup),
     )
     hole_pair = (left_hole_id, right_hole_id)
-    left_by_order = {
-        interval.unit_order: interval
-        for interval in left_intervals
-        if interval.unit_order is not None
-    }
-    right_by_order = {
-        interval.unit_order: interval
-        for interval in right_intervals
-        if interval.unit_order is not None
-    }
+    ground_left = _collar_elevation(left_intervals)
+    ground_right = _collar_elevation(right_intervals)
     matched = [
         (key, left_lookup[key], right_lookup[key])
         for key in all_keys
@@ -800,20 +781,19 @@ def _polygons_for_pair(
             continue
         if left_layer is not None:
             source_layer, x_source, x_other = left_layer, x_left, x_right
-            neighbor_intervals, neighbor_by_order = right_intervals, right_by_order
             source_matches = matched
         else:
             source_layer, x_source, x_other = right_layer, x_right, x_left  # type: ignore[assignment]
-            neighbor_intervals, neighbor_by_order = left_intervals, left_by_order
             source_matches = matched_right_first
         above, below = _bracketing_matches(source_layer, source_matches)
+        x_tip = x_source + pinch_fraction * (x_other - x_source)
         if above is None and below is None:
             z_tip = _pinch_out_z_mid(
-                source_layer, neighbor_intervals, by_order=neighbor_by_order
+                source_layer,
+                ground_at_tip=_interpolate(x_left, ground_left, x_right, ground_right, x_tip),
             )
             wedges.append((source_layer, x_source, x_other, z_tip))
             continue
-        x_tip = x_source + pinch_fraction * (x_other - x_source)
         z_tip = _bracket_tip_z(
             above, below, left_lookup, right_lookup, x_left, x_right, x_tip
         )
@@ -1597,8 +1577,18 @@ def _is_zero_thickness(interval: _LayerInterval) -> bool:
 
 def _sorted_hole_profiles(
     projected_df: pd.DataFrame,
+    *,
+    fence_notes: list[str] | None = None,
 ) -> list[tuple[float, str, list[_LayerInterval], dict[Hashable, _LayerInterval]]]:
-    """Build x-sorted hole interval profiles from a projected DataFrame."""
+    """Build x-sorted hole interval profiles from a projected DataFrame.
+
+    Holes at one projected position (a nested pair, or a section line at right
+    angles to their offset) are collapsed to one profile — the deeper hole's log
+    (equal depths: the first hole ID) — so the fence either side of the position
+    is built from the same log whichever way the transect runs. The others are
+    drawn as columns only; a note per dropped hole is appended to ``fence_notes``
+    (see ``_collapse_coincident_holes``).
+    """
     if projected_df.empty:
         return []
     x_profile = projected_df["x_profile"]
@@ -1626,8 +1616,10 @@ def _sorted_hole_profiles(
                 _correlation_keys(intervals),
             )
         )
-    hole_profiles.sort(key=lambda item: item[0])
-    return hole_profiles
+    # Deeper hole first at equal x, then hole ID: a tie-break that does not
+    # depend on transect direction or DataFrame row order.
+    hole_profiles.sort(key=lambda item: (item[0], -_hole_depth_or_zero(item[2]), item[1]))
+    return _collapse_coincident_holes(hole_profiles, fence_notes=fence_notes)
 
 
 # A hole is "short" (continued beneath its total depth by ``_extend_short_holes``)
@@ -1642,10 +1634,71 @@ SHORT_HOLE_MIN_DEPTH_GAIN_FRACTION = 0.25
 _HoleProfile = tuple[float, str, list[_LayerInterval], dict[Hashable, _LayerInterval]]
 
 
+# Holes whose projected positions differ by no more than this are "coincident":
+# the fence between them would be a zero-width strip.
+COINCIDENT_HOLE_TOLERANCE_M = 1e-6
+
+
 def _hole_depth(intervals: list[_LayerInterval]) -> float:
     """Deepest logged depth below collar (the hole's TD as far as the fence knows)."""
     depths = [i.to_depth for i in intervals if np.isfinite(i.to_depth)]
     return max(depths) if depths else float("nan")
+
+
+def _hole_depth_or_zero(intervals: list[_LayerInterval]) -> float:
+    """``_hole_depth`` with an unlogged hole counted as 0 m (sortable)."""
+    depth = _hole_depth(intervals)
+    return depth if np.isfinite(depth) else 0.0
+
+
+def _collapse_coincident_holes(
+    hole_profiles: list[_HoleProfile],
+    *,
+    fence_notes: list[str] | None = None,
+) -> list[_HoleProfile]:
+    """One fence profile per projected position (``hole_profiles`` sorted by x).
+
+    Two holes at one position (MW-06S / MW-06D) used to stay separate: the fence
+    on the left paired with whichever came first, the fence on the right with
+    the other, and reversing the transect swapped them — the section depended on
+    its direction, and one log was silently absent from each side. Now the
+    deeper hole's log (equal depths: the first hole ID, the sort order of
+    ``_sorted_hole_profiles``) represents the position on both sides and every
+    other hole there is left to its column; a note naming the pair and the log
+    used is appended to ``fence_notes``.
+    """
+
+    def _rank(profile: _HoleProfile) -> tuple[float, str]:
+        return (-_hole_depth_or_zero(profile[2]), profile[1])
+
+    groups: list[list[_HoleProfile]] = []
+    for profile in hole_profiles:
+        # Compare with the group's first (x-lowest) member so a run of nearly
+        # coincident holes cannot drift past the tolerance one step at a time.
+        if groups and abs(profile[0] - groups[-1][0][0]) <= COINCIDENT_HOLE_TOLERANCE_M:
+            groups[-1].append(profile)
+        else:
+            groups.append([profile])
+    collapsed: list[_HoleProfile] = []
+    for group in groups:
+        kept = min(group, key=_rank)
+        collapsed.append(kept)
+        if fence_notes is None:
+            continue
+        kept_depth = _hole_depth_or_zero(kept[2])
+        for dropped in group:
+            if dropped is kept:
+                continue
+            reason = (
+                "deeper"
+                if kept_depth > _hole_depth_or_zero(dropped[2])
+                else "same depth, first by hole ID"
+            )
+            fence_notes.append(
+                f"{dropped[1]} and {kept[1]} share one position; the fence uses "
+                f"{kept[1]}'s log ({reason}) — {dropped[1]} is drawn as a column only"
+            )
+    return collapsed
 
 
 def _fence_column_at(polygons: list[GeologicalPolygon], x: float) -> list[tuple[str, float, float]]:
@@ -1772,19 +1825,9 @@ def _extend_short_holes(
             x_hole, hole_id, intervals, _lookup = profiles[index]
             x_left, left_id, left_intervals, left_lookup = profiles[left]
             x_right, right_id, right_intervals, right_lookup = profiles[right]
-            if not x_left <= x_hole <= x_right:  # pragma: no cover - sorted by x
-                continue
-            if x_hole in (x_left, x_right):
-                # Coincident with a deeper neighbour (nested pair at one projected
-                # position): below the TD the hole shares that neighbour's log.
-                twin = left_intervals if x_hole == x_left else right_intervals
-                column = [
-                    (interval.lithology_code, interval.top_elevation, interval.bottom_elevation)
-                    for interval in sorted(twin, key=lambda item: -item.top_elevation)
-                ]
-                extended = _below_td_intervals(intervals, column)
-                if extended is not None:
-                    updates[index] = (x_hole, hole_id, extended, _correlation_keys(extended))
+            # Profiles hold one hole per position (``_collapse_coincident_holes``),
+            # so the pair spans a strictly positive width.
+            if not x_left < x_hole < x_right:  # pragma: no cover - sorted by x
                 continue
             reference = _resolve_overlaps_in_pair(
                 _polygons_for_pair(
@@ -1819,10 +1862,12 @@ def _fence_hole_profiles(
     *,
     allow_pinch_outs: bool,
     override_index: dict[tuple[str, str], tuple[CorrelationOverride, ...]],
+    fence_notes: list[str] | None = None,
 ) -> list[_HoleProfile]:
-    """Hole profiles the fence is built from: sorted, gap-closed, short holes extended."""
+    """Hole profiles the fence is built from: sorted, gap-closed, one per position,
+    short holes extended."""
     return _extend_short_holes(
-        _sorted_hole_profiles(projected_df),
+        _sorted_hole_profiles(projected_df, fence_notes=fence_notes),
         allow_pinch_outs=allow_pinch_outs,
         override_index=override_index,
     )
@@ -1920,12 +1965,17 @@ def build_stratigraphy(
     """Construct geological polygons between adjacent projected boreholes.
 
     ``pair_summaries`` / ``clip_warnings`` are optional out-parameters: per-pair
-    correlation summaries, and user-facing messages for fence polygons that
-    overlap clipping cut down substantially (see ``_resolve_overlaps_in_pair``).
+    correlation summaries, and user-facing fence notes — polygons that overlap
+    clipping cut down substantially (see ``_resolve_overlaps_in_pair``) and holes
+    sharing one projected position, where the fence uses one log and the other
+    hole is drawn as a column only (see ``_collapse_coincident_holes``).
     """
     override_index = _correlation_overrides_by_pair(correlation_overrides)
     hole_profiles = _fence_hole_profiles(
-        projected_df, allow_pinch_outs=allow_pinch_outs, override_index=override_index
+        projected_df,
+        allow_pinch_outs=allow_pinch_outs,
+        override_index=override_index,
+        fence_notes=clip_warnings,
     )
     if len(hole_profiles) < 2:
         return []

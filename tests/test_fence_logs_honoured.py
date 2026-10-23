@@ -158,4 +158,6 @@ def test_coincident_holes_build_no_invalid_polygons(gap: float, caplog) -> None:
         polygons = build_stratigraphy(_df(holes), allow_pinch_outs=False)
     assert not [r for r in caplog.records if "Invalid polygon" in r.getMessage()]
     assert all(p.polygon.is_valid and p.polygon.area > 0.0 for p in polygons)
-    assert {p.hole_pair for p in polygons} >= {("MW-01", "MW-02"), ("MW-03", "MW-04")}
+    # One log represents the shared position on both sides (equal depths: the
+    # first hole ID); the other hole is drawn as a column only (round 8, D5).
+    assert {p.hole_pair for p in polygons} == {("MW-01", "MW-02"), ("MW-02", "MW-04")}

@@ -48,7 +48,7 @@ Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) 
 
 **Case 2 — Pinch-out** (key in one hole only, `allow_pinch_outs=True`):
 - `_pinch_out_wedge_coords`: vertical edge exactly on the source hole from logged top to bottom; tip at `PINCH_OUT_FRACTION` (0.5) of the way to the neighbour
-- Wedges are planned first: `_bracketing_matches` finds the nearest matched units above/below in the source hole; tip z (`_bracket_tip_z`) = mean of the two bounding contact lines interpolated hole-to-hole at the tip x (one-sided wedges sit on that single contact); no matched bracket → `_pinch_out_z_mid` fallback (adjacent `unit_order` ±1, then elevation position — RLs, not hole-local depths)
+- Wedges are planned first: `_bracketing_matches` finds the nearest matched units above/below in the source hole; tip z (`_bracket_tip_z`) = mean of the two bounding contact lines interpolated hole-to-hole at the tip x (one-sided wedges sit on that single contact); no matched bracket → `_pinch_out_z_mid`: the tip sits at the wedge's **own mid-elevation**, held at or below the collar-to-collar ground line at the tip x (`ground_at_tip`, from `_collar_elevation` = `top_elevation + from_depth`). It used to come from the neighbour's contacts, classifying its intervals only as wholly above/below the wedge: the unit the wedge projects *into* (overlapping its span) was neither, so every unit of a 2 m hole plunged 16 m to the next contact as a needle, the Fill beneath rose 14 m to the 2 m hole's TD and was clipped, and the fill 5 cm from the hole contradicted the log (fuzz seed 46; `tests/test_fence_round8.py`). The neighbour's TD / top are not contacts the wedge abuts either (a unit above the neighbour's log tapering to its top crossed the own-mid wedges below it)
 - No bending when crossing correlations invert the bracketing contacts or the tip falls outside the fill's vertical extent
 - When both bracketing units exist, the upper unit's bottom edge and the lower unit's top edge bend through the tip (`_bend_path`) so upper unit, wedge(s) and lower unit tile the gap with no white triangle; stacked lenses share one tip
 - **Single-bounded wedges (`_tile_open_wedges`):** unmatched units below the lowest match (base units) or above the highest match (top units) have one bracketing contact only, so a tip wedge would leave a white triangle against the fence base line (hole bottom → hole bottom) or ground line (hole top → hole top). They are grouped by `(above, below)` bracket and tiled instead:
@@ -62,7 +62,9 @@ Matched keys → continuous quadrilateral. Unmatched → pinch-out (if allowed) 
 
 **Case 3 — `allow_pinch_outs=False`:** units are drawn exactly as with pinch-outs on, except a lens logged in one hole reaches only `NEAR_FIELD_PINCH_FRACTION` (0.25) of the spacing instead of `PINCH_OUT_FRACTION` (0.5). A neighbouring fill never takes over a logged unit (the old `_closed_unmatched_ends` behaviour contradicted the logs and was removed). **Invariant (tests/test_fence_logs_honoured.py):** at every hole ± a small offset the fill at each logged depth equals the log, for every preset, pinch-outs on or off.
 
-**Short holes:** a hole stopping well short of both neighbours (they reach ≥ max(1 m, 25% of its TD) deeper) gets inferred units below its TD, taken from the fence between its nearest deeper neighbours and drawn as pinch-out style (dashed, faded), so no white void opens under it. Coincident holes (same projected x) use the deeper hole's log; zero-width pairs build no polygons.
+**Short holes:** a hole stopping well short of both neighbours (they reach ≥ max(1 m, 25% of its TD) deeper) gets inferred units below its TD, taken from the fence between its nearest deeper neighbours and drawn as pinch-out style (dashed, faded), so no white void opens under it.
+
+**Coincident holes (`_collapse_coincident_holes`):** holes within `COINCIDENT_HOLE_TOLERANCE_M` (1 µm) of one projected x (a nested MW-06S / MW-06D pair, or a section line at right angles to their offset) are collapsed to **one fence profile** — the deeper log, equal depths → first hole ID (`_sorted_hole_profiles` sorts by `(x, -depth, hole_id)`, never by DataFrame row order) — so both sides of the position are built from the same log whichever way the transect runs (the old stable sort paired each side with a different hole and the result flipped on reversal). The other hole is drawn as a column only (projected data untouched) and a fence note is appended to `build_stratigraphy(..., clip_warnings=list)` — the fence-notes channel the pipeline surfaces as `overlap_warnings` — e.g. "MW-06S and MW-06D share one position; the fence uses MW-06D's log (deeper) — MW-06S is drawn as a column only". `preview_correlation_health` sees the same collapsed profiles; `_polygons_for_pair` still builds nothing for a zero-width pair (defensive).
 
 ## Depth mode (depth below collar)
 
@@ -82,7 +84,7 @@ Called inside `build_stratigraphy()` for every adjacent pair **before** polygons
 
 ## Internal helpers
 
-- **`_sorted_hole_profiles(projected_df)`** — sort/group intervals by `x_profile`; shared by `build_stratigraphy` and `preview_correlation_health` (avoids duplicate DataFrame work)
+- **`_sorted_hole_profiles(projected_df, fence_notes=None)`** — sort/group intervals by `(x_profile, -depth, hole_id)`, drop zero-thickness intervals, close gaps, collapse coincident holes (notes appended to `fence_notes`); shared by `build_stratigraphy` and `preview_correlation_health` via `_fence_hole_profiles` (avoids duplicate DataFrame work)
 - **`_resolve_overlaps_in_pair(polygons)`** — per-pair overlap clipping (see above)
 - **`_largest_polygon(geom)`** — extract largest polygon from MultiPolygon after clip
 

@@ -188,8 +188,7 @@ def _build(**kwargs):
         line,
         environmental_readings=readings,
         environmental_parameters=["Cl"],
-        export_formats=frozenset({"svg"}),
-        **kwargs,
+        **{"export_formats": frozenset({"svg"}), **kwargs},
     )
 
 
@@ -254,24 +253,35 @@ def test_parameter_cap_dedupes_case_and_space_insensitively() -> None:
     assert cap_chemistry_parameters(["", "  ", "Chloride", "CHLORIDE"]) == (("Chloride",), ())
 
 
-# --- D6: rcParams pinned for the export -------------------------------------------
+# --- D6: export styling vs caller-owned rcParams ---------------------------------
 
 
-def test_export_bytes_ignore_rcparams_changed_by_other_code() -> None:
-    baseline = _build(
-        chemistry_color_mode="black_red", chemistry_threshold_green_max=100.0
-    ).svg_bytes
-    assert (
-        baseline
-        == _build(chemistry_color_mode="black_red", chemistry_threshold_green_max=100.0).svg_bytes
-    )
+def test_export_keeps_figure_styling_but_honours_caller_settings() -> None:
+    """Font/hatch styling is the figure's own and survives stray rcParams writes;
+    caller-owned output settings (pdf.fonttype) are honoured, not overridden."""
+    baseline = _build(chemistry_color_mode="black_red", chemistry_threshold_green_max=100.0)
     with mpl.rc_context():
-        # What another thread's ``plt.rcParams[...] = ...`` leaves behind mid-export.
         mpl.rcParams["font.size"] = 20.0
-        mpl.rcParams["svg.fonttype"] = "none"
         mpl.rcParams["hatch.linewidth"] = 3.0
-        mpl.rcParams["pdf.fonttype"] = 42
-        mpl.rcParams["savefig.transparent"] = True
-        mpl.rcParams["path.simplify"] = False
+        mpl.rcParams["svg.fonttype"] = "none"
         churned = _build(chemistry_color_mode="black_red", chemistry_threshold_green_max=100.0)
-    assert churned.svg_bytes == baseline
+    assert churned.svg_bytes == baseline.svg_bytes
+    with mpl.rc_context({"pdf.fonttype": 42}):
+        truetype = _build(
+            chemistry_color_mode="black_red",
+            chemistry_threshold_green_max=100.0,
+            export_formats=frozenset({"svg", "pdf"}),
+        )
+    assert b"/FontFile2" in truetype.pdf_bytes or b"/TrueType" in truetype.pdf_bytes
+
+
+def test_editable_svg_names_the_export_font() -> None:
+    from export_framing import ExportFramingConfig
+
+    result = _build(
+        chemistry_color_mode="black_red",
+        chemistry_threshold_green_max=100.0,
+        export_framing=ExportFramingConfig(svg_editable_text=True),
+    )
+    svg = result.svg_bytes.decode("utf-8")
+    assert "Arial" in svg

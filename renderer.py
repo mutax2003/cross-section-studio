@@ -110,21 +110,6 @@ if TYPE_CHECKING:
 # Salted element ids (with no <dc:date>) make identical inputs give identical SVG.
 mpl.rcParams["svg.hashsalt"] = "cross-section-studio"
 
-# rcParams the export reads at draw / save time (size / family of text added
-# while framing, the font list an editable SVG names, hatch strokes, SVG/PDF
-# font embedding, path simplification, savefig defaults). ``rc_context``
-# restores rcParams on exit, but another thread writing ``plt.rcParams[...]``
-# meanwhile leaked into the bytes, so the whole export runs with these keys
-# pinned to the process values at import — the values every export used
-# before, so normal output is byte-identical.
-_EXPORT_RC_PREFIXES = ("savefig.", "pdf.", "svg.", "path.", "mathtext.", "font.", "hatch.", "text.")
-_EXPORT_RC_KEYS = frozenset({"agg.path.chunksize"})
-_EXPORT_RC_BASELINE: dict[str, object] = {
-    key: dict.__getitem__(mpl.rcParams, key)  # no deprecation lookups
-    for key in dict.keys(mpl.rcParams)
-    if key.startswith(_EXPORT_RC_PREFIXES) or key in _EXPORT_RC_KEYS
-}
-
 logger = logging.getLogger(__name__)
 
 # Wider-spacing / offset zones: pale amber wash over the fence between a
@@ -2213,8 +2198,19 @@ class CrossSectionRenderer(
         return default
 
     def _export_rc(self) -> dict[str, object]:
-        """rcParams pinned for the export path (see ``_EXPORT_RC_BASELINE``)."""
-        return dict(_EXPORT_RC_BASELINE)
+        """The figure's own styling, re-applied while it is saved.
+
+        Text and hatches are drawn again at save time, so the profile's export
+        font (the family an editable SVG names) and hatch strokes are pinned
+        here exactly as during render. Caller-owned settings (``pdf.fonttype``,
+        ``savefig.*``, ``path.*``) are left alone; concurrent sessions are
+        serialised by ``render_lock.RENDER_LOCK``, not by pinning globals.
+        """
+        return {
+            "hatch.color": HATCH_LINE_COLOR,
+            "hatch.linewidth": 0.65,
+            **export_font_rc(self.profile.export_font_family, self.profile.export_font_size),
+        }
 
     def _savefig_format(
         self,
@@ -2235,7 +2231,7 @@ class CrossSectionRenderer(
         # SVG text: outlines by default (identical on every machine); editable
         # <text> on request so labels can be nudged in Illustrator / Inkscape.
         editable = fmt == "svg" and bool(getattr(self.export_framing, "svg_editable_text", False))
-        with mpl.rc_context({**self._export_rc(), "svg.fonttype": "none" if editable else "path"}):
+        with mpl.rc_context({"svg.fonttype": "none" if editable else "path"}):
             fig.savefig(buffer, **kwargs)
         buffer.seek(0)
         payload = buffer.getvalue()

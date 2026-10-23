@@ -63,10 +63,14 @@ from render_lock import RENDER_LOCK
 from render_profiles import (
     ChemistryLabelStyle,
     LayoutMode,
+    cap_chemistry_parameters,
+    chemistry_parameter_cap_note,
+    is_threshold_style_mode,
+    is_two_band_mode,
     normalise_chemistry_thresholds,
     profile_for_layout,
     profile_with_elevation_mode,
-    resolved_chemistry_thresholds,
+    resolved_chemistry_limits,
 )
 from render_theme import filter_water_levels_for_plot
 from renderer import CrossSectionRenderer
@@ -875,6 +879,13 @@ def render_cross_section_from_geometry(
     )
     if screen_intervals and exclusions.screens:
         screen_intervals = [s for s in screen_intervals if id(s) not in exclusions.screens]
+    # At most MAX_CHEMISTRY_PARAMETERS per section: a longer scripted / batch
+    # list plots its first four (Configure order) and names the rest.
+    plotted_parameters, dropped_parameters = cap_chemistry_parameters(environmental_parameters)
+    chemistry_cap_notes: tuple[str, ...] = ()
+    if dropped_parameters:
+        chemistry_cap_notes = (chemistry_parameter_cap_note(plotted_parameters, dropped_parameters),)
+        environmental_parameters = plotted_parameters
     active_parameters = {
         name.strip().casefold() for name in (environmental_parameters or ()) if name.strip()
     }
@@ -883,7 +894,7 @@ def render_cross_section_from_geometry(
         for reading in environmental_readings or ()
         if id(reading) in exclusions.environmental
         and reading.parameter.strip().casefold() in active_parameters
-    )
+    ) + chemistry_cap_notes
     if environmental_readings and exclusions.environmental:
         environmental_readings = [
             r for r in environmental_readings if id(r) not in exclusions.environmental
@@ -960,25 +971,33 @@ def render_cross_section_from_geometry(
         update=profile_updates
     )
 
-    if render_profile.chemistry_color_mode == "threshold" and (
+    color_mode = render_profile.chemistry_color_mode
+    if is_threshold_style_mode(color_mode) and (
         render_profile.chemistry_threshold_green_max is None
         or render_profile.chemistry_threshold_yellow_max is None
+        or (
+            is_two_band_mode(color_mode)
+            and render_profile.chemistry_threshold_yellow_max
+            != render_profile.chemistry_threshold_green_max
+        )
     ):
         # Threshold mode without limits used to print black values beside
         # series-red dots; apply the Configure step's default bands instead.
-        green_max, yellow_max = resolved_chemistry_thresholds(
+        # A two-band mode keeps one limit (the green one) as an equal pair.
+        green_max, yellow_max = resolved_chemistry_limits(
             render_profile.chemistry_threshold_green_max,
             render_profile.chemistry_threshold_yellow_max,
+            color_mode,
         )
         if not render_profile.chemistry_thresholds:
             # With per-parameter limits the sheet-wide pair is only a fallback,
             # so missing values there are expected, not a misconfiguration.
             if math.isnan(green_max) or math.isnan(yellow_max):
                 logger.info(
-                    "chemistry_color_mode='threshold' without limits: values print black "
-                    "(no limit set)."
+                    "chemistry_color_mode=%r without limits: values print black (no limit set).",
+                    color_mode,
                 )
-            else:
+            elif not is_two_band_mode(color_mode):
                 logger.warning(
                     "chemistry_color_mode='threshold' without both limits: using green <= %g, "
                     "orange <= %g, red above.",

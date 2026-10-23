@@ -21,7 +21,7 @@ Click **Prepare deliverables** once. That builds PNG and PDF in a **single** dra
 - **Word figure (.docx)** — PNG + caption/metadata (needs `python-docx`)
 - **Copy PNG to clipboard** — browser clipboard (permission-dependent; fall back to Download PNG)
 - **Prepare report ZIP** / **Download report ZIP** — SVG + PNG + PDF + metadata JSON + README (+ Word when available)
-  - The metadata (JSON and Word table) records the VE the figure prints: a chosen VE as a number (`5`), Auto as e.g. `Auto (≈2.6×)` read from the drawn caption, plus `vertical_exaggeration_drawn`. `chemistry_label_colour_mode` is always filled (`black`, `red` or `threshold`).
+  - The metadata (JSON and Word table) records the VE the figure prints: a chosen VE as a number (`5`), Auto as e.g. `Auto (≈2.6×)` read from the drawn caption, plus `vertical_exaggeration_drawn`. `chemistry_label_colour_mode` is always filled (`black`, `red`, `black_red`, `green_red` or `threshold`); the two exceedance modes add `chemistry_exceedance_limits` (one limit per parameter) and threshold mode `chemistry_thresholds` (green / orange pairs).
 - **Save to project folder** — set **Save exports to folder** (a full path, e.g. `P:\Projects\Job\Figures`) under sidebar **Export**
 
 **Report ZIP** packages the **current** figure. **Batch ZIP** (below) rebuilds a separate figure for each section line in the batch list.
@@ -79,7 +79,7 @@ Anything you should check before issuing the figure is listed in one amber box u
 
 If **Stop if matched layers overlap** is on in Configure, resolve overlaps (or clear the gate after manual review) before Generate or batch ZIP. Cosmetic changes (title, VE, hatches, fonts, column width) still need Generate for a new SVG; projection/stratigraphy can reuse cached geometry when only cosmetics change.
 
-Water and chemistry connector layers (when plotted) add footer text clarifying they are **schematic** — not potentiometric surfaces or plume contours. Chemistry colour thresholds in Configure are set **per parameter** (each plotted parameter has its own Green ≤ / Orange ≤ limits in its own units; the sheet-wide pair is the fallback) and the key under the distance label prints one line per parameter; the metadata JSON and Word figure table list the limits used. Keep chemistry interpolate off for stick-style P2 figures.
+Water and chemistry connector layers (when plotted) add footer text clarifying they are **schematic** — not potentiometric surfaces or plume contours. Chemistry colour limits in Configure are set **per parameter** (each plotted parameter has its own Green ≤ / Orange ≤ limits — or a single Exceedance ≤ limit in the **Black / red** and **Green / red (exceedance)** modes — in its own units; the sheet-wide pair or limit is the fallback) and the key under the distance label prints one line per parameter; the metadata JSON and Word figure table list the limits used. At most four parameters plot on one section (a longer scripted list keeps the first four and a note names the rest). Keep chemistry interpolate off for stick-style P2 figures.
 
 ## Generate again
 

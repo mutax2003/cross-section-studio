@@ -15,7 +15,12 @@ from matplotlib.transforms import Bbox, offset_copy
 
 from chemistry_qc import harmonize_units, rdl_above_guideline_note, rdl_exceeds_guideline
 from models import EnvironmentalReading
-from render_profiles import resolved_chemistry_thresholds_for
+from render_profiles import (
+    cap_chemistry_parameters,
+    chemistry_parameter_cap_note,
+    is_threshold_style_mode,
+    resolved_chemistry_limits_for,
+)
 from render_theme import (
     CHEMISTRY_FIXED_COLORS,
     CHEMISTRY_LABEL_BLACK,
@@ -123,11 +128,12 @@ def _fit_legend_label(text: str) -> str:
     return fit_label(text, max_chars=LEGEND_LABEL_MAX_CHARS)
 
 
-def _shown_threshold_bands(green_max: float, yellow_max: float):
+def _shown_threshold_bands(green_max: float, yellow_max: float, mode: str | None = "threshold"):
     """Threshold bands a value can fall in: no orange band when its limits
     coincide (green 50 / orange 50 reads "green <= 50 . red > 50", not
-    "orange 50-50")."""
-    bands = chemistry_threshold_bands(green_max, yellow_max)
+    "orange 50-50"). A two-band mode (``black_red`` / ``green_red``) has its
+    two bands (black-or-green <= L . red > L)."""
+    bands = chemistry_threshold_bands(green_max, yellow_max, mode)
     if float(yellow_max) <= float(green_max):
         bands = tuple(band for band in bands if band[0] != "orange")
     return bands
@@ -144,10 +150,11 @@ def _threshold_key_text(
     unit: str | None = None,
     *,
     inconclusive: bool = False,
+    mode: str | None = "threshold",
 ) -> str:
     """Plain-text key, e.g. ``green <= 100 . orange 100-300 . red > 300 mg/L``
     (plus ``. grey ND (RDL > 100)`` when a non-detect's limit is above green)."""
-    bands = _shown_threshold_bands(green_max, yellow_max)
+    bands = _shown_threshold_bands(green_max, yellow_max, mode)
     if inconclusive:
         bands = bands + _inconclusive_band(green_max)
     text = " \u00b7 ".join(f"{name} {span}" for name, _hex, span in bands)
@@ -179,6 +186,8 @@ _NO_LIMIT_KEY_TEXT = "no limit set \u2014 black"
 def _threshold_key_lines(
     entries: Sequence[tuple[str, str, float, float]],
     inconclusive: set[str] | frozenset[str] = frozenset(),
+    *,
+    mode: str | None = "threshold",
 ) -> tuple[str, ...]:
     """One key line per plotted parameter: ``(parameter, unit, green, orange)``.
 
@@ -186,13 +195,16 @@ def _threshold_key_lines(
     several parameters each line is prefixed by its parameter name, since
     every parameter carries its own limits in its own units. A parameter
     without limits always reads ``Chloride (mg/L): no limit set \u2014 black``.
+    ``mode`` picks the band set (``black <= 100 . red > 100`` in ``black_red``).
     """
     lines: list[str] = []
     for parameter, unit, green_max, yellow_max in entries:
         if _no_limit_set(green_max, yellow_max):
             lines.append(f"{_parameter_with_unit(parameter, unit)}: {_NO_LIMIT_KEY_TEXT}")
             continue
-        text = _threshold_key_text(green_max, yellow_max, unit, inconclusive=parameter in inconclusive)
+        text = _threshold_key_text(
+            green_max, yellow_max, unit, inconclusive=parameter in inconclusive, mode=mode
+        )
         lines.append(text if len(entries) == 1 else f"{parameter}: {text}")
     return tuple(lines)
 
@@ -374,9 +386,12 @@ class RendererChemistryMixin:
     ) -> None:
         # Values dropped by the label placement (filled by renderer_water).
         self.chemistry_label_notes = []
-        # Threshold mode: non-detects whose detection limit is above the
-        # parameter's green limit (inconclusive), one QA note each.
+        # Threshold-style modes: non-detects whose detection limit is above the
+        # parameter's green / exceedance limit (inconclusive), one QA note each.
         self.chemistry_rdl_notes = []
+        # Parameters beyond the per-section cap (direct renderer callers; the
+        # pipeline caps and notes before the renderer sees the list).
+        self.chemistry_cap_notes = []
         # Column spans the collision pass keeps labels off (chemistry values
         # and water numbers alike), set even when no chemistry is drawn.
         self._column_spans = []
@@ -412,7 +427,15 @@ class RendererChemistryMixin:
             return
         if profile_lookup is None:
             profile_lookup = self._profile_lookup(hole_summary, collar_lookup)
-        active_parameters = {name.strip() for name in self.environmental_parameters if name.strip()}
+        # At most MAX_CHEMISTRY_PARAMETERS per section, first in Configure order.
+        plotted_parameters, dropped_parameters = cap_chemistry_parameters(
+            self.environmental_parameters
+        )
+        if dropped_parameters:
+            self.chemistry_cap_notes.append(
+                chemistry_parameter_cap_note(plotted_parameters, dropped_parameters)
+            )
+        active_parameters = set(plotted_parameters)
         if not active_parameters:
             return
 
@@ -464,8 +487,11 @@ class RendererChemistryMixin:
         # Parameters with an inconclusive (grey) non-detect on the figure: their
         # key line names the grey too.
         threshold_key_inconclusive: set[str] = set()
-        threshold_mode = self.profile.chemistry_color_mode == "threshold"
-        threshold_active = bool(label_values) and self.profile.chemistry_color_mode == "threshold"
+        # "threshold" (green / orange / red) and the two-band exceedance modes
+        # ("black_red" / "green_red") all band values by per-parameter limits.
+        color_mode = self.profile.chemistry_color_mode
+        threshold_mode = is_threshold_style_mode(color_mode)
+        threshold_active = bool(label_values) and threshold_mode
         self.chemistry_threshold_key_text = None
         self.chemistry_threshold_key_lines = ()
         self._chemistry_threshold_key = None
@@ -495,11 +521,12 @@ class RendererChemistryMixin:
             # a parameter without an entry uses the sheet-wide pair, and any
             # limit still missing the Configure defaults (the pipeline fills
             # those too), so labels, dots and the key always agree.
-            green_max, yellow_max = resolved_chemistry_thresholds_for(
+            green_max, yellow_max = resolved_chemistry_limits_for(
                 parameter,
                 self.profile.chemistry_thresholds,
                 self.profile.chemistry_threshold_green_max,
                 self.profile.chemistry_threshold_yellow_max,
+                mode=color_mode,
             )
             readings_by_hole: dict[str, list[EnvironmentalReading]] = {}
             for reading in readings:
@@ -805,7 +832,9 @@ class RendererChemistryMixin:
             if threshold_active:
                 legend_entry["threshold_colors"] = tuple(
                     hex_color
-                    for _name, hex_color, _span in _shown_threshold_bands(green_max, yellow_max)
+                    for _name, hex_color, _span in _shown_threshold_bands(
+                        green_max, yellow_max, color_mode
+                    )
                 )
             self.parameter_series_legend.append(legend_entry)
         if threshold_key_limits:
@@ -816,7 +845,7 @@ class RendererChemistryMixin:
                 green_limit, yellow_limit = threshold_key_limits[parameter]
                 entries.append((parameter, unit, green_limit, yellow_limit))
             self._draw_chemistry_threshold_key(
-                ax, entries, font_size, inconclusive=threshold_key_inconclusive
+                ax, entries, font_size, inconclusive=threshold_key_inconclusive, mode=color_mode
             )
 
     def _draw_chemistry_threshold_key(
@@ -826,6 +855,7 @@ class RendererChemistryMixin:
         font_size: float,
         *,
         inconclusive: set[str] | frozenset[str] = frozenset(),
+        mode: str | None = "threshold",
     ) -> None:
         """State the threshold bands in words on the figure (threshold mode only).
 
@@ -836,7 +866,7 @@ class RendererChemistryMixin:
         parameter has its own limits in its own units, so a shared row would
         mis-state one of them.
         """
-        self.chemistry_threshold_key_lines = _threshold_key_lines(entries, inconclusive)
+        self.chemistry_threshold_key_lines = _threshold_key_lines(entries, inconclusive, mode=mode)
         self.chemistry_threshold_key_text = "\n".join(self.chemistry_threshold_key_lines)
         text_props = {"fontsize": font_size, "color": LABEL_COLOR}
         rows: list[HPacker] = []
@@ -865,7 +895,7 @@ class RendererChemistryMixin:
                 )
                 rows.append(HPacker(children=parts, align="baseline", pad=0, sep=3))
                 continue
-            bands = _shown_threshold_bands(green_max, yellow_max)
+            bands = _shown_threshold_bands(green_max, yellow_max, mode)
             if parameter in inconclusive:
                 bands = bands + _inconclusive_band(green_max)
             for band_index, (name, hex_color, span) in enumerate(bands):

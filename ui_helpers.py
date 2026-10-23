@@ -541,7 +541,16 @@ def export_metadata_payload(
     if consulting_fields:
         payload.update(consulting_fields)
     payload["chemistry_label_colour_mode"] = chemistry_color_mode or "black"
-    if chemistry_color_mode == "threshold" and chemistry_thresholds:
+    if chemistry_color_mode in ("black_red", "green_red") and chemistry_thresholds:
+        # Two-band exceedance modes: one limit per parameter (the green /
+        # exceedance limit; the orange one is set equal and never shown).
+        low_colour = "black" if chemistry_color_mode == "black_red" else "green"
+        payload["chemistry_label_colour_rule"] = f"{low_colour} at or below the limit, red above"
+        payload["chemistry_exceedance_limits"] = {
+            str(parameter): (None if pair[0] is None else float(pair[0]))
+            for parameter, pair in chemistry_thresholds.items()
+        }
+    elif chemistry_color_mode == "threshold" and chemistry_thresholds:
         payload["chemistry_thresholds"] = {
             str(parameter): {
                 "green_max": (None if pair[0] is None else float(pair[0])),

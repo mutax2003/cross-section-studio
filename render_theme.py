@@ -61,6 +61,12 @@ CHEMISTRY_LABEL_COLOR_NAMES: tuple[str, ...] = LABEL_COLOR_NAMES
 # workbook choice: it marks "inconclusive", a QA state, not a band.
 CHEMISTRY_LABEL_INCONCLUSIVE = "#6B7280"
 assert tuple(CHEMISTRY_FIXED_COLORS) == LABEL_COLOR_NAMES
+# Two-band exceedance modes: the colour (name, hex) of a value at or below
+# the parameter's exceedance limit; above it is always CHEMISTRY_LABEL_RED.
+CHEMISTRY_TWO_BAND_LOW_COLORS: dict[str, tuple[str, str]] = {
+    "black_red": ("black", CHEMISTRY_LABEL_BLACK),
+    "green_red": ("green", CHEMISTRY_LABEL_GREEN),
+}
 # Series (marker/stick) colours per parameter. No blue: that is groundwater.
 PARAMETER_PALETTE: tuple[str, ...] = (
     "#EA580C",
@@ -185,17 +191,24 @@ def chemistry_label_color(
     green when its limit is at or below ``green_max`` (below the guideline)
     and :data:`CHEMISTRY_LABEL_INCONCLUSIVE` grey when the limit is above it:
     the true concentration may be anywhere under the limit, so the result can
-    be neither passed nor failed (never orange or red)."""
-    if mode != "threshold":
+    be neither passed nor failed (never orange or red).
+
+    The two-band exceedance modes (``"black_red"`` / ``"green_red"``) use one
+    limit, ``green_max``: black (or green) at or below it, red above, with
+    the same non-detect rule (grey when the detection limit is above it)."""
+    two_band = CHEMISTRY_TWO_BAND_LOW_COLORS.get(mode)
+    if mode != "threshold" and two_band is None:
         return chemistry_fixed_mode_color(mode) or CHEMISTRY_LABEL_BLACK
     # No limit set (blank or NaN): black, never a generic band.
-    if green_max is None or yellow_max is None or green_max != green_max or yellow_max != yellow_max:
+    if green_max is None or green_max != green_max:
+        return CHEMISTRY_LABEL_BLACK
+    if two_band is None and (yellow_max is None or yellow_max != yellow_max):
         return CHEMISTRY_LABEL_BLACK
     if value <= green_max:
-        return CHEMISTRY_LABEL_GREEN
+        return two_band[1] if two_band is not None else CHEMISTRY_LABEL_GREEN
     if not detected:
         return CHEMISTRY_LABEL_INCONCLUSIVE
-    if value <= yellow_max:
+    if two_band is None and value <= yellow_max:
         # Orange replaces yellow (hard to read on white) — meeting 1 Oct 2026.
         return CHEMISTRY_LABEL_ORANGE
     return CHEMISTRY_LABEL_RED
@@ -206,16 +219,27 @@ def _fmt_threshold(value: float) -> str:
 
 
 def chemistry_threshold_bands(
-    green_max: float, yellow_max: float
+    green_max: float, yellow_max: float, mode: str | None = "threshold"
 ) -> tuple[tuple[str, str, str], ...]:
     """(colour name, hex, range text) per threshold band, matching
     :func:`chemistry_label_color` (green <= green_max < orange <= yellow_max < red).
 
     The range text lets a figure state each band in words so it reads without
     colour discrimination (WCAG 1.4.1). A parameter with no limit set (NaN
-    limits) has one band: black, "(no limit set)".
+    limits) has one band: black, "(no limit set)". A two-band exceedance
+    mode has two: ``black`` (or ``green``) ``<= L`` and ``red > L``.
     """
-    if green_max is None or yellow_max is None or green_max != green_max or yellow_max != yellow_max:
+    two_band = CHEMISTRY_TWO_BAND_LOW_COLORS.get(mode or "")
+    if green_max is None or green_max != green_max:
+        return (("black", CHEMISTRY_LABEL_BLACK, "(no limit set)"),)
+    if two_band is not None:
+        limit = _fmt_threshold(green_max)
+        low_name, low_hex = two_band
+        return (
+            (low_name, low_hex, f"≤ {limit}"),
+            ("red", CHEMISTRY_LABEL_RED, f"> {limit}"),
+        )
+    if yellow_max is None or yellow_max != yellow_max:
         return (("black", CHEMISTRY_LABEL_BLACK, "(no limit set)"),)
     low, high = _fmt_threshold(green_max), _fmt_threshold(yellow_max)
     return (
@@ -226,11 +250,15 @@ def chemistry_threshold_bands(
 
 
 def chemistry_threshold_key(
-    green_max: float, yellow_max: float, unit: str | None = None
+    green_max: float,
+    yellow_max: float,
+    unit: str | None = None,
+    mode: str | None = "threshold",
 ) -> str:
     """Plain-text threshold key, e.g. ``green ≤ 100 · orange 100–300 · red > 300 mg/L``."""
     text = " \u00b7 ".join(
-        f"{name} {span}" for name, _hex, span in chemistry_threshold_bands(green_max, yellow_max)
+        f"{name} {span}"
+        for name, _hex, span in chemistry_threshold_bands(green_max, yellow_max, mode)
     )
     unit = (unit or "").strip()
     return f"{text} {unit}" if unit else text

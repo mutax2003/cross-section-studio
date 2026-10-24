@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
@@ -18,7 +17,7 @@ from lithology_codes import collect_lithology_codes
 from models import WaterLevel
 from render_profiles import CHART_PROFILE
 from render_theme import AXES_BG, FIGURE_BG, GRID_COLOR, LABEL_COLOR, STICK_COLOR, SURFACE_COLOR
-from renderer_common import apply_true_value_y_axis, fit_label
+from renderer_common import apply_true_value_y_axis, fit_label, new_figure
 from stratigraphy import GeologicalPolygon
 
 
@@ -209,7 +208,8 @@ class ChartLayoutMixin:
         self._chart_collar_markers_drawn = False
         try:
             fig_width = 13.5 if self.show_legend else 12.0
-            fig, ax = plt.subplots(figsize=(fig_width, 6.8))
+            fig = new_figure((fig_width, 6.8))
+            ax = fig.add_subplot()
             fig.patch.set_facecolor(FIGURE_BG)
             ax.set_facecolor(AXES_BG)
             self._ve_main_ax = ax
@@ -226,8 +226,13 @@ class ChartLayoutMixin:
             ve = self.vertical_exaggeration
 
             if self.interpretation_mode in {"interpolated", "correlation_lines"}:
-                z_min, z_max = self._uncertainty_y_bounds(hole_summary)
-                self._draw_uncertainty_zones(ax, hole_summary, z_min, z_max, collar_lookup)
+                self._draw_uncertainty_zones(
+                    ax,
+                    hole_summary,
+                    collar_lookup,
+                    polygons=polygons,
+                    hole_x_lookup=ctx.x_by_hole,
+                )
 
             if self.profile.show_ground_surface and len(hole_summary) >= 2:
                 self._draw_sky_and_surface(ax, hole_summary, collar_lookup)
@@ -318,13 +323,13 @@ class ChartLayoutMixin:
             # The chart has no title block: the VE note is its only VE caption.
             self._draw_ve_annotation(ax)
             if self.show_legend and lithology_codes:
-                self._draw_legend(ax, style_cache, lithology_codes, polygons)
+                self._draw_legend(ax, style_cache, lithology_codes, polygons, swatch_alpha=0.92)
                 self._extend_chart_legend(ax, hole_summary, water_levels, profile_lookup)
 
             ax.set_xlabel("Distance along transect (m)", fontsize=10, labelpad=8)
             depth_mode = self.profile.y_axis_mode == "depth_below_collar"
             ax.set_ylabel(
-                "Depth below collar (m)" if depth_mode else "Elevation (m)",
+                "Depth below collar (m)" if depth_mode else "Elevation (masl)",
                 fontsize=10,
                 labelpad=8,
             )
@@ -363,13 +368,28 @@ class ChartLayoutMixin:
         if extents is None:
             return
         x_values, top_y, bottom_y = extents
-        segments = np.stack(
+        segments: list[np.ndarray] | np.ndarray = np.stack(
             [
                 np.column_stack([x_values, top_y]),
                 np.column_stack([x_values, bottom_y]),
             ],
             axis=1,
         )
+        if getattr(self, "_deviated_x", None):
+            # Surveyed holes: the stick is a polyline along the hole's trace.
+            hole_ids = hole_summary["hole_id"].astype(str).to_numpy()
+            collars = self._collar_values(
+                hole_summary["hole_id"], hole_summary["collar_elevation"], collar_lookup
+            )
+            lines: list[np.ndarray] = []
+            for index, hole_id in enumerate(hole_ids):
+                if hole_id in self._deviated_x:
+                    lo, hi = sorted((float(top_y[index]), float(bottom_y[index])))
+                    band = self._deviated_band_verts(hole_id, float(collars[index]), lo, hi, 0.0)
+                    lines.append(band[: len(band) // 2])
+                else:
+                    lines.append(segments[index])
+            segments = lines
         collection = LineCollection(segments, colors=STICK_COLOR, linewidths=4.0, zorder=5)
         ax.add_collection(collection)
         ax.scatter(x_values, top_y, marker="v", s=49, c=SURFACE_COLOR, zorder=7)
@@ -443,8 +463,8 @@ class ChartLayoutMixin:
             depth = collar_depths.get(row.hole_id)
             depth_text = f"{depth:.1f} m TD" if depth is not None else ""
             # The collar RL rides in the header box: as a separate label it
-            # sat under the box and only "m RL" showed.
-            rl_text = f"{float(row.collar_elevation):.1f} m RL"
+            # sat under the box and only "m RL" showed (now "masl", as the axis).
+            rl_text = f"{float(row.collar_elevation):.1f} masl"
             hole_id = fit_label(str(row.hole_id))
             lines = [hole_id, depth_text, rl_text]
             labels.append(

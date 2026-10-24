@@ -52,3 +52,33 @@ def test_screens_can_be_left_out_of_the_export() -> None:
     ).svg_bytes.decode()
     assert ExportFramingConfig().include_screens is True
     assert len(without) < len(with_screens)
+
+
+def test_render_survives_pyplot_churn_in_other_threads() -> None:
+    """Another session's plt.close('all') / new pyplot figures must not reset a
+    render's canvas (the 'FigureCanvasBase has no get_renderer' crash)."""
+    import threading
+
+    import matplotlib.pyplot as plt
+
+    from renderer_common import new_figure
+
+    stop = threading.Event()
+
+    def churn() -> None:
+        while not stop.is_set():
+            fig = plt.figure()
+            plt.close("all")
+            del fig
+
+    worker = threading.Thread(target=churn, daemon=True)
+    worker.start()
+    try:
+        for _ in range(20):
+            fig = new_figure((4.0, 3.0))
+            fig.add_subplot().plot([0, 1], [0, 1])
+            assert fig.canvas.get_renderer() is not None
+            fig.canvas.draw()
+    finally:
+        stop.set()
+        worker.join(timeout=5)

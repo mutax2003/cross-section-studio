@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.figure import Figure
 
 from lithology_codes import collect_lithology_codes
 from models import WaterLevel
 from render_theme import AXES_BG, FIGURE_BG, GRID_COLOR, LABEL_COLOR
-from renderer_common import apply_true_value_y_axis, legend_source_keys, settle_figure_layout
+from renderer_common import (
+    apply_true_value_y_axis,
+    legend_source_keys,
+    new_figure,
+    settle_figure_layout,
+)
 from stratigraphy import GeologicalPolygon
 
 # Clearance between the threshold key and the footer lines below it.
@@ -39,7 +43,8 @@ class SectionSheetLayoutMixin:
         lithology_codes: Sequence[str] | None = None,
     ) -> Figure:
         fig_width = 14.0 if self.show_legend else 12.5
-        fig, ax = plt.subplots(figsize=(fig_width, 7.2))
+        fig = new_figure((fig_width, 7.2))
+        ax = fig.add_subplot()
         fig.patch.set_facecolor(FIGURE_BG)
         ax.set_facecolor(AXES_BG)
         self._ve_main_ax = ax
@@ -57,8 +62,13 @@ class SectionSheetLayoutMixin:
         ve = self.vertical_exaggeration
 
         if self.interpretation_mode in {"interpolated", "correlation_lines"}:
-            z_min, z_max = self._uncertainty_y_bounds(hole_summary)
-            self._draw_uncertainty_zones(ax, hole_summary, z_min, z_max, collar_lookup)
+            self._draw_uncertainty_zones(
+                ax,
+                hole_summary,
+                collar_lookup,
+                polygons=polygons,
+                hole_x_lookup=ctx.x_by_hole,
+            )
 
         self._draw_fence_polygons(
             ax,
@@ -161,14 +171,25 @@ class SectionSheetLayoutMixin:
             self._draw_ve_annotation(ax)
 
         if self.show_legend and lithology_codes:
-            self._draw_legend(ax, style_cache, lithology_codes, polygons)
+            self._draw_legend(
+                ax, style_cache, lithology_codes, polygons, swatch_alpha=self.profile.fence_alpha
+            )
             ground = self.profile.show_ground_surface and len(hole_summary) >= 2
-            self._rebuild_outside_legend(ax, self._legend_extra_keys(ax, ground_surface=ground))
+            extras = self._legend_extra_keys(ax, ground_surface=ground)
+            # The groundwater series key joins the lithology legend outside the
+            # frame: in the plot (lower left) it sat over the geology.
+            water_key = next((a for a in ax.artists if a.get_gid() == "water_series_key"), None)
+            if water_key is not None:
+                extras = legend_source_keys(water_key) + extras
+                water_key.remove()
+            self._rebuild_outside_legend(
+                ax, extras, title="Legend" if water_key is not None else None
+            )
 
         y_label = (
             "Depth below collar (m)"
             if self.profile.y_axis_mode == "depth_below_collar"
-            else "Elevation (m RL)"
+            else "Elevation (masl)"
         )
         ax.set_ylabel(y_label, fontsize=10, labelpad=8)
         # Data are plotted at value*VE; label the axis with the true values.
@@ -178,7 +199,11 @@ class SectionSheetLayoutMixin:
         ax.set_title(self.title, fontsize=14, fontweight="bold", pad=title_pad, color=LABEL_COLOR)
         # Exact VE: the plot box is locked to the chosen VE (centred in its
         # frame); auto: it fills the frame and the captions print the measured VE.
-        self._apply_ve_aspect(ax)
+        # Exact VE: the box sits on its frame's bottom edge (under it hang the
+        # hole names and distance label), so the bottom fit moves it 1:1 and
+        # can balance the sheet vertically (``_fit_section_sheet_bottom``).
+        # (Depth mode: the title layout engine owns the top; stays centred.)
+        self._apply_ve_aspect(ax, anchor="S" if self.profile.y_axis_mode == "elevation_rl" else "C")
         if self.profile.show_grid:
             ax.grid(True, linestyle="--", alpha=0.35, color=GRID_COLOR, zorder=0)
         else:
@@ -251,6 +276,11 @@ class SectionSheetLayoutMixin:
         lowest of the hole names and x tick labels, the threshold key follows
         it, and the bottom margin is set so that stack ends just above the
         footer lines (or the printable margin). Re-run after page resizes.
+
+        An exact-VE box narrower than its frame left the spare height above
+        the title (3.5 in on letter portrait); the stack is lifted by half
+        the spare height so the sheet is balanced between the top margin and
+        the footers, never so far that the box itself would shrink.
         """
         supx = getattr(fig, "_supxlabel", None)
         axes = getattr(self, "_ve_main_ax", None)
@@ -267,7 +297,9 @@ class SectionSheetLayoutMixin:
                 continue
             if text.get_position()[1] < 0.2:
                 floor_px = max(floor_px, text.get_window_extent(renderer).y1 + _KEY_FOOTER_PAD_PT * dpi / 72.0)
-        for _attempt in range(3):
+        top_limit_px = height - (margins[2] if margins else 0.06) * dpi
+        balance = self.profile.y_axis_mode == "elevation_rl"
+        for _attempt in range(4):
             settle_figure_layout(fig)
             frame = axes.get_window_extent(renderer)
             lowest = frame.y0
@@ -290,7 +322,27 @@ class SectionSheetLayoutMixin:
             key = getattr(self, "_chemistry_threshold_key", None)
             if key is not None and key.figure is fig:
                 stack_bottom = min(stack_bottom, key.get_window_extent(renderer).y0)
-            delta = (stack_bottom - floor_px) / height
+            outside_legend = axes.get_legend()
+            if balance and outside_legend is not None and outside_legend.get_visible():
+                # A legend hung below a narrow portrait box is part of the stack.
+                stack_bottom = min(stack_bottom, outside_legend.get_window_extent(renderer).y0)
+            target_px = floor_px
+            if balance:
+                content_top = frame.y1
+                tight_all = axes.get_tightbbox(renderer)
+                if tight_all is not None:
+                    content_top = max(content_top, tight_all.y1)
+                legend = axes.get_legend()
+                if legend is not None and legend.get_visible():
+                    content_top = max(content_top, legend.get_window_extent(renderer).y1)
+                spare = (top_limit_px - content_top) + (stack_bottom - floor_px)
+                # Frame height the box does not use (anchored at the bottom):
+                # lifting the frame bottom by up to this keeps the box's size.
+                params = fig.subplotpars
+                unused_px = (params.top - params.bottom) * height - frame.height
+                lift = min(max(spare * 0.5, 0.0), max(unused_px, 0.0) + (stack_bottom - floor_px))
+                target_px = floor_px + max(lift, 0.0)
+            delta = (stack_bottom - target_px) / height
             if abs(delta) * height < 1.0:
                 break
             bottom = min(max(fig.subplotpars.bottom - delta, 0.04), fig.subplotpars.top - 0.2)

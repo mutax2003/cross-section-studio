@@ -24,14 +24,25 @@ from app_common import (
 from app_services import cached_configure_preflight, cached_recommend_transects
 from app_upload import queue_session_values
 from batch_export import validate_batch_transect_lines
-from models import Collar, CorrelationOverride, ParseResult, subset_parse_result
+from chemistry_qc import dominant_units
+from models import (
+    MAX_CHEMISTRY_PARAMETERS,
+    Collar,
+    CorrelationOverride,
+    ParseResult,
+    subset_parse_result,
+)
 from render_profiles import (
     DEFAULT_CHEMISTRY_THRESHOLD_GREEN_MAX,
     DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX,
     ChemistryLabelStyle,
     ChemistryThresholdMap,
+    chemistry_limit_value,
     chemistry_parameter_key,
+    chemistry_parameter_spellings,
     chemistry_thresholds_from_readings,
+    is_two_band_mode,
+    resolved_chemistry_limits_for,
 )
 from ui_output_presets import resolve_output_preset
 
@@ -338,6 +349,41 @@ def queue_consulting_section_label(label: str | None) -> None:
     queue_session_values(consulting_section_label=label, section_title=label)
 
 
+_OFF_LINE_HOLES_SHOWN = 6
+
+
+def off_line_lab_values_message(
+    parse_result: ParseResult,
+    active_ids: Sequence[str],
+    *,
+    offset_warning_m: float,
+) -> str:
+    """Warning text for lab values on holes the coordinate line leaves out.
+
+    A typed (coordinate) line keeps only holes within ``offset_warning_m`` of
+    it, so lab results on the other holes silently never reach the figure.
+    """
+    on_line = set(active_ids)
+    by_hole: dict[str, int] = {}
+    for reading in parse_result.environmental_readings:
+        if reading.hole_id not in on_line:
+            by_hole[reading.hole_id] = by_hole.get(reading.hole_id, 0) + 1
+    if not by_hole:
+        return ""
+    total = sum(by_hole.values())
+    holes = sorted(by_hole)
+    shown = ", ".join(holes[:_OFF_LINE_HOLES_SHOWN])
+    if len(holes) > _OFF_LINE_HOLES_SHOWN:
+        shown += f" +{len(holes) - _OFF_LINE_HOLES_SHOWN} more"
+    noun = "lab value" if total == 1 else "lab values"
+    return (
+        f"**{total} {noun} will be left off** — they belong to "
+        f"{len(holes)} hole(s) more than {offset_warning_m:g} m from this section line "
+        f"({shown}). To include them, raise **Warn when a hole is this far off the line** "
+        "under sidebar **Section line**, or move the line's points so it passes those holes."
+    )
+
+
 def render_configure_step(
     parse_result: ParseResult,
     *,
@@ -493,14 +539,35 @@ def render_configure_step(
             st.caption("Fix the section line or the workbook data before generating.")
         else:
             subset_ready = True
+            # One option per parameter: spellings that differ only in case /
+            # spaces ("Cl", "cl") are one (chemistry_parameter_key), listed by
+            # the first spelling; Validate names the merged spellings.
             available_params = sorted(
-                {reading.parameter for reading in subset_preflight.environmental_readings}
+                chemistry_parameter_spellings(
+                    reading.parameter for reading in subset_preflight.environmental_readings
+                )
             )
+            if transect_mode == "By coordinates":
+                off_line_note = off_line_lab_values_message(
+                    parse_result, active_ids, offset_warning_m=offset_warning_m
+                )
+                if off_line_note:
+                    st.warning(off_line_note, icon=":material/warning:")
             if available_params:
                 st.markdown("**Lab / environmental parameters**")
                 options_sig = tuple(available_params)
-                preset_chem_sig = (prefer_chemistry, options_sig)
-                if st.session_state.get("_env_params_options_sig") != options_sig:
+                output_preset = str(st.session_state.get("output_preset", "section_sheet"))
+                # Re-selecting a chemistry style (p2 -> section sheet -> p2)
+                # seeds an empty pick again, hence the style in the signature.
+                preset_chem_sig = (prefer_chemistry, output_preset, options_sig)
+                # Re-seed when the options change, and also when the widget's
+                # value is gone: a workbook (or line) without lab data does not
+                # draw the multiselect, Streamlit drops its key, and coming back
+                # to the same options used to leave "Parameters to plot" empty.
+                if (
+                    st.session_state.get("_env_params_options_sig") != options_sig
+                    or "environmental_parameters_multiselect" not in st.session_state
+                ):
                     previous = list(st.session_state.get("environmental_parameters_multiselect") or [])
                     kept = [p for p in previous if p in available_params]
                     if prefer_chemistry:
@@ -509,36 +576,62 @@ def render_configure_step(
                             for p in available_params
                             if "chlor" in p.lower() or p.lower() in {"cl", "cl-"}
                         ]
-                        st.session_state.environmental_parameters_multiselect = (
-                            kept or chloride_like or list(available_params)
-                        )
+                        seeded = kept or chloride_like or list(available_params)
                     else:
-                        st.session_state.environmental_parameters_multiselect = (
-                            kept or list(available_params)
-                        )
+                        seeded = kept or list(available_params)
+                    # The seed respects the per-section cap (first four).
+                    st.session_state.environmental_parameters_multiselect = seeded[
+                        :MAX_CHEMISTRY_PARAMETERS
+                    ]
                     st.session_state._env_params_options_sig = options_sig
                 elif (
                     prefer_chemistry
                     and st.session_state.get("_env_params_preset_sig") != preset_chem_sig
                 ):
+                    # A chemistry style prefers chloride-like parameters, but
+                    # only as a seed for an empty pick: switching output styles
+                    # must never drop the parameters the user chose.
+                    current_pick = list(
+                        st.session_state.get("environmental_parameters_multiselect") or []
+                    )
                     chloride_like = [
                         p
                         for p in available_params
                         if "chlor" in p.lower() or p.lower() in {"cl", "cl-"}
                     ]
-                    if chloride_like:
-                        st.session_state.environmental_parameters_multiselect = chloride_like
+                    if chloride_like and not current_pick:
+                        st.session_state.environmental_parameters_multiselect = chloride_like[
+                            :MAX_CHEMISTRY_PARAMETERS
+                        ]
                     st.session_state._env_params_preset_sig = preset_chem_sig
+                current_pick = list(st.session_state.get("environmental_parameters_multiselect") or [])
+                if len(current_pick) > MAX_CHEMISTRY_PARAMETERS:
+                    # A longer pick (older session / scripted state) over the cap
+                    # would make the multiselect refuse to draw.
+                    st.session_state.environmental_parameters_multiselect = current_pick[
+                        :MAX_CHEMISTRY_PARAMETERS
+                    ]
                 environmental_parameters = tuple(
                     st.multiselect(
                         "Parameters to plot on section",
                         options=available_params,
-                        help="Markers and optional fence lines at sample depths (Environmental sheet).",
+                        help=(
+                            "Markers and optional fence lines at sample depths (Environmental "
+                            f"sheet). Up to {MAX_CHEMISTRY_PARAMETERS} parameters per section, "
+                            "each with its own marker shape."
+                        ),
                         key="environmental_parameters_multiselect",
+                        max_selections=MAX_CHEMISTRY_PARAMETERS,
                     )
                 )
+                st.caption(f"Up to {MAX_CHEMISTRY_PARAMETERS} parameters per section.")
                 if not environmental_parameters:
-                    st.caption("No parameters selected — environmental markers will not be plotted.")
+                    reading_count = len(subset_preflight.environmental_readings)
+                    st.warning(
+                        f"No parameters selected — none of the {reading_count} lab value(s) on "
+                        "this section line will be plotted. Pick parameters above to show them.",
+                        icon=":material/warning:",
+                    )
                 label_default = (
                     True
                     if show_parameter_labels_default is None
@@ -555,13 +648,27 @@ def render_configure_step(
                     st.session_state.show_parameter_labels_toggle = label_default
                 if "parameter_interpolate_segments_toggle" not in st.session_state:
                     st.session_state.parameter_interpolate_segments_toggle = segments_default
-                if prefer_chemistry:
-                    if st.session_state.get("_chem_toggle_preset") != prefer_chemistry:
-                        st.session_state.show_parameter_labels_toggle = label_default
-                        st.session_state.parameter_interpolate_segments_toggle = (
-                            segments_default
+                # Each output style remembers its own toggles: a chemistry
+                # style that locks "interpolate" off must not clear the choice
+                # made on Section sheet — switching back restores it.
+                toggle_memory = st.session_state.setdefault(PARAMETER_TOGGLE_MEMORY_KEY, {})
+                last_toggle_preset = st.session_state.get("_param_toggle_preset")
+                if last_toggle_preset != output_preset:
+                    if last_toggle_preset is not None:
+                        toggle_memory[last_toggle_preset] = (
+                            bool(st.session_state.get("show_parameter_labels_toggle", label_default)),
+                            bool(
+                                st.session_state.get(
+                                    "parameter_interpolate_segments_toggle", segments_default
+                                )
+                            ),
                         )
-                        st.session_state._chem_toggle_preset = prefer_chemistry
+                    labels_value, segments_value = toggle_memory.get(
+                        output_preset, (label_default, segments_default)
+                    )
+                    st.session_state.show_parameter_labels_toggle = labels_value
+                    st.session_state.parameter_interpolate_segments_toggle = segments_value
+                    st.session_state._param_toggle_preset = output_preset
                 show_parameter_labels = st.toggle(
                     "Show parameter value labels",
                     key="show_parameter_labels_toggle",
@@ -594,12 +701,13 @@ def render_configure_step(
                 mode_labels = {
                     "black": "All black",
                     "red": "All red (client P2 style)",
+                    "black_red": "Black / red (exceedance)",
+                    "green_red": "Green / red (exceedance)",
                     "threshold": "Green / orange / red thresholds",
                 }
                 # The output style sets the starting colour (Chemistry columns
                 # prints red like the client's P2 figures); switching style
                 # resets it, otherwise the user's choice is kept.
-                output_preset = str(st.session_state.get("output_preset", "section_sheet"))
                 style_mode = resolve_output_preset(output_preset).chemistry_color_mode
                 if (
                     "chemistry_color_mode_radio" not in st.session_state
@@ -614,9 +722,11 @@ def render_configure_step(
                     options=list(mode_labels.values()),
                     key="chemistry_color_mode_radio",
                     help=(
-                        "Black or red labels for data presentation. Threshold mode colours "
-                        "each value green, orange, or red using site-specific limits set below. "
-                        "A colour given in the workbook's label_color column always wins."
+                        "Black or red labels for data presentation. The exceedance modes "
+                        "print a value black (or green) at or below its parameter's limit and "
+                        "red above it. Threshold mode colours each value green, orange, or red "
+                        "using site-specific limits set below. A colour given in the workbook's "
+                        "label_color column always wins."
                     ),
                 )
                 chemistry_color_mode = next(
@@ -625,7 +735,35 @@ def render_configure_step(
                 )
                 chemistry_threshold_green_max = None
                 chemistry_threshold_yellow_max = None
-                if chemistry_color_mode == "threshold":
+                if is_two_band_mode(chemistry_color_mode):
+                    low_colour = "black" if chemistry_color_mode == "black_red" else "green"
+                    exceedance_limit = float(
+                        st.number_input(
+                            "Exceedance limit ≤",
+                            min_value=0.0,
+                            value=100.0,
+                            step=1.0,
+                            key="chemistry_exceedance_limit",
+                            help=(
+                                f"Values at or below this limit print {low_colour}, above it "
+                                "red (same units as the data). Parameters with their own row "
+                                "below use that limit instead."
+                            ),
+                        )
+                    )
+                    # One limit per parameter: stored as the green limit with the
+                    # orange limit equal to it (no orange band).
+                    chemistry_threshold_green_max = exceedance_limit
+                    chemistry_threshold_yellow_max = exceedance_limit
+                    chemistry_thresholds = _render_parameter_threshold_editor(
+                        environmental_parameters,
+                        parse_result,
+                        subset_preflight,
+                        default_green=exceedance_limit,
+                        default_orange=exceedance_limit,
+                        two_band_mode=chemistry_color_mode,
+                    )
+                elif chemistry_color_mode == "threshold":
                     threshold_cols = st.columns(2)
                     with threshold_cols[0]:
                         chemistry_threshold_green_max = float(
@@ -686,10 +824,20 @@ def render_configure_step(
                     help="Keeps coloured values legible over hatched lithology fills.",
                 )
                 chemistry_label_style = style_choice
-            elif parse_result.environmental_readings:
-                st.caption(
-                    "Lab results exist, but none are for holes on this section line."
-                )
+            else:
+                # Nothing to pick on this line: forget the option signature so
+                # the next line / workbook with lab data seeds a fresh selection.
+                st.session_state.pop("_env_params_options_sig", None)
+                st.session_state.pop("_env_params_preset_sig", None)
+                if parse_result.environmental_readings:
+                    st.caption(
+                        "Lab results exist, but none are for holes on this section line."
+                    )
+                else:
+                    st.caption(
+                        "Add an **Environmental** sheet (`hole_id`, `parameter`, `value`, `depth` or "
+                        "`from_depth`/`to_depth`) to plot lab data by depth. See Help → Workbook and data entry."
+                    )
 
             water_levels = subset_preflight.water_levels
             if water_levels:
@@ -705,7 +853,10 @@ def render_configure_step(
                 if series_options:
                     st.markdown("**Groundwater series**")
                     options_sig = tuple(series_options)
-                    if st.session_state.get("_water_series_options_sig") != options_sig:
+                    if (
+                        st.session_state.get("_water_series_options_sig") != options_sig
+                        or "water_series_multiselect" not in st.session_state
+                    ):
                         previous = list(
                             st.session_state.get("water_series_multiselect") or []
                         )
@@ -737,11 +888,6 @@ def render_configure_step(
                             "No water series selected — all groundwater series will be plotted. "
                             "Select specific series to limit the markers."
                         )
-            else:
-                st.caption(
-                    "Add an **Environmental** sheet (`hole_id`, `parameter`, `value`, `depth` or "
-                    "`from_depth`/`to_depth`) to plot lab data by depth. See Help → Workbook and data entry."
-                )
             correlation_overrides = _session_correlation_overrides() + subset_preflight.correlation_overrides
             max_interp_m = float(
                 max_offset_for_interpolation_m
@@ -886,6 +1032,11 @@ CHEMISTRY_THRESHOLD_KEY_PREFIX = "chem_threshold"
 # (a parameter deselected, or the colour mode switched away), so the limits
 # are also kept here (widget key -> value) and restored when the row returns.
 CHEMISTRY_THRESHOLD_MEMORY_KEY = "_chem_threshold_memory"
+# Which editor last wrote the per-parameter widget keys ("two_band" /
+# "threshold"): a change re-seeds the rows for the new mode.
+CHEMISTRY_THRESHOLD_EDITOR_MODE_KEY = "_chem_threshold_editor_mode"
+# Output style -> (show labels, interpolate segments) as last set there.
+PARAMETER_TOGGLE_MEMORY_KEY = "_param_toggle_memory"
 
 
 def chemistry_threshold_widget_key(parameter: str, limit: str, workbook_token: str = "") -> str:
@@ -922,12 +1073,21 @@ def seeded_parameter_thresholds(
     *,
     default_green: float | None,
     default_orange: float | None,
+    mode: str | None = "threshold",
 ) -> tuple[float, float]:
     """Starting limits for a parameter's editor row.
 
     Workbook ``green_max`` / ``orange_max`` win; chloride-like parameters
     start on the 100 / 250 mg/kg bands the client figures use; anything else
     starts on the sheet-wide pair (then the Configure defaults).
+
+    In a two-band exceedance mode (``mode`` = ``"black_red"`` /
+    ``"green_red"``) the row's single limit is resolved exactly as the engine
+    resolves it (:func:`render_profiles.resolved_chemistry_limits_for`: own
+    green, own orange, sheet-wide green, sheet-wide orange), so a workbook
+    row with only an ``orange_max`` seeds that limit and the editor and the
+    figure agree; a parameter with no limit anywhere starts on the chloride
+    / Configure default because the editor row needs a number.
     """
     key = chemistry_parameter_key(parameter)
     own = next(
@@ -946,21 +1106,29 @@ def seeded_parameter_thresholds(
             if default_orange is not None
             else DEFAULT_CHEMISTRY_THRESHOLD_YELLOW_MAX
         )
+    if is_two_band_mode(mode):
+        sheet_green = None if _is_chloride_like(parameter) else default_green
+        sheet_orange = None if _is_chloride_like(parameter) else default_orange
+        limit = chemistry_limit_value(
+            resolved_chemistry_limits_for(
+                parameter, workbook_thresholds, sheet_green, sheet_orange, mode=mode
+            )[0]
+        )
+        if limit is None:
+            limit = fallback_green
+        return limit, limit
     green = float(own[0]) if own[0] is not None else fallback_green
     orange = float(own[1]) if own[1] is not None else max(green, fallback_orange)
     return green, orange
 
 
 def _parameter_units(readings, parameters: Sequence[str]) -> dict[str, str]:
-    units: dict[str, set[str]] = {chemistry_parameter_key(p): set() for p in parameters}
-    for reading in readings:
-        key = chemistry_parameter_key(reading.parameter)
-        unit = (reading.unit or "").strip()
-        if key in units and unit:
-            units[key].add(unit)
+    """Unit beside each editor row: the parameter's main unit — the one the
+    figure converts the other rows to and reads the limits in — not every
+    spelling seen ("mg/L / ug/L")."""
+    dominant = dominant_units(readings)
     return {
-        parameter: " / ".join(sorted(units[chemistry_parameter_key(parameter)]))
-        for parameter in parameters
+        parameter: dominant.get(chemistry_parameter_key(parameter), "") for parameter in parameters
     }
 
 
@@ -971,6 +1139,7 @@ def _render_parameter_threshold_editor(
     *,
     default_green: float | None,
     default_orange: float | None,
+    two_band_mode: str | None = None,
 ) -> ChemistryThresholdMap:
     """Compact Green ≤ / Orange ≤ editor for the selected parameters only.
 
@@ -979,43 +1148,100 @@ def _render_parameter_threshold_editor(
     workbook's ``green_max`` / ``orange_max`` columns, else from the
     chloride defaults or the sheet-wide pair, and remembered per workbook
     and parameter in session state.
+
+    In a two-band exceedance mode (``two_band_mode`` = ``"black_red"`` /
+    ``"green_red"``) each row has one **Exceedance ≤** limit: it shares the
+    green limit's widget (the workbook ``green_max`` seeds it) and is returned
+    as an equal ``(limit, limit)`` pair, so no orange band exists.
     """
     if not parameters:
         return {}
     workbook_thresholds = chemistry_thresholds_from_readings(parse_result.environmental_readings)
     units = _parameter_units(subset_preflight.environmental_readings, parameters)
     token = str(st.session_state.get("file_hash") or "")
-    memory = st.session_state.setdefault(CHEMISTRY_THRESHOLD_MEMORY_KEY, {})
     result: ChemistryThresholdMap = {}
+    two_band = is_two_band_mode(two_band_mode)
+    low_colour = "black" if two_band_mode == "black_red" else "green"
+    # The exceedance limit (two-band) and the green / orange pair (threshold)
+    # share widget keys but mean different things, so each mode keeps its own
+    # memory and a mode switch re-seeds every row for the new mode instead of
+    # inheriting the other mode's widget state (an exceedance limit of 100
+    # otherwise came back as "Orange <= 100" beside "Green <= 100" — no
+    # orange band — in place of the workbook orange_max).
+    mode_kind = "two_band" if two_band else "threshold"
+    memory = st.session_state.setdefault(CHEMISTRY_THRESHOLD_MEMORY_KEY, {}).setdefault(
+        mode_kind, {}
+    )
+    mode_changed = st.session_state.get(CHEMISTRY_THRESHOLD_EDITOR_MODE_KEY) != mode_kind
+    st.session_state[CHEMISTRY_THRESHOLD_EDITOR_MODE_KEY] = mode_kind
     with st.expander("Per-parameter limits", expanded=True):
-        st.caption(
-            "Each parameter is coloured by its own limits (in its own units). "
-            "Rows start from the workbook's green_max / orange_max columns when given."
-        )
+        if two_band:
+            st.caption(
+                f"Each parameter prints {low_colour} at or below its own limit (in its own "
+                "units) and red above it. Rows start from the workbook's green_max column "
+                "when given."
+            )
+        else:
+            st.caption(
+                "Each parameter is coloured by its own limits (in its own units). "
+                "Rows start from the workbook's green_max / orange_max columns when given."
+            )
         for parameter in parameters:
             green_key = chemistry_threshold_widget_key(parameter, "green", token)
             orange_key = chemistry_threshold_widget_key(parameter, "orange", token)
-            if green_key not in st.session_state or orange_key not in st.session_state:
+            if (
+                mode_changed
+                or green_key not in st.session_state
+                or orange_key not in st.session_state
+            ):
                 seed_green, seed_orange = seeded_parameter_thresholds(
                     parameter,
                     workbook_thresholds,
                     default_green=default_green,
                     default_orange=default_orange,
+                    mode=two_band_mode,
                 )
-                # An edited value outlives the row being hidden; the seed
-                # applies only the first time the row appears for a workbook.
-                st.session_state.setdefault(green_key, memory.get(green_key, seed_green))
-                st.session_state.setdefault(orange_key, memory.get(orange_key, seed_orange))
+                # An edited value outlives the row being hidden (and, per
+                # mode, a colour-mode switch); the seed applies only the first
+                # time the row appears for a workbook in this mode.
+                if mode_changed:
+                    st.session_state[green_key] = memory.get(green_key, seed_green)
+                    st.session_state[orange_key] = memory.get(orange_key, seed_orange)
+                else:
+                    st.session_state.setdefault(green_key, memory.get(green_key, seed_green))
+                    st.session_state.setdefault(orange_key, memory.get(orange_key, seed_orange))
             # Spinner step and display precision follow the limits' size, so
             # benzene 0.5 / 5 shows as typed rather than rounded to 2 dp.
             step = _limit_step(
                 st.session_state.get(green_key), st.session_state.get(orange_key)
             )
             unit = units.get(parameter, "")
+            unit_text = f" ({unit})" if unit else ""
+            if two_band:
+                name_col, limit_col = st.columns([2, 1])
+                with name_col:
+                    st.markdown(f"**{parameter}**" + (f"  \n{unit}" if unit else ""))
+                with limit_col:
+                    limit = float(
+                        st.number_input(
+                            f"Exceedance ≤ — {parameter}",
+                            min_value=0.0,
+                            step=step,
+                            format="%g",
+                            key=green_key,
+                            label_visibility="collapsed",
+                            help=(
+                                f"{parameter}: values up to this limit print {low_colour}; "
+                                f"above it red{unit_text}."
+                            ),
+                        )
+                    )
+                memory[green_key] = limit
+                result[parameter] = (limit, limit)
+                continue
             name_col, green_col, orange_col = st.columns([2, 1, 1])
             with name_col:
                 st.markdown(f"**{parameter}**" + (f"  \n{unit}" if unit else ""))
-            unit_text = f" ({unit})" if unit else ""
             with green_col:
                 green = float(
                     st.number_input(
@@ -1047,7 +1273,10 @@ def _render_parameter_threshold_editor(
                 st.warning(f"{parameter}: orange limit should be ≥ its green limit.")
             memory[green_key], memory[orange_key] = green, orange
             result[parameter] = (green, orange)
-        st.caption("Columns: parameter · Green ≤ · Orange ≤ (red above orange).")
+        if two_band:
+            st.caption(f"Columns: parameter · Exceedance ≤ ({low_colour} at or below, red above).")
+        else:
+            st.caption("Columns: parameter · Green ≤ · Orange ≤ (red above orange).")
     return result
 
 

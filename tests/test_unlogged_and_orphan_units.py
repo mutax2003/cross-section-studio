@@ -161,14 +161,23 @@ def test_consulting_draws_one_hole_unit_without_pinch_outs() -> None:
         CONSULTING_SECTION_PROFILE, gap=False, one_hole_unit=True, pinch=False
     )
     try:
-        # Stratigraphy builds no Gravel polygon with pinch-outs off ...
-        assert "Gravel" not in {polygon.lithology_code for polygon in polygons}
-        # ... yet the legend lists it, so the sheet must draw it.
+        # With pinch-outs off the one-hole Gravel stays drawn at its hole: a short
+        # near-field wedge toward each neighbour (never absorbed by the Clay) ...
+        wedges = [polygon for polygon in polygons if polygon.lithology_code == "Gravel"]
+        assert len(wedges) == 2 and all(wedge.is_pinch_out for wedge in wedges)
+        for wedge in wedges:
+            x_min, _, x_max, _ = wedge.polygon.bounds
+            assert 0.0 < x_max - x_min <= 10.0 + 1e-9
+        # ... and the legend lists it, so the sheet draws it.
         assert "GRAVEL" in _figure_texts(figure)
         gravel = get_lithology_style("Gravel", consulting_palette=True).color
         assert _has_face(figure.axes[0], gravel)
         hole_summary = renderer._hole_context(projected).summary
-        rows, lenses = renderer._orphan_unit_geometry(projected, polygons, hole_summary, 1.0)
+        rows, _lenses = renderer._orphan_unit_geometry(projected, polygons, hole_summary, 1.0)
+        assert rows.empty  # nothing left for the renderer's lens fallback
+        # The fallback still lenses a unit no fence polygon draws.
+        no_gravel = [polygon for polygon in polygons if polygon.lithology_code != "Gravel"]
+        rows, lenses = renderer._orphan_unit_geometry(projected, no_gravel, hole_summary, 1.0)
         assert list(rows["lithology_code"]) == ["Gravel"]
         # One short lens toward each neighbour, not reaching past the midpoint.
         assert len(lenses) == 2

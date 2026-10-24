@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO
 
+import numpy as np
 import pandas as pd
 
 from models import (
@@ -33,6 +34,8 @@ from models import (
     WaterLevel,
     WorkbookSectionSpec,
     _clean_text,
+    check_bounded_number,
+    reject_bool_number,
 )
 
 logger = logging.getLogger(__name__)
@@ -101,6 +104,144 @@ def _as_excel(source: WorkbookSource) -> pd.ExcelFile:
     if hasattr(source, "seek"):
         source.seek(0)
     return pd.ExcelFile(source)
+
+
+# --- Data-sheet reads that keep TRUE/FALSE cells ---------------------------------
+# ``pd.read_excel`` infers an int/float column when the other cells are numeric,
+# and even with ``dtype=object`` it folds a bool onto an equal number already
+# seen in the column (``1`` then ``TRUE`` reads as two ``1``s), so a TRUE/FALSE
+# typed in a number column silently became 1 / 0 before the row models could
+# reject it (``models.reject_bool_number``). Every pandas Excel reader turns a
+# native boolean cell into a Python bool in its cell grid (openpyxl ``'b'``,
+# xlrd ``XL_CELL_BOOLEAN``, calamine, odf ``boolean``, pyxlsb), so the grid is
+# marked while pandas reads it — one pass, whatever header / blank rows pandas
+# skips — and the marks are turned back into bools in the frame.
+_BOOL_MARKS = {True: "\x00xs-bool:TRUE\x00", False: "\x00xs-bool:FALSE\x00"}
+_MARK_TO_BOOL = {mark: value for value, mark in _BOOL_MARKS.items()}
+# Readers whose cell grid carries booleans as Python bools.
+BOOL_AWARE_EXCEL_ENGINES = frozenset({"openpyxl", "xlrd", "calamine", "odf", "pyxlsb"})
+_BOOL_UNAVAILABLE_ATTR = "_xs_bool_detection_unavailable"
+_SHEET_CACHE_ATTR = "_xs_data_sheet_frames"
+
+
+def _mark_bool_cells(data: list) -> bool:
+    """Replace every bool in a pandas cell grid by its mark (in place); True when any."""
+    found = False
+    for index, row in enumerate(data):
+        if not any(isinstance(value, (bool, np.bool_)) for value in row):
+            continue
+        found = True
+        data[index] = [
+            _BOOL_MARKS[bool(value)] if isinstance(value, (bool, np.bool_)) else value
+            for value in row
+        ]
+    return found
+
+
+def _unmark(value: object) -> object:
+    if isinstance(value, str) and "\x00xs-bool:" in value:
+        exact = _MARK_TO_BOOL.get(value)
+        if exact is not None:
+            return exact
+        # A deduplicated header ("TRUE.1"): pandas appended to the mark.
+        for mark, flag in _MARK_TO_BOOL.items():
+            value = value.replace(mark, str(flag))
+    return value
+
+
+def _restore_marked_bools(frame: pd.DataFrame) -> pd.DataFrame:
+    frame.columns = [_unmark(name) for name in frame.columns]
+    marks = list(_MARK_TO_BOOL)
+    for position in range(frame.shape[1]):
+        column = frame.iloc[:, position]
+        if column.dtype != object:
+            continue
+        hits = column.isin(marks).to_numpy()
+        if not hits.any():
+            continue
+        values = column.to_numpy(dtype=object, copy=True)
+        values[hits] = [_MARK_TO_BOOL[value] for value in values[hits]]
+        frame.isetitem(position, values)
+    return frame
+
+
+def _note_bool_detection_unavailable(workbook: pd.ExcelFile) -> None:
+    engine = str(getattr(workbook, "engine", None) or "unknown")
+    if getattr(workbook, _BOOL_UNAVAILABLE_ATTR, None) is None:
+        logger.warning(
+            "TRUE/FALSE cell detection is unavailable for the %s Excel reader; a TRUE/FALSE "
+            "in a number column may read as 1 / 0",
+            engine,
+        )
+    try:
+        setattr(workbook, _BOOL_UNAVAILABLE_ATTR, engine)
+    except Exception:  # pragma: no cover - an object that refuses attributes
+        pass
+
+
+def bool_cell_detection_note(workbook: pd.ExcelFile | None) -> str | None:
+    """Import note when this workbook's reader could not report TRUE/FALSE cells."""
+    engine = getattr(workbook, _BOOL_UNAVAILABLE_ATTR, None) if workbook is not None else None
+    if not engine:
+        return None
+    return (
+        f"TRUE/FALSE cells cannot be detected in this file type (read with the {engine} "
+        "reader): a TRUE/FALSE typed in a number column may have been read as 1 / 0 instead "
+        "of being flagged. Save the workbook as .xlsx to have such cells reported."
+    )
+
+
+def _read_marked_frame(
+    workbook: pd.ExcelFile, sheet_name: str, header: int | None
+) -> pd.DataFrame:
+    reader = getattr(workbook, "_reader", None)
+    get_sheet_data = getattr(reader, "get_sheet_data", None)
+    engine = getattr(workbook, "engine", None)
+    if not callable(get_sheet_data) or engine not in BOOL_AWARE_EXCEL_ENGINES:
+        _note_bool_detection_unavailable(workbook)
+        return pd.read_excel(workbook, sheet_name=sheet_name, header=header, dtype=object)
+    marked = False
+
+    def marking_get_sheet_data(*args: object, **kwargs: object) -> list:
+        nonlocal marked
+        data = get_sheet_data(*args, **kwargs)
+        if isinstance(data, list):
+            marked = _mark_bool_cells(data) or marked
+        return data
+
+    reader.get_sheet_data = marking_get_sheet_data  # type: ignore[union-attr]
+    try:
+        frame = pd.read_excel(workbook, sheet_name=sheet_name, header=header, dtype=object)
+    finally:
+        reader.__dict__.pop("get_sheet_data", None)
+    return _restore_marked_bools(frame) if marked else frame
+
+
+def read_data_sheet(
+    workbook: pd.ExcelFile, sheet_name: str, *, header: int | None = 0
+) -> pd.DataFrame:
+    """One data sheet with every cell kept as the type Excel stored (TRUE/FALSE kept as bools).
+
+    ``dtype=object`` keeps ints, floats, dates and text as they are (the row
+    models coerce and validate each value); boolean cells survive as bools
+    (see the note above). ``header=None`` reads a layout sheet such as Data
+    Entry. Each sheet is read once per workbook: later reads (a probe, then
+    the parse) get a copy of the cached frame. A reader that cannot report
+    booleans records an import note (:func:`bool_cell_detection_note`).
+    """
+    cache = getattr(workbook, _SHEET_CACHE_ATTR, None)
+    if cache is None:
+        cache = {}
+        try:
+            setattr(workbook, _SHEET_CACHE_ATTR, cache)
+        except Exception:  # pragma: no cover - an object that refuses attributes
+            pass
+    key = (sheet_name, header)
+    frame = cache.get(key)
+    if frame is None:
+        frame = _read_marked_frame(workbook, sheet_name, header)
+        cache[key] = frame
+    return frame.copy()
 
 
 def _short_error(exc: Exception) -> str:
@@ -262,7 +403,12 @@ def _detect_flag(raw: object, column: str) -> bool | None:
     if not text:
         return None
     compact = " ".join(text.split())
-    if compact in _QUALIFIER_NON_DETECT or compact.replace(" ", "") in _QUALIFIER_NON_DETECT:
+    # In the qualifier column a bare "N" is the lab flag (tentatively
+    # identified, detected); in the detected column it means "no".
+    lab_flag_n = column == "qualifier" and compact == "n"
+    if not lab_flag_n and (
+        compact in _QUALIFIER_NON_DETECT or compact.replace(" ", "") in _QUALIFIER_NON_DETECT
+    ):
         return False
     if compact in _QUALIFIER_DETECTED:
         return True
@@ -358,6 +504,8 @@ def _row_error(sheet: str, row_num: int, exc: Exception, *, hole_id: object = No
     if message.startswith(("value = ", "qualifier = ", "detected = ", "date = ")):
         # Non-detect / qualifier / date messages already name the cell and the fix.
         return f"{where}, {message}"
+    if "is a TRUE/FALSE cell" in message:
+        return f"{where}, {message}."
 
     whole_number = "must be an integer" in lowered or "whole number" in lowered
     if field and (
@@ -416,13 +564,40 @@ def _row_error(sheet: str, row_num: int, exc: Exception, *, hole_id: object = No
     return f"{where}: {message}"
 
 
-def _unknown_hole_error(sheet: str, row_num: int, hole_id: object) -> str:
-    """Row references a hole that is not in Collars (keeps the Excel row number)."""
+def hole_id_match_key(hole_id: object) -> str:
+    """Case- and whitespace-insensitive key (``MW-01`` ~ ``mw-01`` ~ ``MW -01``)."""
+    return re.sub(r"\s+", "", str(hole_id)).casefold()
+
+
+def _case_variant_of(hole_id: object, known_ids: Iterable[str] | None) -> str | None:
+    """The Collars ID that *hole_id* matches only when case / spaces are ignored."""
+    if not known_ids:
+        return None
+    key = hole_id_match_key(hole_id)
+    return next((known for known in sorted(known_ids) if hole_id_match_key(known) == key), None)
+
+
+def _unknown_hole_error(
+    sheet: str,
+    row_num: int,
+    hole_id: object,
+    known_ids: Iterable[str] | None = None,
+    *,
+    detail: str = "",
+) -> str:
+    """Row references a hole that is not in Collars (keeps the Excel row number).
+
+    When Collars has the same ID in another case / spacing (``mw-01`` vs
+    ``MW-01``) the message names it: IDs must match exactly.
+    """
     hole = _cell_text(hole_id, 20)
-    return (
-        f"{sheet} row {row_num}: {hole} is in {sheet} but not in Collars — "
-        "add it to Collars or fix the spelling."
+    variant = _case_variant_of(hole_id, known_ids)
+    fix = (
+        f"Collars has {variant} — hole IDs must match exactly (case and spaces)."
+        if variant is not None
+        else "add it to Collars or fix the spelling."
     )
+    return f"{sheet} row {row_num}: {hole} is in {sheet} but not in Collars{detail} — {fix}"
 
 
 def _missing_columns_message(sheet: str, missing: object) -> str:
@@ -458,6 +633,123 @@ def skipped_row_hole_ids(errors: Sequence[str]) -> dict[str, set[str]]:
 
 
 _COLUMN_SPELLINGS = {"label_colour": "label_color", "yellow_max": "orange_max"}
+
+# pandas reads an Excel error cell (#N/A, #DIV/0! ...) and a formula saved
+# without its result (files written by scripts / web tools) as a blank cell.
+_EMPTY_CELL_ERROR_RE = re.compile(
+    r"^(?P<where>(?P<sheet>[A-Z][A-Za-z ]+?) row (?P<row>\d+)(?: \([^)]*\))?): "
+    r"(?P<field>[a-z_]+) is empty — "
+)
+_MAX_EXPLAINED_CELLS = 200
+
+
+def _header_key(value: object) -> str:
+    name = re.sub(r"\s+", "_", str(value).strip().lower())
+    return _COLUMN_SPELLINGS.get(name, name)
+
+
+def _cells_by_row(sheet: object, wanted: dict[int, set[int]]) -> dict[tuple[int, int], object]:
+    """``{(row, col): value}`` for the wanted 1-based rows / 0-based columns (one pass)."""
+    found: dict[tuple[int, int], object] = {}
+    last = max(wanted)
+    for row_num, values in enumerate(sheet.iter_rows(values_only=True), start=1):  # type: ignore[attr-defined]
+        if row_num > last:
+            break
+        for col in wanted.get(row_num, ()):
+            found[(row_num, col)] = values[col] if col < len(values) else None
+    return found
+
+
+def _explain_empty_cells(
+    errors: list[str],
+    workbook: pd.ExcelFile | None,
+    native_sheets: dict[str, str],
+) -> list[str]:
+    """Reword "<field> is empty" row errors whose cell is not actually empty.
+
+    An Excel error value (``#N/A``, ``#DIV/0!``) and a formula whose result was
+    never cached both reach pandas as a blank. The cached-value workbook names
+    the error; formulas are read from a second, formula-mode load (only when
+    such an error exists). Anything unexpected leaves the message unchanged.
+    """
+    targets: dict[str, list[tuple[int, re.Match[str]]]] = {}
+    for index, message in enumerate(errors):
+        match = _EMPTY_CELL_ERROR_RE.match(message)
+        if match and match.group("sheet") in native_sheets:
+            targets.setdefault(match.group("sheet"), []).append((index, match))
+    book = getattr(workbook, "book", None) if workbook is not None else None
+    if not targets or book is None or not hasattr(book, "sheetnames"):
+        return errors
+    explained = list(errors)
+    raw_book = None
+    try:
+        for label, items in targets.items():
+            sheet_name = DataParser._find_sheet(list(book.sheetnames), native_sheets[label])
+            if sheet_name is None:
+                continue
+            sheet = book[sheet_name]
+            header = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
+            columns = {_header_key(name): col for col, name in enumerate(header) if name is not None}
+            wanted: dict[int, set[int]] = {}
+            located: list[tuple[int, re.Match[str], int, int]] = []
+            for index, match in items[:_MAX_EXPLAINED_CELLS]:
+                col = columns.get(match.group("field"))
+                if col is None:
+                    continue
+                row = int(match.group("row"))
+                wanted.setdefault(row, set()).add(col)
+                located.append((index, match, row, col))
+            if not wanted:
+                continue
+            cached = _cells_by_row(sheet, wanted)
+            formula_rows: dict[int, set[int]] = {}
+            for _index, _match, row, col in located:
+                if cached.get((row, col)) is None:
+                    formula_rows.setdefault(row, set()).add(col)
+            raw: dict[tuple[int, int], object] = {}
+            if formula_rows:
+                if raw_book is None:
+                    raw_book = _load_formula_workbook(workbook)
+                if raw_book is not None and sheet_name in raw_book.sheetnames:
+                    raw = _cells_by_row(raw_book[sheet_name], formula_rows)
+            for index, match, row, col in located:
+                where, field = match.group("where"), match.group("field")
+                value = cached.get((row, col))
+                if isinstance(value, str) and value.strip().startswith("#"):
+                    explained[index] = (
+                        f"{where}: {field} holds the Excel error value {value.strip()} — fix "
+                        "the formula in Excel or type the number."
+                    )
+                    continue
+                formula = raw.get((row, col))
+                if isinstance(formula, str) and formula.startswith("="):
+                    explained[index] = (
+                        f"{where}: {field} is a formula whose result was not cached (the file "
+                        "was saved by a program that does not calculate formulas) — open and "
+                        "save it in Excel, or paste the values (Paste Special → Values)."
+                    )
+    except Exception:  # pragma: no cover - explanation must never break parsing
+        logger.debug("Could not inspect blank cells", exc_info=True)
+        return errors
+    finally:
+        if raw_book is not None:
+            raw_book.close()
+    return explained
+
+
+def _load_formula_workbook(workbook: pd.ExcelFile | None) -> object | None:
+    """The same workbook loaded with formulas (not cached values), or ``None``."""
+    source = getattr(workbook, "_io", None)
+    if source is None:
+        return None
+    import openpyxl
+
+    if hasattr(source, "seek"):
+        source.seek(0)
+    try:
+        return openpyxl.load_workbook(source, read_only=True, data_only=False)
+    except Exception:
+        return None
 
 
 def _blank_cell(value: object) -> bool:
@@ -525,11 +817,23 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     if "hole_id" in df.columns:
         # A blank cell makes pandas read numeric IDs as float: 1 -> 1.0 -> "1.0",
         # which then matches nothing in Collars.
-        df["hole_id"] = df["hole_id"].map(_integral_id_to_text)
+        # Built as an object Series: ``Series.map`` re-infers the dtype, so a
+        # sheet read with dtype=object (1, <blank>, 2) came back as floats.
+        ids = df["hole_id"]
+        if isinstance(ids, pd.Series):
+            df["hole_id"] = pd.Series(
+                [_integral_id_to_text(value) for value in ids], index=df.index, dtype=object
+            )
+        else:  # two headers collapsed to hole_id: the duplicate check reports it
+            df["hole_id"] = ids.map(_integral_id_to_text)
     return df
 
 
 def _integral_id_to_text(value: object) -> object:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
     if isinstance(value, float) and not pd.isna(value) and value.is_integer():
         return str(int(value))
     return value
@@ -561,6 +865,9 @@ class DataParser:
         environmental_frame = None
         screens_frame = None
         gradients_frame = None
+        # Row errors from these sheet labels point at native workbook tabs
+        # (label -> real sheet name), so blank-cell errors can be explained.
+        native_sheets: dict[str, str] = {}
         data_entry_precedence_warnings: list[str] = []
         data_entry = None
         supplied_geology = collars_df is not None and lithology_df is not None
@@ -588,7 +895,7 @@ class DataParser:
                 if data_entry_sheet:
                     from workbook_template import parse_data_entry_sheet
 
-                    entry_frame = pd.read_excel(workbook, sheet_name=data_entry_sheet, header=None)
+                    entry_frame = read_data_sheet(workbook, data_entry_sheet, header=None)
                     data_entry = parse_data_entry_sheet(entry_frame)
                     if not data_entry.environmental.empty:
                         environmental_frame = _normalize_columns(data_entry.environmental)
@@ -615,15 +922,13 @@ class DataParser:
                         raise ValueError(f"Missing required sheet(s): {', '.join(missing)}")
 
                     # Read by the sheet's actual name: detection is case-insensitive.
-                    collars_frame = _normalize_columns(
-                        pd.read_excel(
-                            workbook, sheet_name=self._find_sheet(workbook.sheet_names, collars_name)
-                        )
-                    )
-                    lithology_frame = _normalize_columns(
-                        pd.read_excel(
-                            workbook, sheet_name=self._find_sheet(workbook.sheet_names, lithology_name)
-                        )
+                    collars_tab = self._find_sheet(workbook.sheet_names, collars_name)
+                    lithology_tab = self._find_sheet(workbook.sheet_names, lithology_name)
+                    collars_frame = _normalize_columns(read_data_sheet(workbook, collars_tab))
+                    lithology_frame = _normalize_columns(read_data_sheet(workbook, lithology_tab))
+                    native_sheets["Collars"] = self._find_sheet(workbook.sheet_names, collars_name)
+                    native_sheets["Lithology"] = self._find_sheet(
+                        workbook.sheet_names, lithology_name
                     )
                     # Empty header-only native tabs: fall back to Data Entry geology when present.
                     if (
@@ -634,6 +939,7 @@ class DataParser:
                     ):
                         collars_frame = _normalize_columns(data_entry.collars)
                         lithology_frame = _normalize_columns(data_entry.lithology)
+                        native_sheets.clear()
 
             collars, collar_errors = self._parse_collars(collars_frame)
             lithologies, lithology_errors = self._parse_lithologies(lithology_frame, collars)
@@ -704,7 +1010,8 @@ class DataParser:
                 if water_frame is None:
                     water_sheet = self._find_sheet(workbook.sheet_names, self.WATER_SHEET)
                     if water_sheet:
-                        water_frame = _normalize_columns(pd.read_excel(workbook, sheet_name=water_sheet))
+                        water_frame = _normalize_columns(read_data_sheet(workbook, water_sheet))
+                        native_sheets["Water"] = water_sheet
                 if water_frame is not None and not water_frame.empty:
                     water_levels, water_errors = self._parse_water_levels(water_frame, collars)
                 if environmental_frame is not None and not environmental_frame.empty:
@@ -715,6 +1022,7 @@ class DataParser:
                     environmental_readings, environmental_errors = self._parse_environmental_sheet(
                         workbook, collars
                     )
+                    native_sheets["Environmental"] = "Environmental"
                 field_readings, field_errors = self._parse_field_data_environmental_sheet(
                     workbook, collars
                 )
@@ -724,13 +1032,16 @@ class DataParser:
                     screen_intervals, screen_errors = self._parse_screens_dataframe(screens_frame, collars)
                 else:
                     screen_intervals, screen_errors = self._parse_screens_sheet(workbook, collars)
+                    native_sheets["Screens"] = self.SCREENS_SHEET
                 if gradients_frame is not None and not gradients_frame.empty:
                     vertical_gradients, gradient_errors = self._parse_gradients_dataframe(
                         gradients_frame, collars
                     )
                 else:
                     vertical_gradients, gradient_errors = self._parse_gradients_sheet(workbook, collars)
-                deviation_readings = self._parse_deviation_sheet(workbook, structure_errors)
+                    native_sheets["Gradients"] = self.GRADIENTS_SHEET
+                deviation_readings = self._parse_deviation_sheet(workbook, structure_errors, collars)
+                native_sheets["Deviations"] = "Deviations"
                 correlation_overrides = self._parse_correlation_sheet(workbook)
                 faults = self._parse_fault_sheet(workbook, structure_errors)
                 unconformities = self._parse_unconformity_sheet(workbook, structure_errors)
@@ -742,13 +1053,17 @@ class DataParser:
                 lithologies = self._apply_lithology_aliases(lithologies, lithology_aliases)
 
             errors = tuple(
-                collar_errors
-                + lithology_errors
-                + water_errors
-                + screen_errors
-                + gradient_errors
-                + environmental_errors
-                + structure_errors
+                _explain_empty_cells(
+                    collar_errors
+                    + lithology_errors
+                    + water_errors
+                    + screen_errors
+                    + gradient_errors
+                    + environmental_errors
+                    + structure_errors,
+                    workbook,
+                    native_sheets,
+                )
                 + data_entry_precedence_warnings
             )
             if errors:
@@ -816,7 +1131,7 @@ class DataParser:
         sheet = self._find_sheet(workbook.sheet_names, sheet_name)
         if not sheet:
             return False
-        frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
+        frame = _normalize_columns(read_data_sheet(workbook, sheet))
         return self._frame_has_hole_rows(frame)
 
     @staticmethod
@@ -950,7 +1265,7 @@ class DataParser:
             if valid_hole_ids and lithology.hole_id not in valid_hole_ids:
                 if not self._collar_failed(lithology.hole_id):
                     errors.append(
-                        _unknown_hole_error("Lithology", row_num, lithology.hole_id)
+                        _unknown_hole_error("Lithology", row_num, lithology.hole_id, valid_hole_ids)
                     )
                 continue
 
@@ -1008,16 +1323,26 @@ class DataParser:
                     raise ValueError("depth or elevation_masl is required")
                 elevation_masl: float | None = None
                 if has_masl:
-                    elevation_masl = float(masl_raw)
+                    # Checked before the depth conversion so the row error names
+                    # elevation_masl, not the derived depth.
+                    elevation_masl = check_bounded_number(
+                        float(reject_bool_number(masl_raw, "elevation_masl")),  # type: ignore[arg-type]
+                        "elevation_masl",
+                    )
                     collar = collar_by_id.get(hole_id)
                     if collar is None:
-                        raise ValueError(f"unknown hole_id '{hole_id}' for elevation_masl")
+                        if self._collar_failed(hole_id):
+                            continue
+                        errors.append(
+                            _unknown_hole_error("Water", row_num, hole_id, valid_hole_ids)
+                        )
+                        continue
                     # A head above the collar is a (flowing) artesian condition,
                     # not an error: the head keeps its elevation and Validate
                     # reports it as information. depth stays non-negative.
                     depth = max(0.0, collar.elevation - elevation_masl)
                 elif has_depth:
-                    depth = float(depth_raw)
+                    depth = float(reject_bool_number(depth_raw, "depth"))  # type: ignore[arg-type]
                 else:
                     depth = 0.0
                 payload: dict[str, object] = {
@@ -1052,7 +1377,7 @@ class DataParser:
                 continue
             if valid_hole_ids and level.hole_id not in valid_hole_ids:
                 if not self._collar_failed(level.hole_id):
-                    errors.append(_unknown_hole_error("Water", row_num, level.hole_id))
+                    errors.append(_unknown_hole_error("Water", row_num, level.hole_id, valid_hole_ids))
                 continue
             levels.append(level)
 
@@ -1066,7 +1391,7 @@ class DataParser:
         sheet = self._find_sheet(workbook.sheet_names, self.SCREENS_SHEET)
         if not sheet:
             return [], []
-        frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
+        frame = _normalize_columns(read_data_sheet(workbook, sheet))
         return self._parse_screens_dataframe(frame, collars)
 
     def _parse_gradients_sheet(
@@ -1077,7 +1402,7 @@ class DataParser:
         sheet = self._find_sheet(workbook.sheet_names, self.GRADIENTS_SHEET)
         if not sheet:
             return [], []
-        frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
+        frame = _normalize_columns(read_data_sheet(workbook, sheet))
         return self._parse_gradients_dataframe(frame, collars)
 
     def _parse_screens_dataframe(
@@ -1100,7 +1425,7 @@ class DataParser:
                 continue
             if valid_hole_ids and interval.hole_id not in valid_hole_ids:
                 if not self._collar_failed(interval.hole_id):
-                    errors.append(_unknown_hole_error("Screens", row_num, interval.hole_id))
+                    errors.append(_unknown_hole_error("Screens", row_num, interval.hole_id, valid_hole_ids))
                 continue
             intervals.append(interval)
         return intervals, errors
@@ -1125,43 +1450,72 @@ class DataParser:
                 continue
             if valid_hole_ids and gradient.hole_id not in valid_hole_ids:
                 if not self._collar_failed(gradient.hole_id):
-                    errors.append(_unknown_hole_error("Gradients", row_num, gradient.hole_id))
+                    errors.append(_unknown_hole_error("Gradients", row_num, gradient.hole_id, valid_hole_ids))
                 continue
             gradients.append(gradient)
         return gradients, errors
 
     def _parse_deviation_sheet(
-        self, workbook: pd.ExcelFile, errors: list[str]
+        self,
+        workbook: pd.ExcelFile,
+        errors: list[str],
+        collars: Sequence[Collar] | None = None,
     ) -> list[DeviationReading]:
+        """Deviations rows; errors carry the Excel row number like other sheets.
+
+        Rows for holes not in Collars are not used by the section (the survey
+        has no collar to hang from): one message per hole names them.
+        """
         sheet = self._find_sheet(workbook.sheet_names, "Deviations")
         if not sheet:
             return []
-        frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
+        frame = _normalize_columns(read_data_sheet(workbook, sheet))
         required = {"hole_id", "depth", "inclination_deg", "azimuth_deg"}
         if not required.issubset(frame.columns):
             return []
+        valid_hole_ids = {collar.hole_id for collar in collars or ()}
         readings: list[DeviationReading] = []
-        for row in frame.itertuples(index=False):
+        orphan_rows: dict[str, list[int]] = {}
+        for row_num, row in enumerate(frame.itertuples(index=False), start=2):
+            if self._blank_hole_id(row.hole_id):
+                if self._row_has_values(row, ("depth", "inclination_deg", "azimuth_deg")):
+                    errors.append(f"Deviations row {row_num}: hole_id is blank")
+                continue
             try:
-                readings.append(
-                    DeviationReading.model_validate(
-                        {
-                            "hole_id": row.hole_id,
-                            "depth": row.depth,
-                            "inclination_deg": row.inclination_deg,
-                            "azimuth_deg": row.azimuth_deg,
-                        }
-                    )
+                reading = DeviationReading.model_validate(
+                    {
+                        "hole_id": row.hole_id,
+                        "depth": row.depth,
+                        "inclination_deg": row.inclination_deg,
+                        "azimuth_deg": row.azimuth_deg,
+                    }
                 )
             except Exception as exc:
-                errors.append(f"Deviations row for {row.hole_id!r}: {_short_error(exc)}")
+                errors.append(_row_error("Deviations", row_num, exc, hole_id=row.hole_id))
+                continue
+            if valid_hole_ids and reading.hole_id not in valid_hole_ids:
+                if not self._collar_failed(reading.hole_id):
+                    orphan_rows.setdefault(reading.hole_id, []).append(row_num)
+                continue
+            readings.append(reading)
+        for hole_id, rows in orphan_rows.items():
+            noun = "row" if len(rows) == 1 else "rows"
+            errors.append(
+                _unknown_hole_error(
+                    "Deviations",
+                    rows[0],
+                    hole_id,
+                    valid_hole_ids,
+                    detail=f" (survey of {len(rows)} {noun} not used)",
+                )
+            )
         return readings
 
     def _parse_correlation_sheet(self, workbook: pd.ExcelFile) -> list[CorrelationOverride]:
         sheet = self._find_sheet(workbook.sheet_names, "Correlations")
         if not sheet:
             return []
-        frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
+        frame = _normalize_columns(read_data_sheet(workbook, sheet))
         required = {"left_hole_id", "right_hole_id", "left_unit_order", "right_unit_order"}
         if not required.issubset(frame.columns):
             return []
@@ -1238,7 +1592,7 @@ class DataParser:
             if valid_hole_ids and reading.hole_id not in valid_hole_ids:
                 if not self._collar_failed(reading.hole_id):
                     errors.append(
-                        _unknown_hole_error("Environmental", row_num, reading.hole_id)
+                        _unknown_hole_error("Environmental", row_num, reading.hole_id, valid_hole_ids)
                     )
                 continue
             readings.append(reading)
@@ -1252,7 +1606,7 @@ class DataParser:
         sheet = self._find_sheet(workbook.sheet_names, "Environmental")
         if not sheet:
             return [], []
-        frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
+        frame = _normalize_columns(read_data_sheet(workbook, sheet))
         return self._parse_environmental_dataframe(frame, collars)
 
     def _parse_field_data_environmental_dataframe(
@@ -1306,6 +1660,13 @@ class DataParser:
 
             ova_value: float | None = None
             ec_value: float | None = None
+            for column in ("ova", "ec"):
+                try:
+                    # A TRUE/FALSE cell is not a reading of 1 / 0.
+                    reject_bool_number(payload.get(column), column)
+                except ValueError as exc:
+                    errors.append(_row_error("Field Data", row_num, exc, hole_id=hole_id))
+                    payload[column] = None
             if has_ova:
                 parsed_ova = pd.to_numeric(payload.get("ova"), errors="coerce")
                 if not pd.isna(parsed_ova):
@@ -1329,7 +1690,7 @@ class DataParser:
                 continue
 
             if valid_hole_ids and hole_id not in valid_hole_ids:
-                errors.append(_unknown_hole_error("Field Data", row_num, hole_id))
+                errors.append(_unknown_hole_error("Field Data", row_num, hole_id, valid_hole_ids))
                 continue
 
             if ova_color_col is not None and ova_color_col == ec_color_col:
@@ -1395,7 +1756,7 @@ class DataParser:
         sheet = self._find_sheet(workbook.sheet_names, "Faults")
         if not sheet:
             return []
-        frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
+        frame = _normalize_columns(read_data_sheet(workbook, sheet))
         if not {"name", "x_profile", "elevation"}.issubset(frame.columns):
             return []
         frame = frame.dropna(how="all", subset=["name", "x_profile", "elevation"])
@@ -1417,7 +1778,7 @@ class DataParser:
         sheet = self._find_sheet(workbook.sheet_names, "Unconformities")
         if not sheet:
             return []
-        frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
+        frame = _normalize_columns(read_data_sheet(workbook, sheet))
         if not {"name", "x_profile", "elevation"}.issubset(frame.columns):
             return []
         frame = frame.dropna(how="all", subset=["name", "x_profile", "elevation"])
@@ -1458,7 +1819,7 @@ class DataParser:
         sheet = self._find_sheet(workbook.sheet_names, self.SECTIONS_SHEET)
         if not sheet:
             return []
-        frame = _normalize_columns(pd.read_excel(workbook, sheet_name=sheet))
+        frame = _normalize_columns(read_data_sheet(workbook, sheet))
         if "section_label" not in frame.columns or "hole_ids" not in frame.columns:
             logger.warning(
                 "Sections sheet missing required columns section_label and hole_ids; skipped"

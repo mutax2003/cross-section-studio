@@ -60,7 +60,7 @@ Validate / Configure guidance only (never changes geometry). Set `GROQ_API_KEY` 
 
 Full schemas: [`docs/workbook-format.md`](docs/workbook-format.md). Short in-app guide: Help → **Workbook & data entry**.
 
-Blank `unit_order` is filled from one site-wide unit sequence; Validate flags `unit_order` that runs against depth, zero-thickness rows and logging gaps (gaps draw grey as **Not logged** and never block Generate). Lithology colours follow legend template 261002 (`data/bh_log_lithology_legend.json`); the old Excel hex sheet only fills in codes 261002 doesn't list.
+Blank `unit_order` is filled from one site-wide unit sequence; Validate flags `unit_order` that runs against depth, zero-thickness rows and logging gaps (gaps draw grey as **Not logged** and never block Generate). Lithology colours and hatches follow the client lithology legend 261023 (`data/BH Log Lithology Legend.xlsx` → `data/bh_log_lithology_legend.json` via `scripts/build_lithology_legend.py`).
 
 ### After Generate
 

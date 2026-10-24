@@ -328,7 +328,7 @@ def test_legend_glyph_matches_the_drawn_markers(mode, segments) -> None:
         drawn = {
             tuple(np.round(c, 3))
             for coll in figure.axes[0].collections
-            if coll.get_zorder() == 8
+            if getattr(coll, "_css_marker_kind", None) == "chem"
             for c in coll.get_facecolors()
         }
         if mode != "threshold":

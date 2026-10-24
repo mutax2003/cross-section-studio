@@ -410,15 +410,16 @@ def test_legend_shows_date_for_unlabelled_series() -> None:
     levels = [WaterLevel(hole_id=h, depth=d, date=D(2026, 4, 2)) for h, d in (("A", 4.0), ("B", 5.0), ("C", 6.0))]
     _result, renderer = _section(levels, elevation_mode="absolute")
     (entry,) = renderer.water_series_legend
-    assert entry["level_label"] == "GROUNDWATER LEVEL (2026-04-02)"
-    assert entry["elevation_label"] == "GROUNDWATER ELEVATION masl (2026-04-02)"
+    # Section sheet legends: sentence case beside the lithology rows.
+    assert entry["level_label"] == "Groundwater level (2026-04-02)"
+    assert entry["elevation_label"] == "Groundwater elevation masl (2026-04-02)"
 
 
 def test_no_dates_regression() -> None:
     levels = [WaterLevel(hole_id=h, depth=d) for h, d in (("A", 4.0), ("B", 5.0), ("C", 6.0))]
     result, renderer = _section(levels, elevation_mode="absolute")
     (entry,) = renderer.water_series_legend
-    assert entry["level_label"] == "GROUNDWATER LEVEL (masl)"
+    assert entry["level_label"] == "Groundwater level (masl)"
     assert not any("readings 20" in n for n in result.qa_notes)
     assert not any("sampling dates" in n for n in result.qa_notes)
     # Identical figure with and without an explicit blank date.

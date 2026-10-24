@@ -322,7 +322,7 @@ def render_full_lithology_legend() -> None:
         png = _full_legend_png()
         st.image(
             png,
-            caption="Colours and patterns follow the client legend template (261002).",
+            caption="Colours and patterns follow the client lithology legend 261023.",
             width="stretch",
         )
         st.download_button(
@@ -412,10 +412,41 @@ def section_notes_markdown(warnings: Sequence[str]) -> str:
     return f"**{len(unique)} notes about this section**\n\n{bullets}"
 
 
+# renderer_water._chem_drop_notes: "Chemistry labels: 33 value(s) not printed - …"
+_CHEM_DROP_RE = re.compile(r"^Chemistry labels: (\d+) value\(s\) not printed")
+
+
+def lab_values_left_off_markdown(warnings: Sequence[str]) -> str:
+    """Headline for lab values the figure could not print (empty when none).
+
+    The per-hole list stays in the section notes; this says how many, why and
+    how to get them onto the figure, so the loss is not buried in a note.
+    """
+    total = 0
+    for message in dedupe_messages(warnings):
+        match = _CHEM_DROP_RE.match(str(message))
+        if match is not None:
+            total += int(match.group(1))
+    if not total:
+        return ""
+    noun = "lab value was" if total == 1 else "lab values were"
+    return (
+        f"**{total} {noun} left off the figure** — there was no room to print "
+        f"{'it' if total == 1 else 'them'} beside the borehole at this scale (the markers "
+        "are still drawn; the notes below list the values by hole). To include them, "
+        "choose a larger **Page size** under sidebar **Export**, split the line into sections "
+        "with fewer boreholes, or lower **Font size** under sidebar **Advanced**."
+    )
+
+
 def _render_overlap_warnings(warnings: Sequence[str]) -> None:
     """Section notes after Generate: overlaps, crossing layers, fence clipping,
     dropped chemistry labels, map scale. Always one warning box (a plain
-    expander for 2+ notes read as body text and was easy to miss)."""
+    expander for 2+ notes read as body text and was easy to miss); lab values
+    left off the figure also get their own warning headline above it."""
+    left_off = lab_values_left_off_markdown(warnings)
+    if left_off:
+        st.warning(left_off, icon=":material/warning:")
     text = section_notes_markdown(warnings)
     if text:
         st.warning(text, icon=":material/info:")
@@ -462,6 +493,7 @@ def _reanalyze_quality(
         parse_result.collars,
         parse_result.lithologies,
         placeholder_elevation_m=placeholder_elevation_m,
+        deviation_readings=parse_result.deviation_readings,
     )
     st.session_state.quality_report = qa
     st.session_state.parse_result = parse_result

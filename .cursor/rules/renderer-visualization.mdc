@@ -21,7 +21,7 @@ Input: `GeologicalPolygon` list, projected DataFrame, optional `WaterLevel` / sc
 Output: Matplotlib figure or SVG/PNG/PDF bytes.
 
 **No projection or pinch-out logic** — consume pre-built polygons and projected intervals only.
-Lithology fills use the **BH Log** legend (Excel → `constants.get_lithology_style()`; namespaced as `USGS_LITHOLOGY_*`).
+Lithology fills use the client legend **261023** (`data/BH Log Lithology Legend.xlsx` → `scripts/build_lithology_legend.py` → `data/bh_log_lithology_legend.json` → `constants.get_lithology_style()`; namespaced as `USGS_LITHOLOGY_*`). Never hard-code a lithology hex: edit the workbook and rerun the script. Hatch marks (`.` dots, `/` 45° dashes, `+` loam, `O` gravel stones) are drawn by `hatch_patterns.py` to the CAD legend's DOTS / DASH / CROSS / GRAVEL patterns.
 
 `CrossSectionRenderer` accepts `environmental_readings` plus `environmental_parameters` (filter names). When profile `show_parameter_markers` is on, `_draw_parameter_readings()` / `parameter_marker` place labels (pipeline forces markers on when `environmental_parameters` is non-empty).
 
@@ -118,7 +118,7 @@ Streamlit: sidebar **Output style** selectbox preset **Consulting report (title 
 ## Y-Axis Modes
 
 - `elevation_rl` — absolute reduced level (default). Water labels use stored `elevation_masl` when present, else `collar RL − depth`. Consulting plot labels are compact `{rl:.3f}`; `masl` stays in the title-block legend/notes.
-- `depth_below_collar` — inverted depth axis; wired from UI `elevation_mode=relative`. Water labels use **mbgs** (depth below collar), not fake masl. Fence polygons map to depth with the collar RL interpolated linearly between the pair's holes (`_fence_plot_coords(..., hole_x_lookup)`), never a left/right collar step.
+- `depth_below_collar` — inverted depth axis; wired from UI `elevation_mode=relative`. Water labels use **mbgs** (depth below collar), not fake masl. Water is **markers only** in this mode (no joining line, no `i=`) unless the joined wells' collars agree within 0.01 m, with a QA note. Fence polygons map to depth with the collar RL interpolated linearly between the pair's holes (`_fence_plot_coords(..., hole_x_lookup)`), never a left/right collar step.
 
 Water is a **rule-based overlay** (markers + linear segments between measured holes). Segment polylines and chemistry sticks/fence bands are batched via `matplotlib.collections.LineCollection` (same geometry/style as prior per-call `ax.plot`). Do not interpolate across unmeasured holes unless `water_interpolate_across_gaps`. Consulting title-block GW legend is gated on `show_water_legend` and only drawn when a series was plotted.
 

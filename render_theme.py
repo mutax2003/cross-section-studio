@@ -61,6 +61,12 @@ CHEMISTRY_LABEL_COLOR_NAMES: tuple[str, ...] = LABEL_COLOR_NAMES
 # workbook choice: it marks "inconclusive", a QA state, not a band.
 CHEMISTRY_LABEL_INCONCLUSIVE = "#6B7280"
 assert tuple(CHEMISTRY_FIXED_COLORS) == LABEL_COLOR_NAMES
+# Two-band exceedance modes: the colour (name, hex) of a value at or below
+# the parameter's exceedance limit; above it is always CHEMISTRY_LABEL_RED.
+CHEMISTRY_TWO_BAND_LOW_COLORS: dict[str, tuple[str, str]] = {
+    "black_red": ("black", CHEMISTRY_LABEL_BLACK),
+    "green_red": ("green", CHEMISTRY_LABEL_GREEN),
+}
 # Series (marker/stick) colours per parameter. No blue: that is groundwater.
 PARAMETER_PALETTE: tuple[str, ...] = (
     "#EA580C",
@@ -185,16 +191,24 @@ def chemistry_label_color(
     green when its limit is at or below ``green_max`` (below the guideline)
     and :data:`CHEMISTRY_LABEL_INCONCLUSIVE` grey when the limit is above it:
     the true concentration may be anywhere under the limit, so the result can
-    be neither passed nor failed (never orange or red)."""
-    if mode != "threshold":
+    be neither passed nor failed (never orange or red).
+
+    The two-band exceedance modes (``"black_red"`` / ``"green_red"``) use one
+    limit, ``green_max``: black (or green) at or below it, red above, with
+    the same non-detect rule (grey when the detection limit is above it)."""
+    two_band = CHEMISTRY_TWO_BAND_LOW_COLORS.get(mode)
+    if mode != "threshold" and two_band is None:
         return chemistry_fixed_mode_color(mode) or CHEMISTRY_LABEL_BLACK
-    if green_max is None or yellow_max is None:
+    # No limit set (blank or NaN): black, never a generic band.
+    if green_max is None or green_max != green_max:
+        return CHEMISTRY_LABEL_BLACK
+    if two_band is None and (yellow_max is None or yellow_max != yellow_max):
         return CHEMISTRY_LABEL_BLACK
     if value <= green_max:
-        return CHEMISTRY_LABEL_GREEN
+        return two_band[1] if two_band is not None else CHEMISTRY_LABEL_GREEN
     if not detected:
         return CHEMISTRY_LABEL_INCONCLUSIVE
-    if value <= yellow_max:
+    if two_band is None and value <= yellow_max:
         # Orange replaces yellow (hard to read on white) — meeting 1 Oct 2026.
         return CHEMISTRY_LABEL_ORANGE
     return CHEMISTRY_LABEL_RED
@@ -205,14 +219,28 @@ def _fmt_threshold(value: float) -> str:
 
 
 def chemistry_threshold_bands(
-    green_max: float, yellow_max: float
+    green_max: float, yellow_max: float, mode: str | None = "threshold"
 ) -> tuple[tuple[str, str, str], ...]:
     """(colour name, hex, range text) per threshold band, matching
     :func:`chemistry_label_color` (green <= green_max < orange <= yellow_max < red).
 
     The range text lets a figure state each band in words so it reads without
-    colour discrimination (WCAG 1.4.1).
+    colour discrimination (WCAG 1.4.1). A parameter with no limit set (NaN
+    limits) has one band: black, "(no limit set)". A two-band exceedance
+    mode has two: ``black`` (or ``green``) ``<= L`` and ``red > L``.
     """
+    two_band = CHEMISTRY_TWO_BAND_LOW_COLORS.get(mode or "")
+    if green_max is None or green_max != green_max:
+        return (("black", CHEMISTRY_LABEL_BLACK, "(no limit set)"),)
+    if two_band is not None:
+        limit = _fmt_threshold(green_max)
+        low_name, low_hex = two_band
+        return (
+            (low_name, low_hex, f"≤ {limit}"),
+            ("red", CHEMISTRY_LABEL_RED, f"> {limit}"),
+        )
+    if yellow_max is None or yellow_max != yellow_max:
+        return (("black", CHEMISTRY_LABEL_BLACK, "(no limit set)"),)
     low, high = _fmt_threshold(green_max), _fmt_threshold(yellow_max)
     return (
         ("green", CHEMISTRY_LABEL_GREEN, f"\u2264 {low}"),
@@ -222,14 +250,66 @@ def chemistry_threshold_bands(
 
 
 def chemistry_threshold_key(
-    green_max: float, yellow_max: float, unit: str | None = None
+    green_max: float,
+    yellow_max: float,
+    unit: str | None = None,
+    mode: str | None = "threshold",
 ) -> str:
     """Plain-text threshold key, e.g. ``green ≤ 100 · orange 100–300 · red > 300 mg/L``."""
     text = " \u00b7 ".join(
-        f"{name} {span}" for name, _hex, span in chemistry_threshold_bands(green_max, yellow_max)
+        f"{name} {span}"
+        for name, _hex, span in chemistry_threshold_bands(green_max, yellow_max, mode)
     )
     unit = (unit or "").strip()
     return f"{text} {unit}" if unit else text
+
+
+def _adopted_nest_status_rows(levels, kept, allowed) -> list:
+    """DRY / NM rows of deselected series that belong to a plotted nest series.
+
+    A workbook may log "MW-02 dry" under the shallow round's series id with
+    ``connect_group`` "deep" while the deep heads of the same round sit in
+    their own series ("June 2025 deep"). Deselecting the shallow series must
+    not lose the deep well's DRY note: a dry / NM row whose (non-blank)
+    connect_group matches a plotted series' readings, on the same date (or
+    undated), at a hole that series has no row for, is re-filed under that
+    series (first match in workbook order).
+    """
+    from hydro_metrics import water_status
+
+    nests: dict[str, list[tuple[str, str, set]]] = {}
+    covered: set[tuple[str, str]] = set()
+    for level in kept:
+        series_id = getattr(level, "series_id", None) or "default"
+        covered.add((series_id, str(getattr(level, "hole_id", ""))))
+        group = str(getattr(level, "connect_group", "") or "").strip()
+        if not group:
+            continue
+        entries = nests.setdefault(group, [])
+        entry = next((item for item in entries if item[0] == series_id), None)
+        if entry is None:
+            entry = (series_id, str(getattr(level, "series_label", "") or ""), set())
+            entries.append(entry)
+        entry[2].add(getattr(level, "date", None))
+    adopted: list = []
+    for level in levels:
+        series_id = getattr(level, "series_id", None) or "default"
+        group = str(getattr(level, "connect_group", "") or "").strip()
+        if series_id in allowed or not group or water_status(level) == "measured":
+            continue
+        if not hasattr(level, "model_copy"):
+            continue
+        date = getattr(level, "date", None)
+        hole_id = str(getattr(level, "hole_id", ""))
+        for target_id, target_label, dates in nests.get(group, ()):
+            if (target_id, hole_id) in covered:
+                continue
+            if date is not None and None not in dates and date not in dates:
+                continue
+            adopted.append(level.model_copy(update={"series_id": target_id, "series_label": target_label}))
+            covered.add((target_id, hole_id))
+            break
+    return adopted
 
 
 def filter_water_levels_for_plot(
@@ -244,11 +324,12 @@ def filter_water_levels_for_plot(
     levels = list(water_levels)
     if selected_series_ids:
         allowed = {str(sid).strip() or "default" for sid in selected_series_ids}
-        levels = [
+        kept = [
             level
             for level in levels
             if (getattr(level, "series_id", None) or "default") in allowed
         ]
+        levels = kept + _adopted_nest_status_rows(levels, kept, allowed)
     # Preserve workbook order of first appearance when capping.
     order: list[str] = []
     for level in levels:

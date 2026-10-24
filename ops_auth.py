@@ -16,61 +16,21 @@ _MAX_AUTH_ATTEMPTS = 5
 _LOCKOUT_SECONDS = 30.0
 _AUTH_HMAC_KEY = b"css-auth"
 
-# Sensitive session keys cleared on Sign out (shared-password / kiosk safety).
-_LOGOUT_CLEAR_KEYS = (
-    # Configure preflight + prepared deliverables: a shared-password kiosk must
-    # not keep site JSON or exports after Sign out.
-    "_preflight_json_key",
-    "_preflight_subset_json",
-    "_preflight_overrides_json",
-    "section_build_subset_json",
-    "section_build_request_json",
-    "report_package_bytes",
-    "figure_docx_bytes",
-    "batch_package_bytes",
-    "_batch_package_token",
-    "_batch_zip_name",
-    "file_bytes",
-    "parse_result",
-    "import_report",
-    "quality_report",
-    "mapping_proposal",
-    "detection_result",
-    "hole_ids",
-    "unique_lithology_codes",
-    "lithology_index",
-    "parse_signature",
-    "file_hash",
-    "lithology_aliases",
-    "render_cache_key",
-    "polygon_overlap_warnings",
-    "section_lithology_codes",
-    "section_polygon_count",
-    "section_hole_count",
-    "transect_selection_key",
-    "transect_selection",
-    "svg_display_meta",
-    "transect_candidates",
-    "svg_bytes",
-    "png_bytes",
-    "pdf_bytes",
-    "section_build_subset_json",
-    "section_build_request_json",
-    "uploaded_name",
-    "qa_narrative",
-    "qa_fix_plan",
-    "ai_report_suggestion",
-    "ai_lithology_suggestions",
-    "ai_correlation_suggestions",
-    "ai_sheet_roles",
-    "ai_column_suggestions",
-    "section_qa_answer",
-    "ai_figure_caption",
-    "export_output_dir",
-    "enable_ai_suggestions",
+# Sign out wipes the whole session except this allowlist: a shared-password
+# kiosk must not hand the next user the workbook, the figure, title-block text,
+# logos, chemistry / water picks or anything typed. Listing what to *keep*
+# (not what to drop) means a new session key never needs an edit here.
+_LOGOUT_KEEP_KEYS = frozenset(
+    {
+        "_auth_ok",  # set to False by render_logout_control
+        "keyboard_shortcuts_enabled",  # app_menubar.SHORTCUTS_ENABLED_KEY (UI chrome)
+    }
 )
-# Prefix-matched on Sign out: per-provider runtime LLM keys.
-_LOGOUT_CLEAR_PREFIXES = ("_llm_api_key_runtime",)
+# Upload widget keys embed these counters. They are bumped (never reset): a
+# file_uploader re-created under a key it had before can hand back the file
+# the browser still holds for it, which reloaded the previous workbook.
+_LOGOUT_ROTATE_COUNTERS = ("workbook_uploader_key", "logo_uploader_key")
+
 
 _AUTH_WINDOW_SECONDS = 300.0
 
@@ -128,18 +88,43 @@ def _passwords_match(entered: str, password: str) -> bool:
     return hmac.compare_digest(left, right)
 
 
-def _clear_sensitive_session_on_logout(session: Any | None = None) -> None:
-    """Drop workbook / export / AI residuals so the next shared-password user starts clean."""
-    target = session if session is not None else st.session_state
-    # The explicit list plus the app's own parse / section key lists, so a
-    # new session key never needs a matching edit here to be wiped on Sign out.
-    from app_state import SESSION_PARSE_KEYS, SESSION_SECTION_KEYS
+def _release_session_figures() -> None:
+    """Close this browser session's retained figures and drop its export memos."""
+    try:
+        from app_services import drop_session_memos
 
-    for key in (*_LOGOUT_CLEAR_KEYS, *SESSION_PARSE_KEYS, *SESSION_SECTION_KEYS):
-        if key in target:
+        drop_session_memos()
+    except Exception as exc:  # pragma: no cover - best effort, never block Sign out
+        logger.warning("Could not release retained figures on Sign out: %s", exc)
+
+
+def _clear_sensitive_session_on_logout(session: Any | None = None) -> None:
+    """Wipe the session for the next shared-password user (allowlist kept).
+
+    Removes the workbook bytes, parse / QA results, the generated figure and
+    every prepared deliverable, title-block fields, logos, chemistry / water
+    selections, AI output and runtime API keys. Upload widget keys are rotated
+    so the browser's copy of the last file cannot be re-read under the old key.
+    The next run re-seeds defaults via ``app_state.init_session_defaults``.
+    """
+    target = session if session is not None else st.session_state
+    if session is None:
+        _release_session_figures()
+    counters = {}
+    for name in _LOGOUT_ROTATE_COUNTERS:
+        try:
+            counters[name] = int(target.get(name, 0) or 0) + 1
+        except (TypeError, ValueError):
+            counters[name] = 1
+    for key in list(target.keys()):
+        if str(key) in _LOGOUT_KEEP_KEYS:
+            continue
+        try:
+            del target[key]
+        except Exception:  # pragma: no cover - key vanished mid-loop
             target[key] = None
-    for key in [k for k in list(target.keys()) if str(k).startswith(_LOGOUT_CLEAR_PREFIXES)]:
-        target[key] = None
+    for name, value in counters.items():
+        target[name] = value
 
 
 def _client_bucket() -> str:

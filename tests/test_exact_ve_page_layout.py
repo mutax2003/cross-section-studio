@@ -262,7 +262,6 @@ def test_section_sheet_and_chart_legends_key_chemistry(layout) -> None:
 
 @pytest.mark.parametrize("mode", ["black", "red"])
 def test_single_colour_chemistry_legend_key_is_the_drawn_marker(mode) -> None:
-    from matplotlib.collections import PathCollection
     from matplotlib.colors import to_hex
 
     _r, figure, _renderer = _export("section_sheet", None, None, chemistry_color_mode=mode)
@@ -276,7 +275,7 @@ def test_single_colour_chemistry_legend_key_is_the_drawn_marker(mode) -> None:
         drawn = {
             to_hex(c)
             for coll in ax.collections
-            if isinstance(coll, PathCollection) and coll.get_zorder() == 8
+            if getattr(coll, "_css_marker_kind", None) == "chem"
             for c in coll.get_facecolors()
         }
         assert drawn == {to_hex(handle.get_markerfacecolor())}

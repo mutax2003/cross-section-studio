@@ -53,15 +53,13 @@ def test_ops_auth_logout_clears_sensitive_session() -> None:
         "keep_me": "ok",
     }
     _clear_sensitive_session_on_logout(session)
-    assert session["file_bytes"] is None
-    assert session["parse_result"] is None
-    assert session["svg_bytes"] is None
-    assert session["png_bytes"] is None
-    assert session["pdf_bytes"] is None
-    assert session["section_build_request_json"] is None
-    assert session["uploaded_name"] is None
-    assert session["ai_report_suggestion"] is None
-    assert session["keep_me"] == "ok"
+    # Everything outside the allowlist is removed (the next run re-seeds
+    # defaults), including keys the wipe was never told about.
+    for key in (
+        "file_bytes", "parse_result", "svg_bytes", "png_bytes", "pdf_bytes",
+        "section_build_request_json", "uploaded_name", "ai_report_suggestion", "keep_me",
+    ):
+        assert key not in session, key
     assert session["_auth_ok"] is True  # auth flag cleared by render_logout_control
 
 
@@ -245,11 +243,11 @@ def test_ops_auth_logout_clears_runtime_llm_keys_and_export_folder() -> None:
         "keep_me": "ok",
     }
     _clear_sensitive_session_on_logout(session)
-    assert session["_llm_api_key_runtime_groq"] is None
-    assert session["_llm_api_key_runtime"] is None
-    assert session["export_output_dir"] is None
-    assert session["enable_ai_suggestions"] is None
-    assert session["keep_me"] == "ok"
+    for key in (
+        "_llm_api_key_runtime_groq", "_llm_api_key_runtime", "export_output_dir",
+        "enable_ai_suggestions", "keep_me",
+    ):
+        assert key not in session, key
 
 
 def test_redact_secrets_scrubs_groq_keys() -> None:
@@ -344,7 +342,7 @@ def test_logout_wipes_every_parse_and_section_key() -> None:
         "section_build_request_json",
     )
     session = {key: f"value-{key}" for key in keys}
-    session["unrelated"] = "kept"
+    session["unrelated"] = "also wiped"
     _clear_sensitive_session_on_logout(session)
-    assert all(session[key] is None for key in keys), [k for k in keys if session[k] is not None]
-    assert session["unrelated"] == "kept"
+    assert not [key for key in keys if key in session]
+    assert "unrelated" not in session

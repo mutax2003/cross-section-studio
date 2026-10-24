@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 import time
+from unittest import mock
 
 import matplotlib
 
@@ -36,7 +37,7 @@ from models import (
     ScreenInterval,
     WaterLevel,
 )
-from pipeline import compute_section_geometry, render_cross_section_from_geometry
+from pipeline import OverlayExclusions, compute_section_geometry, render_cross_section_from_geometry
 from renderer_common import THRESHOLD_KEY_GID, ThresholdDotsKey, fit_label, legend_source_keys
 from renderer_water import _figure_renderer, _text_box
 
@@ -281,7 +282,18 @@ def _portrait_sheet(*, ve, span: float, depth: float, parameter: str):
     ]
     points = [(0.0, 0.0), (span, 0.0)]
     geometry = compute_section_geometry(collars, lith, points)
-    result = render_cross_section_from_geometry(
+    # The pipeline now leaves readings this far below a 20 m hole off the
+    # figure (find_implausible_overlays); keep them drawn here so the test
+    # still exercises the footnote layout it was written for.
+    with mock.patch("pipeline.find_implausible_overlays", return_value=OverlayExclusions()):
+        result = _render_portrait(geometry, points, ve, readings, parameter)
+    bundle = result.retained_export_bundle
+    bundle["figure"].draw_without_rendering()
+    return bundle["renderer"], bundle["figure"], result
+
+
+def _render_portrait(geometry, points, ve, readings, parameter: str):
+    return render_cross_section_from_geometry(
         geometry,
         points,
         render_layout="section_sheet",
@@ -299,9 +311,6 @@ def _portrait_sheet(*, ve, span: float, depth: float, parameter: str):
         parameter_draw_markers=False,
         close_figure=False,
     )
-    bundle = result.retained_export_bundle
-    bundle["figure"].draw_without_rendering()
-    return bundle["renderer"], bundle["figure"], result
 
 
 def test_tall_legend_beside_a_short_exact_ve_plot_stays_on_the_page() -> None:

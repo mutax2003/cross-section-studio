@@ -451,15 +451,17 @@ def test_black_default_and_threshold_modes_keep_their_colours() -> None:
     # entry had an empty gap where the sample sits in red mode).
     assert renderer.parameter_series_legend[0].get("sample_color") == CHEMISTRY_LABEL_BLACK
 
-    # No limits set: the Configure defaults (green <= 100, orange <= 250)
-    # apply, so values, dots and the key agree (it used to print black).
+    # No limits set anywhere (engine called without thresholds; the app seeds
+    # real ones on Configure): values print black and the key says so -- a
+    # generic 100 / 250 band no longer colours every parameter (QA round 7).
     threshold, colours = _p2_render("threshold")
-    assert colours["120"] == CHEMISTRY_LABEL_ORANGE
-    assert colours["220"] == CHEMISTRY_LABEL_ORANGE
+    assert colours["120"] == CHEMISTRY_LABEL_BLACK
+    assert colours["220"] == CHEMISTRY_LABEL_BLACK
     assert threshold.chemistry_threshold_key_text is not None
-    assert "100" in threshold.chemistry_threshold_key_text
-    assert "250" in threshold.chemistry_threshold_key_text
+    assert "no limit set" in threshold.chemistry_threshold_key_text
+    assert "250" not in threshold.chemistry_threshold_key_text
     assert "sample_text" not in threshold.parameter_series_legend[0]
+    assert CHEMISTRY_LABEL_ORANGE != CHEMISTRY_LABEL_BLACK
     bands = {"green_max": 150.0, "yellow_max": 200.0}
     assert chemistry_label_color(120.0, "threshold", **bands) == CHEMISTRY_LABEL_GREEN
     assert chemistry_label_color(270.0, "threshold", **bands) == CHEMISTRY_LABEL_RED
@@ -601,7 +603,8 @@ def test_threshold_bands_never_invert() -> None:
 
     assert resolved_chemistry_thresholds(None, 50) == (50.0, 50.0)
     assert resolved_chemistry_thresholds(500, 100) == (100.0, 100.0)
-    assert resolved_chemistry_thresholds(None, None) == (100.0, 250.0)
+    # Neither limit: "no limit set" (NaN pair), not a generic band.
+    assert all(v != v for v in resolved_chemistry_thresholds(None, None))
     assert resolved_chemistry_thresholds(300, None) == (300.0, 300.0)
 
 

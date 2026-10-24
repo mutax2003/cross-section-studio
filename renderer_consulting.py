@@ -14,9 +14,9 @@ from dataclasses import dataclass
 
 import matplotlib as mpl
 import matplotlib.image as mpimg
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.axes import Axes
 from matplotlib.backends.backend_agg import RendererAgg
 from matplotlib.figure import Figure
 from matplotlib.font_manager import FontProperties
@@ -65,6 +65,9 @@ from renderer_common import (
     add_ve_caption,
     fit_label,
     fitted_x_locators,
+    format_ve_value,
+    new_figure,
+    parameter_legend_text,
     pinch_out_key_artist,
     release_twins,
     settle_figure_layout,
@@ -72,7 +75,7 @@ from renderer_common import (
     water_status_legend_label,
     water_status_texts,
 )
-from renderer_water import ARTESIAN_LEGEND_LABEL
+from renderer_water import ARTESIAN_LEGEND_LABEL, GRADIENT_LEGEND_LABEL
 from stratigraphy import GeologicalPolygon
 
 logger = logging.getLogger(__name__)
@@ -302,6 +305,12 @@ _TITLE_CELL_BASE_PT = 7.0
 _TITLE_CELL_FLOOR_PT = 6.0
 _TITLE_CELL_HARD_MIN_PT = 5.0
 _TITLE_CELL_LINE_SPACING = 1.1
+# Title-block value cells wrap before they shrink: a long TITLE takes a second
+# line (its row grows) at the design size, and never prints below this size
+# or with an ellipsis ("…WITH CHLORID…" / a 5 pt one-liner read as defects).
+_TITLE_VALUE_MIN_PT = 7.0
+# Most lines one value row may claim before its text is allowed to shrink.
+_TITLE_VALUE_MAX_LINES = 3
 
 # Subtitle band title: start size and the smallest sizes tried before wrapping.
 _BAND_TITLE_BASE_PT = 9.0
@@ -317,6 +326,14 @@ _NOTES_MIN_PT = 4.5
 
 # A label that already names a (cross) section as a word is printed as-is.
 _SECTION_WORD_RE = re.compile(r"\bsection\b", re.IGNORECASE)
+# A note typed with its own "NOTE:" prefix under the "NOTES:" heading read
+# "1. NOTE: masl DENOTES ..."; the numbered list drops the prefix.
+_NOTE_PREFIX_RE = re.compile(r"^\s*notes?\s*[:.\-–—]\s*", re.IGNORECASE)
+
+
+def _strip_note_prefix(note: str) -> str:
+    stripped = _NOTE_PREFIX_RE.sub("", str(note), count=1)
+    return stripped or str(note)
 
 # RL / depth axis labelling: at most this many labelled ticks per side, and
 # labels at least this many font heights apart. The client figures label every
@@ -651,6 +668,10 @@ class _TrueMetreFormatter(Formatter):
         return "0" if text == "-0" else text
 
 
+# Caption colour of the "section too long for 1x" warning printed under the strip.
+LOCKED_VE_CAPTION_COLOR = "#B91C1C"
+
+
 class ConsultingLayoutMixin:
     """Consulting report-sheet layout methods. Expects CrossSectionRenderer attributes."""
 
@@ -714,7 +735,7 @@ class ConsultingLayoutMixin:
 
         ctx = self._hole_context(projected_df)
         # Lock letter landscape (11×8.5 in) so PNG/PDF match client page extracts.
-        fig = plt.figure(figsize=(11.0, 8.5))
+        fig = new_figure((11.0, 8.5))
         fig.patch.set_facecolor(CONSULTING_FIGURE_BG)
         # right=0.95 leaves room for the twin RL axis label; at 0.97 it fell
         # off the fixed letter page and was silently dropped from PNG/PDF.
@@ -873,7 +894,7 @@ class ConsultingLayoutMixin:
                 column_half_m=track_half,
             )
 
-            ax_right: plt.Axes | None = None
+            ax_right: Axes | None = None
             if self.profile.show_dual_y_axes:
                 ax_right = ax.twinx()
                 ax_right.set_ylim(ax.get_ylim())
@@ -1397,6 +1418,9 @@ class ConsultingLayoutMixin:
                 else self._hole_elevation_at_depth(gradient.hole_id, 1.0, collar_rl)
             )
             y = self._plot_y(anchor_rl, collar_rl)
+            if getattr(self, "_deviated_x", None):
+                # Surveyed holes: the arrow sits on the trace at its anchor.
+                x_profile = self._deviated_x_at(str(gradient.hole_id), float(collar_rl), float(y), float(x_profile))
             if gradient.direction == "up":
                 arrow = FancyArrow(
                     float(x_profile),
@@ -1480,7 +1504,7 @@ class ConsultingLayoutMixin:
         end_transform = offset_copy(header_transform, fig=ax.figure, x=-2.0, y=0.0, units="points")
         if start_primary or start_secondary:
             start_lines = [line for line in (start_primary, start_secondary) if line]
-            ax.text(
+            start_label = ax.text(
                 0.0,
                 label_y,
                 "\n".join(start_lines),
@@ -1494,9 +1518,11 @@ class ConsultingLayoutMixin:
                 zorder=10,
                 linespacing=0.9,
             )
+            # The header pass steps it clear of the hole-header leaders.
+            start_label._css_section_end = "start"
         if end_primary or end_secondary:
             end_lines = [line for line in (end_primary, end_secondary) if line]
-            ax.text(
+            end_label = ax.text(
                 1.0,
                 label_y,
                 "\n".join(end_lines),
@@ -1510,6 +1536,7 @@ class ConsultingLayoutMixin:
                 zorder=10,
                 linespacing=0.9,
             )
+            end_label._css_section_end = "end"
 
     @staticmethod
     def _requested_map_scale(title_block: ConsultingTitleBlock | None) -> float | None:
@@ -1580,12 +1607,88 @@ class ConsultingLayoutMixin:
         _box, status, printed = aspect.layout()
         return status, printed
 
+    # A locked (exact) VE that draws the section shorter than this on the
+    # page is unusable: 1x on a 1.8 km x 20 m section was a 1.5 cm strip.
+    LOCKED_VE_MIN_PLOT_HEIGHT_IN = 3.0 / 2.54
+    LOCKED_VE_STRIP_CAPTION = "Section too long for {ve} \u2014 choose a VE or split the section"
+
+    def _locked_ve_plot_height_in(self, figure: Figure) -> float | None:
+        """Drawn height (inches) of the main axes when the VE is locked; None
+        in auto VE or off a consulting sheet."""
+        if getattr(self, "ve_auto", True) or str(getattr(self.profile, "layout", "")) != "consulting_section":
+            return None
+        axes = getattr(figure, "_css_main_axes", None)
+        if not axes:
+            return None
+        main_ax = axes[0]
+        main_ax.apply_aspect()
+        height = float(main_ax.bbox.height) / float(figure.dpi)
+        return height if np.isfinite(height) and height > 0.0 else None
+
+    def _locked_ve_label(self) -> str:
+        ve = self.chosen_vertical_exaggeration
+        if ve is None:
+            ve = float(self.vertical_exaggeration)
+        return format_ve_value(float(ve), auto=False)
+
+    def locked_ve_strip_notes(self, figure: Figure) -> tuple[str, ...]:
+        """QA note when the locked VE leaves the section a thin strip on the page.
+
+        The preset's VE is a client style and is never changed silently: the
+        note (and the on-figure caption) say to choose a VE or split the
+        section instead.
+        """
+        height = self._locked_ve_plot_height_in(figure)
+        if height is None or height >= self.LOCKED_VE_MIN_PLOT_HEIGHT_IN:
+            return ()
+        page = page_description(tuple(figure.get_size_inches()))
+        return (
+            f"Section too long for {self._locked_ve_label()} \u2014 at the locked vertical exaggeration the "
+            f"section is only {height * 2.54:.1f} cm high on a {page} page (under "
+            f"{self.LOCKED_VE_MIN_PLOT_HEIGHT_IN * 2.54:.0f} cm). Choose a vertical exaggeration or split "
+            "the section; the preset's VE was kept.",
+        )
+
+    def annotate_locked_ve_strip(self, figure: Figure) -> None:
+        """Print the strip caption under the plot (or remove a stale one)."""
+        previous = figure.__dict__.pop("_css_locked_ve_caption", None)
+        if previous is not None:
+            previous.remove()
+        height = self._locked_ve_plot_height_in(figure)
+        if height is None or height >= self.LOCKED_VE_MIN_PLOT_HEIGHT_IN:
+            return
+        main_ax = figure._css_main_axes[0]
+        cell = main_ax.get_position(original=True)
+        drawn = main_ax.get_position()
+        fig_h = float(figure.get_size_inches()[1])
+        # Under the x tick labels and distance label (about 0.55 in), inside
+        # the plot's own gridspec cell.
+        y = max(cell.y0 + 0.02, drawn.y0 - 0.55 / fig_h)
+        caption = figure.text(
+            0.5 * (drawn.x0 + drawn.x1),
+            y,
+            self.LOCKED_VE_STRIP_CAPTION.format(ve=self._locked_ve_label()),
+            ha="center",
+            va="top",
+            fontsize=self._fs(9),
+            fontweight="bold",
+            color=LOCKED_VE_CAPTION_COLOR,
+            zorder=20,
+        )
+        caption.set_gid("locked-ve-strip-caption")
+        figure._css_locked_ve_caption = caption
+
     def map_scale_notes(self, figure: Figure) -> tuple[str, ...]:
-        """User-facing QA note when the title block map scale could not be drawn exactly.
+        """User-facing QA notes from the export page fit: the title block map
+        scale that could not be drawn exactly, and a locked VE that leaves
+        the section a thin strip (``locked_ve_strip_notes``).
 
         Read after the export page geometry is applied (the pipeline adds it to
         the build's QA notes); empty when the scale fits or was never set.
         """
+        return self._map_scale_only_notes(figure) + self.locked_ve_strip_notes(figure)
+
+    def _map_scale_only_notes(self, figure: Figure) -> tuple[str, ...]:
         layout = self._map_scale_layout(figure)
         if layout is None or layout[0] == "exact":
             return ()
@@ -1824,7 +1927,12 @@ class ConsultingLayoutMixin:
                 fit_axes=ax_center,
             )
 
-        notes = title_block.notes or DEFAULT_CONSULTING_NOTES
+        notes = list(title_block.notes or DEFAULT_CONSULTING_NOTES)
+        if getattr(self, "gradient_labels_drawn", False) and GRADIENT_LEGEND_LABEL not in notes:
+            # What the "i=" labels on the water lines mean (a legend row for
+            # it re-flowed the legend); ahead of the interpretation disclaimer.
+            at = notes.index(self.disclaimer) if self.disclaimer in notes else len(notes)
+            notes.insert(at, GRADIENT_LEGEND_LABEL)
         ax_notes.text(
             0.04,
             0.86,
@@ -1850,7 +1958,9 @@ class ConsultingLayoutMixin:
         is cut with "…". At the design size notes that fit draw as before.
         """
         font_scale = self._consulting_font_scale()
-        shown = [f"{index}. {note}" for index, note in enumerate(notes[:4], start=1)]
+        shown = [
+            f"{index}. {_strip_note_prefix(note)}" for index, note in enumerate(notes[:4], start=1)
+        ]
         if not shown:
             return
         note_top = 0.68 - 0.18 * (font_scale - 1.0)
@@ -1930,7 +2040,11 @@ class ConsultingLayoutMixin:
                     linespacing=1.15,
                 )
                 extent = artist.get_window_extent()
-                if extent.x1 <= right_px or wrap_width <= 12 or attempt == 5:
+                # Measured at the layout dpi: the 300 dpi export sets a long
+                # line a little wider (a 70-character note reached 0.11 in
+                # from the page edge), so a line must clear the margin by a
+                # few percent of its width.
+                if extent.x1 + 0.03 * extent.width <= right_px or wrap_width <= 12 or attempt == 5:
                     break
                 ratio = (right_px - extent.x0) / max(extent.width, 1.0)
                 wrap_width = max(12, min(wrap_width - 1, int(wrap_width * ratio)))
@@ -2287,7 +2401,8 @@ class ConsultingLayoutMixin:
                             {
                                 "color": entry.get("color", CONSULTING_WATER_COLOR),
                                 "marker": entry.get("marker", "v"),
-                                "linestyle": gw_linestyle,
+                                # "none": markers only (depth mode, wells at different collars).
+                                "linestyle": "none" if entry.get("linestyle") == "none" else gw_linestyle,
                             },
                         )
                     )
@@ -2302,6 +2417,8 @@ class ConsultingLayoutMixin:
                             },
                         )
                     )
+                    if entry.get("linestyle") == "none":
+                        continue
                     entries.append(
                         (
                             "line",
@@ -2337,7 +2454,7 @@ class ConsultingLayoutMixin:
             entries.append(
                 (
                     kind,
-                    str(entry.get("label", entry.get("parameter", "PARAMETER"))),
+                    parameter_legend_text(str(entry.get("label", entry.get("parameter", "PARAMETER")))),
                     {
                         "color": entry.get("color", PARAMETER_READING_COLOR),
                         "marker": entry.get("marker", "D"),
@@ -2863,8 +2980,14 @@ class ConsultingLayoutMixin:
         base_pt: float | None = None,
         floor_pt: float | None = None,
         hard_min_pt: float | None = None,
+        wrap_first: bool = False,
     ) -> tuple[list[str], float, float]:
         """Lines, point size and line step (axes fraction) that keep ``text`` in its cell.
+
+        ``wrap_first`` (title-block value cells) wraps at the base size before
+        any shrinking, steps down only to ``hard_min_pt`` when the wrapped
+        lines still overflow the row, and never ellipsizes: the last resort
+        keeps every line and tightens the line step instead.
 
         The value is measured with the figure's renderer at the figure's
         current size. It stays on one line at the base size when it fits;
@@ -2906,6 +3029,20 @@ class ConsultingLayoutMixin:
             def _fits(extent) -> bool:
                 return extent.x1 <= right_px and (left_px is None or extent.x0 >= left_px)
 
+            if wrap_first:
+                return self._wrap_first_cell_lines(
+                    probe,
+                    text,
+                    fits=_fits,
+                    right_px=right_px,
+                    left_px=left_px,
+                    row_px=row_px,
+                    ax_height_px=ax_height_px,
+                    base_pt=base_pt,
+                    hard_min_pt=hard_min_pt,
+                    step_pt=step_pt,
+                )
+
             pt = base_pt
             while True:
                 probe.set_fontsize(pt)
@@ -2943,6 +3080,75 @@ class ConsultingLayoutMixin:
         finally:
             probe.remove()
 
+    @staticmethod
+    def _wrap_first_cell_lines(
+        probe,
+        text: str,
+        *,
+        fits,
+        right_px: float,
+        left_px: float | None,
+        row_px: float,
+        ax_height_px: float,
+        base_pt: float,
+        hard_min_pt: float,
+        step_pt: float,
+    ) -> tuple[list[str], float, float]:
+        """Wrap-before-shrink fit for ``_fit_title_cell_text(wrap_first=True)``."""
+        pt = base_pt
+        while True:
+            probe.set_fontsize(pt)
+            probe.set_text(text)
+            extent = probe.get_window_extent()
+            line_px = extent.height * _TITLE_CELL_LINE_SPACING
+            if fits(extent):
+                return [text], pt, 0.0
+            avail_px = right_px - (extent.x0 if left_px is None else left_px)
+            chars = max(8, int(len(text) * avail_px / max(extent.width, 1.0)))
+
+            def _wrap(width: int) -> list[str]:
+                # Keep "A - A'" together: never break a line at a spaced dash.
+                glued = text.replace(" - ", "\u00a0-\u00a0")
+                return [line.replace("\u00a0", " ") for line in textwrap.wrap(glued, width=width)] or [text]
+
+            lines = _wrap(chars)
+            # Character-count wrapping is approximate: re-measure each line
+            # and tighten the width until every line fits the cell.
+            while chars > 8:
+                widest = 0.0
+                for line in lines:
+                    probe.set_text(line)
+                    widest = max(widest, probe.get_window_extent().x1)
+                if widest <= right_px:
+                    break
+                chars -= 1
+                lines = _wrap(chars)
+            probe.set_text(text)
+            if len(lines) * line_px <= row_px + 0.5 or pt - step_pt < hard_min_pt - 1e-9:
+                step = line_px if len(lines) * line_px <= row_px + 0.5 else row_px / max(len(lines), 1)
+                return lines, pt, step / ax_height_px
+            pt -= step_pt
+
+    def _title_value_line_counts(
+        self, ax, values: list[str], *, x: float, cell_right: float, max_chars: int
+    ) -> list[int]:
+        """Lines each title-block value needs at the design size (wrap first)."""
+        counts: list[int] = []
+        for value in values:
+            lines, _pt, _gap = self._fit_title_cell_text(
+                ax,
+                str(value),
+                x=x,
+                y_centre=0.5,
+                cell_right=cell_right,
+                row_height=1.0,
+                max_chars=max_chars,
+                wrap_first=True,
+                hard_min_pt=self._fs(_TITLE_VALUE_MIN_PT),
+            )
+            counts.append(max(1, min(len(lines), _TITLE_VALUE_MAX_LINES)))
+        return counts
+
     def _draw_fitted_cell_text(
         self,
         ax,
@@ -2962,6 +3168,7 @@ class ConsultingLayoutMixin:
         hard_min_pt: float | None = None,
         color: str = LABEL_COLOR,
         clip_on: bool = True,
+        wrap_first: bool = False,
     ) -> list:
         """Fit ``text`` to its cell (``_fit_title_cell_text``) and draw it.
 
@@ -2985,6 +3192,7 @@ class ConsultingLayoutMixin:
             base_pt=base_pt,
             floor_pt=floor_pt,
             hard_min_pt=hard_min_pt,
+            wrap_first=wrap_first,
         )
         if va == "center":
             text_top = y_centre + (len(wrapped) - 1) * line_gap * 0.5
@@ -3216,12 +3424,26 @@ class ConsultingLayoutMixin:
         if label_need is not None and label_need > label_col_w:
             label_col_w = min(label_need, table_width * 0.45)
         value_col_w = table_width - label_col_w
-        row_height = table_height / max(len(rows), 1)
         # Character budget from panel fraction; consulting sheets are typically wide.
         max_chars = max(28, int(value_col_w * 170 / scale))
+        value_x = table_left + label_col_w + 0.012
+        # A value too long for one line (a long TITLE) wraps at the design
+        # size and its row takes a share of the table per line, instead of the
+        # text shrinking to ~5 pt or being cut with "…".
+        weights = self._title_value_line_counts(
+            ax,
+            [value for _label, value in rows],
+            x=value_x,
+            cell_right=table_left + table_width,
+            max_chars=max_chars,
+        )
+        unit_height = table_height / max(sum(weights), 1)
 
-        for index, (label, value) in enumerate(rows):
-            row_bottom = table_bottom + (len(rows) - index - 1) * row_height
+        row_top = table_bottom + table_height
+        for (label, value), weight in zip(rows, weights, strict=True):
+            row_height = unit_height * weight
+            row_bottom = row_top - row_height
+            row_top = row_bottom
             ax.plot(
                 [table_left, table_left + table_width],
                 [row_bottom, row_bottom],
@@ -3251,7 +3473,6 @@ class ConsultingLayoutMixin:
                 fontweight="bold",
                 hard_min_pt=_TITLE_CELL_HARD_MIN_PT,
             )
-            value_x = table_left + label_col_w + 0.012
             self._draw_fitted_cell_text(
                 ax,
                 str(value),
@@ -3260,9 +3481,11 @@ class ConsultingLayoutMixin:
                 cell_right=table_left + table_width,
                 row_height=row_height,
                 max_chars=max_chars,
+                wrap_first=True,
+                hard_min_pt=self._fs(_TITLE_VALUE_MIN_PT),
             )
 
-        top_y = table_bottom + len(rows) * row_height
+        top_y = table_bottom + table_height
         for x_pos in (table_left, table_left + table_width):
             ax.plot(
                 [x_pos, x_pos],

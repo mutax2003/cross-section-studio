@@ -97,15 +97,17 @@ def test_chart_legend_names_water_series_and_collar_marker() -> None:
         legend = figure.axes[0].get_legend()
         assert legend is not None
         labels = [text.get_text() for text in legend.get_texts()]
-        water = [label for label in labels if label.startswith("GROUNDWATER LEVEL")]
+        # One case convention per legend: sentence case beside the
+        # title-case lithology rows, the series names as given.
+        water = [label for label in labels if label.startswith("Groundwater level")]
         assert water == [
-            "GROUNDWATER LEVEL (MAY 14, 2026)",
-            "GROUNDWATER LEVEL (SEPT 22, 2026)",
+            "Groundwater level (May 14, 2026)",
+            "Groundwater level (Sept 22, 2026)",
         ]
         assert labels[-1] == COLLAR_LEGEND_LABEL
         assert {"Clay", "Sand"} <= set(labels)
         handles = dict(zip(labels, legend.legend_handles, strict=True))
-        series_handle = handles["GROUNDWATER LEVEL (MAY 14, 2026)"]
+        series_handle = handles["Groundwater level (May 14, 2026)"]
         assert series_handle.get_marker() not in (None, "", "None")
         assert series_handle.get_linestyle() not in ("None", "none", "")
         assert handles[COLLAR_LEGEND_LABEL].get_marker() == "v"

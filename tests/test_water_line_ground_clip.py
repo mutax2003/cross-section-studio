@@ -3,8 +3,9 @@
 A straight line between two heads can rise above a topographic low between
 the wells (creek valley); in elevation mode the drawn line follows
 ``min(line, ground)`` there. Where both heads are above ground (flowing
-artesian zone) it is left as drawn and a QA note says so. Sections where the
-line stays below ground draw exactly as before.
+artesian zone) it is left as drawn and a QA note says so; where one head is
+above ground the line still rises to it (only interior runs are clipped).
+Sections where the line stays below ground draw exactly as before.
 """
 
 from __future__ import annotations
@@ -58,14 +59,39 @@ def test_both_heads_above_ground_is_left_as_artesian() -> None:
     assert xy is None and clipped == [] and artesian == [0]
 
 
-def test_one_artesian_head_still_clips() -> None:
+def test_one_artesian_head_line_reaches_the_measured_head() -> None:
+    """Round 7: a measured above-ground (flowing artesian) head is real data —
+    clipping the line to the ground made it miss the head it joins (MW-07,
+    636.00 on a 635.00 collar). The run above ground next to the artesian well
+    stays straight, so the line rises out of the ground to the head."""
     flat_x = np.asarray([0.0, 100.0])
     flat_y = np.asarray([100.0, 100.0])
-    xy, clipped, _artesian = clip_water_line_to_ground(
+    xy, clipped, artesian = clip_water_line_to_ground(
         np.asarray([0.0, 100.0]), np.asarray([101.0, 99.0]), flat_x, flat_y
     )
-    assert clipped == [0]
-    assert np.all(xy[:, 1] <= 100.0 + 1e-9)
+    assert xy is None and clipped == [] and artesian == [0]
+    # Mirror: artesian head on the right.
+    xy, clipped, artesian = clip_water_line_to_ground(
+        np.asarray([0.0, 100.0]), np.asarray([99.0, 101.0]), flat_x, flat_y
+    )
+    assert xy is None and clipped == [] and artesian == [0]
+
+
+def test_one_artesian_head_still_clips_an_interior_hill() -> None:
+    """A valley between the wells (line above ground there) is still clipped;
+    only the run ending at the artesian head is left above ground."""
+    hill_x = np.asarray([0.0, 20.0, 50.0, 100.0])
+    hill_y = np.asarray([100.0, 99.0, 101.0, 100.0])
+    xy, clipped, artesian = clip_water_line_to_ground(
+        np.asarray([0.0, 100.0]), np.asarray([99.5, 101.0]), hill_x, hill_y
+    )
+    assert clipped == [0] and artesian == [0]
+    assert xy is not None
+    assert xy[-1].tolist() == [100.0, 101.0]
+    ground = np.interp(xy[:, 0], hill_x, hill_y)
+    interior = xy[:, 0] <= 40.0
+    assert np.all(xy[interior, 1] <= ground[interior] + 1e-9)
+    assert np.any(xy[:, 1] > ground + 1e-6)
 
 
 # --- Rendered sections -------------------------------------------------------------

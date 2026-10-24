@@ -113,7 +113,8 @@ def test_section_sheet_shows_series_key_and_fans_out_markers() -> None:
     renderer, figure = _stress_render(SECTION_SHEET_PROFILE)
     texts = [text.get_text() for legend in figure.findobj(Legend) for text in legend.get_texts()]
     for _series_id, label in SERIES:
-        assert f"GROUNDWATER LEVEL ({label.upper()})" in texts
+        # Section sheet legends: sentence case beside the lithology rows.
+        assert f"Groundwater level ({label})" in texts
     ax = renderer._water_series_key_ax
     figure.draw_without_rendering()
     scatters = [
@@ -143,7 +144,7 @@ def test_single_series_section_sheet_has_no_series_key() -> None:
         water_levels=water,
     )
     texts = [text.get_text() for legend in figure.findobj(Legend) for text in legend.get_texts()]
-    assert not any("GROUNDWATER" in text for text in texts)
+    assert not any("GROUNDWATER" in text.upper() for text in texts)
 
 
 def test_groundwater_legend_switch_off_hides_the_series_key() -> None:

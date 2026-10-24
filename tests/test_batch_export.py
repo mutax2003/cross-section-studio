@@ -370,7 +370,10 @@ def test_batch_names_match_across_styles_and_keep_trailing_title_text() -> None:
         section_title=title, consulting_title_block=SimpleNamespace(section_label=title)
     )
     for request in (sheet, consulting):
-        assert _batch_section_title(request, "B-B'") == "B-B' WITH CHLORIDE"
+        # Same spacing as the base title, so the A-A' batch sheet matches the
+        # single-section sheet word for word.
+        assert _batch_section_title(request, "B-B'") == "B - B' WITH CHLORIDE"
+        assert _batch_section_title(request, "A-A'") == title
         assert batch_cover_title(request, labels) == "Cross Sections A-A', B-B', C-C' WITH CHLORIDE"
     site = SimpleNamespace(section_title="Site X A-A' chloride", consulting_title_block=None)
     assert batch_cover_title(site, labels) == "Site X — Cross Sections A-A', B-B', C-C' chloride"

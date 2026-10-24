@@ -15,7 +15,29 @@ datas: list[tuple[str, str]] = [
     (str(root / "docs" / "help"), "docs/help"),
 ]
 
-# Bundle data files but skip Excel/Office lock temps (~$*) that block packaging when open.
+# Bundle data files but skip Excel/Office lock temps (~$*) that block packaging when open,
+# and dev-only content the app never reads: client reference PDFs and their extracts,
+# figure-parity outputs, test outputs and local logs.
+_DEV_ONLY_DATA_DIRS = (
+    "pdf_extract",
+    "pdf_extract_p2",
+    "ecoventure_gwm",
+    "advantage_transects",
+    "advantage_p2_transects",
+    "Data2",
+)
+_DEV_ONLY_DATA_FILES = ("smoke_test_output.svg", "audit.log", "cross_section.png", "cross_section2.png")
+
+
+def _dev_only_data(rel_to_data: Path) -> bool:
+    parts = rel_to_data.parts
+    if parts and parts[0] in _DEV_ONLY_DATA_DIRS:
+        return True
+    if len(parts) == 1 and (parts[0] in _DEV_ONLY_DATA_FILES or parts[0].lower().endswith(".pdf")):
+        return True
+    return False
+
+
 _data_root = root / "data"
 if _data_root.is_dir():
     for path in _data_root.rglob("*"):
@@ -23,6 +45,8 @@ if _data_root.is_dir():
             continue
         name = path.name
         if name.startswith("~$") or name.startswith(".~") or name.endswith(".tmp"):
+            continue
+        if _dev_only_data(path.relative_to(_data_root)):
             continue
         rel = path.relative_to(root)
         datas.append((str(path), str(rel.parent).replace("\\", "/")))

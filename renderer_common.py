@@ -7,8 +7,9 @@ from collections.abc import Callable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
-from matplotlib.backends.backend_agg import RendererAgg
+from matplotlib.backends.backend_agg import FigureCanvasAgg, RendererAgg
 from matplotlib.collections import PolyCollection
+from matplotlib.figure import Figure
 from matplotlib.patches import PathPatch, Polygon, Rectangle
 from matplotlib.path import Path
 from matplotlib.text import Annotation, Text
@@ -125,29 +126,21 @@ def format_ve_value(ve: float, *, auto: bool) -> str:
 def format_ve_caption(ve: float | None, *, auto: bool, style: str = "consulting") -> str:
     """VE wording for the figure.
 
-    ``style``: ``"consulting"`` (subtitle band, upper case), ``"short"``
-    (in-plot "V.E." note) or ``"footer"`` (metadata footer item).
+    One family per sheet register: ``"consulting"`` (subtitle band, upper
+    case, value first as on the client sheets: "5× VERTICAL EXAGGERATION",
+    "≈2.2× VERTICAL EXAGGERATION"); ``"short"`` (in-plot note) and
+    ``"footer"`` (metadata footer item) share the "V.E. 5×" form.
     """
     if ve is None or not np.isfinite(ve) or ve <= 0:
-        return {
-            "consulting": "VERTICAL EXAGGERATION: AUTO",
-            "short": "V.E. auto",
-            "footer": "VE: auto",
-        }.get(style, "VE: auto")
+        return "AUTO VERTICAL EXAGGERATION" if style == "consulting" else "V.E. auto"
     unit = is_unit_ve(ve, auto=auto)
     if style == "consulting":
         if unit:
             return "NO VERTICAL EXAGGERATION"
-        if auto:
-            return f"VERTICAL EXAGGERATION {format_ve_value(ve, auto=True)}"
-        return f"{format_ve_value(ve, auto=False)} VERTICAL EXAGGERATION"
-    if style == "short":
-        if unit:
-            return "No V.E. (1×)"
-        return f"V.E. {format_ve_value(ve, auto=auto)}"
+        return f"{format_ve_value(ve, auto=auto)} VERTICAL EXAGGERATION"
     if unit:
-        return "VE: none (1×)"
-    return f"VE: {format_ve_value(ve, auto=auto)}"
+        return "No V.E. (1×)"
+    return f"V.E. {format_ve_value(ve, auto=auto)}"
 
 
 class VECaptionText(Text):
@@ -798,9 +791,182 @@ def stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robu
     """Make overlapping hole headers readable (see ``_stack_hole_headers``)."""
     try:
         fig._css_extent_cache = {}
+        section_ends = _section_end_labels(fig)
+        _restore_section_end_labels(section_ends)
         _stack_hole_headers(fig, headers, max_tiers=max_tiers, robust=robust)
+        _clear_section_ends_of_leaders(fig, section_ends, headers)
     finally:
         fig.__dict__.pop("_css_extent_cache", None)
+
+
+# Clearance (points) between a section-end label and a header leader.
+_SECTION_END_LEADER_GAP_PT = 3.0
+
+
+def _section_end_labels(fig) -> list:
+    """Section-end labels ("A / NORTHWEST", "A' / SOUTHEAST") tagged by the layout."""
+    return [
+        text
+        for ax in fig.axes
+        for text in ax.texts
+        if getattr(text, "_css_section_end", None) in ("start", "end") and text.get_visible()
+    ]
+
+
+def _restore_section_end_labels(labels) -> None:
+    """Undo a previous leader-clearing step (re-runs start from the drawn position)."""
+    for text in labels:
+        base = getattr(text, "_css_section_end_base", None)
+        if base is None:
+            text._css_section_end_base = text.get_transform()
+        else:
+            text.set_transform(base)
+        text.set_bbox(None)
+
+
+def _leader_segments_px(fig) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """Display-space end points of the header leaders drawn by the stacking pass."""
+    from matplotlib.text import Annotation
+
+    px_per_pt = fig.dpi / 72.0
+    segments = []
+    for leader in getattr(fig, "_css_header_leaders", None) or []:
+        try:
+            if isinstance(leader, Annotation):
+                start = leader.xycoords.transform(leader.xy)
+                dx, dy = leader.xyann
+                end = (start[0] + dx * px_per_pt, start[1] + dy * px_per_pt)
+            else:
+                points = leader.get_transform().transform(leader.get_xydata())
+                start, end = points[0], points[-1]
+        except Exception:  # pragma: no cover - defensive (unknown leader artist)
+            continue
+        segments.append(((float(start[0]), float(start[1])), (float(end[0]), float(end[1]))))
+    return segments
+
+
+def _segment_x_span(segment, y0: float, y1: float) -> tuple[float, float] | None:
+    """x range a leader segment covers between display heights ``y0``..``y1``."""
+    (xa, ya), (xb, yb) = segment
+    lo, hi = sorted((ya, yb))
+    if hi < y0 or lo > y1:
+        return None
+    if abs(yb - ya) < 1e-9:
+        return min(xa, xb), max(xa, xb)
+
+    def x_at(y: float) -> float:
+        return xa + (xb - xa) * (y - ya) / (yb - ya)
+
+    ys = (max(lo, y0), min(hi, y1))
+    xs = [x_at(y) for y in ys]
+    return min(xs), max(xs)
+
+
+# A section-end label stepped inward further than this (inches) no longer
+# reads as the section's end: it is lifted or masked instead.
+_SECTION_END_MAX_INWARD_IN = 0.45
+
+
+def _section_end_hits(moved, segments, header_boxes, gap) -> list[tuple[float, float]]:
+    """x spans of the leaders / header boxes a section-end label box touches."""
+    hits = [
+        span
+        for span in (_segment_x_span(seg, moved.y0 - gap, moved.y1 + gap) for seg in segments)
+        if span is not None and span[1] > moved.x0 - gap and span[0] < moved.x1 + gap
+    ]
+    hits += [(other.x0, other.x1) for other in header_boxes if _boxes_overlap(moved, other, gap)]
+    return hits
+
+
+def _section_end_step(box, segments, header_boxes, gap, direction: float) -> float | None:
+    """Horizontal shift (px) stepping ``box`` past every touching leader /
+    header in ``direction`` (+1 right, -1 left); None when it never clears."""
+    shift = 0.0
+    for _attempt in range(len(segments) + len(header_boxes) + 1):
+        moved = box.translated(shift, 0.0)
+        hits = _section_end_hits(moved, segments, header_boxes, gap)
+        if not hits:
+            return shift
+        if direction > 0:
+            shift += max(span[1] for span in hits) + gap - moved.x0
+        else:
+            shift += min(span[0] for span in hits) - gap - moved.x1
+    return None
+
+
+def _clear_section_ends_of_leaders(fig, labels, headers) -> None:
+    """Keep the section-end labels clear of the hole-header leaders and headers.
+
+    Rotated / fanned headers rise above the end labels, and the end hole's
+    leader then ran through "A' SOUTHEAST" (QA round 7); on a dense section
+    the rotated end-hole header itself ("BH26-01") printed through "A"
+    (round 8). In order of preference the label: steps outward past the
+    frame corner (inside the printable page), steps a short way inward,
+    lifts above the headers / leaders it sits on, or keeps its place on an
+    opaque white ground that interrupts them.
+    """
+    from matplotlib.transforms import offset_copy
+
+    if not labels:
+        return
+    segments = _leader_segments_px(fig)
+    renderer = fig.canvas.get_renderer()
+    px_per_pt = fig.dpi / 72.0
+    gap = _SECTION_END_LEADER_GAP_PT * px_per_pt
+    header_boxes = [
+        _header_extent(t, renderer) for t in headers if t.figure is fig and t.get_visible() and t.get_text().strip()
+    ]
+    if not segments and not header_boxes:
+        return
+    margins = getattr(fig, "_css_page_margins_in", None) or (MIN_PRINT_MARGIN_IN,) * 4
+    page_x0 = fig.bbox.x0 + margins[0] * fig.dpi
+    page_x1 = fig.bbox.x1 - margins[1] * fig.dpi
+    top_limit = fig.bbox.y1 - margins[2] * fig.dpi
+    max_inward = _SECTION_END_MAX_INWARD_IN * fig.dpi
+    for text in labels:
+        side = text._css_section_end
+        box = text.get_window_extent(renderer)
+        if not _section_end_hits(box, segments, header_boxes, gap):
+            continue
+        inward = 1.0 if side == "start" else -1.0
+
+        def place(dx: float, dy: float) -> None:
+            text.set_transform(
+                offset_copy(
+                    text._css_section_end_base, fig=fig, x=dx / px_per_pt, y=dy / px_per_pt, units="points"
+                )
+            )
+
+        # 1. Outward, past the frame corner, while it stays on the page.
+        shift = _section_end_step(box, segments, header_boxes, gap, -inward)
+        if shift is not None:
+            moved = box.translated(shift, 0.0)
+            if moved.x0 >= page_x0 - 0.5 and moved.x1 <= page_x1 + 0.5:
+                place(shift, 0.0)
+                continue
+        # 2. A short step inward (still reads as the section's end).
+        shift = _section_end_step(box, segments, header_boxes, gap, inward)
+        if shift is not None and abs(shift) <= max_inward:
+            place(shift, 0.0)
+            continue
+        # 3. Lifted above the headers / leaders it sits on.
+        over = [other.y1 for other in header_boxes if _boxes_overlap(box, other, gap)]
+        over += [
+            max(seg[0][1], seg[1][1])
+            for seg in segments
+            if (span := _segment_x_span(seg, box.y0 - gap, box.y1 + gap)) is not None
+            and span[1] > box.x0 - gap
+            and span[0] < box.x1 + gap
+        ]
+        lift = (max(over) + gap - box.y0) if over else 0.0
+        if lift > 0.0 and box.y1 + lift <= top_limit:
+            lifted = box.translated(0.0, lift)
+            if not _section_end_hits(lifted, segments, header_boxes, gap):
+                place(0.0, lift)
+                continue
+        # 4. In place on an opaque white ground.
+        text.set_bbox({"facecolor": "white", "edgecolor": "none", "pad": 1.0})
+        text.set_zorder(max(text.get_zorder(), 11))
 
 
 def _stack_hole_headers(fig, headers, *, max_tiers: int = _HEADER_MAX_TIERS, robust: bool = False) -> None:
@@ -1948,6 +2114,19 @@ def draw_without_rendering_fast(fig) -> None:
             arrow.__dict__.pop("draw", None)
 
 
+def new_figure(figsize: tuple[float, float], **kwargs) -> Figure:
+    """A standalone Figure on its own Agg canvas, never registered with pyplot.
+
+    pyplot's figure registry is process-wide: with two sessions rendering, a
+    figure-number clash or another thread's ``plt.close`` destroyed this
+    figure's manager and reset its canvas to a bare ``FigureCanvasBase`` (no
+    ``get_renderer``). ``plt.close`` on a standalone figure is a harmless no-op.
+    """
+    fig = Figure(figsize=figsize, **kwargs)
+    FigureCanvasAgg(fig)
+    return fig
+
+
 def settle_figure_layout(fig) -> None:
     """``fig.draw_without_rendering()`` for the label passes, skipped when the
     figure has not been drawn since its last settle and its layout is unchanged."""
@@ -2075,6 +2254,63 @@ class _LithologySwatchHandler:
         return rect
 
 
+class UncertaintyZoneKey:
+    """Legend proxy: the wider-spacing zone (tint, sparse diagonal hatch,
+    dashed outline), drawn like the zone overlay on the section."""
+
+    def __init__(self, *, facecolor, edgecolor, linestyle, label: str, spacing_in: float = 1.0 / 12.0) -> None:
+        self.facecolor = facecolor
+        self.edgecolor = edgecolor
+        self.linestyle = linestyle
+        self.spacing_in = float(spacing_in)
+        self._label = label
+
+    def get_label(self) -> str:
+        return self._label
+
+
+class _UncertaintyZoneHandler:
+    def legend_artist(self, legend, orig_handle, fontsize, handlebox):
+        from matplotlib.collections import LineCollection
+
+        x0, y0 = handlebox.xdescent, handlebox.ydescent
+        width, height = handlebox.width, handlebox.height
+        rect = Rectangle(
+            (x0, y0),
+            width,
+            height,
+            facecolor=orig_handle.facecolor,
+            edgecolor=orig_handle.edgecolor,
+            linewidth=0.75,
+            linestyle=orig_handle.linestyle,
+            transform=handlebox.get_transform(),
+        )
+        handlebox.add_artist(rect)
+        # Back-slanted lines (top-left to bottom-right) every ``spacing_in``,
+        # clipped to the swatch: whole lines, not a page-anchored hatch slice.
+        w_in, h_in = width / 72.0, height / 72.0
+        step = orig_handle.spacing_in
+        segments = []
+        k = step / 2.0
+        while k < w_in + h_in:
+            # x + y = k (swatch inches, y up): falls from upper left to lower right.
+            start = (max(0.0, k - h_in), min(h_in, k))
+            end = (min(w_in, k), max(0.0, k - w_in))
+            if start[0] < end[0]:
+                segments.append([start, end])
+            k += step
+        to_display = Affine2D().scale(72.0).translate(x0, y0) + handlebox.get_transform()
+        lines = LineCollection(
+            segments,
+            colors=orig_handle.edgecolor,
+            linewidths=0.6,
+            transform=to_display,
+        )
+        lines.set_gid("legend-uncertainty-hatch")
+        handlebox.add_artist(lines)
+        return rect
+
+
 def _legend_handler_map() -> dict:
     from matplotlib.patches import Patch
 
@@ -2082,6 +2318,7 @@ def _legend_handler_map() -> dict:
         ThresholdDotsKey: _ThresholdDotsHandler(),
         SampleTextKey: _SampleTextHandler(),
         PinchOutKey: _PinchOutHandler(),
+        UncertaintyZoneKey: _UncertaintyZoneHandler(),
         Patch: _LithologySwatchHandler(),
     }
 
@@ -2118,14 +2355,58 @@ def legend_source_keys(legend) -> list[tuple[object, str]]:
     ]
 
 
-def parameter_legend_keys(entries, *, draw_markers: bool, upper: bool = False) -> list[tuple[object, str]]:
-    """``(handle, label)`` per chemistry legend entry (``parameter_series_legend``)."""
+# pH is not a concentration and keeps its lower-case p: the chemistry pass
+# keys every parameter as "<NAME> CONCENTRATION (<unit>)" in upper case, which
+# printed "PH CONCENTRATION (-)".
+_PH_LEGEND_RE = re.compile(
+    r"^\s*ph\b(?:\s+concentration)?\s*(?:\(\s*(?:-|–|—|s\.?u\.?|ph(?:\s+units?)?|units?)?\s*\))?\s*$",
+    re.IGNORECASE,
+)
+
+
+def parameter_legend_text(label: str) -> str:
+    """Legend wording for a chemistry key: ``"pH"`` for any pH label, else ``label``."""
+    return "pH" if _PH_LEGEND_RE.match(str(label)) else str(label)
+
+
+def sentence_case_legend_label(label: str, parameter: str | None = None) -> str:
+    """``"BENZENE CONCENTRATION (mg/L)"`` -> ``"Benzene concentration (mg/L)"``.
+
+    Section-sheet / chart legends list lithologies in title case; an
+    upper-case chemistry or water row beside them read as a different key.
+    The parameter keeps its own spelling (``"pH"``); a bracketed unit or
+    series name is left as given. Mixed-case labels pass through.
+    """
+    text = str(label)
+    head, sep, tail = text.partition(" (")
+    if head != head.upper():
+        return text
+    words = head.lower()
+    name = str(parameter or "").strip()
+    if name and words.startswith(name.lower()):
+        words = name + words[len(name):]
+    else:
+        words = words[:1].upper() + words[1:]
+    return words + sep + tail
+
+
+def parameter_legend_keys(
+    entries, *, draw_markers: bool, upper: bool = False, sentence_case: bool = False
+) -> list[tuple[object, str]]:
+    """``(handle, label)`` per chemistry legend entry (``parameter_series_legend``).
+
+    ``sentence_case``: section-sheet / chart legends (title-case lithology
+    rows) get ``"Benzene concentration (mg/L)"`` instead of the consulting
+    title block's upper case.
+    """
     from matplotlib.lines import Line2D
 
     keys: list[tuple[object, str]] = []
     for entry in entries or ():
         label = str(entry.get("label") or entry.get("parameter") or "Parameter")
-        label = label.upper() if upper else label
+        if sentence_case and not upper:
+            label = sentence_case_legend_label(label, entry.get("parameter"))
+        label = parameter_legend_text(label.upper() if upper else label)
         # Each parameter's own marker shape (set per entry by the chemistry
         # pass) keys its samples, with or without markers on the section.
         marker = entry.get("marker") or "o"
@@ -2213,18 +2494,119 @@ def deviated_x_steps(
     return steps
 
 
+def _interp_extrapolate(points: np.ndarray, xp: np.ndarray, fp: np.ndarray) -> np.ndarray:
+    """``np.interp`` over ascending ``xp`` that continues the end segments
+    (linear extrapolation) instead of clamping to the end values."""
+    points = np.asarray(points, dtype=float)
+    if xp.size < 2:
+        return np.full(points.shape, float(fp[0]))
+    result = np.interp(points, xp, fp)
+    lo_span = xp[1] - xp[0]
+    hi_span = xp[-1] - xp[-2]
+    below = points < xp[0]
+    above = points > xp[-1]
+    if lo_span > 0.0 and np.any(below):
+        slope = (fp[1] - fp[0]) / lo_span
+        result = np.where(below, fp[0] + (points - xp[0]) * slope, result)
+    if hi_span > 0.0 and np.any(above):
+        slope = (fp[-1] - fp[-2]) / hi_span
+        result = np.where(above, fp[-1] + (points - xp[-1]) * slope, result)
+    return result
+
+
+def deviated_trace(
+    tops: np.ndarray,
+    bottoms: np.ndarray,
+    xs: np.ndarray,
+    collar_rl: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(elevations, xs)`` of an inclined hole's trace through the section,
+    collar first, then every logged interval boundary top to bottom.
+
+    The projection gives one section x per interval (at its mid-depth).
+    The trace is the polyline through those mid-points: x at each interval
+    boundary (and at the collar) is interpolated between neighbouring
+    mid-points, and continued along the end segments above the first and
+    below the last one. A single-interval hole is a straight column.
+    """
+    tops = np.asarray(tops, dtype=float)
+    bottoms = np.asarray(bottoms, dtype=float)
+    xs = np.asarray(xs, dtype=float)
+    mids = 0.5 * (tops + bottoms)
+    order = np.argsort(mids, kind="stable")  # ascending elevation for interp
+    mid_e, mid_x = mids[order], xs[order]
+    keep = np.concatenate(([True], np.diff(mid_e) > 1e-9))
+    mid_e, mid_x = mid_e[keep], mid_x[keep]
+    bounds = np.unique(np.concatenate(([float(collar_rl)], tops, bottoms)))[::-1]
+    bounds = bounds[bounds <= float(collar_rl) + 1e-9]
+    trace_x = _interp_extrapolate(bounds, mid_e, mid_x)
+    return bounds, trace_x
+
+
 class RendererGeometryMixin:
     """Well extents, profile lookup, and lithology style resolution."""
 
-    # --- Surveyed (inclined) holes: column follows the projected intervals ----
+    # --- Surveyed (inclined) holes: one continuous slanted column ------------
     #
-    # The lithology track of an inclined hole steps sideways with each
-    # interval's projected x. The well column, casing, screens, LNAPL band
-    # and water markers follow the same steps (piece-wise constant x per
-    # logged interval; above the first interval the first interval's x, below
-    # the last the last one's). Limits: the steps are the interval x's (not a
-    # continuous slant), and chemistry labels, EOL bars and the chart layout's
-    # sticks still sit at the collar x.
+    # An inclined hole's column, track lithology, screens, LNAPL band, water
+    # markers, contact ticks and end-of-log bar follow its trace through the
+    # section (``deviated_trace``): a polyline through the projected interval
+    # mid-points, straight within each logged interval and kinked at the
+    # interval boundaries. Above the collar (casing stick-up) the column is
+    # vertical at the collar x; below the deepest logged interval it keeps the
+    # last interval's slant down to TD. Vertical holes never enter this path:
+    # their geometry is the exact legacy rectangle at the collar x.
+
+    def _deviated_trace_plot(
+        self, hole_id: str, collar_rl: float
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """``(plot_y, x)`` trace nodes (collar first) of a surveyed hole, or
+        ``None`` for a vertical hole."""
+        steps = (getattr(self, "_deviated_x", None) or {}).get(str(hole_id))
+        if steps is None:
+            return None
+        cache = self.__dict__.setdefault("_deviated_trace_cache", {})
+        key = (str(hole_id), round(float(collar_rl), 6))
+        found = cache.get(key)
+        if found is None:
+            tops, bottoms, xs = steps
+            elevs, trace_x = deviated_trace(tops, bottoms, xs, float(collar_rl))
+            ys = self._plot_y_values(elevs, np.full(len(elevs), float(collar_rl)))
+            found = cache[key] = (np.asarray(ys, dtype=float), trace_x)
+        return found
+
+    def _deviated_collar_x(self, hole_id: str, collar_rl: float, default_x: float) -> float:
+        """Section x of the collar of a surveyed hole (``default_x`` when vertical)."""
+        trace = self._deviated_trace_plot(hole_id, collar_rl)
+        if trace is None:
+            return float(default_x)
+        return float(trace[1][0])
+
+    def _deviated_x_of(
+        self, hole_id: str, collar_rl: float, ys, default_x: float
+    ) -> np.ndarray:
+        """Section x of plot heights ``ys`` down ``hole_id`` along its trace
+        (``default_x`` everywhere for a vertical hole)."""
+        ys = np.asarray(ys, dtype=float)
+        trace = self._deviated_trace_plot(hole_id, collar_rl)
+        if trace is None:
+            return np.full(ys.shape, float(default_x))
+        node_y, node_x = trace
+        if node_y.size < 2:
+            return np.full(ys.shape, float(node_x[0]))
+        collar_up = bool(node_y[0] >= node_y[-1])  # plot y grows upward (elevation)
+        order = np.argsort(node_y, kind="stable")
+        yp, xp = node_y[order], node_x[order]
+        keep = np.concatenate(([True], np.diff(yp) > 1e-12))
+        yp, xp = yp[keep], xp[keep]
+        result = _interp_extrapolate(ys, yp, xp)
+        # Casing above the collar stays vertical at the collar x.
+        above = ys > node_y[0] if collar_up else ys < node_y[0]
+        return np.where(above, float(node_x[0]), result)
+
+    def _deviated_x_at(self, hole_id: str, collar_rl: float, y: float, default_x: float) -> float:
+        """Section x of plot height ``y`` down ``hole_id`` (``default_x`` when vertical)."""
+        return float(self._deviated_x_of(hole_id, collar_rl, [float(y)], default_x)[0])
 
     def _deviated_pieces(
         self,
@@ -2232,69 +2614,130 @@ class RendererGeometryMixin:
         collar_rl: float,
         y_a: float,
         y_b: float,
+        *,
+        max_dx: float = 1.0,
     ) -> list[tuple[float, float, float]] | None:
-        """``[(y_low, y_high, x), …]`` plot-y pieces of ``[y_a, y_b]`` on a
-        surveyed hole, or ``None`` for a vertical hole (draw at collar x)."""
-        steps = (getattr(self, "_deviated_x", None) or {}).get(str(hole_id))
-        if steps is None:
+        """``[(y_low, y_high, x), …]`` boxes covering the trace of a surveyed
+        hole over plot heights ``[y_a, y_b]`` (each at most ``max_dx`` wide in
+        x, so a box centred on its x covers the slant), or ``None`` for a
+        vertical hole (draw at collar x)."""
+        trace = self._deviated_trace_plot(hole_id, collar_rl)
+        if trace is None:
             return None
-        tops, bottoms, xs = steps
-        collar = np.full(len(tops), float(collar_rl))
-        top_y = self._plot_y_values(tops, collar)
-        bottom_y = self._plot_y_values(bottoms, collar)
-        # Plot y may grow upward (elevation) or downward (depth mode).
-        sign = 1.0 if float(top_y[0]) >= float(bottom_y[-1]) else -1.0
-        bounds = 0.5 * (bottom_y[:-1] + top_y[1:])
-        edges = np.concatenate(([sign * np.inf], bounds, [-sign * np.inf]))
+        node_y, _node_x = trace
         lo_clip, hi_clip = min(y_a, y_b), max(y_a, y_b)
+        if not np.isfinite(lo_clip):
+            lo_clip = float(np.min(node_y)) - 1e6
+        if not np.isfinite(hi_clip):
+            hi_clip = float(np.max(node_y)) + 1e6
+        breaks = np.unique(np.concatenate(([lo_clip, hi_clip], node_y)))
+        breaks = breaks[(breaks >= lo_clip) & (breaks <= hi_clip)]
         pieces: list[tuple[float, float, float]] = []
-        for index, x in enumerate(xs):
-            lo = max(min(edges[index], edges[index + 1]), lo_clip)
-            hi = min(max(edges[index], edges[index + 1]), hi_clip)
-            if hi - lo > 1e-9:
-                pieces.append((float(lo), float(hi), float(x)))
+        for lo, hi in zip(breaks[:-1], breaks[1:], strict=True):
+            if hi - lo <= 1e-9:
+                continue
+            x_lo, x_hi = self._deviated_x_of(hole_id, collar_rl, [lo, hi], 0.0)
+            parts = max(1, int(np.ceil(abs(float(x_hi) - float(x_lo)) / max(max_dx, 1e-6))))
+            edges = np.linspace(lo, hi, parts + 1)
+            mids = 0.5 * (edges[:-1] + edges[1:])
+            mid_x = self._deviated_x_of(hole_id, collar_rl, mids, 0.0)
+            for p_lo, p_hi, p_x in zip(edges[:-1], edges[1:], mid_x, strict=True):
+                pieces.append((float(p_lo), float(p_hi), float(p_x)))
         return pieces
 
-    def _deviated_x_at(self, hole_id: str, collar_rl: float, y: float, default_x: float) -> float:
-        """Section x of plot height ``y`` down ``hole_id`` (``default_x`` when vertical)."""
-        pieces = self._deviated_pieces(hole_id, collar_rl, float(y) - 1e-6, float(y) + 1e-6)
-        if not pieces:
-            return float(default_x)
-        return pieces[0][2]
+    def _deviated_band_verts(
+        self,
+        hole_id: str,
+        collar_rl: float,
+        y_lo: float,
+        y_hi: float,
+        half: float,
+    ) -> np.ndarray:
+        """Polygon of the band ``[y_lo, y_hi]`` of ``hole_id``'s column, ``half``
+        either side of its trace, kinked wherever the trace is (so a column
+        border and the interval quads inside it share their edges)."""
+        trace = self._deviated_trace_plot(hole_id, collar_rl)
+        node_y = trace[0] if trace is not None else np.zeros(0)
+        inside = node_y[(node_y > y_lo + 1e-9) & (node_y < y_hi - 1e-9)]
+        ys = np.concatenate(([y_lo], np.sort(inside), [y_hi]))
+        xs = self._deviated_x_of(hole_id, collar_rl, ys, 0.0)
+        left = np.column_stack((xs - half, ys))
+        right = np.column_stack((xs + half, ys))[::-1]
+        return np.vstack((left, right))
 
-    def _split_deviated_rects(
+    def _track_rect_verts(
         self,
         hole_ids: Sequence[str],
         collar_rls: np.ndarray,
         x_centres: np.ndarray,
         y0: np.ndarray,
         heights: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Split each rect on a surveyed hole into its interval-x pieces.
-
-        Returns ``(x_centres, y0, heights)``; unchanged arrays when no hole is
-        surveyed (vertical holes keep their exact legacy geometry)."""
-        if not getattr(self, "_deviated_x", None):
-            return x_centres, y0, heights
-        out_x: list[float] = []
-        out_y: list[float] = []
-        out_h: list[float] = []
-        for hole_id, collar, x, y, h in zip(hole_ids, collar_rls, x_centres, y0, heights, strict=True):
-            pieces = self._deviated_pieces(str(hole_id), float(collar), float(y), float(y + h))
-            if pieces is None:
-                out_x.append(float(x))
-                out_y.append(float(y))
-                out_h.append(float(h))
-                continue
-            for lo, hi, piece_x in pieces:
-                out_x.append(piece_x)
-                out_y.append(lo)
-                out_h.append(hi - lo)
-        return (
-            np.asarray(out_x, dtype=float),
-            np.asarray(out_y, dtype=float),
-            np.asarray(out_h, dtype=float),
+        half: float,
+    ) -> np.ndarray:
+        """``(N, 4, 2)`` interval quads: the exact ``_rect_verts`` rectangle for
+        a vertical hole; on a surveyed hole the quad follows the trace from the
+        interval top to its bottom (vertex order as ``_rect_verts``)."""
+        x_centres = np.asarray(x_centres, dtype=float)
+        y0 = np.asarray(y0, dtype=float)
+        heights = np.asarray(heights, dtype=float)
+        x_bottom = x_centres.copy()
+        x_top = x_centres.copy()
+        surveyed = getattr(self, "_deviated_x", None) or {}
+        if surveyed:
+            for index, hole_id in enumerate(hole_ids):
+                if str(hole_id) not in surveyed:
+                    continue
+                lo, hi = self._deviated_x_of(
+                    str(hole_id),
+                    float(collar_rls[index]),
+                    [y0[index], y0[index] + heights[index]],
+                    x_centres[index],
+                )
+                x_bottom[index], x_top[index] = float(lo), float(hi)
+        y_top = y0 + heights
+        return np.stack(
+            [
+                np.column_stack([x_bottom - half, y0]),
+                np.column_stack([x_bottom + half, y0]),
+                np.column_stack([x_top + half, y_top]),
+                np.column_stack([x_top - half, y_top]),
+            ],
+            axis=1,
         )
+
+    def _column_verts(
+        self,
+        hole_ids: Sequence[str],
+        collar_rls: np.ndarray,
+        x_centres: np.ndarray,
+        y0: np.ndarray,
+        heights: np.ndarray,
+        half: float,
+    ) -> list[np.ndarray]:
+        """One polygon per well column: the exact ``_rect_verts`` rectangle for
+        a vertical hole, the continuous slanted band for a surveyed one."""
+        rects = self._rect_verts(
+            np.asarray(x_centres, dtype=float) - half,
+            np.asarray(y0, dtype=float),
+            np.full(len(hole_ids), 2.0 * half),
+            np.asarray(heights, dtype=float),
+        )
+        verts: list[np.ndarray] = []
+        surveyed = getattr(self, "_deviated_x", None) or {}
+        for index, hole_id in enumerate(hole_ids):
+            if str(hole_id) in surveyed:
+                verts.append(
+                    self._deviated_band_verts(
+                        str(hole_id),
+                        float(collar_rls[index]),
+                        float(y0[index]),
+                        float(y0[index] + heights[index]),
+                        half,
+                    )
+                )
+            else:
+                verts.append(rects[index])
+        return verts
 
     def _hole_elevations_at_depths(
         self,
@@ -2429,8 +2872,14 @@ class RendererGeometryMixin:
         collar_depths: dict[str, float],
         collar_lookup: dict[str, float],
         track_half: float,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
-        """Return (x_left, y0, width, height) for filled/bordered well rectangles."""
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | list[np.ndarray] | None:
+        """Return (x_left, y0, width, height) for filled/bordered well rectangles.
+
+        With a surveyed (inclined) hole on the section the result is instead
+        a list of column polygons (``_column_verts``): vertical holes keep
+        their rectangle, the inclined hole gets one continuous slanted band.
+        ``_add_rect_collection`` takes either form.
+        """
         extents = self._well_extents(hole_summary, collar_depths, collar_lookup)
         if extents is None:
             return None
@@ -2443,14 +2892,11 @@ class RendererGeometryMixin:
         y0 = np.minimum(top_y[mask], bottom_y[mask])
         heights = heights[mask]
         if getattr(self, "_deviated_x", None):
-            # Surveyed holes: the column steps with the projected intervals.
             hole_ids = hole_summary["hole_id"].astype(str).to_numpy()[mask]
             collars = self._collar_values(
                 hole_summary["hole_id"], hole_summary["collar_elevation"], collar_lookup
             )[mask]
-            x_values, y0, heights = self._split_deviated_rects(
-                hole_ids, collars, x_values, y0, heights
-            )
+            return self._column_verts(hole_ids, collars, x_values, y0, heights, track_half)
         return x_values - track_half, y0, np.full(len(x_values), track_half * 2.0), heights
 
     @staticmethod
@@ -2475,7 +2921,7 @@ class RendererGeometryMixin:
     def _add_rect_collection(
         self,
         ax,
-        geometry: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+        geometry: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | list[np.ndarray] | np.ndarray,
         *,
         facecolors,
         edgecolors,
@@ -2484,8 +2930,11 @@ class RendererGeometryMixin:
         hatch: str | None = None,
         alpha: float | None = None,
     ) -> None:
+        """``geometry``: ``(x_left, y0, width, height)`` rectangles, or ready
+        polygon vertices (a list / ``(N, K, 2)`` array) for slanted columns."""
+        verts = geometry if isinstance(geometry, (list, np.ndarray)) else self._rect_verts(*geometry)
         collection = (HatchBatchedPolyCollection if hatch else PolyCollection)(
-            self._rect_verts(*geometry),
+            verts,
             facecolors=facecolors,
             edgecolors=edgecolors,
             linewidths=linewidths,
@@ -2538,6 +2987,17 @@ class RendererGeometryMixin:
         y0_masked = y0[mask]
         heights_masked = heights[mask]
         width = 2.0 * track_half_width
+        slanted = None
+        if getattr(self, "_deviated_x", None):
+            # Surveyed holes: each interval quad follows the hole's trace.
+            slanted = self._track_rect_verts(
+                projected_df["hole_id"].astype(str).to_numpy()[mask],
+                np.asarray(collars, dtype=float)[mask],
+                x_masked,
+                y0_masked,
+                heights_masked,
+                track_half_width,
+            )
         order = np.argsort(lithology_codes, kind="stable")
         sorted_codes = lithology_codes[order]
         split_at = np.concatenate(
@@ -2555,6 +3015,8 @@ class RendererGeometryMixin:
                 np.full(count, width),
                 heights_masked[slice_idx],
             )
+            if slanted is not None:
+                geometry = slanted[slice_idx]
             hatch = style.hatch if self.show_hatches else ""
             if not hatch:
                 self._add_rect_collection(
@@ -2571,7 +3033,7 @@ class RendererGeometryMixin:
             # One collection per code; thin intervals pick up the densified
             # hatch when the figure is drawn (see ThinUnitHatchCollection).
             collection = ThinUnitHatchCollection(
-                self._rect_verts(*geometry),
+                geometry if isinstance(geometry, np.ndarray) else self._rect_verts(*geometry),
                 base_hatch=hatch,
                 min_height_in=thin_min_in,
                 facecolors=style.color,
@@ -2636,14 +3098,29 @@ class RendererGeometryMixin:
         tops = self._plot_y_values(gaps["top_elevation"].to_numpy(dtype=float), collars)
         bottoms = self._plot_y_values(gaps["bottom_elevation"].to_numpy(dtype=float), collars)
         count = len(gaps)
+        gap_x = gaps["x_profile"].to_numpy(dtype=float)
+        geometry: tuple | np.ndarray = (
+            gap_x - track_half_width,
+            np.minimum(tops, bottoms),
+            np.full(count, 2.0 * track_half_width),
+            np.abs(tops - bottoms),
+        )
+        if getattr(self, "_deviated_x", None):
+            # Surveyed holes: the grey gap follows the hole's trace.
+            geometry = self._track_rect_verts(
+                gaps["hole_id"].astype(str).to_numpy(),
+                collars,
+                np.asarray([
+                    self._deviated_collar_x(h, float(c), float(x))
+                    for h, c, x in zip(gaps["hole_id"].astype(str), collars, gap_x, strict=True)
+                ]),
+                np.minimum(tops, bottoms),
+                np.abs(tops - bottoms),
+                track_half_width,
+            )
         self._add_rect_collection(
             ax,
-            (
-                gaps["x_profile"].to_numpy(dtype=float) - track_half_width,
-                np.minimum(tops, bottoms),
-                np.full(count, 2.0 * track_half_width),
-                np.abs(tops - bottoms),
-            ),
+            geometry,
             facecolors=UNLOGGED_FILL_COLOR,
             edgecolors=TRACK_BORDER_COLOR,
             linewidths=0.6,
@@ -2700,15 +3177,15 @@ class RendererGeometryMixin:
         x_arr = x_arr[mask]
         y_arr = np.minimum(top_ys[mask], bottom_ys[mask])
         h_arr = heights[mask]
+        geometry: tuple | np.ndarray = (x_arr - half, y_arr, np.full(len(x_arr), width), h_arr)
         if getattr(self, "_deviated_x", None):
-            # Surveyed holes: a screen follows the column's interval steps.
-            x_arr, y_arr, h_arr = self._split_deviated_rects(
-                np.asarray(screen_holes)[mask], collar_arr[mask], x_arr, y_arr, h_arr
+            # Surveyed holes: a screen follows the column's slanted trace.
+            geometry = self._track_rect_verts(
+                np.asarray(screen_holes)[mask], collar_arr[mask], x_arr, y_arr, h_arr, half
             )
-        x_arr = x_arr - half
         self._add_rect_collection(
             ax,
-            (x_arr, y_arr, np.full(len(x_arr), width), h_arr),
+            geometry,
             facecolors=TRACK_FILL_COLOR,
             edgecolors=TRACK_BORDER_COLOR,
             linewidths=0.6,

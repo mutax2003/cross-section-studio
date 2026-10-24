@@ -149,7 +149,9 @@ def test_borehole_only_mode_skips_polygons() -> None:
     assert BOREHOLE_ONLY_DISCLAIMER.encode() in svg_bytes
 
 
-def test_allow_pinch_outs_false_reduces_polygons() -> None:
+def test_allow_pinch_outs_false_still_honours_logged_units() -> None:
+    """Pinch-outs off must not absorb a one-hole unit into its neighbour fill: the
+    Sandstone used to run down over BH-01's logged Clay (5-10 m)."""
     collars = [
         Collar(hole_id="BH-01", easting=0.0, northing=0.0, elevation=100.0, total_depth=10.0),
         Collar(hole_id="BH-02", easting=50.0, northing=0.0, elevation=100.0, total_depth=10.0),
@@ -165,8 +167,13 @@ def test_allow_pinch_outs_false_reduces_polygons() -> None:
     _, without_pinch, _, _, _, _, _ = build_cross_section(
         collars, lithologies, [(0.0, 0.0), (50.0, 0.0)], allow_pinch_outs=False
     )
-    assert len(with_pinch) > len(without_pinch)
     assert any(polygon.is_pinch_out for polygon in with_pinch)
+    for polygons in (with_pinch, without_pinch):
+        clay = [p for p in polygons if p.lithology_code == "Clay"]
+        assert clay and all(p.is_pinch_out for p in clay)
+        sandstone = next(p for p in polygons if p.lithology_code == "Sandstone")
+        at_bh01 = [z for x, z in sandstone.polygon.exterior.coords if abs(x) < 1e-9]
+        assert abs(min(at_bh01) - 95.0) < 1e-9  # stops at the logged contact
 
 
 def test_overlap_warnings_returned_from_pipeline() -> None:
@@ -481,7 +488,7 @@ def test_crossing_note_wording_follows_pinch_out_setting() -> None:
     lithology = [Lithology(hole_id=h, from_depth=a, to_depth=b, lithology_code=c) for h, a, b, c in rows]
     off = compute_section_geometry(collars, lithology, [(0, 0), (50, 0)], allow_pinch_outs=False)
     notes = [m for m in off.overlap_warnings if m.startswith("Crossing correlation")]
-    assert notes and all("not drawn between these holes" in m for m in notes)
+    assert notes and all("short pinch-outs at their own holes" in m for m in notes)
 
 
 def test_wedge_only_pairs_do_not_report_correlation_conflicts() -> None:
@@ -552,16 +559,18 @@ def _pdf_pages(pdf: bytes) -> list[tuple[float, float, str]]:
     ]
 
 
-def test_section_sheet_summary_page_is_letter_with_wrapped_text() -> None:
-    """The summary page claimed letter but was cropped to its text (19.9 x
-    8.9 in with a long disclaimer)."""
+def test_section_sheet_summary_page_matches_figure_page_with_wrapped_text() -> None:
+    """The summary page was cropped to its text (19.9 x 8.9 in with a long
+    disclaimer). It is a fixed sheet with wrapped text: the figure page's own
+    size on a tight / auto export (QA round 8: no mixed page sizes)."""
     collars, lithology = _crossing_holes()
     result = build_cross_section(
         collars, lithology, [(0, 0), (50, 0)], title="X" * 40, export_formats=frozenset({"pdf"})
     )
     pages = _pdf_pages(result.pdf_bytes)
     assert len(pages) >= 2
-    assert all(page[:2] == (11.0, 8.5) for page in pages[1:])
+    figure_page = pages[0][:2]
+    assert all(page[:2] == figure_page for page in pages[1:])
     assert "QA notes" in pages[1][2] and "Crossing correlation" in pages[1][2]
 
 

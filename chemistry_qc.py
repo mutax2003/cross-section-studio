@@ -4,16 +4,30 @@ Engine module (no Streamlit). Used by the Validate summary
 (``ai_quality.summarize_environmental_readings``) and the chemistry overlay
 (``renderer_chemistry``) so the warning text is identical in both places.
 
-Threshold limits carry no unit of their own (they are "in the parameter's own
-units"), so nothing here converts units: a parameter reported in more than one
-unit is flagged for the user to fix in the workbook instead of being silently
-converted.
+Units: threshold limits carry no unit of their own -- they are read in the
+parameter's *main* unit, the unit most of its readings use
+(:func:`dominant_units`). A workbook ``green_max`` / ``orange_max`` typed on a
+row in another unit is taken to be in that row's unit and converted with the
+row's value (:func:`workbook_threshold_limits`, :func:`harmonize_units`); when
+the row's unit cannot be converted its limits are ignored, with a Validate
+warning and a figure QA note ("Chloride limits on MW1 are in ug/kg, not
+convertible to mg/L -- ignored"). A parameter reported in more than one unit is
+harmonised for the figure by :func:`harmonize_units`: a reading in a known
+convertible unit (ng/L <-> ug/L <-> mg/L <-> g/L, ug/kg <-> mg/kg = ug/g <-> g/kg,
+ppb <-> ppm, and ppm / ppb as mg/L / mg/kg when the parameter's other units are
+all aqueous or all solid) is shown and threshold-coloured in the main unit, and
+the figure QA notes say so ("MW-04 Chloride 45000 ug/L shown as 45 mg/L
+(converted to the parameter's main unit)"). A reading whose unit cannot be
+converted (mg/kg beside mg/L, an unknown unit) keeps its own value and unit on
+the figure, is never threshold-coloured, and gets a QA note. Nothing is
+converted silently; Validate still asks for one unit per parameter.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from typing import Literal
 
 from render_profiles import (
@@ -38,7 +52,7 @@ QualifierKind = Literal["non_detect", "detected", "unknown"]
 
 QUALIFIER_NON_DETECT = frozenset(
     {"<", "nd", "n.d.", "n.d", "ndl", "u", "bdl", "not detected", "non-detect", "non detect",
-     "below detection limit", "below detection", "<rdl", "<dl", "<mdl", "no", "n", "false", "0"}
+     "below detection limit", "below detection", "<rdl", "<dl", "<mdl", "no", "false", "0"}
 )
 QUALIFIER_DETECTED = frozenset({"=", "detected", "yes", "y", "true", "1", "d"})
 # Letters of common detected-data lab flags (EPA CLP / Canadian lab reports).
@@ -148,13 +162,313 @@ def mixed_unit_parameters(readings: Iterable[object]) -> dict[str, tuple[str, ..
 
 
 def mixed_unit_warnings(readings: Iterable[object]) -> list[str]:
-    """One Validate warning per parameter reported in more than one unit."""
-    return [
-        f"{parameter} is reported in more than one unit ({', '.join(units)}) — values and "
-        "threshold limits are compared as typed, not converted; use one unit for "
-        f"{parameter} in the Environmental sheet."
-        for parameter, units in mixed_unit_parameters(readings).items()
-    ]
+    """One Validate warning per parameter reported in more than one unit.
+
+    Says what the figure does with the odd readings: converted to the main
+    unit (named in the figure QA notes), or printed with their own unit and
+    left out of the threshold colours when no conversion is known.
+    """
+    readings = list(readings)
+    harmonized = harmonize_units(readings)
+    warnings: list[str] = []
+    for parameter, units in mixed_unit_parameters(readings).items():
+        key = chemistry_parameter_key(parameter)
+        main = harmonized.dominant.get(key, "")
+        stuck = sorted(
+            {
+                str(getattr(reading, "unit", "") or "").strip()
+                for reading in harmonized.unconverted
+                if chemistry_parameter_key(str(getattr(reading, "parameter", ""))) == key
+            }
+        )
+        if stuck:
+            handling = (
+                f"the figure converts what it can to {main} (its main unit); {', '.join(stuck)} "
+                f"cannot be converted to {main}, so those values print with their own unit and "
+                "are not threshold-coloured"
+            )
+        else:
+            handling = (
+                f"the figure converts them to {main} (its main unit) and says so in the QA notes; "
+                f"threshold limits are read as {main}"
+            )
+        warnings.append(
+            f"{parameter} is reported in more than one unit ({', '.join(units)}) — {handling}. "
+            f"Use one unit for {parameter} in the Environmental sheet."
+        )
+    return warnings
+
+
+# --- Unit conversion (figure) -------------------------------------------------
+#
+# unit_key spelling -> (family, factor to the family's base unit). "ratio" is
+# ppm / ppb: mass per mass or (dilute water) mass per volume, so it joins the
+# aqueous or the solid family only when the parameter's other units say which.
+# "ppt" is left out on purpose: parts per thousand or per trillion.
+
+_UNIT_FAMILIES: dict[str, tuple[str, float]] = {
+    "g/l": ("aqueous", 1e3),
+    "mg/l": ("aqueous", 1.0),
+    "ug/l": ("aqueous", 1e-3),
+    "mcg/l": ("aqueous", 1e-3),
+    "ng/l": ("aqueous", 1e-6),
+    "g/kg": ("solid", 1e3),
+    "mg/kg": ("solid", 1.0),
+    "ug/g": ("solid", 1.0),
+    "mcg/g": ("solid", 1.0),
+    "ug/kg": ("solid", 1e-3),
+    "mcg/kg": ("solid", 1e-3),
+    "ng/g": ("solid", 1e-3),
+    "ng/kg": ("solid", 1e-6),
+    "ppm": ("ratio", 1.0),
+    "ppb": ("ratio", 1e-3),
+}
+
+
+def unit_family(unit: object) -> tuple[str, float] | None:
+    """``(family, factor)`` of a known unit (``"ug/L"`` -> ``("aqueous", 0.001)``), else None."""
+    return _UNIT_FAMILIES.get(unit_key(unit))
+
+
+def convert_unit(
+    value: float,
+    from_unit: object,
+    to_unit: object,
+    *,
+    ratio_family: str | None = None,
+) -> float | None:
+    """``value`` in ``from_unit`` expressed in ``to_unit``, or None when not convertible.
+
+    Same spelling key: unchanged. ppm / ppb convert to the aqueous or solid
+    family only when ``ratio_family`` names it (the parameter's other units
+    are all of that family): 1 ppm = 1 mg/L (dilute water) = 1 mg/kg.
+    """
+    if unit_key(from_unit) == unit_key(to_unit):
+        return float(value)
+    source, target = unit_family(from_unit), unit_family(to_unit)
+    if source is None or target is None:
+        return None
+    (source_family, source_factor), (target_family, target_factor) = source, target
+    if source_family != target_family and (
+        ratio_family is None or {source_family, target_family} != {"ratio", ratio_family}
+    ):
+        return None
+    # 12 significant digits: 0.003 * 1000 prints "3", not "3.0000000000000004".
+    return float(f"{float(value) * source_factor / target_factor:.12g}")
+
+
+def dominant_units(readings: Iterable[object]) -> dict[str, str]:
+    """Main unit per parameter key: the unit most readings use (first seen wins a tie).
+
+    Blank units are ignored; spellings collapse by :func:`unit_key` and keep
+    the first spelling seen. Parameters without any unit are left out.
+    """
+    counts: dict[str, dict[str, int]] = {}
+    spellings: dict[str, dict[str, str]] = {}
+    for reading in readings:
+        key = chemistry_parameter_key(str(getattr(reading, "parameter", "") or ""))
+        unit = str(getattr(reading, "unit", "") or "").strip()
+        if not key or not unit:
+            continue
+        ukey = unit_key(unit)
+        spellings.setdefault(key, {}).setdefault(ukey, unit)
+        per = counts.setdefault(key, {})
+        per[ukey] = per.get(ukey, 0) + 1
+    result: dict[str, str] = {}
+    for key, per in counts.items():
+        best = max(per.values())
+        # Insertion order: the first unit seen with the top count.
+        ukey = next(u for u, n in per.items() if n == best)
+        result[key] = spellings[key][ukey]
+    return result
+
+
+def _ratio_families(readings: Iterable[object]) -> dict[str, str | None]:
+    """Parameter key -> the one matrix (``"aqueous"`` / ``"solid"``) its non-ratio
+    units name, or None (none, or both): decides whether ppm / ppb convert."""
+    families: dict[str, set[str]] = {}
+    for reading in readings:
+        key = chemistry_parameter_key(str(getattr(reading, "parameter", "") or ""))
+        family = unit_family(getattr(reading, "unit", ""))
+        if key and family is not None and family[0] != "ratio":
+            families.setdefault(key, set()).add(family[0])
+    return {
+        key: (next(iter(matrix)) if len(matrix) == 1 else None) for key, matrix in families.items()
+    }
+
+
+def _row_limits(reading: object) -> tuple[float | None, float | None]:
+    green = getattr(reading, "green_max", None)
+    orange = getattr(reading, "orange_max", None)
+    return (None if green is None else float(green), None if orange is None else float(orange))
+
+
+def _converted_row_limits(
+    reading: object, unit: str, main: str, ratio_family: str | None
+) -> tuple[float | None, float | None] | None:
+    """The row's ``green_max`` / ``orange_max`` in the parameter's main unit.
+
+    A row without a unit, or in the main unit, keeps its limits as typed
+    (they are read in the main unit). None when the row's unit cannot be
+    converted to the main unit: the caller ignores those limits.
+    """
+    green, orange = _row_limits(reading)
+    if not unit or not main or unit_key(unit) == unit_key(main):
+        return green, orange
+    converted = tuple(
+        None if limit is None else convert_unit(limit, unit, main, ratio_family=ratio_family)
+        for limit in (green, orange)
+    )
+    if any(limit is not None and value is None for limit, value in zip((green, orange), converted)):
+        return None
+    return converted[0], converted[1]
+
+
+def _ignored_limits_note(reading: object, unit: str, main: str) -> str:
+    return (
+        f"{getattr(reading, 'parameter', '')} limits on {getattr(reading, 'hole_id', '')} are in "
+        f"{unit}, not convertible to {main} — ignored"
+    )
+
+
+@dataclass
+class WorkbookLimits:
+    """Result of :func:`workbook_threshold_limits`."""
+
+    # Parameter name (first spelling) -> (green_max, orange_max) in the
+    # parameter's main unit; a limit no row gives is None.
+    thresholds: dict[str, tuple[float | None, float | None]] = field(default_factory=dict)
+    # Validate warnings for rows whose limits could not be converted (ignored).
+    warnings: list[str] = field(default_factory=list)
+
+
+def workbook_threshold_limits(readings: Iterable[object]) -> WorkbookLimits:
+    """Per-parameter limits typed in the workbook, in each parameter's main unit.
+
+    Each row's ``green_max`` / ``orange_max`` are taken to be in that row's
+    unit and converted to the parameter's main unit (:func:`dominant_units`,
+    :func:`convert_unit`, same matrix rule as :func:`harmonize_units`); the
+    first row giving each limit wins, so one filled row per parameter is
+    enough. A row whose unit cannot be converted contributes no limits and
+    earns a warning ("Chloride limits on MW1 are in ug/kg, not convertible
+    to mg/L — ignored").
+    """
+    readings = list(readings)
+    dominant = dominant_units(readings)
+    ratio_families = _ratio_families(readings)
+    found: dict[str, list[float | None]] = {}
+    names: dict[str, str] = {}
+    result = WorkbookLimits()
+    for reading in readings:
+        name = str(getattr(reading, "parameter", "") or "").strip()
+        key = chemistry_parameter_key(name)
+        if not key or _row_limits(reading) == (None, None):
+            continue
+        unit = str(getattr(reading, "unit", "") or "").strip()
+        main = dominant.get(key, "")
+        limits = _converted_row_limits(reading, unit, main, ratio_families.get(key))
+        if limits is None:
+            note = _ignored_limits_note(reading, unit, main)
+            if note not in result.warnings:
+                result.warnings.append(note)
+            continue
+        names.setdefault(key, name)
+        pair = found.setdefault(key, [None, None])
+        for index, limit in enumerate(limits):
+            if pair[index] is None and limit is not None:
+                pair[index] = limit
+    result.thresholds = {names[key]: (pair[0], pair[1]) for key, pair in found.items()}
+    return result
+
+
+def ignored_limit_warnings(readings: Iterable[object]) -> list[str]:
+    """Validate warnings for workbook limit rows in a unit that cannot be converted."""
+    return workbook_threshold_limits(readings).warnings
+
+
+@dataclass
+class UnitHarmonization:
+    """Result of :func:`harmonize_units` (see the module docstring)."""
+
+    # Same order as the input; converted readings carry the main unit.
+    readings: list = field(default_factory=list)
+    # Parameter key (chemistry_parameter_key) -> main unit spelling.
+    dominant: dict[str, str] = field(default_factory=dict)
+    # Readings (as returned) whose unit could not be converted.
+    unconverted: list = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def dominant_unit_for(self, parameter: str) -> str:
+        return self.dominant.get(chemistry_parameter_key(parameter), "")
+
+    def is_unconverted(self, reading: object) -> bool:
+        return any(reading is item for item in self.unconverted)
+
+
+def harmonize_units(readings: Iterable[object]) -> UnitHarmonization:
+    """Readings in each parameter's main unit, plus figure QA notes.
+
+    A reading in another, convertible unit is replaced by a copy in the main
+    unit (value / detection limit and the row's ``green_max`` / ``orange_max``
+    converted; ``value_label`` text typed in the workbook is kept as typed).
+    A reading in a unit that cannot be converted is returned unchanged
+    (limits it carries are dropped from the copy, with a note) and listed in
+    ``unconverted``: the figure prints it with its own unit and does not
+    threshold-colour it. Readings without a unit, or of a parameter with a
+    single unit, are returned unchanged.
+    """
+    readings = list(readings)
+    dominant = dominant_units(readings)
+    ratio_families = _ratio_families(readings)
+    result = UnitHarmonization(dominant=dominant)
+    for reading in readings:
+        key = chemistry_parameter_key(str(getattr(reading, "parameter", "") or ""))
+        unit = str(getattr(reading, "unit", "") or "").strip()
+        main = dominant.get(key, "")
+        if not unit or not main or unit_key(unit) == unit_key(main):
+            result.readings.append(reading)
+            continue
+        ratio_family = ratio_families.get(key)
+        value = float(getattr(reading, "value"))
+        where = f"{getattr(reading, 'hole_id', '')} {getattr(reading, 'parameter', '')}"
+        converted = convert_unit(value, unit, main, ratio_family=ratio_family)
+        limits = _converted_row_limits(reading, unit, main, ratio_family)
+        if converted is None:
+            if _row_limits(reading) != (None, None):
+                # Limits typed in an unconvertible unit must not be read as
+                # the main unit: drop them from the copy and say so.
+                limits_note = _ignored_limits_note(reading, unit, main)
+                if limits_note not in result.notes:
+                    result.notes.append(limits_note)
+                reading = reading.model_copy(  # type: ignore[attr-defined]
+                    update={"green_max": None, "orange_max": None}
+                )
+            result.readings.append(reading)
+            result.unconverted.append(reading)
+            note = (
+                f"{where} {value:g} {unit} printed with its own unit — {unit} cannot be "
+                f"converted to {main} (the parameter's main unit), so it is not threshold-coloured"
+            )
+        else:
+            assert limits is not None  # same unit as the value, so convertible
+            result.readings.append(
+                reading.model_copy(  # type: ignore[attr-defined]
+                    update={
+                        "value": converted,
+                        "unit": main,
+                        "green_max": limits[0],
+                        "orange_max": limits[1],
+                    }
+                )
+            )
+            prefix = "" if getattr(reading, "detected", True) else "<"
+            note = (
+                f"{where} {prefix}{value:g} {unit} shown as {prefix}{converted:g} {main} "
+                "(converted to the parameter's main unit)"
+            )
+        if note not in result.notes:
+            result.notes.append(note)
+    return result
 
 
 def rdl_exceeds_guideline(reading: object, green_max: float | None) -> bool:

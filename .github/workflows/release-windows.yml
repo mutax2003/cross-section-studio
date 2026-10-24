@@ -51,8 +51,17 @@ jobs:
           $notes = "docs/release-notes-$version.md"
           if (-not (Test-Path $notes)) { $notes = $null }
           $assets = @("dist/CrossSectionStudio-win64-v$version.zip", "dist/release-manifest.json")
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -eq 0) {
+          # gh release view also finds a draft for the tag (upload into it rather
+          # than creating a second release). A missing release exits 1: keep that
+          # from becoming a terminating error, and tell "not found" apart from a
+          # broken API call so a transient failure never routes into "create".
+          $PSNativeCommandUseErrorActionPreference = $false
+          $probe = (gh release view $tag 2>&1 | Out-String)
+          $viewExit = $LASTEXITCODE
+          if ($viewExit -ne 0 -and $probe -notmatch 'release not found|Not Found|HTTP 404') {
+            Write-Error "gh release view $tag failed: $probe"
+          }
+          if ($viewExit -eq 0) {
             gh release upload $tag @assets --clobber
           } else {
             $ghArgs = @("release", "create", $tag) + $assets + @(

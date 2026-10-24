@@ -840,10 +840,15 @@ def vertical_gradient_arrow_conflicts(
 # calibrated flow model.
 
 # Near-collinear wells: minor/major singular value ratio of the centred E/N
-# matrix below this, or an rms spread across the best-fit line below
-# ``COLLINEAR_MIN_SPREAD_M``, leaves the cross-line gradient undetermined.
-COLLINEAR_SINGULAR_RATIO = 0.05
-COLLINEAR_MIN_SPREAD_M = 1.0
+# matrix below this, or wells spread across the best-fit line (max − min
+# perpendicular offset) by less than ``COLLINEAR_MIN_SPREAD_M`` or
+# ``COLLINEAR_MIN_SPREAD_FRACTION`` of their spread along it, leave the
+# cross-line gradient undetermined. Wells 16 m apart across a 280 m line
+# (ratio ≈ 0.03 by spread, a few cm of head error swings the azimuth by tens
+# of degrees) fitted "toward 181°, i = 0.47" and printed it on the figure.
+COLLINEAR_SINGULAR_RATIO = 0.15
+COLLINEAR_MIN_SPREAD_M = 5.0
+COLLINEAR_MIN_SPREAD_FRACTION = 0.10
 # Below this |∇h| the head surface is treated as flat (no flow direction).
 FLAT_GRADIENT = 1e-6
 # Validate warnings: poor planarity.
@@ -943,6 +948,7 @@ def fit_head_plane(
     series_label: str = "",
     collinear_ratio: float = COLLINEAR_SINGULAR_RATIO,
     collinear_min_spread_m: float = COLLINEAR_MIN_SPREAD_M,
+    collinear_min_spread_fraction: float = COLLINEAR_MIN_SPREAD_FRACTION,
 ) -> HeadPlaneFit | None:
     """Least-squares plane through ≥3 well heads; ``None`` with fewer wells.
 
@@ -960,13 +966,19 @@ def fit_head_plane(
     north = np.array([float(point.northing) for point in points])
     head = np.array([float(point.head_masl) for point in points])
     centred = np.column_stack([east - east.mean(), north - north.mean()])
-    singular = np.linalg.svd(centred, compute_uv=False)
+    _u, singular, axes = np.linalg.svd(centred, full_matrices=False)
     major = float(singular[0])
     minor = float(singular[1])
     ratio = minor / major if major > 0.0 else 0.0
-    rms_cross_spread = minor / math.sqrt(len(points))
+    # Offsets along / across the best-fit line of wells (principal axes).
+    along = centred @ axes[0]
+    across = centred @ axes[1]
+    along_spread = float(np.ptp(along))
+    cross_spread = float(np.ptp(across))
     collinear = (
-        major <= 0.0 or ratio < collinear_ratio or rms_cross_spread < collinear_min_spread_m
+        major <= 0.0
+        or ratio < collinear_ratio
+        or cross_spread < max(collinear_min_spread_m, collinear_min_spread_fraction * along_spread)
     )
     method = "3-point" if len(points) == 3 else "planar fit"
     if collinear:
@@ -1139,7 +1151,7 @@ def section_flow_relation(
 def format_flow_direction(fit: HeadPlaneFit) -> str:
     """``"toward 128° (SE)"``, or why there is no direction."""
     if fit.collinear or not math.isfinite(fit.gradient):
-        return "undetermined (collinear wells)"
+        return "wells nearly collinear — flow direction not determined"
     if fit.flow_azimuth_deg is None:
         return "flat (no measurable gradient)"
     return f"toward {fit.flow_azimuth_deg:.0f}° ({compass_point(fit.flow_azimuth_deg)})"
@@ -1154,7 +1166,7 @@ def head_plane_fit_warnings(
     if fit.collinear:
         return [
             f"Groundwater flow ({label}): wells {', '.join(fit.hole_ids)} are nearly "
-            "collinear — plan-view flow direction cannot be fitted."
+            "collinear — flow direction not determined (no plan-view fit)."
         ]
     warnings: list[str] = []
     if fit.poor_fit:

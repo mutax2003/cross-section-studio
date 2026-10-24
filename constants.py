@@ -11,23 +11,12 @@ from pathlib import Path
 
 from paths import (
     bh_log_lithology_legend_path,
-    bh_log_lithology_legend_xlsx_path,
     lithology_styles_path,
 )
 
 logger = logging.getLogger(__name__)
 
 _HEX_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
-
-# Fallback colours for codes not listed in the BH Log legend workbook.
-_BASE_LITHOLOGY_COLORS: dict[str, str] = {
-    "Bedrock": "#4A4A4A",
-    "Limestone": "#E0E4E8",
-    "Shale": "#5C6B7A",
-    "Flare Pit Material": "#6D4C41",
-    "Topsoil": "#534230",
-    "Sand and Clay": "#E8B84A",
-}
 
 DEFAULT_LITHOLOGY_COLOR = "#B8B8B8"
 # Codes outside the scheme cycle through these so two unknown units on one
@@ -40,65 +29,31 @@ FALLBACK_LITHOLOGY_STYLES: tuple[tuple[str, str], ...] = (
     ("#DEDEDE", "oo"),
 )
 DEFAULT_LITHOLOGY_HATCH = "++"  # "+" covers any remaining type
-HATCH_LINE_COLOR = "#323232"  # mark colour in the CAD template
 POLYGON_EDGE_COLOR = "#2C2C2C"
 
-# Agreed display scheme (meeting 1 Oct 2026): each soil group shares one base
-# colour and a hatch marks the secondary component only —
-#   sandy = dots, silty = 45° lines, gravel = stone/cobble, "+" = loam mixes;
-# the dominant units (Clay, Silt, Loam, Topsoil, Organics, Coal) stay plain so
-# boreholes and well screens read clearly over them. Sand is the exception:
-# it carries the same sparse dot stipple as the other sandy units.
-# Matplotlib hatch strings (repeat chars for density): / \ | - + x o O . *
-# Densities follow Sheryl's CAD template (Cross_Section_Litho_Legend_261002,
-# which supersedes 261001 by adding the Sand stipple):
-# sparse marks, not dense hatching. matplotlib has no isolated plus mark, so
-# "+" draws its sparsest grid.
-HATCH_SANDY = "."
-HATCH_SILTY = "/"
-HATCH_GRAVEL = "O"  # large circles: closest built-in to the template's cobbles
-HATCH_PLUS = "+"
+# Lithology scheme: client legend 261023. Source workbook
+# data/BH Log Lithology Legend.xlsx, generated into
+# data/bh_log_lithology_legend.json by scripts/build_lithology_legend.py.
+# Every lithology colour and hatch comes from that JSON; no hex is repeated
+# here. Each soil group shares one base colour and the hatch marks the
+# secondary component: sandy = dots, silty = 45° dashes, loam = "+",
+# gravel = stone outlines; Clay, Silt, Clay Loam, Topsoil, Organics, Coal,
+# Mudstone and the singles are solid. Hatch values are matplotlib hatch
+# strings; hatch_patterns.py draws ".", "/", "+" and "O" as the CAD legend's
+# DOTS / DASH / CROSS / GRAVEL marks.
 
-_BASE_LITHOLOGY_HATCHES: dict[str, str] = {
-    # Clay group (#967259)
-    "Clay": "",
-    "Sandy Clay": HATCH_SANDY,
-    "Silty Clay": HATCH_SILTY,
-    "Silty Clay Loam": HATCH_PLUS,
-    # Silt (#8D5524)
-    "Silt": "",
-    # Loam group (#C68642)
-    "Sandy Clay Loam": HATCH_SANDY,
-    "Clay Loam": HATCH_PLUS,
-    "Loam": "",
-    "Silty Loam": HATCH_SILTY,
-    # Sand group (#FFE39F) — Sand itself is dotted (template 261002)
-    "Sand": HATCH_SANDY,
-    "Loamy Sand": HATCH_SILTY,
-    "Silty Sand": HATCH_SILTY,
-    "Sand and Gravel": HATCH_GRAVEL,
-    # Rock group (#4C516D)
-    "Siltstone": HATCH_SILTY,
-    "Sandstone": HATCH_SANDY,
-    "Mudstone": "",
-    # Singles
-    "Gravel": HATCH_GRAVEL,
-    "Topsoil": "",
-    "Organics": "",
-    "Coal": "",
-    "Fill": "",
-    "Bentonite": "",
-    "Drilling Waste": "",
-    "Other": "",
-    "Refuse": "",
-    "No Recovery": "",
-    # Not on the agreed sheet: keep their distinguishing patterns.
-    "Bedrock": "xxx",
-    "Limestone": "..",
-    "Shale": "\\\\",
-    "Flare Pit Material": "**",
-    "Sand and Clay": "/.",
-}
+
+@dataclass(frozen=True)
+class LithologyScheme:
+    """The bundled lithology scheme (``data/bh_log_lithology_legend.json``)."""
+
+    scheme_id: str
+    colors: dict[str, str]
+    hatches: dict[str, str]
+    legend_order: tuple[str, ...]
+    legacy_codes: tuple[str, ...]
+    family_hatches: dict[str, str]
+    hatch_line_color: str
 
 
 def _normalize_hex_colour(value: object) -> str | None:
@@ -116,99 +71,92 @@ def _normalize_hex_colour(value: object) -> str | None:
 normalize_hex_colour = _normalize_hex_colour
 
 
-def parse_bh_log_legend_xlsx(path: Path) -> dict[str, str]:
-    """Parse BH Log Lithology Legend.xlsx into lithology_code → #RRGGBB."""
-    try:
-        import pandas as pd
-    except ImportError:
-        return {}
-    if not path.exists():
-        return {}
-    try:
-        frame = pd.read_excel(path, header=1)
-    except (OSError, ValueError):
-        return {}
-    if frame.shape[1] < 3:
-        return {}
-    frame = frame.iloc[:, :4].copy()
-    frame.columns = ["colour", "unused", "lithology", "rgb"][: frame.shape[1]]
-    if "lithology" not in frame.columns or "colour" not in frame.columns:
-        return {}
-    frame = frame.dropna(subset=["lithology"])
-    colors: dict[str, str] = {}
-    for _, row in frame.iterrows():
-        lithology = str(row["lithology"]).strip()
-        if not lithology or lithology.casefold() == "lithology":
-            continue
-        colour = _normalize_hex_colour(row["colour"])
-        if colour is None:
-            continue
-        colors[lithology] = colour
-    return colors
-
-
-def parse_bh_log_legend_json(path: Path) -> dict[str, str]:
-    """Parse cached BH Log legend JSON into lithology_code → #RRGGBB."""
+def _read_json_object(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
-    if not isinstance(payload, dict):
-        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def parse_lithology_scheme(path: Path) -> LithologyScheme:
+    """Read a scheme JSON (schema 2; an old flat ``{code: hex}`` map also works)."""
+    payload = _read_json_object(path)
+    entries = payload.get("lithologies")
+    if not isinstance(entries, dict):
+        # Schema 1: a flat code -> hex map without hatches.
+        entries = {code: {"color": colour} for code, colour in payload.items()}
     colors: dict[str, str] = {}
-    for code, colour in payload.items():
-        normalized = _normalize_hex_colour(colour)
-        if normalized is None:
+    hatches: dict[str, str] = {}
+    for code, entry in entries.items():
+        if not isinstance(entry, dict):
             continue
-        colors[str(code)] = normalized
-    return colors
+        colour = _normalize_hex_colour(entry.get("color"))
+        if colour is None:
+            continue
+        colors[str(code)] = colour
+        if isinstance(entry.get("hatch"), str):
+            hatches[str(code)] = entry["hatch"]
+    families = payload.get("hatch_families")
+    family_hatches = {
+        str(name): str(spec.get("hatch", ""))
+        for name, spec in (families.items() if isinstance(families, dict) else ())
+        if isinstance(spec, dict)
+    }
+    order = [str(code) for code in payload.get("legend_order") or () if str(code) in colors]
+    legacy = [str(code) for code in payload.get("legacy_codes") or () if str(code) in colors]
+    return LithologyScheme(
+        scheme_id=str(payload.get("scheme_id") or "unversioned"),
+        colors=colors,
+        hatches=hatches,
+        legend_order=tuple(order or colors),
+        legacy_codes=tuple(legacy),
+        family_hatches=family_hatches,
+        hatch_line_color=_normalize_hex_colour(payload.get("hatch_line_color")) or "#323232",
+    )
+
+
+def parse_bh_log_legend_json(path: Path) -> dict[str, str]:
+    """Scheme JSON -> lithology_code -> #RRGGBB."""
+    return dict(parse_lithology_scheme(path).colors)
 
 
 @lru_cache(maxsize=1)
-def _load_bh_log_lithology_colors() -> dict[str, str]:
-    """Agreed scheme (template 261002, bundled JSON) with the old Excel legend as fallback.
+def load_lithology_scheme() -> LithologyScheme:
+    """The bundled scheme (client legend 261023)."""
+    path = bh_log_lithology_legend_path()
+    scheme = parse_lithology_scheme(path)
+    if not scheme.colors:
+        logger.error("Lithology scheme %s is missing or empty; every code draws grey", path)
+    return scheme
 
-    261002 supersedes the old BH Log hex sheet: the Excel legend only supplies
-    codes the scheme does not list, so older workbooks with extra codes still
-    get their historic colour instead of grey. Conflicting colours are ignored
-    (and logged).
-    """
-    scheme = parse_bh_log_legend_json(bh_log_lithology_legend_path())
-    xlsx_colors = parse_bh_log_legend_xlsx(bh_log_lithology_legend_xlsx_path())
-    if not xlsx_colors:
-        return scheme
-    scheme_lookup = {code.casefold(): colour for code, colour in scheme.items()}
-    ignored = sorted(
-        code for code, colour in xlsx_colors.items()
-        if code.casefold() in scheme_lookup and scheme_lookup[code.casefold()].upper() != colour.upper()
-    )
-    if ignored:
-        logger.warning(
-            "BH Log Lithology Legend.xlsx differs from the 261002 scheme for %d code(s): %s "
-            "(the scheme wins; the Excel legend only adds codes the scheme lacks)",
-            len(ignored),
-            ", ".join(ignored[:8]),
-        )
-    extra = {
-        code: colour for code, colour in xlsx_colors.items() if code.casefold() not in scheme_lookup
-    }
-    return {**scheme, **extra}
+
+LITHOLOGY_SCHEME: LithologyScheme = load_lithology_scheme()
+LITHOLOGY_SCHEME_ID: str = LITHOLOGY_SCHEME.scheme_id
+# Swatch order of the client legend sheet (legacy codes excluded).
+LITHOLOGY_LEGEND_ORDER: tuple[str, ...] = tuple(
+    code for code in LITHOLOGY_SCHEME.legend_order if code not in LITHOLOGY_SCHEME.legacy_codes
+)
+HATCH_LINE_COLOR = LITHOLOGY_SCHEME.hatch_line_color  # mark colour on the CAD legend
+HATCH_SANDY = LITHOLOGY_SCHEME.family_hatches.get("sandy", ".")
+HATCH_SILTY = LITHOLOGY_SCHEME.family_hatches.get("silty", "/")
+HATCH_PLUS = LITHOLOGY_SCHEME.family_hatches.get("loam", "+")
+HATCH_GRAVEL = LITHOLOGY_SCHEME.family_hatches.get("gravel", "O")
 
 
 def _build_lithology_palette() -> dict[str, str]:
-    palette = dict(_BASE_LITHOLOGY_COLORS)
-    palette.update(_load_bh_log_lithology_colors())
-    return palette
+    return dict(LITHOLOGY_SCHEME.colors)
 
 
 def _build_lithology_hatches(palette: dict[str, str]) -> dict[str, str]:
-    hatches = dict(_BASE_LITHOLOGY_HATCHES)
+    hatches: dict[str, str] = {}
     for code in palette:
-        if code in hatches:
-            continue
-        hatches[code] = "" if code.casefold() == "no recovery" else DEFAULT_LITHOLOGY_HATCH
+        hatch = LITHOLOGY_SCHEME.hatches.get(code)
+        if hatch is None:
+            hatch = "" if code.casefold() == "no recovery" else DEFAULT_LITHOLOGY_HATCH
+        hatches[code] = hatch
     return hatches
 
 

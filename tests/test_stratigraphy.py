@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
-from shapely.geometry import LineString, Point, Polygon as ShapelyPolygon
+from shapely.geometry import LineString, Point
+from shapely.geometry import Polygon as ShapelyPolygon
 
 from models import CorrelationOverride
 from stratigraphy import (
@@ -95,12 +96,16 @@ def test_pinch_out_triangle_apex() -> None:
     assert clay.polygon.buffer(0.01).contains(apex)
 
     # Clay (left only) and Silt (right only) are both base units under the matched
-    # Sandstone: they meet along a facies change at mid-span and fill down to the
-    # base line between the hole bottoms (85 -> 80) instead of tapering to a tip.
+    # Sandstone: a lateral facies change. They share the slot down to the base line
+    # between the hole bottoms (85 -> 80) along a sloping boundary, each thinning to
+    # zero at the other hole (no vertical wall mid-span, no white triangle).
     assert clay.polygon.area == pytest.approx(10.0 * 25.0)
     silt = next(item for item in polygons if item.lithology_code == "Silt")
     assert silt.is_pinch_out and silt.polygon.area == pytest.approx(10.0 * 25.0)
-    assert clay.polygon.intersection(silt.polygon).length == pytest.approx(10.0)  # 92.5 -> 82.5
+    # The higher slot (Clay, mid 90 vs 85) overlies: boundary (0, 85) -> (50, 90).
+    shared = clay.polygon.intersection(silt.polygon)
+    assert shared.length == pytest.approx((50.0**2 + 5.0**2) ** 0.5)
+    assert shared.distance(Point(0.0, 85.0)) < 1e-9 and shared.distance(Point(50.0, 90.0)) < 1e-9
 
 
 def test_pinch_out_uses_elevation_neighbors_when_collars_differ() -> None:
@@ -152,13 +157,19 @@ def test_pinch_out_uses_elevation_neighbors_when_collars_differ() -> None:
     )
     polygons = build_stratigraphy(projected, allow_pinch_outs=True)
     clay = next(item for item in polygons if item.lithology_code == "Clay" and item.is_pinch_out)
-    # Elevation neighbor above = Fill bottom 100 (nothing below 85) → apex at mid-x, z=100
-    apex = Point(25.0, 100.0)
+    # In elevation, BH-02's Silt (100–90) overlaps the Clay (95–85): the Clay
+    # projects into it and tapers at its own mid-elevation → apex at mid-x, z=90
+    # (not jumping to the Fill base at 100 above the Silt).
+    apex = Point(25.0, 90.0)
     assert clay.polygon.buffer(0.05).contains(apex)
     # Depth-based neighbors (Gravel base 5 m → 115, Silt top 20 m → 100) would
     # average to 107.5 (must not be used)
     wrong_apex = Point(25.0, 107.5)
     assert not clay.polygon.buffer(0.05).contains(wrong_apex)
+    # The Sand (100–95) overlaps the top of the Silt too (and touches the Fill
+    # base only at the contact): it tapers at its own mid-elevation as well.
+    sand = next(item for item in polygons if item.lithology_code == "Sand" and item.is_pinch_out)
+    assert sand.polygon.buffer(0.05).contains(Point(25.0, 97.5))
 
 
 def test_unit_order_correlates_duplicate_lithology_codes() -> None:
@@ -731,8 +742,9 @@ def test_stacked_pinch_outs_fan_to_shared_tip_without_gaps(source_left: bool) ->
         )
 
 
-def test_opposing_pinch_outs_in_one_gap_meet_at_common_tip() -> None:
-    """Different lenses logged in each hole between the same matched units tile the gap."""
+def test_opposing_pinch_outs_in_one_gap_share_it_as_facies_change() -> None:
+    """Different lenses logged in each hole between the same matched units tile the gap
+    along a sloping facies boundary (no bow-tie through a shared tip)."""
     rows = [
         ("A", 0.0, 100.0, 95.0, "Sand"),
         ("A", 0.0, 95.0, 90.0, "Silt"),
@@ -776,12 +788,13 @@ def test_single_bounded_pinch_out_tip_on_matched_contact(at_top: bool) -> None:
     _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 50.0})
 
 
-def test_pinch_out_tiling_skipped_without_pinch_outs() -> None:
-    """allow_pinch_outs=False keeps hole-to-hole quadrilaterals (no mid-span bends)."""
+def test_pinch_outs_off_keeps_lens_in_near_field() -> None:
+    """allow_pinch_outs=False still draws the Silt logged in BH-02 (never absorbed by
+    its neighbours), but tapers it out a quarter of the spacing from its hole."""
     polygons = build_stratigraphy(_shifted_unit_order_pair(), allow_pinch_outs=False)
-    assert not any(p.is_pinch_out for p in polygons)
-    for polygon in polygons:
-        assert len(polygon.polygon.exterior.coords) == 5
+    silt = [p for p in polygons if p.is_pinch_out]
+    assert [p.lithology_code for p in silt] == ["Silt"]
+    assert silt[0].polygon.bounds[0] == pytest.approx(32.0 - 0.25 * 32.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1193,10 +1206,13 @@ def test_opposing_base_units_meet_at_facies_change_without_gap(reverse: bool) ->
     _assert_pinch_outs_attached(polygons, {"A": rows[0][1], "B": rows[2][1]})
     left = next(p for p in polygons if p.lithology_code == "Sandy Clay Loam").polygon
     right = next(p for p in polygons if p.lithology_code == "Sandy Clay").polygon
-    # Vertical facies boundary at mid-span from the contact (93.5) to the base (86.5).
+    # Sloping facies boundary hole to hole (equal slot mid-elevations: the code
+    # tie-break puts Sandy Clay on top either way round): from the Sandy Clay Loam
+    # hole's contact (95) to the Sandy Clay hole's base (88). No vertical wall.
     shared = left.intersection(right)
-    assert shared.length == pytest.approx(7.0)
-    assert shared.bounds[0] == pytest.approx(25.0) and shared.bounds[2] == pytest.approx(25.0)
+    assert shared.length == pytest.approx((50.0**2 + 7.0**2) ** 0.5)
+    assert shared.distance(Point(rows[1][1], 95.0)) < 1e-9
+    assert shared.distance(Point(rows[3][1], 88.0)) < 1e-9
     # The matched Clay Loam above stays a straight quadrilateral.
     clay_loam = next(p for p in polygons if p.lithology_code == "Clay Loam")
     assert not clay_loam.is_pinch_out and len(clay_loam.polygon.exterior.coords) == 5
@@ -1220,10 +1236,11 @@ def test_opposing_base_units_stack_proportionally() -> None:
     assert overlap == pytest.approx(0.0, abs=1e-6)
     _assert_pinch_outs_attached(polygons, {"A": 0.0, "B": 40.0})
     silt = next(p for p in polygons if p.lithology_code == "Silt").polygon
-    # Silt is 40% of A's 10 m base column; at mid-span the column is 92 -> 81.5 thick.
-    assert silt.bounds[2] == pytest.approx(20.0)
+    # A's slot sits lower (mid 85 vs 88.5), so A's units underlie B's and thin
+    # linearly to zero at B's base (83): Silt (4 m at A) is 2 m thick mid-span.
+    assert silt.bounds[2] == pytest.approx(40.0)
     assert silt.intersection(LineString([(20.0, 0.0), (20.0, 200.0)])).length == pytest.approx(
-        0.4 * 10.5
+        2.0
     )
 
 
@@ -1246,7 +1263,9 @@ def test_opposing_top_units_meet_at_facies_change_without_gap(reverse: bool) -> 
     _assert_pinch_outs_attached(polygons, {"A": rows[0][1], "B": rows[2][1]})
     fill = next(p for p in polygons if p.lithology_code == "Fill").polygon
     topsoil = next(p for p in polygons if p.lithology_code == "Topsoil").polygon
-    assert fill.intersection(topsoil).length == pytest.approx((101.0 + 99.5) / 2 - 98.5)
+    # Fill's slot is higher (mid 99.5 vs 99.25): boundary from Fill's base at A
+    # (98) to the Topsoil top at B (99.5).
+    assert fill.intersection(topsoil).length == pytest.approx((30.0**2 + 1.5**2) ** 0.5)
 
 
 def test_opposing_base_units_mirror_under_transect_reversal() -> None:
@@ -1334,23 +1353,26 @@ def test_pinch_anchor_edge_prefers_hole_edge_over_facies_boundary() -> None:
 
 
 @pytest.mark.parametrize("mirror", [False, True])
-def test_pinch_outs_off_bracketing_contacts_converge_at_source_hole(mirror: bool) -> None:
-    """Regression (QA c_nopinch / sA_nopinch): with pinch-outs off the unmatched Silt
-    left a white wedge. The upper unit's base and lower unit's top now meet at the
-    Silt's mid-elevation on the hole that logged it, so the fence tiles."""
+def test_pinch_outs_off_bracketing_contacts_bend_through_near_field_tip(mirror: bool) -> None:
+    """Regression (QA c_nopinch / sA_nopinch, then browser QA round 7): with pinch-outs
+    off the unmatched Silt first left a white wedge, then was absorbed into the
+    bracketing fills (Sand and Clay drawn over BH-02's logged Silt). The Silt now
+    stays at its hole and tapers to a tip a quarter of the way across; the upper
+    unit's base and lower unit's top bend through that tip, so the fence tiles."""
     projected = _shifted_unit_order_pair()
     if mirror:
         projected = projected.assign(x_profile=32.0 - projected["x_profile"])
     polygons = build_stratigraphy(projected, allow_pinch_outs=False)
-    assert not any(p.is_pinch_out for p in polygons)
-    assert "Silt" not in {p.lithology_code for p in polygons}
+    assert [p.lithology_code for p in polygons if p.is_pinch_out] == ["Silt"]
     z_top = (629.0, 629.5) if not mirror else (629.5, 629.0)
     z_bot = (602.0, 603.5) if not mirror else (603.5, 602.0)
     assert _fence_gap_area(polygons, 0.0, 32.0, z_top, z_bot) == pytest.approx(0.0, abs=1e-6)
     assert _pairwise_overlap_area(polygons) == pytest.approx(0.0, abs=1e-6)
     assert detect_polygon_overlaps(polygons) == []
-    meet = Point(0.0 if mirror else 32.0, (624.0 + 619.5) / 2.0)
-    for code in ("Sand and Clay", "Clay"):
+    # Tip at x = 24 (8 m from BH-02) on the mean bracketing contact line:
+    # 623 + 0.75 * ((624 + 619.5) / 2 - 623) = 622.0625.
+    meet = Point(8.0 if mirror else 24.0, 622.0625)
+    for code in ("Sand and Clay", "Clay", "Silt"):
         polygon = next(p for p in polygons if p.lithology_code == code).polygon
         assert polygon.boundary.distance(meet) < 1e-9
 
@@ -1361,8 +1383,9 @@ def test_pinch_outs_off_bracketing_contacts_converge_at_source_hole(mirror: bool
 def test_pinch_outs_off_single_bounded_units_leave_no_gap(
     reverse: bool, at_top: bool, opposing: bool
 ) -> None:
-    """Base (or top) units logged in one hole only: the bracketing matched unit takes
-    their space, running to the hole end, so the fence envelope stays fully tiled."""
+    """Base (or top) units logged in one hole only stay drawn at their hole (the
+    matched unit above no longer takes their space) and tile to the hole end /
+    facies boundary, so the fence envelope stays fully tiled."""
     rows = [
         ("A", 0.0, 100.0, 95.0, "Clay Loam"),
         ("A", 0.0, 95.0, 85.0, "Sandy Clay Loam"),
@@ -1378,7 +1401,10 @@ def test_pinch_outs_off_single_bounded_units_leave_no_gap(
     before = projected.copy()
     polygons = build_stratigraphy(projected, allow_pinch_outs=False)
     pd.testing.assert_frame_equal(projected, before)  # hole data untouched
-    assert [p.lithology_code for p in polygons] == ["Clay Loam"]
+    codes = sorted(p.lithology_code for p in polygons)
+    assert codes == sorted(["Clay Loam", "Sandy Clay Loam"] + (["Sandy Clay"] if opposing else []))
+    clay_loam = next(p for p in polygons if p.lithology_code == "Clay Loam")
+    assert not clay_loam.is_pinch_out and len(clay_loam.polygon.exterior.coords) == 5
     gap, overlap = _fence_envelope_gap_and_overlap(polygons, rows)
     assert gap == pytest.approx(0.0, abs=1e-6)
     assert overlap == pytest.approx(0.0, abs=1e-6)

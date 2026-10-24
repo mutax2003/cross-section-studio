@@ -293,9 +293,9 @@ def test_report_zip_readme_lists_the_word_file_when_included() -> None:
     assert "Word figure (.docx)" in readme
 
 
-def test_export_filename_keeps_primes_and_names_the_section_once() -> None:
+def test_export_filename_names_the_section_once() -> None:
     """A consulting PDF was named A_-_A_WITH_CHLORIDE_A-A_BH-01_BH-06.pdf:
-    the prime dropped and the section label printed twice."""
+    the section label printed twice. Primes are dropped (filesystem-safe)."""
     from export_framing import build_export_filename
 
     stem = build_export_filename(
@@ -304,7 +304,7 @@ def test_export_filename_keeps_primes_and_names_the_section_once() -> None:
         transect_label="A-A' BH-01→BH-06",
         include_transect_label=True,
     )
-    assert stem == "A-A'_WITH_CHLORIDE_BH-01_BH-06"
+    assert stem == "A-A_WITH_CHLORIDE_BH-01_BH-06"
     # A label the title does not carry is kept.
     stem = build_export_filename(
         pattern="section_title",
@@ -315,19 +315,19 @@ def test_export_filename_keeps_primes_and_names_the_section_once() -> None:
     assert stem == "Bay_Area_Site_A_BH-01_BH-06"
 
 
-def test_file_names_keep_the_section_prime_without_stray_fragments() -> None:
+def test_file_names_drop_the_section_prime_without_stray_fragments() -> None:
     from export_framing import build_export_filename
 
     title = "Section A-A'"
-    assert build_export_filename(pattern="section_title", section_title=title) == "Section_A-A'"
+    assert build_export_filename(pattern="section_title", section_title=title) == "Section_A-A"
     with_label = build_export_filename(
         pattern="section_title",
         section_title=title,
         transect_label="Section A-A' BH 1",
         include_transect_label=True,
     )
-    assert with_label == "Section_A-A'_BH_1"
-    assert "_'_" not in with_label
+    assert with_label == "Section_A-A_BH_1"
+    assert "'" not in with_label
 
 
 def test_title_that_prefixes_a_hole_id_does_not_clip_it() -> None:
@@ -345,4 +345,7 @@ def test_reserved_and_typographic_names_are_safe_and_distinct() -> None:
     for reserved in ("CON", "nul", "LPT1"):
         assert build_export_filename(pattern="section_title", section_title=reserved) == f"{reserved}_"
     for typographic in ("B-B′", "B–B’"):
-        assert build_export_filename(pattern="section_title", section_title=typographic) == "B-B'"
+        assert build_export_filename(pattern="section_title", section_title=typographic) == "B-B"
+    # One policy everywhere: no quote characters in any file name.
+    assert build_export_filename(pattern="section_title", section_title="B-B'") == "B-B"
+    assert build_export_filename(pattern="section_title", section_title="O'Hara pit") == "OHara_pit"

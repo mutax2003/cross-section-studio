@@ -12,6 +12,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO, Literal
 
+import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field
 
@@ -405,8 +406,11 @@ def _field_data_maps(workbook: pd.ExcelFile) -> tuple[dict[str, float], dict[str
         workbook._xs_field_data_frame = None  # type: ignore[attr-defined]
         return cached
 
-    frame = pd.read_excel(workbook, sheet_name=field_key)
+    from parsing import read_data_sheet
+
+    frame = read_data_sheet(workbook, field_key)
     workbook._xs_field_data_frame = frame  # type: ignore[attr-defined]
+    workbook._xs_field_data_bool_notes = ()  # type: ignore[attr-defined]
     if frame.empty:
         cached = ({}, {})
         workbook._xs_field_data_maps = cached  # type: ignore[attr-defined]
@@ -434,13 +438,26 @@ def _field_data_maps(workbook: pd.ExcelFile) -> tuple[dict[str, float], dict[str
 
     elevations: dict[str, float] = {}
     total_depths: dict[str, float] = {}
+    bool_notes: list[str] = []
     if hole_col is not None:
         holes = frame[hole_col].astype(str).str.strip()
         valid_holes = holes.ne("") & holes.str.lower().ne("nan")
+
+        def _numbers(column: object) -> pd.Series:
+            # A TRUE/FALSE cell is not an RL / depth of 1 / 0: skip it, with a note.
+            values = frame.loc[valid_holes, column]
+            flags = values.map(lambda value: isinstance(value, (bool, np.bool_)))
+            for index in values.index[flags.to_numpy(dtype=bool)]:
+                bool_notes.append(
+                    f"Field Data row {int(index) + 2} ({holes[index]}): {column} = "
+                    f"'{bool(values[index])}' is a TRUE/FALSE cell — ignored; enter a number."
+                )
+            return pd.to_numeric(values.where(~flags), errors="coerce")
+
         if elev_col is not None:
             elev_frame = frame.loc[valid_holes, [hole_col, elev_col]].copy()
             elev_frame["_hole_id"] = elev_frame[hole_col].astype(str).str.strip()
-            elev_frame["_rl"] = pd.to_numeric(elev_frame[elev_col], errors="coerce")
+            elev_frame["_rl"] = _numbers(elev_col)
             elev_frame = elev_frame.dropna(subset=["_rl"])
             if not elev_frame.empty:
                 elevations = (
@@ -453,7 +470,7 @@ def _field_data_maps(workbook: pd.ExcelFile) -> tuple[dict[str, float], dict[str
             td_frame = frame.loc[valid_holes, [hole_col, td_col]].copy()
             td_frame["_hole_id"] = td_frame[hole_col].astype(str).str.strip()
             # Interval strings / non-numeric Depth values coerce to NaN → skipped.
-            td_frame["_td"] = pd.to_numeric(td_frame[td_col], errors="coerce")
+            td_frame["_td"] = _numbers(td_col)
             td_frame = td_frame.dropna(subset=["_td"])
             if not td_frame.empty:
                 total_depths = (
@@ -465,7 +482,14 @@ def _field_data_maps(workbook: pd.ExcelFile) -> tuple[dict[str, float], dict[str
 
     cached = (elevations, total_depths)
     workbook._xs_field_data_maps = cached  # type: ignore[attr-defined]
+    workbook._xs_field_data_bool_notes = tuple(bool_notes)  # type: ignore[attr-defined]
     return cached
+
+
+def field_data_bool_notes(workbook: pd.ExcelFile) -> tuple[str, ...]:
+    """Import notes for TRUE/FALSE cells skipped in the Field Data RL / TD columns."""
+    _field_data_maps(workbook)
+    return tuple(getattr(workbook, "_xs_field_data_bool_notes", ()))
 
 
 def get_cached_field_data_frame(workbook: pd.ExcelFile) -> pd.DataFrame | None:
@@ -486,6 +510,24 @@ def _read_field_data_total_depths(workbook: pd.ExcelFile) -> dict[str, float]:
     return _field_data_maps(workbook)[1]
 
 
+# Profile columns read as numbers by FieldExportAdapter (depths, coordinates).
+_ADAPTER_NUMBER_KEYS = ("from_depth", "to_depth", "latitude", "longitude", "easting", "northing")
+
+
+def _reject_bool_number_cells(frame: pd.DataFrame, sheet: str, columns: Sequence[str]) -> None:
+    """A TRUE/FALSE cell in a number column is an import error, not 1 / 0."""
+    for column in columns:
+        values = frame[column]
+        if isinstance(values, pd.DataFrame):  # duplicate header: the first one is read
+            values = values.iloc[:, 0]
+        for index, value in values.items():
+            if isinstance(value, (bool, np.bool_)):
+                raise ValueError(
+                    f"{sheet} row {int(index) + 2}: {column} = '{bool(value)}' is a TRUE/FALSE "
+                    "cell — enter a number."
+                )
+
+
 class FieldExportAdapter:
     def adapt(
         self,
@@ -503,7 +545,10 @@ class FieldExportAdapter:
             sheet_lookup = {_normalize_header(name): name for name in active_workbook.sheet_names}
             if sheet_key not in sheet_lookup:
                 raise ValueError(f"Lithology sheet '{profile.lithology_sheet}' not found")
-            lithology_raw = pd.read_excel(active_workbook, sheet_name=sheet_lookup[sheet_key])
+            from parsing import read_data_sheet
+
+            lithology_sheet = sheet_lookup[sheet_key]
+            lithology_raw = read_data_sheet(active_workbook, lithology_sheet)
 
             column_map = profile.columns.copy()
             resolved_map: dict[str, str] = {}
@@ -513,6 +558,11 @@ class FieldExportAdapter:
                 if resolved is None:
                     raise ValueError(f"Required column '{expected}' not found on lithology sheet")
                 resolved_map[key] = resolved
+            _reject_bool_number_cells(
+                lithology_raw,
+                lithology_sheet,
+                [resolved_map[key] for key in _ADAPTER_NUMBER_KEYS if key in resolved_map],
+            )
 
             coord_rules = profile.coordinates.model_copy()
             if target_crs:
@@ -688,6 +738,7 @@ def ingest_workbook(
                     warnings.append(
                         "Field Data sheet detected — no TD column mapped; total depth inferred from lithology."
                     )
+                warnings.extend(field_data_bool_notes(workbook))
             # Native: OVA/EC success info is appended after parse (no future-work warning).
 
         project_metadata: dict[str, str] = {}
@@ -835,6 +886,12 @@ def ingest_workbook(
                     f"Field Data sheet: parsed {ova_ec_count} OVA/EC reading(s)."
                 )
 
+        from parsing import bool_cell_detection_note
+
+        bool_note = bool_cell_detection_note(workbook)
+        if bool_note:
+            warnings.append(bool_note)
+
         if parse_result.section_specs:
             warnings.append(
                 f"Info: Sections sheet: loaded {len(parse_result.section_specs)} transect "
@@ -847,6 +904,7 @@ def ingest_workbook(
             mapping_proposal=mapping_proposal,
             aliases=aliases,
             placeholder_elevation_m=placeholder_elevation,
+            deviation_readings=parse_result.deviation_readings,
         )
 
         uses_placeholder = (

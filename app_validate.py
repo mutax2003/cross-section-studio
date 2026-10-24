@@ -27,6 +27,16 @@ from parsing import skipped_row_hole_ids
 from ui_helpers import unique_download_bytes
 
 
+def _md_cell(value: object) -> str:
+    """Workbook text for one markdown table cell: ``|`` and newlines would split it."""
+    return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
+
+
+def _md_code_cell(value: object) -> str:
+    """Code-span cell: no backticks inside (they would end the span)."""
+    return "`" + _md_cell(str(value).replace("`", "'")) + "`"
+
+
 def _show_qa_message(message: str) -> None:
     """``Info:`` lines (artesian heads, dated samples, …) as info, the rest as warnings."""
     if message.startswith("Info: "):
@@ -183,7 +193,7 @@ def _render_groundwater_flow(
             "exact" if usable and fit.method == "3-point" else "—"
         )
         rows.append(
-            f"| `{escape(fit.display_label)}` | {escape(', '.join(fit.hole_ids))} | "
+            f"| {_md_code_cell(fit.display_label)} | {_md_cell(', '.join(fit.hole_ids))} | "
             f"{format_flow_direction(fit)} | "
             f"{f'{fit.gradient:.2g}' if usable else '—'} | {r2} | "
             f"{f'{fit.max_abs_residual_m:.2f} m' if usable else '—'} | {section_text} |"
@@ -241,8 +251,8 @@ def _render_validate_details(
                 for series in water_summary.series:
                     missing = ", ".join(series.missing_hole_ids) if series.missing_hole_ids else "—"
                     rows.append(
-                        f"| `{series.series_id}` | {series.series_label or '—'} | "
-                        f"{series.hole_count} | {missing} |"
+                        f"| {_md_code_cell(series.series_id)} | {_md_cell(series.series_label or '—')} | "
+                        f"{series.hole_count} | {_md_cell(missing)} |"
                     )
                 st.markdown("\n".join(rows))
             if water_summary.holes_without_any_water:
@@ -308,7 +318,8 @@ def _render_validate_details(
                     )
                     missing = ", ".join(param.missing_hole_ids) if param.missing_hole_ids else "—"
                     rows.append(
-                        f"| `{param.parameter}` | {param.hole_count} | {depth_range} | {missing} |"
+                        f"| {_md_code_cell(param.parameter)} | {param.hole_count} | {depth_range} | "
+                        f"{_md_cell(missing)} |"
                     )
                 st.markdown("\n".join(rows))
             if env_summary.holes_without_any_readings:
@@ -615,6 +626,10 @@ def render_next_step_coach(
     """
     quality_report = st.session_state.get("quality_report")
     if quality_report is None or quality_report.has_blocking_errors:
+        return
+    if st.session_state.get("svg_bytes") is not None:
+        # A section is already on screen: the Generate strip above it says
+        # whether it is up to date, so "Next: choose holes…" only misleads.
         return
     if selection and selection[0]:
         holes = " → ".join(escape(str(hole)) for hole in selection[0])

@@ -45,6 +45,17 @@ def _forget_previous_transect() -> None:
     st.session_state.pop("hole_sequence_multiselect", None)
     st.session_state.pop("workbook_section_choice", None)
     st.session_state.pop("_workbook_section_applied", None)
+    # Lab-parameter and water-series picks belong to the old workbook: drop
+    # them (and their option signatures) so Configure seeds this workbook's
+    # defaults instead of keeping a stale or empty selection.
+    for key in (
+        "environmental_parameters_multiselect",
+        "_env_params_options_sig",
+        "_env_params_preset_sig",
+        "water_series_multiselect",
+        "_water_series_options_sig",
+    ):
+        st.session_state.pop(key, None)
     st.session_state["_reset_consulting_section_label"] = True
     # Project-seeded title block fields belong to the workbook being dropped.
     st.session_state["_reset_project_seed"] = True

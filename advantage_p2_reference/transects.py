@@ -64,7 +64,7 @@ def _title_block(
         project_number=PROJECT_NUMBER,
         source=SOURCE,
         date=REPORT_DATE,
-        notes=("NOTE: mbgs DENOTES METRES BELOW GROUND SURFACE.",),
+        notes=("mbgs DENOTES METRES BELOW GROUND SURFACE.",),
         drawn_by=DRAWN_BY,
         revised=REVISED,
         prepared_for=PREPARED_FOR,
@@ -88,8 +88,9 @@ ADVANTAGE_P2_TRANSECTS: dict[str, TransectSpec] = {
             "2017-BH10",
             "BH23-07",
         ),
-        # Approximate client Fig 6 chainage from pdf_extract_p2 tick marks (~0–32.5 m).
-        profile_eastings=(0.0, 8.0, 11.0, 17.0, 27.0, 29.5, 32.5),
+        # Client Fig 6 stick centres read from pdf_extract_p2 against the 10 m
+        # grid lines (59.05 px/m): 0 / 8.96 / 10.96 / 15.65 / 25.44 / 28.74 / 32.09.
+        profile_eastings=(0.0, 9.0, 11.0, 15.65, 25.45, 28.75, 32.1),
         title_block=_title_block(
             section_label="A-A'",
             figure_number="6",
@@ -114,8 +115,9 @@ ADVANTAGE_P2_TRANSECTS: dict[str, TransectSpec] = {
             "BH24-08",
             "BH23-01",
         ),
-        # Client Fig 7 distance ticks ~0–32 m (B south → B' north).
-        profile_eastings=(0.0, 5.0, 10.0, 15.0, 20.0, 26.0, 32.0),
+        # Client Fig 7 stick centres (B south → B' north) read against the 10 m
+        # grid lines: 0 / 8.45 / 17.41 / 20.61 / 25.84 / 30.16 / 33.02.
+        profile_eastings=(0.0, 8.45, 17.4, 20.6, 25.85, 30.15, 33.0),
         title_block=_title_block(
             section_label="B-B'",
             figure_number="7",

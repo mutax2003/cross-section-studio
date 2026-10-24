@@ -21,6 +21,7 @@ Click **Prepare deliverables** once. That builds PNG and PDF in a **single** dra
 - **Word figure (.docx)** — PNG + caption/metadata (needs `python-docx`)
 - **Copy PNG to clipboard** — browser clipboard (permission-dependent; fall back to Download PNG)
 - **Prepare report ZIP** / **Download report ZIP** — SVG + PNG + PDF + metadata JSON + README (+ Word when available)
+  - The metadata (JSON and Word table) records the VE the figure prints: a chosen VE as a number (`5`), Auto as e.g. `Auto (≈2.6×)` read from the drawn caption, plus `vertical_exaggeration_drawn`. `chemistry_label_colour_mode` is always filled (`black`, `red`, `black_red`, `green_red` or `threshold`); the two exceedance modes add `chemistry_exceedance_limits` (one limit per parameter) and threshold mode `chemistry_thresholds` (green / orange pairs).
 - **Save to project folder** — set **Save exports to folder** (a full path, e.g. `P:\Projects\Job\Figures`) under sidebar **Export**
 
 **Report ZIP** packages the **current** figure. **Batch ZIP** (below) rebuilds a separate figure for each section line in the batch list.
@@ -33,8 +34,8 @@ Under sidebar **Export** (margins, crop and CAD layers are under **Advanced**): 
 
 Sidebar **Export → File names**:
 
-- **Section title** (default) — e.g. `Site_X_A-A'`. Spaces become `_`, `A - A'` becomes `A-A'`, and the section prime is kept.
-- **Project_Figure_Section_Rev** — title-block project and figure numbers, section and revision, e.g. `12345_Fig3_A-A'_Rev_A`.
+- **Section title** (default) — e.g. `Site_X_A-A`. Spaces become `_`, `A - A'` becomes `A-A`: file names use only letters, digits, `_` and `-`, so apostrophes and section primes (`'`, `′`, `’`) are left out of every download, ZIP entry and saved file.
+- **Project_Figure_Section_Rev** — title-block project and figure numbers, section and revision, e.g. `12345_Fig3_A-A_Rev_A`.
 
 **Revision / draft tag** is appended (with the DRAFT watermark on, `DRAFT` is added). Names Windows reserves (`CON`, `PRN`, `LPT1` …) get a trailing `_`.
 
@@ -44,7 +45,7 @@ Configure → **Several section lines (batch ZIP)**: one section line per row as
 
 On Generate, **Prepare batch ZIP** draws each valid line as its own figure and packages them with a README; lines that can't be drawn are listed and left out instead of failing the batch. Tick **Include SVG in batch ZIP** only when needed (SVG is slower). **report_binder.pdf** collects the section PDFs behind a cover page; every page is fitted (scaled, not cropped) onto one letter landscape sheet size so the binder prints evenly.
 
-Each section is named after **its own** line, not the section on screen: the title's section label is swapped for the line's (title `Site X A-A'` → `Site_X_B-B'.pdf` for line `B-B'`), with the prime kept. The ZIP and binder cover are named for the whole batch, e.g. cover *Site X — Cross Sections A-A', B-B'* and `Site_X_Cross_Sections_A-A'_B-B'.zip`; words after the label stay after it (title `A - A' WITH CHLORIDE` → `B-B'_WITH_CHLORIDE.pdf` and `Cross_Sections_A-A'_B-B'_WITH_CHLORIDE.zip`). Every output style names files the same way. Two lines that would give the same name get `_2`, `_3`.
+Each section is named after **its own** line, not the section on screen: the title's section label is swapped for the line's (title `Site X A-A'` → sheet title *Site X B-B'*, file `Site_X_B-B.pdf` for line `B-B'`). The sheet title keeps the rest of the title and its spacing, so the batch sheet for the line on screen reads exactly like the single section (title `A - A' WITH CHLORIDE` → sheet *B - B' WITH CHLORIDE*, file `B-B_WITH_CHLORIDE.pdf`). The ZIP and binder cover are named for the whole batch, e.g. cover *Site X — Cross Sections A-A', B-B'* and `Site_X_Cross_Sections_A-A_B-B.zip` (`Cross_Sections_A-A_B-B_WITH_CHLORIDE.zip` for the chloride title). Every output style names files the same way. Two lines that would give the same name get `_2`, `_3`.
 
 Helpers: **Add current section line**, **Fill from suggested lines**, and **Load from workbook Sections** (when the workbook has a **Sections** sheet). An empty batch box is seeded **once** from that sheet on Configure; clearing the box after that does not re-seed — use **Load from workbook Sections** to refresh.
 
@@ -54,7 +55,7 @@ Download SVG for drafting. With **CAD-friendly SVG layers** on, export promotes 
 
 ## Vertical exaggeration on exports
 
-With **Auto (fit page)** (the default) the figure fills the page and the VE caption shows the VE actually printed (e.g. `VERTICAL EXAGGERATION ≈2.2×`); it is re-measured for the export page preset, so the PNG, PDF and SVG captions match the sheet they are on. Pick a number (1×, 2×, 5×, …) to draw exactly that VE on every page: the plot keeps its proportions and shrinks inside its frame instead of stretching.
+With **Auto (fit page)** (the default) the figure fills the page and the VE caption shows the VE actually printed (e.g. `≈2.2× VERTICAL EXAGGERATION`); it is re-measured for the export page preset, so the PNG, PDF and SVG captions match the sheet they are on. Pick a number (1×, 2×, 5×, …) to draw exactly that VE on every page: the plot keeps its proportions and shrinks inside its frame instead of stretching.
 
 A workbook **Project** tab `vertical_exaggeration` (a number such as `5`, or `auto`) sets the starting choice when the workbook is uploaded; a new workbook without one, or **Clear workbook**, returns to Auto. A VE you pick yourself stays when you switch **Output style** (it is not reset to the workbook or style default). **Chemistry columns** (P2 style) is always drawn at exactly 1× and its VE control is locked.
 
@@ -69,7 +70,7 @@ If the section is too long (or, with a fixed VE, too tall) for the page at that 
 Anything you should check before issuing the figure is listed in one amber box under the figure. With **Include QA notes (PDF)** on, the PDF lists them too: on the summary page (letter landscape) for Section sheet and Quick preview, and on an extra letter-landscape **QA notes** page after the sheet for the one-sheet consulting styles (Consulting, Groundwater fence, Chemistry columns, Chemistry + groundwater). That toggle is on by default for Section sheet and off for the consulting styles, whose PDF usually goes to the client; once you set it yourself, your choice is kept across styles.
 
 - **Polygon overlap** — matched layers overlap between two holes.
-- **Crossing correlation** — the same layers are logged in opposite order in neighbouring holes (e.g. `Crossing correlation MW-01–MW-02: Sand, Clay logged in opposite order — drawn as pinch-outs`). They are not joined across; with pinch-outs off they are not drawn between those holes. Check `unit_order` or add a Correlations row.
+- **Crossing correlation** — the same layers are logged in opposite order in neighbouring holes (e.g. `Crossing correlation MW-01–MW-02: Sand, Clay logged in opposite order — drawn as pinch-outs`). They are not joined across; with pinch-outs off they are drawn as short pinch-outs at their own holes. Check `unit_order` or add a Correlations row.
 - **Fence clipped** — a fence polygon lost much of its area to a conflicting correlation (`… kept 40% of its area`).
 - **Chemistry labels** — values that had no room beside their borehole at this scale are listed by hole (`Chemistry labels: 2 value(s) not printed …`). Their markers are still drawn; a larger page or fewer boreholes per section shows them.
 - **Map scale** — the title-block map scale didn't fit the page (see above; the sheet is marked AS SHOWN).
@@ -78,7 +79,7 @@ Anything you should check before issuing the figure is listed in one amber box u
 
 If **Stop if matched layers overlap** is on in Configure, resolve overlaps (or clear the gate after manual review) before Generate or batch ZIP. Cosmetic changes (title, VE, hatches, fonts, column width) still need Generate for a new SVG; projection/stratigraphy can reuse cached geometry when only cosmetics change.
 
-Water and chemistry connector layers (when plotted) add footer text clarifying they are **schematic** — not potentiometric surfaces or plume contours. Chemistry colour thresholds in Configure are set **per parameter** (each plotted parameter has its own Green ≤ / Orange ≤ limits in its own units; the sheet-wide pair is the fallback) and the key under the distance label prints one line per parameter; the metadata JSON and Word figure table list the limits used. Keep chemistry interpolate off for stick-style P2 figures.
+Water and chemistry connector layers (when plotted) add footer text clarifying they are **schematic** — not potentiometric surfaces or plume contours. Chemistry colour limits in Configure are set **per parameter** (each plotted parameter has its own Green ≤ / Orange ≤ limits — or a single Exceedance ≤ limit in the **Black / red** and **Green / red (exceedance)** modes — in its own units; the sheet-wide pair or limit is the fallback) and the key under the distance label prints one line per parameter; the metadata JSON and Word figure table list the limits used. At most four parameters plot on one section (a longer scripted list keeps the first four and a note names the rest). Keep chemistry interpolate off for stick-style P2 figures.
 
 ## Generate again
 

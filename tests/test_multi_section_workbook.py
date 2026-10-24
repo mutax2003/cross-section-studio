@@ -608,7 +608,9 @@ def test_streamlit_upload_seeds_batch_lines_and_builds_zip(site_bytes: bytes) ->
     assert len(pngs) == 3 and len(pdfs) == 3, names
     for stem in ("A-A", "B-B", "C-C"):
         assert any(name.endswith(f"{stem}.png") for name in pngs), names
-    assert not any("B-B_" in name for name in names), names
+        # Mirrors the single-section report ZIP: SVG + metadata per section.
+        assert f"{stem}.svg" in names and f"{stem}_metadata.json" in names, names
+    assert not any("B-B_" in name.removesuffix("_metadata.json") for name in names), names
     zip_name = at.session_state["_batch_zip_name"]
     assert all(label in zip_name for label in ("A-A", "B-B", "C-C")), zip_name
     assert "'" not in zip_name and not any("'" in name for name in names), names

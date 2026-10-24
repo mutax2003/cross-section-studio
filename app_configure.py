@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 import re
@@ -45,6 +46,22 @@ from render_profiles import (
     resolved_chemistry_limits_for,
 )
 from ui_output_presets import resolve_output_preset
+
+
+def capped_multiselect_kwargs() -> dict[str, object]:
+    """Keyword arguments that keep a ``max_selections`` multiselect cap-safe.
+
+    Streamlit's "Select all" entry ignores ``max_selections`` (it is only
+    hidden once the cap is reached), so a capped picker with more options than
+    the cap offered a bulk select past it. ``select_all=False`` removes it;
+    Streamlit releases without the parameter have no bulk select to remove.
+    """
+    try:
+        parameters = inspect.signature(st.multiselect).parameters
+    except (TypeError, ValueError):  # pragma: no cover - uninspectable build
+        return {}
+    return {"select_all": False} if "select_all" in parameters else {}
+
 
 OVERRIDE_WARNINGS_LABEL = "Generate even if data checks found warnings"
 FAIL_ON_OVERLAPS_LABEL = "Stop if matched layers overlap"
@@ -622,6 +639,8 @@ def render_configure_step(
                         ),
                         key="environmental_parameters_multiselect",
                         max_selections=MAX_CHEMISTRY_PARAMETERS,
+                        # No "Select all": it would pick past the cap.
+                        **capped_multiselect_kwargs(),
                     )
                 )
                 st.caption(f"Up to {MAX_CHEMISTRY_PARAMETERS} parameters per section.")
@@ -881,6 +900,7 @@ def render_configure_step(
                             ),
                             key="water_series_multiselect",
                             max_selections=MAX_WATER_SERIES,
+                            **capped_multiselect_kwargs(),
                         )
                     )
                     if not selected_water_series_ids:

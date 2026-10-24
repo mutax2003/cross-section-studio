@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from app_identity import APP_NAME, COPYRIGHT_NOTICE, CREATED_BY
+from constants import LITHOLOGY_SCHEME_ID
 from export_framing import ExportFramingConfig, sanitize_filename_stem
 from models import Collar, Lithology, ScreenInterval, Transect
 from projection import (
@@ -497,6 +498,27 @@ def _ve_metadata_value(vertical_exaggeration: float | None, drawn: str | None) -
     return f"Auto ({drawn})" if drawn else "Auto (fit to page)"
 
 
+def consulting_metadata_fields(consulting_title_block: object | None) -> dict[str, str]:
+    """Title-block fields recorded in the export metadata (single and batch)."""
+    if consulting_title_block is None:
+        return {}
+    return {
+        field: str(getattr(consulting_title_block, field, "") or "")
+        for field in ("figure_number", "project_number", "prepared_for", "prepared_by", "revised")
+    }
+
+
+# Colour rule wording recorded with each mode (metadata JSON, Word table and
+# the batch binder summary page). A per-reading workbook label_color still wins.
+_FIXED_COLOUR_RULES: dict[str, str] = {
+    "black": "every value black",
+    "red": "every value red",
+}
+THRESHOLD_COLOUR_RULE = (
+    "green at or below the green limit, orange above it up to the orange limit, red above"
+)
+
+
 def export_metadata_payload(
     *,
     section_title: str,
@@ -509,8 +531,15 @@ def export_metadata_payload(
     chemistry_color_mode: str | None = None,
     chemistry_thresholds: Mapping[str, Sequence[float | None]] | None = None,
     drawn_vertical_exaggeration: str | None = None,
+    lithology_scheme_id: str | None = None,
 ) -> dict[str, object]:
     """JSON-serializable metadata for report packages.
+
+    The single-section report ZIP and every section of the batch ZIP use this
+    one builder, so both record the same fields: the chemistry colour mode and
+    its rule (``chemistry_label_colour_rule``), the per-parameter limits, the
+    VE drawn and the lithology colour scheme id (``lithology_scheme_id``,
+    defaults to the loaded legend's id).
 
     In threshold colour mode the per-parameter limits are listed as
     ``{"Chloride": {"green_max": 100, "orange_max": 250}, ...}`` so the
@@ -540,7 +569,11 @@ def export_metadata_payload(
         payload["vertical_exaggeration_drawn"] = drawn_vertical_exaggeration
     if consulting_fields:
         payload.update(consulting_fields)
+    payload["lithology_scheme_id"] = lithology_scheme_id or LITHOLOGY_SCHEME_ID
     payload["chemistry_label_colour_mode"] = chemistry_color_mode or "black"
+    fixed_rule = _FIXED_COLOUR_RULES.get(chemistry_color_mode or "black")
+    if fixed_rule:
+        payload["chemistry_label_colour_rule"] = fixed_rule
     if chemistry_color_mode in ("black_red", "green_red") and chemistry_thresholds:
         # Two-band exceedance modes: one limit per parameter (the green /
         # exceedance limit; the orange one is set equal and never shown).
@@ -551,6 +584,7 @@ def export_metadata_payload(
             for parameter, pair in chemistry_thresholds.items()
         }
     elif chemistry_color_mode == "threshold" and chemistry_thresholds:
+        payload["chemistry_label_colour_rule"] = THRESHOLD_COLOUR_RULE
         payload["chemistry_thresholds"] = {
             str(parameter): {
                 "green_max": (None if pair[0] is None else float(pair[0])),

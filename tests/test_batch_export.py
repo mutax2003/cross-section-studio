@@ -136,8 +136,8 @@ def test_build_multi_transect_exports_distinct_figures() -> None:
     svg_a, svg_b = entries[0][1], entries[1][1]
     png_a, png_b = entries[0][2], entries[1][2]
     pdf_a, pdf_b = entries[0][3], entries[1][3]
-    # Default batch formats are PNG+PDF (skip SVG encode).
-    assert svg_a == b"" and svg_b == b""
+    # Default batch formats mirror the report ZIP: SVG + PNG + PDF.
+    assert b"<svg" in svg_a and b"<svg" in svg_b
     assert png_a and png_b and png_a != png_b
     assert pdf_a and pdf_b and pdf_a != pdf_b
 
@@ -147,17 +147,17 @@ def test_build_multi_transect_exports_distinct_figures() -> None:
     )
     with zipfile.ZipFile(BytesIO(zip_bytes)) as archive:
         names = set(archive.namelist())
-    assert "A-A.svg" not in names and "B-B.svg" not in names
+    assert "A-A.svg" in names and "B-B.svg" in names
     assert "A-A.png" in names and "B-B.pdf" in names
     assert "report_binder.pdf" in names
 
-    with_svg = build_multi_transect_exports(
+    without_svg = build_multi_transect_exports(
         parse_result,
         base,
         specs[:1],
-        export_formats=frozenset({"svg", "png", "pdf"}),
+        export_formats=frozenset({"png", "pdf"}),
     )
-    assert with_svg[0][1].startswith(b"<") or b"<svg" in with_svg[0][1][:200].lower()
+    assert without_svg[0][1] == b""  # a caller may still narrow the formats
 
 
 def test_prepare_batch_section_request_overrides_geometry() -> None:

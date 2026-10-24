@@ -327,9 +327,11 @@ def _sample_environmental() -> list[dict[str, object]]:
             "to_depth": "",
             "unit": "mg/L",
             # Non-detect: the limit in value, "<" in qualifier; the figure
-            # prints "<5" and the unit column carries the unit.
+            # prints "<5" and the unit column carries the unit. No
+            # label_color override anywhere in the sample: every value takes
+            # its colour from the mode and these limits (a fixed "green" here
+            # printed "<5" green beside a black exceedance in the default mode).
             "value_label": "",
-            "label_color": "green",
             "green_max": 100,
             "orange_max": 250,
             "qualifier": "<",
@@ -355,9 +357,11 @@ def _sample_environmental() -> list[dict[str, object]]:
             "value_label": "",
         },
         {
+            # Above the orange limit (250): prints red in threshold mode and
+            # in the exceedance modes, as the sample's own limits say.
             "hole_id": "MW-03",
             "parameter": "Chloride",
-            "value": 120.0,
+            "value": 310.0,
             "depth": 4.0,
             "from_depth": "",
             "to_depth": "",
@@ -1027,8 +1031,17 @@ def build_input_template_bytes() -> bytes:
     return buffer.getvalue()
 
 
-def load_data_entry_sheets(source: str | Path | BinaryIO | BytesIO) -> DataEntrySheets:
-    frame = pd.read_excel(source, sheet_name=DATA_ENTRY_SHEET, header=None)
+def load_data_entry_sheets(
+    source: str | Path | BinaryIO | BytesIO | pd.ExcelFile,
+) -> DataEntrySheets:
+    """Parse the Data Entry sheet, read through the importer's one sheet
+    reader (:func:`parsing.read_data_sheet`: cell types as Excel stored them)."""
+    from parsing import read_data_sheet
+
+    if isinstance(source, pd.ExcelFile):
+        return parse_data_entry_sheet(read_data_sheet(source, DATA_ENTRY_SHEET, header=None))
+    with pd.ExcelFile(source) as workbook:
+        frame = read_data_sheet(workbook, DATA_ENTRY_SHEET, header=None)
     return parse_data_entry_sheet(frame)
 
 

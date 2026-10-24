@@ -20,8 +20,9 @@ from batch_export import (
     BATCH_DEFAULT_EXPORT_FORMATS,
     batch_cover_title,
     batch_section_title,
+    binder_summary_lines,
     build_batch_zip,
-    build_one_transect_exports,
+    build_one_transect_package,
     export_binder_pdf,
     label_in_title,
     split_batch_transect_lines,
@@ -35,10 +36,10 @@ from export_framing import (
     save_exports_to_directory,
 )
 from models import ConsultingTitleBlock
-from pipeline import ALL_EXPORT_FORMATS
 from report_export import normalize_pdf_pages
 from ui_helpers import (
     THIN_PLOT_HEIGHT_IN,
+    consulting_metadata_fields,
     drawn_vertical_exaggeration,
     export_metadata_payload,
     fixed_ve_plot_height_in,
@@ -234,15 +235,7 @@ def _export_stem(
 def _consulting_field_map(
     consulting_title_block: ConsultingTitleBlock | None,
 ) -> dict[str, str]:
-    if consulting_title_block is None:
-        return {}
-    return {
-        "figure_number": consulting_title_block.figure_number,
-        "project_number": consulting_title_block.project_number,
-        "prepared_for": consulting_title_block.prepared_for,
-        "prepared_by": consulting_title_block.prepared_by,
-        "revised": consulting_title_block.revised,
-    }
+    return consulting_metadata_fields(consulting_title_block)
 
 
 def _render_batch_export(
@@ -251,6 +244,7 @@ def _render_batch_export(
     export_framing: ExportFramingConfig | None,
     consulting_title_block: ConsultingTitleBlock | None,
     is_stale: bool,
+    preset_label: str | None = None,
 ) -> None:
     specs_raw = str(st.session_state.get("batch_transect_specs", "")).strip()
     if not specs_raw:
@@ -266,14 +260,8 @@ def _render_batch_export(
         st.warning("No section line in the batch list is ready yet — fix the lines above.")
         return
     st.caption(
-        f"{len(specs)} section line(s) — each one is drawn afresh as PNG and PDF "
-        "(SVG optional), not copied from the current figure."
-    )
-    include_svg = st.checkbox(
-        "Include SVG in batch ZIP",
-        value=False,
-        key="batch_include_svg",
-        help="SVG files are the slowest to build; leave off if you only need PNG and PDF.",
+        f"{len(specs)} section line(s) — each one is drawn afresh, not copied from the "
+        "current figure, and packaged like the report ZIP: SVG, PNG, PDF and metadata JSON."
     )
     if is_stale:
         st.info("Click Generate section first so the batch uses your current figure style.")
@@ -283,20 +271,23 @@ def _render_batch_export(
         st.info("Generate a section first, then prepare the batch ZIP.")
         return
     batch_token = hashlib.sha256(
-        f"{request_json}\x00{specs_raw}\x00{include_svg}\x00{section_title}".encode()
+        f"{request_json}\x00{specs_raw}\x00{section_title}\x00{preset_label}".encode()
     ).hexdigest()
     if st.button("Prepare batch ZIP", key="prepare_batch_zip"):
         try:
             base_request = cached_parse_request(request_json)
-            formats = ALL_EXPORT_FORMATS if include_svg else BATCH_DEFAULT_EXPORT_FORMATS
             raw_entries = []
             failed: list[str] = []
             with st.spinner(f"Drawing {len(specs)} section line(s)…"):
                 for spec in specs:
                     try:
                         raw_entries.append(
-                            build_one_transect_exports(
-                                parse_result, base_request, spec, export_formats=formats
+                            build_one_transect_package(
+                                parse_result,
+                                base_request,
+                                spec,
+                                export_formats=BATCH_DEFAULT_EXPORT_FORMATS,
+                                preset_label=preset_label,
                             )
                         )
                     except ValueError as exc:  # e.g. too few holes with logs
@@ -308,24 +299,35 @@ def _render_batch_export(
                 return
             # Name each file after its own section, not the one previewed.
             entries = []
-            for label, svg_bytes, png_bytes, pdf_bytes in raw_entries:
-                sheet_title = batch_section_title(base_request, label)
+            for package in raw_entries:
+                sheet_title = batch_section_title(base_request, package.label)
                 stem = _export_stem(
                     section_title=sheet_title,
                     export_framing=export_framing,
                     consulting_title_block=consulting_title_block,
-                    transect_label=label,
-                    include_transect_label=not label_in_title(label, sheet_title),
+                    transect_label=package.label,
+                    include_transect_label=not label_in_title(package.label, sheet_title),
                 )
-                entries.append((sanitize_filename(stem), svg_bytes, png_bytes, pdf_bytes))
-            pdfs = [pdf for _stem, _svg, _png, pdf in entries if pdf]
-            cover_title = batch_cover_title(base_request, [entry[0] for entry in raw_entries])
+                entries.append(package.entry(sanitize_filename(stem)))
+            pdfs = [package.pdf_bytes for package in raw_entries if package.pdf_bytes]
+            cover_title = batch_cover_title(base_request, [package.label for package in raw_entries])
+            # The colour rule and limits are batch-wide (one request); list
+            # them on the binder's summary page when any section has lab data.
+            summary = binder_summary_lines(
+                raw_entries[0].metadata,
+                include_chemistry=bool(
+                    base_request.environmental_parameters
+                    or parse_result.environmental_readings
+                ),
+            )
             st.session_state["batch_package_bytes"] = build_batch_zip(
                 entries,
                 # One sheet size throughout: tight section pages and letter
                 # text pages are fitted onto letter landscape.
                 binder_pdf=export_binder_pdf(
-                    [normalize_pdf_pages(pdf) for pdf in pdfs], cover_title=cover_title
+                    [normalize_pdf_pages(pdf) for pdf in pdfs],
+                    cover_title=cover_title,
+                    summary_lines=summary,
                 )
                 or None,
             )
@@ -651,4 +653,5 @@ def render_profile_and_downloads(
         export_framing=export_framing,
         consulting_title_block=consulting_title_block,
         is_stale=is_stale,
+        preset_label=preset_label,
     )

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 import re
 import threading
 import zipfile
 from collections import OrderedDict
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from io import BytesIO
 
 from matplotlib.backends.backend_pdf import PdfPages
@@ -24,9 +26,15 @@ from pipeline import (
 )
 from renderer_common import new_figure
 from section_build_request import SectionBuildRequest
+from ui_helpers import (
+    consulting_metadata_fields,
+    drawn_vertical_exaggeration,
+    export_metadata_payload,
+)
 
-# Default batch deliverables skip SVG encode (usually the slowest); opt in via export_formats.
-BATCH_DEFAULT_EXPORT_FORMATS = frozenset({"png", "pdf"})
+# Each batch section ships what the single-section report ZIP ships: SVG (CAD),
+# PNG, PDF and a metadata JSON. A caller may still narrow the formats.
+BATCH_DEFAULT_EXPORT_FORMATS = frozenset({"svg", "png", "pdf"})
 
 _GEOMETRY_MEMO_MAX = 8
 _geometry_memo: OrderedDict[str, SectionGeometry] = OrderedDict()
@@ -423,6 +431,50 @@ def prepare_batch_section_request(
     return subset, request
 
 
+@dataclass(frozen=True)
+class BatchSectionPackage:
+    """One rebuilt batch section: its files plus the metadata JSON payload."""
+
+    label: str
+    svg_bytes: bytes
+    png_bytes: bytes
+    pdf_bytes: bytes
+    metadata: dict[str, object] = field(default_factory=dict)
+
+    def entry(self, stem: str | None = None) -> tuple[str, bytes, bytes, bytes, dict[str, object]]:
+        """``(stem, svg, png, pdf, metadata)`` for :func:`build_batch_zip`."""
+        return (stem or self.label, self.svg_bytes, self.png_bytes, self.pdf_bytes, self.metadata)
+
+
+def batch_section_metadata(
+    request: SectionBuildRequest,
+    *,
+    label: str,
+    hole_count: int | None,
+    overlap_warnings: Sequence[str] = (),
+    svg_bytes: bytes = b"",
+    pdf_bytes: bytes = b"",
+    preset_label: str | None = None,
+) -> dict[str, object]:
+    """Metadata JSON for one batch section, from the single-section builder
+    (:func:`ui_helpers.export_metadata_payload`): colour mode, rule and limits,
+    VE as drawn, lithology scheme id and the section's own title block."""
+    return export_metadata_payload(
+        section_title=request.section_title,
+        preset_label=preset_label,
+        vertical_exaggeration=request.vertical_exaggeration,
+        hole_count=hole_count,
+        transect_label=label,
+        overlap_warnings=list(overlap_warnings),
+        consulting_fields=consulting_metadata_fields(request.consulting_title_block),
+        chemistry_color_mode=request.chemistry_color_mode,
+        chemistry_thresholds=request.chemistry_thresholds,
+        drawn_vertical_exaggeration=drawn_vertical_exaggeration(
+            pdf_bytes=pdf_bytes, svg_bytes=svg_bytes
+        ),
+    )
+
+
 def build_one_transect_exports(
     parse_result: ParseResult,
     base_request: SectionBuildRequest,
@@ -431,6 +483,23 @@ def build_one_transect_exports(
     export_formats: frozenset[str] | None = None,
 ) -> tuple[str, bytes, bytes, bytes]:
     """Rebuild one transect; reuse process-local geometry when payloads match."""
+    package = build_one_transect_package(
+        parse_result, base_request, spec, export_formats=export_formats, with_metadata=False
+    )
+    return package.label, package.svg_bytes, package.png_bytes, package.pdf_bytes
+
+
+def build_one_transect_package(
+    parse_result: ParseResult,
+    base_request: SectionBuildRequest,
+    spec: BatchTransectSpec,
+    *,
+    export_formats: frozenset[str] | None = None,
+    preset_label: str | None = None,
+    with_metadata: bool = True,
+) -> BatchSectionPackage:
+    """Rebuild one transect with its metadata payload (as the single-section
+    report ZIP); reuse process-local geometry when payloads match."""
     subset, request = prepare_batch_section_request(parse_result, base_request, spec)
     formats = export_formats or BATCH_DEFAULT_EXPORT_FORMATS
     hole_ids = tuple(collar.hole_id for collar in subset.collars)
@@ -516,7 +585,22 @@ def build_one_transect_exports(
         groundwater_flow_notes=request.groundwater_flow_notes,
         export_framing=request.export_framing,
     )
-    return spec.label, result.svg_bytes, result.png_bytes, result.pdf_bytes
+    metadata = (
+        batch_section_metadata(
+            request,
+            label=spec.label,
+            hole_count=len(geometry.projected_hole_ids),
+            overlap_warnings=result.overlap_warnings,
+            svg_bytes=result.svg_bytes,
+            pdf_bytes=result.pdf_bytes,
+            preset_label=preset_label,
+        )
+        if with_metadata
+        else {}
+    )
+    return BatchSectionPackage(
+        spec.label, result.svg_bytes, result.png_bytes, result.pdf_bytes, metadata
+    )
 
 
 def build_multi_transect_exports(
@@ -543,9 +627,76 @@ def build_multi_transect_exports(
 _LETTER_LANDSCAPE_IN = (11.0, 8.5)
 
 
-def _cover_page_pdf(title: str, subtitle: str, *, page_size_in: tuple[float, float]) -> bytes:
-    """One cover page at exactly ``page_size_in`` (no tight bbox: that cropped
-    the page to the text, a non-standard ~489 x 624 pt sheet)."""
+_COLOUR_MODE_LABELS: dict[str, str] = {
+    "black": "All black",
+    "red": "All red",
+    "black_red": "Black / red (exceedance)",
+    "green_red": "Green / red (exceedance)",
+    "threshold": "Green / orange / red thresholds",
+}
+
+
+def _limit_text(value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return str(value)
+    if math.isnan(number):
+        return None
+    return f"{number:g}"
+
+
+def binder_summary_lines(
+    metadata: Mapping[str, object], *, include_chemistry: bool = True
+) -> list[str]:
+    """Summary-page lines for the binder, read from a section's metadata
+    payload: the chemistry colour rule, each parameter's limits and the
+    lithology colour scheme."""
+    lines: list[str] = []
+    if include_chemistry:
+        mode = str(metadata.get("chemistry_label_colour_mode") or "black")
+        rule = metadata.get("chemistry_label_colour_rule")
+        heading = f"Chemistry label colours: {_COLOUR_MODE_LABELS.get(mode, mode)}"
+        lines.append(f"{heading} ({rule})" if rule else heading)
+        exceedance = metadata.get("chemistry_exceedance_limits")
+        thresholds = metadata.get("chemistry_thresholds")
+        if isinstance(exceedance, Mapping):
+            for parameter, limit in exceedance.items():
+                text = _limit_text(limit)
+                lines.append(f"{parameter}: red above {text}" if text else f"{parameter}: no limit set")
+        elif isinstance(thresholds, Mapping):
+            for parameter, pair in thresholds.items():
+                limits = pair if isinstance(pair, Mapping) else {}
+                green = _limit_text(limits.get("green_max"))
+                orange = _limit_text(limits.get("orange_max"))
+                if green is None and orange is None:
+                    lines.append(f"{parameter}: no limit set")
+                    continue
+                parts = []
+                if green is not None:
+                    parts.append(f"green \u2264 {green}")
+                if orange is not None:
+                    parts.append(f"orange \u2264 {orange}, red above {orange}")
+                lines.append(f"{parameter}: {', '.join(parts)}")
+    scheme = metadata.get("lithology_scheme_id")
+    if scheme:
+        lines.append(f"Lithology colour scheme: {scheme}")
+    return lines
+
+
+def _cover_page_pdf(
+    title: str,
+    subtitle: str,
+    *,
+    page_size_in: tuple[float, float],
+    summary_lines: Sequence[str] = (),
+) -> bytes:
+    """One cover / summary page at exactly ``page_size_in`` (no tight bbox:
+    that cropped the page to the text, a non-standard ~489 x 624 pt sheet).
+    ``summary_lines`` (chemistry colour rule, limits per parameter) print
+    under the subtitle."""
     buffer = BytesIO()
     with PdfPages(buffer) as pdf:
         cover = new_figure(page_size_in)
@@ -553,7 +704,7 @@ def _cover_page_pdf(title: str, subtitle: str, *, page_size_in: tuple[float, flo
         ax.axis("off")
         ax.text(
             0.5,
-            0.55,
+            0.72 if summary_lines else 0.55,
             title,
             ha="center",
             va="center",
@@ -562,12 +713,33 @@ def _cover_page_pdf(title: str, subtitle: str, *, page_size_in: tuple[float, flo
             wrap=True,
             transform=ax.transAxes,
         )
-        ax.text(0.5, 0.45, subtitle, ha="center", va="center", fontsize=12, transform=ax.transAxes)
+        ax.text(
+            0.5,
+            0.62 if summary_lines else 0.45,
+            subtitle,
+            ha="center",
+            va="center",
+            fontsize=12,
+            transform=ax.transAxes,
+        )
+        if summary_lines:
+            ax.text(
+                0.5,
+                0.54,
+                "\n".join(summary_lines[:24]),
+                ha="center",
+                va="top",
+                fontsize=9,
+                linespacing=1.4,
+                transform=ax.transAxes,
+            )
         pdf.savefig(cover)
     return buffer.getvalue()
 
 
-def _merge_pdfs_pypdf(section_pdfs: Sequence[bytes], *, cover_title: str) -> bytes | None:
+def _merge_pdfs_pypdf(
+    section_pdfs: Sequence[bytes], *, cover_title: str, summary_lines: Sequence[str] = ()
+) -> bytes | None:
     try:
         from pypdf import PdfReader, PdfWriter
     except ImportError:
@@ -580,7 +752,10 @@ def _merge_pdfs_pypdf(section_pdfs: Sequence[bytes], *, cover_title: str) -> byt
         box = readers[0].pages[0].mediabox
         page_size_in = (float(box.width) / 72.0, float(box.height) / 72.0)
     cover = _cover_page_pdf(
-        cover_title, f"{len(section_pdfs)} section(s)", page_size_in=page_size_in
+        cover_title,
+        f"{len(section_pdfs)} section(s)",
+        page_size_in=page_size_in,
+        summary_lines=summary_lines,
     )
     writer.append(PdfReader(BytesIO(cover)))
     for reader in readers:
@@ -590,14 +765,23 @@ def _merge_pdfs_pypdf(section_pdfs: Sequence[bytes], *, cover_title: str) -> byt
     return out.getvalue()
 
 
-def export_binder_pdf(section_pdfs: Sequence[bytes], *, cover_title: str = "Cross Section Report") -> bytes:
-    """Combine prepared single-section PDF bytes into one binder document."""
+def export_binder_pdf(
+    section_pdfs: Sequence[bytes],
+    *,
+    cover_title: str = "Cross Section Report",
+    summary_lines: Sequence[str] = (),
+) -> bytes:
+    """Combine prepared single-section PDF bytes into one binder document.
+
+    ``summary_lines`` (see :func:`binder_summary_lines`) print on the cover /
+    summary page: the chemistry colour rule and the limits per parameter.
+    """
     valid = [payload for payload in section_pdfs if payload]
     if not valid:
         return b""
     if len(valid) == 1 or len({payload for payload in valid}) == 1:
         return valid[0]
-    merged = _merge_pdfs_pypdf(valid, cover_title=cover_title)
+    merged = _merge_pdfs_pypdf(valid, cover_title=cover_title, summary_lines=summary_lines)
     if merged is not None:
         return merged
     # Fallback without pypdf: cover page only (individual PDFs still land in the ZIP).
@@ -605,21 +789,29 @@ def export_binder_pdf(section_pdfs: Sequence[bytes], *, cover_title: str = "Cros
         cover_title,
         f"{len(valid)} section(s) — install pypdf for full binder merge",
         page_size_in=_LETTER_LANDSCAPE_IN,
+        summary_lines=summary_lines,
     )
 
 
 def build_batch_zip(
-    entries: Sequence[tuple[str, bytes, bytes, bytes]],
+    entries: Sequence[tuple],
     *,
     binder_pdf: bytes | None = None,
 ) -> bytes:
-    """Zip multiple transect exports. Each entry is (stem, svg, png, pdf)."""
+    """Zip multiple transect exports.
+
+    Each entry is ``(stem, svg, png, pdf)`` or ``(stem, svg, png, pdf,
+    metadata)``; a metadata mapping is written as ``<stem>_metadata.json``
+    beside the section's files, as in the single-section report ZIP.
+    """
     buffer = BytesIO()
     # The binder and readme names are taken up front so no section stem can
     # collide with them (a section labelled "report_binder").
     used: dict[str, int] = {"report_binder": 1, "readme": 1}
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for stem, svg_bytes, png_bytes, pdf_bytes in entries:
+        for entry in entries:
+            stem, svg_bytes, png_bytes, pdf_bytes = entry[:4]
+            metadata = entry[4] if len(entry) > 4 else None
             # Sanitize (labels may carry path separators) and uniquify — zipfile
             # writes duplicate names silently and extractors keep only one.
             safe = _sanitize_stem(str(stem))
@@ -640,6 +832,11 @@ def build_batch_zip(
                 archive.writestr(f"{safe}.png", png_bytes)
             if pdf_bytes:
                 archive.writestr(f"{safe}.pdf", pdf_bytes)
+            if metadata:
+                archive.writestr(
+                    f"{safe}_metadata.json",
+                    json.dumps(metadata, indent=2, default=str).encode("utf-8"),
+                )
         if binder_pdf:
             archive.writestr("report_binder.pdf", binder_pdf)
         archive.writestr("README.txt", _batch_readme(len(entries)).encode("utf-8"))
@@ -653,7 +850,10 @@ def _batch_readme(section_count: int) -> str:
 
     return (
         f"Cross Section Studio batch export: {section_count} section line(s).\n"
-        "Each section has a PNG (reports) and PDF (print); SVG (CAD) when selected.\n"
-        "report_binder.pdf, when present, collects every section PDF behind a cover page.\n"
+        "Each section has an SVG (CAD), PNG (reports), PDF (print) and a metadata JSON\n"
+        "(colour mode, rule and limits, VE drawn, lithology scheme), as in the\n"
+        "single-section report ZIP.\n"
+        "report_binder.pdf, when present, collects every section PDF behind a summary\n"
+        "page listing the chemistry colour rule and the limits per parameter.\n"
         f"{CREATED_BY}. {COPYRIGHT_NOTICE}\n"
     )

@@ -85,7 +85,7 @@ ADVANTAGE_P2_TRANSECTS: dict[str, TransectSpec] = {
             "2017-BH18",
             "2017-BH11 / BH24-11",
             "2017-BH09",
-            "2017-BH10",
+            "2017-BH10-01",
             "BH23-07",
         ),
         # Client Fig 6 stick centres read from pdf_extract_p2 against the 10 m

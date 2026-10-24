@@ -160,9 +160,10 @@ def test_two_parameters_are_coloured_by_their_own_limits(profile) -> None:
         # Dots agree with their labels (one scatter per parameter, in sorted order).
         dots = [c for ax in figure.axes for c in ax.collections if getattr(c, "_css_marker_kind", None) == "chem"]
         assert len(dots) >= 2
+        # Key rows in Configure order (the order passed in), not alphabetical.
         assert renderer.chemistry_threshold_key_lines == (
-            "Benzene: green ≤ 0.5 · orange 0.5–5 · red > 5 mg/kg",
             "Chloride: green ≤ 100 · orange 100–250 · red > 250 mg/kg",
+            "Benzene: green ≤ 0.5 · orange 0.5–5 · red > 5 mg/kg",
         )
         assert renderer.chemistry_threshold_key_text == "\n".join(renderer.chemistry_threshold_key_lines)
         # Legend 3-dot sample per parameter: benzene has an orange band, so three dots.
@@ -207,7 +208,7 @@ def test_empty_orange_band_is_omitted_per_parameter() -> None:
         SECTION_SHEET_PROFILE, chemistry_thresholds={"Chloride": (100.0, 250.0), "Benzene": (1.0, 1.0)}
     )
     try:
-        assert renderer.chemistry_threshold_key_lines[0] == "Benzene: green ≤ 1 · red > 1 mg/kg"
+        assert renderer.chemistry_threshold_key_lines[1] == "Benzene: green ≤ 1 · red > 1 mg/kg"
         by_name = {entry["parameter"]: entry for entry in renderer.parameter_series_legend}
         assert len(by_name["Benzene"]["threshold_colors"]) == 2
         assert len(by_name["Chloride"]["threshold_colors"]) == 3

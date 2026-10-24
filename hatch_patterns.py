@@ -352,10 +352,87 @@ def install() -> None:
 # the identical marks-per-inch (``get_path(hatch, 6)`` on a 1 in cell, exactly
 # what the backends tile in the section), with isolated marks kept only when
 # whole and the pattern centred in the swatch. Continuous line hatches
-# (``-``, ``|``, ``x``, gravel outlines) are clipped to the swatch instead.
+# (``-``, ``|``, ``\\``, ``x``, gravel outlines) are clipped to the swatch
+# instead; the straight ones are phased first so the most lines cross the
+# swatch, centred. Anchored at the swatch corner, a line could fall on the
+# corner itself: Shale (``\\\\``) showed one line where its key holds two, and
+# a single ``\\`` drew none in a section-sheet key.
 
 _ISOLATED_MARK_MAX_IN = 0.25  # a subpath group wider than this is a line hatch
 _MARK_PHASE_STEP_IN = 0.5 / 72.0
+# Phase search span for straight line hatches: the coarsest stock spacing
+# (one ``\\``, ``x``, ``-`` or ``|`` at density 6 repeats every 1/3 in along x).
+_LINE_PHASE_SPAN_IN = 1.0 / 3.0
+
+
+def _clipped_lengths(segs: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Length and midpoint of each segment ``(..., 2, 2)`` inside the box ``lo``-``hi``.
+
+    Liang-Barsky clipping, vectorised over every leading axis.
+    """
+    p0 = segs[..., 0, :]
+    d = segs[..., 1, :] - p0
+    t0 = np.zeros(p0.shape[:-1])
+    t1 = np.ones(p0.shape[:-1])
+    outside = np.zeros(p0.shape[:-1], dtype=bool)
+    for axis in (0, 1):
+        da = d[..., axis]
+        flat = np.abs(da) < 1e-12
+        outside |= flat & ((p0[..., axis] < lo[axis]) | (p0[..., axis] > hi[axis]))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ta = (lo[axis] - p0[..., axis]) / da
+            tb = (hi[axis] - p0[..., axis]) / da
+        enter = np.where(flat, -np.inf, np.minimum(ta, tb))
+        leave = np.where(flat, np.inf, np.maximum(ta, tb))
+        t0 = np.maximum(t0, enter)
+        t1 = np.minimum(t1, leave)
+    span = np.where(outside, 0.0, np.clip(t1 - t0, 0.0, None))
+    length = span * np.linalg.norm(d, axis=-1)
+    mid = p0 + d * ((t0 + t1) / 2.0)[..., None]
+    return length, mid
+
+
+def _line_phase(segs: np.ndarray, width_in: float, height_in: float, inset_in: float) -> np.ndarray:
+    """``(dx, dy)`` that puts the most whole hatch lines through a swatch, centred.
+
+    ``segs`` are the straight line pieces tiled around the swatch. A line
+    counts when at least half the swatch's short side of it is inside the
+    inset box (a corner sliver does not); ties keep the lines centred.
+    """
+    lo = np.array([inset_in, inset_in])
+    hi = np.array([width_in - inset_in, height_in - inset_in])
+    if np.any(hi <= lo):
+        return np.zeros(2)
+    # Only pieces some shift (0 .. span up / right) can bring into the box.
+    seg_lo, seg_hi = segs.min(axis=1), segs.max(axis=1)
+    near = np.all((seg_hi + _LINE_PHASE_SPAN_IN >= lo) & (seg_lo <= hi), axis=1)
+    segs = segs[near]
+    if not len(segs):
+        return np.zeros(2)
+    # Pieces of one infinite hatch line (tiles repeat it) share an id.
+    d = segs[:, 1] - segs[:, 0]
+    angle = np.mod(np.arctan2(d[:, 1], d[:, 0]), np.pi)
+    normal = np.stack([-np.sin(angle), np.cos(angle)], axis=1)
+    offset = np.einsum("ij,ij->i", segs[:, 0], normal)
+    _ids, line_id = np.unique(np.round(np.stack([angle, offset], axis=1), 4), axis=0, return_inverse=True)
+    line_id = np.asarray(line_id).ravel()
+    n_lines = int(line_id.max()) + 1
+    steps = np.arange(0.0, _LINE_PHASE_SPAN_IN, _MARK_PHASE_STEP_IN)
+    shifts = np.array([(dx, dy) for dx in steps for dy in steps])
+    length, mid = _clipped_lengths(segs[None, :, :, :] + shifts[:, None, None, :], lo, hi)
+    per_line = np.zeros((len(shifts), n_lines))
+    np.add.at(per_line, (slice(None), line_id), length)
+    min_len = 0.5 * float(np.min(hi - lo))
+    count = (per_line >= min_len).sum(axis=1)
+    total = length.sum(axis=1)
+    centre = np.array([width_in / 2.0, height_in / 2.0])
+    with np.errstate(invalid="ignore", divide="ignore"):
+        centroid = (mid * length[..., None]).sum(axis=1) / total[:, None]
+    off_centre = np.where(total > 0, np.abs(centroid - centre).sum(axis=1), np.inf)
+    # Most lines first, then the most centred (rounded so float noise does
+    # not pick among equally centred phases).
+    best = np.lexsort((np.round(off_centre, 4), -count))[0]
+    return shifts[best]
 
 
 def _subpaths(path: Path) -> list[tuple[np.ndarray, np.ndarray]]:
@@ -420,13 +497,15 @@ def swatch_marks_path(
     nx = int(np.ceil(width_in)) + 2
     ny = int(np.ceil(height_in)) + 2
 
-    def tiled(parts):
+    def tiled(parts, *, phase: bool = False):
         """Line pieces, tiled over the swatch, that reach inside it."""
         if parts and all(len(v) == 2 for v, _c in parts):
             # Straight segments (gravel outlines, stock lines): vectorised.
             segs = np.stack([v for v, _c in parts])  # (n, 2, 2)
             shifts = np.array([(ix, iy) for ix in range(-1, nx) for iy in range(-1, ny)], dtype=float)
             moved = (segs[None, :, :, :] + shifts[:, None, None, :]).reshape(-1, 2, 2)
+            if phase:
+                moved = moved + _line_phase(moved, width_in, height_in, inset_in)
             lo, hi = moved.min(axis=1), moved.max(axis=1)
             keep = (hi[:, 0] >= 0) & (hi[:, 1] >= 0) & (lo[:, 0] <= width_in) & (lo[:, 1] <= height_in)
             moved = np.unique(np.round(moved[keep], 6), axis=0)
@@ -504,7 +583,9 @@ def swatch_marks_path(
                 codes_list.append(codes)
             marks_path = Path(np.concatenate(verts_list), np.concatenate(codes_list))
     lines_path = None
-    pieces = tiled(lines) if lines else []
+    # Gravel outlines keep the cell phase (stones are drawn one size
+    # everywhere); straight stock lines are phased into the swatch.
+    pieces = tiled(lines, phase="O" not in hatch) if lines else []
     if pieces:
         lines_path = Path(
             np.concatenate([v for v, _c in pieces]), np.concatenate([c for _v, c in pieces])

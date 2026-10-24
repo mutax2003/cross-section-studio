@@ -161,7 +161,7 @@
       "value_label": "300"
     },
     {
-      "hole_id": "2017-BH10",
+      "hole_id": "2017-BH10-01",
       "parameter": "Chloride",
       "value": 294.0,
       "depth": 0.75,
@@ -169,7 +169,7 @@
       "value_label": "294"
     },
     {
-      "hole_id": "2017-BH10",
+      "hole_id": "2017-BH10-01",
       "parameter": "Chloride",
       "value": 193.0,
       "depth": 2.625,

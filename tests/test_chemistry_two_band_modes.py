@@ -262,9 +262,10 @@ def test_sheet_wide_limit_inconclusive_non_detect_and_no_limit(mode: str) -> Non
         assert labels["<2"] == CHEMISTRY_LABEL_INCONCLUSIVE.lower()
         assert labels["0.4"] == LOW[mode].lower()
         assert labels["500"] == CHEMISTRY_LABEL_RED.lower()
+        # Key rows in Configure order (the order passed in), not alphabetical.
         assert renderer.chemistry_threshold_key_lines == (
-            f"Benzene: {low_name} ≤ 1 · red > 1 · grey ND (RDL > 1) mg/L",
             f"Chloride: {low_name} ≤ 100 · red > 100 mg/L",
+            f"Benzene: {low_name} ≤ 1 · red > 1 · grey ND (RDL > 1) mg/L",
         )
         assert renderer.chemistry_rdl_notes == [
             "BH-02 Benzene at 2 m: detection limit 2 mg/L exceeds guideline 1 mg/L — result inconclusive"

@@ -1623,11 +1623,14 @@ def _sorted_hole_profiles(
 
 
 # A hole is "short" (continued beneath its total depth by ``_extend_short_holes``)
-# when the nearest holes on both sides were drilled deeper by at least
-# ``max(SHORT_HOLE_MIN_DEPTH_GAIN_M, SHORT_HOLE_MIN_DEPTH_GAIN_FRACTION * TD)``.
-# Ordinary depth differences keep the convention that the fence base follows the
-# hole bottoms; a hole stopped well short of both neighbours (a shallow well of a
-# nested pair) would otherwise notch a white wedge into the fence.
+# when the nearest holes on both sides end LOWER in elevation (bottom RL) by at
+# least ``max(SHORT_HOLE_MIN_DEPTH_GAIN_M, SHORT_HOLE_MIN_DEPTH_GAIN_FRACTION * TD)``
+# (TD = its depth below collar). Elevation, not depth, because the fence is built
+# in elevation: a hole on a hill can be nearly as deep as its neighbours yet end
+# far above them. Ordinary differences keep the convention that the fence base
+# follows the hole bottoms; a hole ending well above both neighbours (a shallow
+# well of a nested pair, a hole on a hill) would otherwise notch a white wedge
+# into the fence.
 SHORT_HOLE_MIN_DEPTH_GAIN_M = 1.0
 SHORT_HOLE_MIN_DEPTH_GAIN_FRACTION = 0.25
 
@@ -1643,6 +1646,12 @@ def _hole_depth(intervals: list[_LayerInterval]) -> float:
     """Deepest logged depth below collar (the hole's TD as far as the fence knows)."""
     depths = [i.to_depth for i in intervals if np.isfinite(i.to_depth)]
     return max(depths) if depths else float("nan")
+
+
+def _hole_bottom(intervals: list[_LayerInterval]) -> float:
+    """Lowest logged elevation (RL of the hole's TD as far as the fence knows)."""
+    bottoms = [i.bottom_elevation for i in intervals if np.isfinite(i.bottom_elevation)]
+    return min(bottoms) if bottoms else float("nan")
 
 
 def _hole_depth_or_zero(intervals: list[_LayerInterval]) -> float:
@@ -1738,6 +1747,14 @@ def _below_td_intervals(
     The deepest logged unit is extended when the column continues the same unit
     across the TD; every other run below the TD becomes an ``inferred`` interval.
     Returns ``None`` when nothing is added.
+
+    A hole on a hill can stand above the neighbours' fence altogether: the column
+    then starts below the TD (between the neighbours' collars), and its upper runs
+    are units the hole already logged higher up. Closing that gap at its midpoint
+    put an inferred copy of e.g. the Sand the hole logged at surface beneath its
+    logged Clay. Instead the runs above the column's first run of the deepest
+    logged unit (or, without one, the leading runs of units the hole logged) are
+    dropped, and the deepest logged unit continues down across the gap.
     """
     finite = [
         interval
@@ -1757,9 +1774,27 @@ def _below_td_intervals(
     if not below:
         return None
     extended = list(intervals)
+    index = next(i for i, interval in enumerate(extended) if interval is deepest)
     code, top, bottom = below[0]
-    if code == deepest.lithology_code and top >= td - 1e-6:
-        index = next(i for i, interval in enumerate(extended) if interval is deepest)
+    if top < td - 1e-6:
+        # The neighbours' fence passes beneath the TD (a hole on a hill).
+        column_bottom = below[-1][2]
+        match = next((i for i, run in enumerate(below) if run[0] == deepest.lithology_code), None)
+        if match is not None:
+            below = below[match:]
+        else:
+            logged = {interval.lithology_code for interval in intervals}
+            while below and below[0][0] in logged:
+                below = below[1:]
+        if below and below[0][0] == deepest.lithology_code:
+            continued_to = below[0][2]
+            below = below[1:]
+        else:
+            continued_to = below[0][1] if below else column_bottom
+        extended[index] = replace(
+            deepest, bottom_elevation=continued_to, to_depth=collar - continued_to
+        )
+    elif code == deepest.lithology_code and top >= td - 1e-6:
         extended[index] = replace(deepest, bottom_elevation=bottom, to_depth=collar - bottom)
         below = below[1:]
     for code, top, bottom in below:
@@ -1790,12 +1825,15 @@ def _extend_short_holes(
     the fence base line up to its TD: a white wedge under the hole, with the
     deeper units squeezed into slivers. The strata do not end because a hole
     did: below its TD the hole gets the column the fence between its nearest
-    deeper neighbours shows at its position (interpolated, matched and tiled
+    lower-ending neighbours shows at its position (interpolated, matched and tiled
     exactly like any other pair), flagged ``inferred`` so those fills are drawn
-    as pinch-outs (dashed, faded). "Short" compares total depths (see
-    ``SHORT_HOLE_MIN_DEPTH_GAIN_M``); nothing is added when the neighbours' fence
-    does not reach below the hole's TD (a hole in a valley). Holes are extended
-    deepest first (equal depths together, so the result does not depend on
+    as pinch-outs (dashed, faded). "Short" compares the *elevations* of the hole
+    bottoms (see ``SHORT_HOLE_MIN_DEPTH_GAIN_M``), the frame the fence is built
+    in: judged on depth below collar, a hole on a hill only a little shallower
+    than its neighbours (but ending far above their bottoms) was not extended and
+    a white notch opened under it, while a hole in a valley (shallower, but its
+    bottom no higher than theirs) is not short at all. Holes are extended lowest
+    bottom first (equal bottoms together, so the result does not depend on
     transect direction), so a run of short holes chains off the already-extended
     ones. Column / projected data are untouched.
     """
@@ -1803,24 +1841,25 @@ def _extend_short_holes(
         return hole_profiles
     profiles = list(hole_profiles)
     depths = [_hole_depth(intervals) for _x, _id, intervals, _lookup in profiles]
-    by_depth: dict[float, list[int]] = defaultdict(list)
+    bottoms = [_hole_bottom(intervals) for _x, _id, intervals, _lookup in profiles]
+    by_bottom: dict[float, list[int]] = defaultdict(list)
     for index in range(1, len(profiles) - 1):
-        if np.isfinite(depths[index]):
-            by_depth[round(depths[index], 6)].append(index)
-    for level in sorted(by_depth, reverse=True):
+        if np.isfinite(depths[index]) and np.isfinite(bottoms[index]):
+            by_bottom[round(bottoms[index], 6)].append(index)
+    for level in sorted(by_bottom):
         updates: dict[int, _HoleProfile] = {}
-        for index in by_depth[level]:
-            needed = depths[index] + max(
+        for index in by_bottom[level]:
+            bottom = bottoms[index]
+            needed = bottom - max(
                 SHORT_HOLE_MIN_DEPTH_GAIN_M, SHORT_HOLE_MIN_DEPTH_GAIN_FRACTION * depths[index]
             )
-            # Nearest hole each side at least as deep as this one (only shorter
-            # holes are skipped, so a run of short holes chains); it must reach
-            # ``needed``, or the hole is not short next to that neighbour.
-            left = next((i for i in range(index - 1, -1, -1) if depths[i] >= depths[index]), None)
-            right = next(
-                (i for i in range(index + 1, len(profiles)) if depths[i] >= depths[index]), None
-            )
-            if left is None or right is None or min(depths[left], depths[right]) < needed:
+            # Nearest hole each side whose bottom is at least as low as this one
+            # (only holes ending higher are skipped, so a run of short holes
+            # chains); it must reach down to ``needed``, or the hole is not short
+            # next to that neighbour.
+            left = next((i for i in range(index - 1, -1, -1) if bottoms[i] <= bottom), None)
+            right = next((i for i in range(index + 1, len(profiles)) if bottoms[i] <= bottom), None)
+            if left is None or right is None or max(bottoms[left], bottoms[right]) > needed:
                 continue
             x_hole, hole_id, intervals, _lookup = profiles[index]
             x_left, left_id, left_intervals, left_lookup = profiles[left]
@@ -1854,6 +1893,7 @@ def _extend_short_holes(
         for index, profile in updates.items():
             profiles[index] = profile
             depths[index] = _hole_depth(profile[2])
+            bottoms[index] = _hole_bottom(profile[2])
     return profiles
 
 

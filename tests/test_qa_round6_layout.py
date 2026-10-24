@@ -156,7 +156,10 @@ def test_true_metre_locator_caps_ticks_on_an_extreme_span() -> None:
     renderer, figure, _result = _render(site, layout="consulting_section", ve=25.0)
     elapsed = time.perf_counter() - started
     try:
-        assert elapsed < 10.0, elapsed
+        # Hang guard only (the uncapped locator never finished); the tick caps
+        # below are the real check. ~9 s on a quiet runner, so 10 s tripped
+        # under parallel load on unchanged code.
+        assert elapsed < 60.0, elapsed
         counted = 0
         for ax in figure.axes:
             lo, hi = sorted(ax.get_ylim())

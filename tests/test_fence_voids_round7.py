@@ -406,8 +406,9 @@ def test_fuzz_short_holes_leave_no_void_between_deeper_neighbours(
     covered = unary_union([p.polygon for p in polygons])
     for (_a, xa, ca, ua), (_s, xs, cs, us), (_b, xb, cb, ub) in zip(holes, holes[1:], holes[2:]):
         depth_a, depth_s, depth_b = ua[-1][2], us[-1][2], ub[-1][2]
-        needed = depth_s + max(1.0, 0.25 * depth_s)
-        if depth_a < needed or depth_b < needed:
+        # "Short" is judged on bottom elevations (the frame the fence is built in).
+        needed = cs - depth_s - max(1.0, 0.25 * depth_s)
+        if ca - depth_a > needed or cb - depth_b > needed:
             continue
         floor = max(ca - depth_a, cb - depth_b)
         region = Polygon(

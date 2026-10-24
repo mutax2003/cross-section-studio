@@ -38,7 +38,7 @@ _DIGITIZED: dict[str, dict[str, tuple[tuple[float, float, str], ...]]] = {
             (10.5, 13.5, "Silty Clay"),
         ),
         "2017-BH09": ((0.0, 3.0, "Sandy Clay"),),
-        "2017-BH10": (
+        "2017-BH10-01": (
             (0.0, 1.5, "Sandy Clay"),
             (1.5, 3.0, "Sand"),
         ),

@@ -275,6 +275,7 @@ class CrossSectionRenderer(
         unconformities: Sequence[Unconformity] = (),
         environmental_readings: Sequence[EnvironmentalReading] = (),
         environmental_parameters: Sequence[str] = (),
+        omitted_chemistry_parameters: Sequence[str] = (),
         render_profile: CrossSectionRenderProfile | None = None,
         raster_log_strips: Sequence[RasterLogStrip] = (),
         consulting_title_block: ConsultingTitleBlock | None = None,
@@ -313,6 +314,9 @@ class CrossSectionRenderer(
         self.unconformities = tuple(unconformities)
         self.environmental_readings = tuple(environmental_readings)
         self.environmental_parameters = tuple(environmental_parameters)
+        # Parameters a caller capped off before rendering (pipeline: beyond the
+        # per-section limit); named on the figure under the chemistry key.
+        self.omitted_chemistry_parameters = tuple(omitted_chemistry_parameters)
         self.profile = render_profile or SECTION_SHEET_PROFILE
         self.raster_log_strips = tuple(raster_log_strips)
         self.consulting_title_block = consulting_title_block

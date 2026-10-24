@@ -1190,6 +1190,7 @@ def render_cross_section_from_geometry(
         unconformities=unconformities,
         environmental_readings=environmental_readings,
         environmental_parameters=tuple(environmental_parameters or ()),
+        omitted_chemistry_parameters=dropped_parameters,
         render_profile=render_profile,
         raster_log_strips=raster_log_strips,
         consulting_title_block=effective_consulting_block,

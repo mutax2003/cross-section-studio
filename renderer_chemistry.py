@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 from bisect import bisect_left
 from collections.abc import Sequence
 from typing import NotRequired, TypedDict
@@ -59,6 +60,10 @@ class ParameterLegendEntry(TypedDict):
 _PARAMETER_LABEL_MIN_GAP_PTS = 26.0
 # The "N values not printed" line under the threshold key.
 _OMITTED_FOOTNOTE_GID = "chemistry-omitted-footnote"
+# The "Not shown: ... (4-parameter limit)" line under the chemistry key, and
+# its wrap width (a long scripted list must not run past the plot frame).
+_OMITTED_PARAMETERS_GID = "chemistry-omitted-parameters"
+_OMITTED_PARAMETERS_WRAP_CHARS = 90
 # Clearance between the lowest x-axis text and the threshold key below it.
 _THRESHOLD_KEY_GAP_PTS = 3.0
 # Threshold mode: a fence segment joining readings in different bands.
@@ -393,6 +398,8 @@ class RendererChemistryMixin:
         # Parameters beyond the per-section cap (direct renderer callers; the
         # pipeline caps and notes before the renderer sees the list).
         self.chemistry_cap_notes = []
+        # The on-figure "Not shown: ..." line, when parameters were left off.
+        self.chemistry_omitted_parameters_text = None
         # Column spans the collision pass keeps labels off (chemistry values
         # and water numbers alike), set even when no chemistry is drawn.
         self._column_spans = []
@@ -436,6 +443,16 @@ class RendererChemistryMixin:
             self.chemistry_cap_notes.append(
                 chemistry_parameter_cap_note(plotted_parameters, dropped_parameters)
             )
+        # Named on the figure too (under the chemistry key): parameters this
+        # pass capped off plus any a caller capped before rendering.
+        plotted_keys = {chemistry_parameter_key(name) for name in plotted_parameters}
+        omitted_parameters = tuple(
+            {
+                chemistry_parameter_key(name): name.strip()
+                for name in (*getattr(self, "omitted_chemistry_parameters", ()), *dropped_parameters)
+                if name.strip() and chemistry_parameter_key(name) not in plotted_keys
+            }.values()
+        )
         # Parameter identity is chemistry_parameter_key (trimmed, case-folded):
         # "Cl" and "cl" readings plot as one parameter under the first
         # spelling, the same key the cap, the limits and the unit grouping use.
@@ -516,7 +533,10 @@ class RendererChemistryMixin:
         configured_order += sorted(name for name in by_parameter if name not in configured_order)
         series_markers = parameter_series_markers(configured_order, base_marker)
         several_parameters = len(by_parameter) >= 2
-        for parameter, readings in sorted(by_parameter.items()):
+        # Configure order (the order passed in) everywhere: drawing, the
+        # legend rows and the threshold key, not alphabetical.
+        for parameter in configured_order:
+            readings = by_parameter[parameter]
             marker = series_markers[parameter]
             if draw_markers:
                 color = series_colors[parameter]
@@ -844,7 +864,7 @@ class RendererChemistryMixin:
             self.parameter_series_legend.append(legend_entry)
         if threshold_key_limits:
             entries = []
-            for parameter in sorted(threshold_key_limits):
+            for parameter in (name for name in configured_order if name in threshold_key_limits):
                 named_units = sorted(unit for unit in threshold_key_units[parameter] if unit)
                 unit = named_units[0] if len(named_units) == 1 else ""
                 green_limit, yellow_limit = threshold_key_limits[parameter]
@@ -852,6 +872,8 @@ class RendererChemistryMixin:
             self._draw_chemistry_threshold_key(
                 ax, entries, font_size, inconclusive=threshold_key_inconclusive, mode=color_mode
             )
+        if omitted_parameters:
+            self._add_omitted_parameters_note(ax, omitted_parameters, font_size)
 
     def _draw_chemistry_threshold_key(
         self,
@@ -941,6 +963,59 @@ class RendererChemistryMixin:
         key._css_rows = list(stack.get_children())
         ax.add_artist(key)
         self._chemistry_threshold_key = key
+
+    def _add_omitted_parameters_note(self, ax, names: Sequence[str], font_size: float) -> None:
+        """Name, under the chemistry key, the parameters left off by the per-section cap.
+
+        Scripted / batch calls can pass more than
+        :data:`models.MAX_CHEMISTRY_PARAMETERS`; the QA note names the extra
+        ones, and so does the printed figure, so a reader knows values exist.
+        A row of the threshold key when one is drawn, else a box in the key's
+        place under the distance label (same artist id, so every layout makes
+        room for it and the "values not printed" footnote stacks under it).
+        """
+        from models import MAX_CHEMISTRY_PARAMETERS
+
+        text = f"Not shown: {', '.join(names)} ({MAX_CHEMISTRY_PARAMETERS}-parameter limit)"
+        self.chemistry_omitted_parameters_text = text
+        wrapped = "\n".join(textwrap.wrap(text, _OMITTED_PARAMETERS_WRAP_CHARS)) or text
+        note = TextArea(
+            wrapped,
+            textprops={
+                "fontsize": font_size,
+                "color": LABEL_COLOR,
+                "fontstyle": "italic",
+                "multialignment": "center",
+            },
+        )
+        note._text.set_gid(_OMITTED_PARAMETERS_GID)
+        note.set_figure(ax.figure)
+        key = getattr(self, "_chemistry_threshold_key", None)
+        stack = getattr(key, "_css_stack", None)
+        if key is not None and stack is not None:
+            key._css_rows.append(note)
+            stack._children.append(note)
+            stack.stale = True
+            key.stale = True
+            return
+        stack = VPacker(children=[note], align="center", pad=0, sep=2)
+        box = AnnotationBbox(
+            stack,
+            (0.5, 0.0),
+            xycoords=_below_x_axis_anchor(ax),
+            xybox=(0.0, -_THRESHOLD_KEY_GAP_PTS),
+            boxcoords="offset points",
+            box_alignment=(0.5, 1.0),
+            frameon=False,
+            pad=0.0,
+            annotation_clip=False,
+        )
+        box.set_gid(THRESHOLD_KEY_GID)
+        box.set_zorder(9.5)
+        box._css_stack = stack
+        box._css_rows = [note]
+        ax.add_artist(box)
+        self._chemistry_threshold_key = box
 
     def _update_chemistry_omitted_footnote(self, fig, labels) -> None:
         """On-figure note when the label pass had to leave values off.

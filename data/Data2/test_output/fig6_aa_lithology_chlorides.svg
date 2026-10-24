@@ -1967,8 +1967,8 @@ z
     </g>
    </g>
    <g id="text_44">
-    <!-- 2017-BH10 -->
-    <g style="fill: #111827" transform="translate(544.791231 68.991628) scale(0.08 -0.08)">
+    <!-- 2017-BH10-01 -->
+    <g style="fill: #111827" transform="translate(537.564981 68.991628) scale(0.08 -0.08)">
      <use xlink:href="#DejaVuSans-Bold-15"/>
      <use xlink:href="#DejaVuSans-Bold-13" transform="translate(69.578125 0)"/>
      <use xlink:href="#DejaVuSans-Bold-14" transform="translate(139.15625 0)"/>
@@ -1978,6 +1978,9 @@ z
      <use xlink:href="#DejaVuSans-Bold-2b" transform="translate(396.03125 0)"/>
      <use xlink:href="#DejaVuSans-Bold-14" transform="translate(479.71875 0)"/>
      <use xlink:href="#DejaVuSans-Bold-13" transform="translate(549.296875 0)"/>
+     <use xlink:href="#DejaVuSans-Bold-10" transform="translate(618.875 0)"/>
+     <use xlink:href="#DejaVuSans-Bold-13" transform="translate(660.375 0)"/>
+     <use xlink:href="#DejaVuSans-Bold-14" transform="translate(729.953125 0)"/>
     </g>
    </g>
    <g id="text_45">

@@ -23,7 +23,6 @@ def test_identity_strings() -> None:
 def test_repository_level_notices() -> None:
     assert "Copyright (c) 2026 Andrew Liu, Ecoventure" in (ROOT / "COPYRIGHT").read_text(encoding="utf-8")
     assert CREATED_BY in (ROOT / "README.md").read_text(encoding="utf-8")
-    assert CREATED_BY in (ROOT / "docs" / "help" / "about.md").read_text(encoding="utf-8")
     assert 'authors = [{ name = "Andrew Liu" }]' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'org.opencontainers.image.authors="Andrew Liu, Ecoventure"' in (ROOT / "Dockerfile").read_text(
         encoding="utf-8"
@@ -35,6 +34,18 @@ def test_about_block_carries_attribution() -> None:
 
     text = about_version_markdown()
     assert CREATED_BY in text and COPYRIGHT_NOTICE in text
+
+
+def test_rendered_about_dialog_shows_attribution_once_after_version() -> None:
+    """Help → About = docs/help/about.md + about_version_markdown(); the notice
+    comes from app_identity via the latter only, never hard-coded in the .md."""
+    from app_menubar import load_help_markdown
+
+    assert CREATED_BY not in (ROOT / "docs" / "help" / "about.md").read_text(encoding="utf-8")
+    text = load_help_markdown("about")
+    assert text.count(CREATED_BY) == 1
+    assert text.count(COPYRIGHT_NOTICE) == 1
+    assert text.index(CREATED_BY) > text.index("## Version")
 
 
 def test_windows_version_resource_is_well_formed() -> None:

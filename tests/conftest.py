@@ -136,3 +136,37 @@ def _close_matplotlib_figures():
     import matplotlib.pyplot as plt
 
     plt.close("all")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _pin_test_fonts_to_dejavu_sans():
+    """Measure text with the same glyphs on every machine.
+
+    ``render_theme.export_font_rc`` asks matplotlib for Arial, then Calibri,
+    then DejaVu Sans. CI (ubuntu) has neither Arial nor Calibri, so every
+    export falls through to DejaVu Sans; a Windows workstation finds Arial and
+    the pixel-exact header / water-label / notes layout assertions shift by
+    1-2 px. Hide the families ahead of DejaVu Sans from matplotlib's font
+    manager for the test session so local runs resolve the same font CI does.
+    Production font selection is untouched: the rc family list is unchanged
+    and the fonts come back when the session ends.
+    """
+    from matplotlib import font_manager
+
+    import render_theme
+
+    hidden = {render_theme.EXPORT_FONT_FAMILY_DEFAULT.casefold()}
+    for family in render_theme.EXPORT_FONT_FALLBACKS:
+        if family.casefold() == "dejavu sans":
+            break
+        hidden.add(family.casefold())
+
+    manager = font_manager.fontManager
+    original = list(manager.ttflist)
+    manager.ttflist = [entry for entry in original if entry.name.casefold() not in hidden]
+    manager._findfont_cached.cache_clear()
+    try:
+        yield
+    finally:
+        manager.ttflist = original
+        manager._findfont_cached.cache_clear()

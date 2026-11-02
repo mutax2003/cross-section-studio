@@ -121,7 +121,12 @@ def read_workbook_rows(path: Path = WORKBOOK) -> list[dict[str, object]]:
     for row in sheet.iter_rows(min_row=header_row + 1, min_col=6, max_col=9):
         hex_cell, fill_cell, name_cell, hatch_cell = row
         name = str(name_cell.value or "").strip()
-        colour = _hex(hex_cell.value)
+        raw_hex = str(hex_cell.value or "").strip()
+        colour = _hex(raw_hex)
+        if raw_hex and colour is None:
+            # A typo here would otherwise read as "blank" and inherit the
+            # group colour above, shipping the wrong colour without a word.
+            raise ValueError(f"row {hex_cell.row}: column F {raw_hex!r} is not a #RRGGBB hex")
         if colour:
             group_colour = colour
         if not name:
@@ -152,7 +157,13 @@ def build_scheme(path: Path = WORKBOOK) -> dict[str, object]:
     lithologies: dict[str, dict[str, object]] = {}
     for row in read_workbook_rows(path):
         family = str(row["hatch_family"])
-        lithologies[str(row["name"])] = {
+        name = str(row["name"])
+        if name in lithologies:
+            raise ValueError(
+                f"{name!r} (row {row['row']}) is listed twice in the workbook; "
+                f"the first is {lithologies[name]['source']}"
+            )
+        lithologies[name] = {
             "color": row["color"],
             "hatch": HATCH_FAMILIES[family]["hatch"],
             "hatch_family": family,

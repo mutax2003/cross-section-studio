@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 from paths import (
     app_root,
+    bh_log_lithology_legend_path,
     cross_section_input_template,
     import_profiles_dir,
     lithology_aliases_path,
@@ -42,6 +43,17 @@ def test_paths_help_topic_helpers() -> None:
 def test_lithology_aliases_path_readable() -> None:
     path = lithology_aliases_path()
     assert path.is_file()
+
+
+def test_bh_log_lithology_legend_json_is_bundled() -> None:
+    """The scheme JSON is a shipped resource: without it every lithology draws grey."""
+    import json
+
+    path = bh_log_lithology_legend_path()
+    assert path.is_file()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["scheme_id"] == "261023"
+    assert len(payload["lithologies"]) >= 25
 
 
 def test_cross_section_input_template_prefers_multi_tab() -> None:

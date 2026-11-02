@@ -76,7 +76,8 @@ def _read_json_object(path: Path) -> dict:
         return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Could not read %s: %s", path, exc)
         return {}
     return payload if isinstance(payload, dict) else {}
 
@@ -129,7 +130,7 @@ def load_lithology_scheme() -> LithologyScheme:
     path = bh_log_lithology_legend_path()
     scheme = parse_lithology_scheme(path)
     if not scheme.colors:
-        logger.error("Lithology scheme %s is missing or empty; every code draws grey", path)
+        logger.error("Lithology scheme %s is missing, unreadable or empty; every code draws grey", path)
     return scheme
 
 

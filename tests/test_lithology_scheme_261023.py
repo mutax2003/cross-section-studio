@@ -134,6 +134,32 @@ def test_workbook_with_a_conflicting_cell_fill_is_rejected(tmp_path: Path) -> No
         build_lithology_legend.build_scheme(broken)
 
 
+def test_workbook_with_a_malformed_hex_is_rejected_not_inherited(tmp_path: Path) -> None:
+    """A typo in column F must not read as blank and take the colour above."""
+    import openpyxl
+
+    book = openpyxl.load_workbook(bh_log_lithology_legend_xlsx_path())
+    sheet = book.worksheets[0]
+    sheet["F4"].value = "#96725"  # Clay group head (F is merged down the group): five digits
+    broken = tmp_path / "legend.xlsx"
+    book.save(broken)
+    with pytest.raises(ValueError, match=r"row 4: column F '#96725' is not a #RRGGBB hex"):
+        build_lithology_legend.build_scheme(broken)
+
+
+def test_workbook_with_a_duplicated_lithology_is_rejected(tmp_path: Path) -> None:
+    """A row pasted twice must fail the build rather than let the lower row win."""
+    import openpyxl
+
+    book = openpyxl.load_workbook(bh_log_lithology_legend_xlsx_path())
+    sheet = book.worksheets[0]
+    sheet["H5"].value = "Clay"  # Sandy Clay row renamed to the row above
+    broken = tmp_path / "legend.xlsx"
+    book.save(broken)
+    with pytest.raises(ValueError, match="'Clay' \(row 5\) is listed twice"):
+        build_lithology_legend.build_scheme(broken)
+
+
 def test_legacy_codes_keep_their_styles_but_stay_off_the_legend() -> None:
     payload = json.loads(bh_log_lithology_legend_path().read_text(encoding="utf-8"))
     legacy = payload["legacy_codes"]

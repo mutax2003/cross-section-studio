@@ -16,5 +16,3 @@ Windows desktop builds show the product version under **Help → About** (inject
 
 
 ---
-
-Created by Andrew Liu, Ecoventure, 2026. Copyright © 2026 Andrew Liu, Ecoventure. All rights reserved.
